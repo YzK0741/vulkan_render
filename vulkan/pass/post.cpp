@@ -206,14 +206,6 @@ namespace vulkan::pass {
             .bloom_intensity = this->frame_.suppress_bloom ? 0.0f : settings.bloom_intensity,
             .bloom_threshold = settings.bloom_threshold,
             .encode_gamma = writing_ldr ? 1.0f : (vulkan::is_srgb_format(this->swap_chain_format_) ? 0.0f : 1.0f),
-            .gi_intensity = out.constants.gi_resolved ? 1.0f : 0.0f,
-            .gi_depth_scale = out.constants.proj[2][2],
-            .gi_depth_offset = out.constants.proj[3][2],
-            // The SAME edge criterion the spatial filter uses: one silhouette test for the whole chain, so what
-            // survives the filter is not undone by the upsample.
-            .gi_depth_sigma = settings.gi_depth_sigma,
-            .gi_normal_power = settings.gi_normal_power,
-            .gi_upsample = this->gi_upsample_ ? 1.0f : 0.0f,
             .fxaa_subpixel = settings.fxaa_subpixel,
             .fxaa_edge_threshold = settings.fxaa_edge_threshold,
         };

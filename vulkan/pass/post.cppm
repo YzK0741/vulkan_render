@@ -73,22 +73,6 @@ export namespace vulkan::pass {
         // because it renders into the R16F LDR image, which must hold gamma-encoded values for FXAA's luma
         // thresholds.
         float encode_gamma = 0.0f;
-        // composite only: the weight on the screen-space GI image (1 = GI ran this frame, 0 = the added term is
-        // exactly zero, which is what keeps GI-off frames byte-identical). The tracer scales the signal itself;
-        // this is the on/off switch folded into the push block rather than a shader branch on a feature flag it
-        // cannot see.
-        float gi_intensity = 0.0f;
-        // composite only: the joint-bilateral UPSAMPLE of the half-resolution GI. A plain bilinear fetch of a
-        // half-resolution image mixes in the neighbouring texels across a silhouette, which darkens the geometry
-        // side and spills light onto the background side; these four terms are the same edge criterion the
-        // spatial filter uses, so a silhouette that survives one pass is not re-blurred by the next.
-        float gi_depth_scale = 0.0f;  // projection[2][2]
-        float gi_depth_offset = 0.0f; // projection[3][2]
-        float gi_depth_sigma = 0.02f;
-        float gi_normal_power = 16.0f;
-        // 1 = the bilateral gather, 0 = the plain bilinear fetch. The off switch exists to make the upsample
-        // measurable (the same reason ssgi_spatial_sigma can be 0); it is not a quality knob.
-        float gi_upsample = 1.0f;
         // FXAA lanes (fxaa.frag): the sub-pixel term strength (0 = pure directional blend) and the relative luma
         // contrast below which a pixel counts as flat.
         float fxaa_subpixel = 0.75f;

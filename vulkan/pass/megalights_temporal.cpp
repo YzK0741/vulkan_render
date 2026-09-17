@@ -132,9 +132,8 @@ namespace vulkan::pass {
         }
         this->set_layout_ = *layout;
         // ONE set layout, this pass's own (see the declaration): its depth and velocity are own bindings too, so
-        // there is no shared set to hand over - the shape `ssgi_temporal_pass` builds with, and the reason
-        // `build_ssgi_temporal` takes a single layout.
-        auto built = pipelines::build_ssgi_temporal(context.device, this->set_layout_, render_resource::megalights_temporal_io.push->size, spirv);
+        // there is no shared set to hand over - which is the shape `build_resolve_pipeline` takes.
+        auto built = pipelines::build_resolve_pipeline(context.device, this->set_layout_, render_resource::megalights_temporal_io.push->size, spirv);
         if (!built) {
             utility::log("stochastic punctual lighting's temporal resolve disabled (the chain will stay off): {}", built.error());
             this->release_owned();

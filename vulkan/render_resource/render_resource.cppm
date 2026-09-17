@@ -1245,7 +1245,7 @@ export namespace vulkan::render_resource {
     }};
 
     /// @brief the push block the whole post chain shares, in bytes; its shape is `vulkan.pass.post`'s
-    inline constexpr uint32_t post_push_bytes = 52;
+    inline constexpr uint32_t post_push_bytes = 28;
 
     /**
      * @brief the bloom chain's four levels, as ONE declaration per level

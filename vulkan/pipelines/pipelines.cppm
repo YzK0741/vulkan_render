@@ -87,7 +87,7 @@ namespace vulkan::pipelines {
     /// what build_ssgi() creates: the tracer's COMPUTE pipeline. It owns no set layout - it binds
     /// the shared scene set plus the G-buffer set, which already carries the radiance sampler and
     /// the GI storage image it needs - so only the pipeline layout is new.
-    export struct ssgi_owned {
+    export struct compute_pipeline_owned {
         VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
         std::optional<vk_pipeline> trace;
     };
@@ -105,41 +105,41 @@ namespace vulkan::pipelines {
     /// the ray-traced sun shadow: the same two set layouts as the GI tracer (the scene set carries the
     /// camera, the light UBO and - when the device has ray tracing - the top level structure; the
     /// G-buffer set carries the surface the ray starts from)
-    export std::expected<ssgi_owned, std::string> build_rt_shadow(VkDevice device, VkDescriptorSetLayout scene_layout, VkDescriptorSetLayout gbuffer_layout, uint32_t push_constant_size, std::span<unsigned char const> compute_shader_code);
+    export std::expected<compute_pipeline_owned, std::string> build_rt_shadow(VkDevice device, VkDescriptorSetLayout scene_layout, VkDescriptorSetLayout gbuffer_layout, uint32_t push_constant_size, std::span<unsigned char const> compute_shader_code);
     /// the stochastic punctual lighting trace (shaders/megalights_trace.comp): the same two set layouts again,
     /// with the estimator's own push block - see docs/megalights.md
-    export std::expected<ssgi_owned, std::string> build_megalights_trace(VkDevice device, VkDescriptorSetLayout scene_layout, VkDescriptorSetLayout gbuffer_layout, uint32_t push_constant_size,
-                                                                         std::span<unsigned char const> compute_shader_code);
+    export std::expected<compute_pipeline_owned, std::string> build_megalights_trace(VkDevice device, VkDescriptorSetLayout scene_layout, VkDescriptorSetLayout gbuffer_layout, uint32_t push_constant_size,
+                                                                                     std::span<unsigned char const> compute_shader_code);
     /// the stochastic chain's temporal resolve (shaders/megalights_temporal.comp): two set layouts again - the
     /// shared G-buffer set at index 0 and the pass's own at index 1 - with the accumulation's own push block
-    export std::expected<ssgi_owned, std::string> build_megalights_temporal(VkDevice device, VkDescriptorSetLayout gbuffer_layout, VkDescriptorSetLayout pass_set_layout, uint32_t push_constant_size,
-                                                                            std::span<unsigned char const> compute_shader_code);
+    export std::expected<compute_pipeline_owned, std::string> build_megalights_temporal(VkDevice device, VkDescriptorSetLayout gbuffer_layout, VkDescriptorSetLayout pass_set_layout, uint32_t push_constant_size,
+                                                                                        std::span<unsigned char const> compute_shader_code);
     /// the mask bake: a compute pass over the shared scene set only (the material table and the texture
     /// array), which collapses the triangles a material's alphaMode MASK cuts out and writes the expanded
     /// vertices a bottom level structure is then built from - see shaders/mask_bake.comp
-    export std::expected<ssgi_owned, std::string> build_mask_bake(VkDevice device, VkDescriptorSetLayout scene_layout, uint32_t push_constant_size, std::span<unsigned char const> compute_shader_code);
+    export std::expected<compute_pipeline_owned, std::string> build_mask_bake(VkDevice device, VkDescriptorSetLayout scene_layout, uint32_t push_constant_size, std::span<unsigned char const> compute_shader_code);
     /// the compute skinning pass: the same shape again, over the scene set's per-joint matrices - see
     /// shaders/compute_skin.comp
-    export std::expected<ssgi_owned, std::string> build_compute_skin(VkDevice device, VkDescriptorSetLayout scene_layout, uint32_t push_constant_size, std::span<unsigned char const> compute_shader_code);
+    export std::expected<compute_pipeline_owned, std::string> build_compute_skin(VkDevice device, VkDescriptorSetLayout scene_layout, uint32_t push_constant_size, std::span<unsigned char const> compute_shader_code);
     /// the clustered-light sort (shaders/light_cluster.comp): the shared scene set alone, and NO push constants
     /// at all - the shader reads the light UBO and writes the two cluster buffers through that set's bindings
     /// 11 and 12, which is why this builder takes no push size. It is the first compute pipeline in this module
     /// that came out of `vulkan.core` (where it was built against the core's own scene pipeline layout).
-    export std::expected<ssgi_owned, std::string> build_cluster(VkDevice device, VkDescriptorSetLayout scene_layout, std::span<unsigned char const> compute_shader_code);
+    export std::expected<compute_pipeline_owned, std::string> build_cluster(VkDevice device, VkDescriptorSetLayout scene_layout, std::span<unsigned char const> compute_shader_code);
 
-    /// what build_ssgi_temporal() creates: the pipeline layout and the resolve pipeline. The SET layout comes IN
+    /// what build_resolve_pipeline() creates: the pipeline layout and the resolve pipeline. The SET layout comes IN
     /// as a parameter now - it is generated from the denoiser's own DECLARATION (see
     /// render_resource::ssgi_temporal_io), which is what stops the seven bindings and the family's descriptor
     /// pool count from drifting apart: they were written by hand in two places once and the validation layer
     /// named the mismatch ("Trying to allocate 15 of VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER descriptors ...
     /// but this pool only has a total of 12").
-    export struct ssgi_temporal_owned {
+    export struct resolve_pipeline_owned {
         VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
         std::optional<vk_pipeline> resolve;
     };
 
-    export std::expected<ssgi_temporal_owned, std::string> build_ssgi_temporal(VkDevice device, VkDescriptorSetLayout pass_set_layout, uint32_t push_constant_size,
-                                                                               std::span<unsigned char const> compute_shader_code);
+    export std::expected<resolve_pipeline_owned, std::string> build_resolve_pipeline(VkDevice device, VkDescriptorSetLayout pass_set_layout, uint32_t push_constant_size,
+                                                                                     std::span<unsigned char const> compute_shader_code);
 
     /// what build_gi_probe() creates: the world-space probe cache's pipeline layout and pipeline. The SET
     /// layout comes IN as a parameter rather than being built here, because it is the PASS's (see
@@ -400,9 +400,9 @@ namespace vulkan::pipelines {
     // bindless texture array to sample it. It owns no set layout, like the tracer, and it is the only compute
     // pass here whose output is not an image: it writes vertices into a buffer the acceleration structure is
     // then built from.
-    std::expected<ssgi_owned, std::string> build_mask_bake(VkDevice device, VkDescriptorSetLayout const scene_layout, uint32_t const push_constant_size, std::span<unsigned char const> const compute_shader_code) {
+    std::expected<compute_pipeline_owned, std::string> build_mask_bake(VkDevice device, VkDescriptorSetLayout const scene_layout, uint32_t const push_constant_size, std::span<unsigned char const> const compute_shader_code) {
         using fail = std::unexpected<std::string>;
-        ssgi_owned out;
+        compute_pipeline_owned out;
 
         VkPushConstantRange push_range = {};
         push_range.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
@@ -445,9 +445,9 @@ namespace vulkan::pipelines {
     // The compute skinning pass (see shaders/compute_skin.comp): the same shape as the mask bake above and
     // for the same reason - it reads only the shared scene set (here the per-joint matrices at binding 9)
     // and owns no set layout of its own.
-    std::expected<ssgi_owned, std::string> build_compute_skin(VkDevice device, VkDescriptorSetLayout const scene_layout, uint32_t const push_constant_size, std::span<unsigned char const> const compute_shader_code) {
+    std::expected<compute_pipeline_owned, std::string> build_compute_skin(VkDevice device, VkDescriptorSetLayout const scene_layout, uint32_t const push_constant_size, std::span<unsigned char const> const compute_shader_code) {
         using fail = std::unexpected<std::string>;
-        ssgi_owned out;
+        compute_pipeline_owned out;
 
         VkPushConstantRange push_range = {};
         push_range.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
@@ -493,9 +493,9 @@ namespace vulkan::pipelines {
     // rather than the core's scene pipeline layout, which is what the old `core::make_cluster_pipeline` used:
     // the two are equivalent for this pipeline (same set layout, and the shader uses no push constants), and
     // owning it is what lets the pass release it.
-    std::expected<ssgi_owned, std::string> build_cluster(VkDevice const device, VkDescriptorSetLayout const scene_layout, std::span<unsigned char const> const compute_shader_code) {
+    std::expected<compute_pipeline_owned, std::string> build_cluster(VkDevice const device, VkDescriptorSetLayout const scene_layout, std::span<unsigned char const> const compute_shader_code) {
         using fail = std::unexpected<std::string>;
-        ssgi_owned out;
+        compute_pipeline_owned out;
 
         VkPipelineLayoutCreateInfo pipeline_layout_info = {};
         pipeline_layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
@@ -534,9 +534,9 @@ namespace vulkan::pipelines {
     // because its inputs are in the same places (the camera block and the light UBO in the scene set,
     // the stored surface in the G-buffer set) plus the top level structure, which lives in the scene set
     // as binding 16 when the device has ray tracing. Nothing new is created here beyond the layout.
-    std::expected<ssgi_owned, std::string> build_rt_shadow(VkDevice device, VkDescriptorSetLayout const scene_layout, VkDescriptorSetLayout const gbuffer_layout, uint32_t const push_constant_size, std::span<unsigned char const> const compute_shader_code) {
+    std::expected<compute_pipeline_owned, std::string> build_rt_shadow(VkDevice device, VkDescriptorSetLayout const scene_layout, VkDescriptorSetLayout const gbuffer_layout, uint32_t const push_constant_size, std::span<unsigned char const> const compute_shader_code) {
         using fail = std::unexpected<std::string>;
-        ssgi_owned out;
+        compute_pipeline_owned out;
 
         VkPushConstantRange push_range = {};
         push_range.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
@@ -581,15 +581,15 @@ namespace vulkan::pipelines {
     // shadow's builder rather than repeating twenty lines of Vulkan, and it exists as its own name because a
     // caller reading `build_rt_shadow` inside this pass's create() would have to check that the two are still the
     // same shape - which is exactly the kind of coupling a name is for.
-    std::expected<ssgi_owned, std::string> build_megalights_trace(VkDevice device, VkDescriptorSetLayout const scene_layout, VkDescriptorSetLayout const gbuffer_layout, uint32_t const push_constant_size,
-                                                                  std::span<unsigned char const> const compute_shader_code) {
+    std::expected<compute_pipeline_owned, std::string> build_megalights_trace(VkDevice device, VkDescriptorSetLayout const scene_layout, VkDescriptorSetLayout const gbuffer_layout, uint32_t const push_constant_size,
+                                                                              std::span<unsigned char const> const compute_shader_code) {
         return build_rt_shadow(device, scene_layout, gbuffer_layout, push_constant_size, compute_shader_code);
     }
     // ... and the chain's temporal resolve: the same two-layout shape, with the shared G-buffer set FIRST
     // because that is index 0 in its declaration (its own bindings are set 1) - the order of the arguments IS
     // the set numbering, which is why this forwarder takes them in that order rather than reusing the one above.
-    std::expected<ssgi_owned, std::string> build_megalights_temporal(VkDevice device, VkDescriptorSetLayout const gbuffer_layout, VkDescriptorSetLayout const pass_set_layout, uint32_t const push_constant_size,
-                                                                     std::span<unsigned char const> const compute_shader_code) {
+    std::expected<compute_pipeline_owned, std::string> build_megalights_temporal(VkDevice device, VkDescriptorSetLayout const gbuffer_layout, VkDescriptorSetLayout const pass_set_layout, uint32_t const push_constant_size,
+                                                                                 std::span<unsigned char const> const compute_shader_code) {
         return build_rt_shadow(device, gbuffer_layout, pass_set_layout, push_constant_size, compute_shader_code);
     }
     // The GI spatial filter: the same two set layouts the tracer binds (the shared scene set and the
@@ -605,9 +605,9 @@ namespace vulkan::pipelines {
     // The GI temporal resolve: its own set layout, because it groups four things no other pass puts
     // together (the raw trace, the accumulated history, the motion vectors and the depth). It binds
     // no scene set: the push block carries the two projection terms its depth guard needs.
-    std::expected<ssgi_temporal_owned, std::string> build_ssgi_temporal(VkDevice const device, VkDescriptorSetLayout const pass_set_layout, uint32_t const push_constant_size, std::span<unsigned char const> const compute_shader_code) {
+    std::expected<resolve_pipeline_owned, std::string> build_resolve_pipeline(VkDevice const device, VkDescriptorSetLayout const pass_set_layout, uint32_t const push_constant_size, std::span<unsigned char const> const compute_shader_code) {
         using fail = std::unexpected<std::string>;
-        ssgi_temporal_owned out;
+        resolve_pipeline_owned out;
 
         // THE SET LAYOUT IS THE DECLARATION'S (render_resource::ssgi_temporal_io, generated by the caller with
         // bindings::make_set_layout): seven bindings, one of which is the storage image the resolve writes.
