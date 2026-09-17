@@ -498,7 +498,7 @@ int main() {
         CHECK(rr::deferred_io.targets[0].kind == rr::target_kind::color);
         CHECK(rr::deferred_io.barrier_images.empty()); // it moves no image of its own
         CHECK(rr::deferred_io.push.has_value());
-        CHECK(rr::deferred_io.push->size == 92);                         // mat4 + vec4 + two floats
+        CHECK(rr::deferred_io.push->size == 88);                         // mat4 + vec4 + one float
         CHECK(rr::deferred_io.push->stages == rr::stage_flag::fragment); // the vertex stage pushes nothing
         CHECK(rr::descriptor_counts_for(rr::deferred_io, rr::deferred_io.own_set).total() == 0);
     }

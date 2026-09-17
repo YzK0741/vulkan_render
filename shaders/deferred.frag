@@ -83,7 +83,6 @@ layout(push_constant) uniform DeferredPush {
     // green on the reference scene with 37.6% of pixels differing, on a frame whose documented intent is
     // that SSAO does nothing at all there. 0.0 on the marched path and with GI off, so nothing else in the
     // frame moves.
-    float gi_replaces_ambient;
     // 1.0 = the stochastic punctual lighting pass ANSWERED this frame, so the cluster loop below must not add
     // the punctual lights a second time (and this stage adds `ml_lighting` instead, see the end of main). It is
     // set from whether that pass actually recorded, not from its knob - a frame whose pass was gated off keeps
@@ -226,11 +225,10 @@ void main() {
     // Skipping the computation rather than multiplying by it is what makes an SSAO-on and an SSAO-off
     // traced frame BIT-IDENTICAL, which is the acceptance for that: on a traced frame the rays are the
     // occlusion.
-    si.ao = material.b * (pc.gi_replaces_ambient > 0.5 ? 1.0 : ssao_occlusion(v_uv, depth, si.normal));
+    si.ao = material.b * ssao_occlusion(v_uv, depth, si.normal);
     // The diffuse ambient's own switch, and the ONE place the traced chain's replacement of that term is
     // expressed on this side: 0 means the chain already carries it, so this stage adds none of it. Its own
     // comment (shade_input::diffuse_ambient_scale) has the measurement that moved it here.
-    si.diffuse_ambient_scale = (pc.gi_replaces_ambient > 0.5) ? 0.0 : 1.0;
     // emissive is NOT re-evaluated here: the G-buffer pass already added it into the HDR target,
     // because it needs the material's emissive texture and the UVs - neither of which the G-buffer
     // stores (see gbuffer.frag). Adding it again would double it.

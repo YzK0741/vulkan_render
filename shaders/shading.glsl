@@ -568,7 +568,6 @@ struct shade_input {
     // forced to exactly zero (`ssgi_intensity = 0`), i.e. two thirds of it was never ray noise and did not
     // respond to the ray budget (16 rays: 0.63). Scaling the term here instead leaves nothing to
     // disagree about, by construction.
-    float diffuse_ambient_scale;
     /**
      * 1 = the PUNCTUAL lights are somebody else's business this frame, so this stage must not add them.
      *
@@ -661,9 +660,6 @@ vec3 shade_surface(shade_input s) {
     // resolve's accumulation cap is guarded against in shaders/ssgi_temporal.comp. Zeroing the finished
     // value leaves every frame that does not use the switch bit for bit what it was, and that is what makes
     // "the GI-off and marched frames are unchanged" a check rather than a claim.
-    if (s.diffuse_ambient_scale == 0.0) {
-        ambient = vec3(0.0);
-    }
     // The SPECULAR ambient is NOT gated: that half is removed exactly, one pass earlier, by the pass that
     // replaces it (shaders/ssgi_spec.comp, at its own texel).
     vec3 specular_ibl = ibl_specular * fresnel_ibl * s.ao;

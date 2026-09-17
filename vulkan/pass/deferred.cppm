@@ -52,7 +52,6 @@ export namespace vulkan::pass {
          * (`ensure_inputs`) are gone: they are the frame's ORDERING rule about images the G-buffer pass wrote, and
          * they now run in the stage's preamble in the renderer, like the ray-traced shadow stage's identical pair.
          */
-        bool gi_replaces_ambient = false;
         /**
          * Whether the stochastic punctual lighting pass ANSWERED this frame, in which case this stage must not add
          * the punctual lights itself - it adds that pass's shadowed estimate instead (docs/megalights.md, and the
@@ -82,7 +81,6 @@ export namespace vulkan::pass {
             /// of pixels differing and 13.7% off by more than 4/255, on a frame where SSAO is supposed to do NOTHING
             /// because the rays ARE the occlusion (see shaders/deferred.frag and shaders/shading.glsl). 0.0
             /// everywhere else, which is what keeps the marched and the GI-off frames byte-identical.
-            float gi_replaces_ambient = 0.0f;
             /// 1.0 = the stochastic punctual lighting pass answered this frame, so this stage does not add the
             /// punctual lights itself (see `deferred_frame::punctual_replaced`) and adds `ml_lighting` instead.
             /// 0.0 on every frame the pass did not record, which is what keeps the unshadowed path unchanged.

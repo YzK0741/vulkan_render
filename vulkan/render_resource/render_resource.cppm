@@ -1426,7 +1426,7 @@ export namespace vulkan::render_resource {
         .targets = deferred_targets,
         .barrier_images = {},
         .barrier_buffers = {},
-        .push = push_block{.offset = 0, .size = 92, .stages = stage_flag::fragment},
+        .push = push_block{.offset = 0, .size = 88, .stages = stage_flag::fragment},
     };
 
     // =============================================================================================

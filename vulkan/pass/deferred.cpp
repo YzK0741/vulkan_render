@@ -67,7 +67,7 @@ namespace vulkan::pass {
         // ONE flag, and it is the composed predicate (the knob AND ray queries AND this frame's structures), not
         // the similarly named feature fact - see frame_facts' own note. The punctual lane is the OTHER kind of fact:
         // whether the stochastic pass recorded this frame, which is what makes the two paths exclusive.
-        this->set_frame(deferred_frame{.gi_replaces_ambient = facts.gi_traced, .punctual_replaced = facts.megalights_resolved});
+        this->set_frame(deferred_frame{.punctual_replaced = facts.megalights_resolved});
     }
 
     void deferred_pass::create(pass_context const& context) {
@@ -169,7 +169,6 @@ namespace vulkan::pass {
         push.inv_view_proj = io.constants.inv_view_proj;
         push.ssao = glm::vec4(this->ssao_radius_, this->ssao_enabled_ ? this->ssao_intensity_ : 0.0f, static_cast<float>(this->ssao_samples_), this->ssao_bias_);
         push.unlit = this->unlit_ ? 1.0f : 0.0f;
-        push.gi_replaces_ambient = this->frame_.gi_replaces_ambient ? 1.0f : 0.0f;
         push.punctual_replaced = this->frame_.punctual_replaced ? 1.0f : 0.0f;
         vkCmdPushConstants(io.cmd, io.pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), &push);
         vkCmdDraw(io.cmd, 3, 1, 0, 0);
