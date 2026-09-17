@@ -624,10 +624,8 @@ namespace vulkan {
         // ... and the stage the runner is handed. One entry, and the pass is declared before this initialiser
         // so it refers to a constructed object; a pass list is pointers in DECLARATION ORDER, never a
         // container whose iteration order is an accident (the capture gate compares frames byte for byte).
-        std::array<pass::frame_pass*, 1> gi_probe_stage = {};
         // The storage `resolved_io::push` points into for the frame. It is the pass's own block type, so the
         // two sides of the boundary cannot disagree about the layout; the host fills it, the pass reads it.
-        std::array<std::byte, sizeof(pass::gi_probe_pass::push_constants)> gi_probe_push = {};
         // The shaders the app has loaded, by file name, for the passes that build their own pipelines. The APP
         // is the loader (it knows the shader directory); the runtime is only the place a pass asks. A copy
         // rather than a view, because the caller's buffer is a local in a startup scope.

@@ -1153,8 +1153,6 @@ namespace vulkan {
         // views. A pass that owns a family now cannot be missed here, because it is not this function that
         // remembers: `recreate_stage` calls every pass in the stage, and a pass added to it is covered.
         {
-            pass::stage const probe_stage = {.name = "gi_probe", .passes = this->gi_probe_stage, .marks = false};
-            [[maybe_unused]] pass::run_report const probe_recreated = pass::recreate_stage(probe_stage, this->make_pass_host());
             pass::stage const taa_stage = {.name = "taa", .passes = this->taa_stage, .marks = false};
             [[maybe_unused]] pass::run_report const taa_recreated = pass::recreate_stage(taa_stage, this->make_pass_host());
             // THE STAGES ADDED SINCE THIS LIST WAS WRITTEN, and now one call per chain: the tracer's
@@ -3282,7 +3280,6 @@ namespace vulkan {
         this->megalights_stage = {at("megalights_trace"), at("megalights_temporal")};
         this->deferred_stage = {at("deferred")};
         this->taa_stage = {at("taa")};
-        this->gi_probe_stage = {at("gi_probe")};
         this->post_composite_stage = {at("post_composite")};
         this->bloom_stage = {at("post_bloom_0"), at("post_bloom_1"), at("post_bloom_2"), at("post_bloom_3")};
         this->fxaa_stage = {at("fxaa")};
@@ -3991,8 +3988,6 @@ namespace vulkan {
         // what the frame was before it existed. Its stage writes no mark pair (the interval is measured
         // from the GI chain's end), so `marks = false` and the end mark below is the runtime's.
         {
-            pass::stage const probe_stage = {.name = "gi_probe", .passes = this->gi_probe_stage, .marks = false};
-            [[maybe_unused]] pass::run_report const probe_report = pass::record_stage(probe_stage, this->make_pass_host());
         }
         this->gpu_mark(command_buffer, gpu_mark_id::gi_probe_end, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
 
