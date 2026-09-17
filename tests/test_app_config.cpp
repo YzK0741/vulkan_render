@@ -141,7 +141,6 @@ namespace {
         CHECK(settings.render.ssao_radius > 0.49f && settings.render.ssao_radius < 0.51f);
         CHECK(settings.render.ssao_intensity > 0.99f && settings.render.ssao_intensity < 1.01f);
         CHECK(settings.render.ssao_samples == 8);
-        // [render] screen-space GI: the generator writes these seven, so the fixture has to carry them
         // [render] ray tracing: written by the generator like every other switch, so it round-trips
         CHECK(!settings.render.rt_shadows);
         CHECK(!settings.render.rt_mask_bake);         // default: the mask bake is off (see the generated-defaults fixture)

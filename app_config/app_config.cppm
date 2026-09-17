@@ -50,22 +50,10 @@ import utility;
  * gpu_timings = true  # measure + report per-pass GPU milliseconds (timestamp queries)
  * gbuffer_debug = false  # draw the G-buffer + one of its channels instead of the shaded scene
  * taa = false            # temporal anti-aliasing (jitter + resolved history)
- * ssgi = true           # one bounce of diffuse indirect: traced rays, the shipped configuration
- * ssgi_intensity = 1.0  # weight on the traced indirect (on the traced path it REPLACES the ambient)
- * ssgi_radius = 0.12    # ray length as a fraction of the scene radius
- * ssgi_rays = 2         # rays per pixel per frame (1..16)
- * ssgi_steps = 6        # depth samples per ray (1..64)
- * ssgi_spatial_sigma = 2.0  # GI spatial filter width in GI texels; 0 = off (a pass-through)
- * ssgi_upsample = true  # joint-bilateral upsample of the half-res GI in the composite; false = bilinear
  * rt_shadows = false    # ray-traced sun shadows (needs a device with ray queries; else ignored)
  * rt_mask_bake = false  # bake alphaMode MASK into the acceleration structures (off: the rule measured worse)
- * ssgi_ray_tracing = true # trace the GI rays instead of marching the depth buffer (same conditions)
- * ssgi_bounce = 0.0     # re-emit this fraction of the previous frame's indirect at a hit (multi-bounce)
- * ssgi_probes = false   # world-space probe cache: answers for hits the screen cannot resolve
- * ssgi_hit_shading = true # shade the surface a ray hit from its geometry, not from the screen
  * furnace = false       # verification mode: sun off, environment a constant, so the answer is analytic
  * animation_time = -1.0 # pin a keyframe animation at N seconds (-1 = play it; playback is wall-clock)
- * ssgi_probe_rate = 0.08 # how much of a cell one frame's observation replaces
  * gbuffer_channel = 1    # which channel: 0 albedo, 1 normal, 2 roughness, 3 metallic, 4 ao, 5 id,
  *                        # 6 depth, 7 flags, 8 motion (the motion vector, amplified - see the shader)
  * validation_layers = true  # Vulkan validation layers + debug messenger (Debug builds default on, Release off)
@@ -180,7 +168,6 @@ namespace app_config {
         // happens where the term is added), so this intensity multiplies the ambient itself and 1.0 is the
         // value that means "use the traced estimate". At 0.7 the term the chain carries is 30% smaller than
         // the ambient it stands in for - a systematic darkening - which is why this default moved WITH
-        // `ssgi_ray_tracing` rather than after it. A machine that ends up marching should set ~0.7, where the
         // chain ADDS to the probe and the two overlap.
         // Whether the composite upsamples that half-resolution result with a joint-bilateral gather
         // (true) or a plain bilinear fetch (false). Not a quality knob: bilinear is what the chain did
@@ -206,30 +193,21 @@ namespace app_config {
         // the frames every earlier measurement was taken with.
         bool rt_skin_bake = false;
         // Trace the screen-space GI rays against the acceleration structures instead of marching the depth
-        // buffer ([render] ssgi_ray_tracing). Same estimator, better hit oracle; ignored unless the device
-        // has ray queries and ssgi itself is on - which is exactly why it can default ON: the fallback on a
         // device without ray queries is the marched chain, and the only knob that differs between them is
         // the intensity (see it above).
         // Re-emit a fraction of the previous frame's accumulated indirect at every GI hit ([render]
-        // ssgi_bounce): the multi-bounce approximation, so that a ray also carries the light that
         // already bounced once at the surface it hit. 0 - the default - is the single-bounce estimator
         // every earlier measurement was taken with. The image being fed back already carries
-        // ssgi_intensity, so the loop's effective gain is this value times that one.
-        // The world-space probe cache ([render] ssgi_probes): a persistent grid of SH-2 cells over the
         // scene's bounds - four coefficients per channel, so a cell answers for a DIRECTION - each filled by
         // tracing its OWN rays and sampled by the tracer for a hit the screen cannot resolve. The pass
         // declares no camera at all, which is what makes a cell a fact about the scene rather than about the
         // frame. Off by default, and a no-op when off - the tracer's fallback for those hits is
-        // then exactly what it was. `ssgi_probe_rate` is how much of a cell one frame's observation
-        // replaces (its own loop gain), `ssgi_probe_rounds` how far a frame spreads what it deposited
-        // (0 = injection only, which is how the propagation is measured), and `ssgi_probe_gain` how much
         // of the cache's answer is added on top of the environment probe (0 = the cache runs, and is
         // still not sampled: that is the A/B that measures what it adds). The gain's SIGN is a second A/B:
         // negative means the same gain with the cell looked up along the opposite direction of the ray,
         // which differs from the positive one only through the cache - so the two captures were identical
         // until a cell carried a direction (measured: same SHA256), and differ on 22.7% of pixels now.
         // Shade the surface a GI ray hit from the geometry it landed on, instead of sampling the screen's
-        // direct-radiance image there ([render] ssgi_hit_shading). ON BY DEFAULT, because it is what makes
         // the indirect light a fact about the scene rather than about the frame the camera happened to
         // show: a hit the camera cannot see (off screen, or hidden) can be answered at all, and a surface's
         // indirect light stops moving when the view does. It needs the traced path (the marched one never
@@ -239,7 +217,6 @@ namespace app_config {
         // and the whole shipped chain costs +0.81 ms on a 1.81 ms frame against the same frame with GI off.
         // The tables, the arms and the two defects the flip exposed are in docs/gi_hit_shading.md (L2.4).
         // Trace a glossy reflection ray per pixel and use what it finds as the surface's specular ambient
-        // ([render] ssgi_specular), instead of the lighting stage's split-sum lookup of the prefiltered
         // environment - which knows nothing but the sky, so a metal panel inside a room reflects the sky.
         // It is a REPLACEMENT, not an addition: the estimate falls back to exactly the lighting stage's own
         // term wherever a ray finds no geometry, so the frame only changes where the reflection has
@@ -248,15 +225,11 @@ namespace app_config {
         // it). It needs the traced GI path, hit shading and the acceleration structures, and it is not
         // recorded at all where those are missing - so a config that turns GI off is bit-identical to the
         // frame before the lobe existed.
-        // ... and how far its rays reach ([render] ssgi_specular_radius, a fraction of the scene radius).
-        // A REACH OF ITS OWN, because the shared `ssgi_radius` is pinned by the MARCHED path: that path's
-        // resolution is radius / ssgi_steps, so a radius large enough for a reflection (0.5, i.e. 9 world
         // units on Sponza) would give a 6-step march 1.55-unit steps and miss the detail between them.
         // Measured on the reference scene, the glossy effect against its reach: -0.907 at 0.12, -2.126 at
         // 0.5 and -2.350 at 2.0 - so the default realizes 39% of the signal available, half of it recovers
         // 2.3x, and beyond 0.5 the curve is flat (both in effect and in cost, since a ray that reaches the
         // geometry it can reach stops traversing). 0.5 is that knee.
-        // ... and how many rays per pixel ([render] ssgi_specular_rays, clamped to [1, 8]). One is the
         // feature's definition and what its cost was measured at; the hit is a POINT sample of a cone whose
         // width is the material's roughness, so this is the knob that buys a wide lobe's noise down - the
         // denoiser problem this feature brings with it.

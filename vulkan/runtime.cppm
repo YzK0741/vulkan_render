@@ -1449,8 +1449,6 @@ namespace vulkan {
             bool gbuffer_pass = false; // gbuffer_pass_active(): the surface pipeline exists and this frame shades
             bool deferred_lit = false; // deferred_lit_active(): the lighting stage is this frame's shading path
             bool megalights = false;   // megalights_active(): the knob, the pass, and the deferred shading path
-            bool ssgi_traced = false;  // ssgi_traced_active(): the above plus ray queries and this frame's structure
-            bool ssgi_probes = false;  // gi_probe_active(): the cache's knob, its pipeline and the chain
             bool rt_shadow = false;    // rt_shadows_active(): the knob and the device
             bool fxaa = false;         // post_fxaa_active(): the knob and the FXAA pass
             /// the knobs the feature table composes with, and the frame's own content
@@ -1459,7 +1457,6 @@ namespace vulkan {
             bool clustered = false;           // the clustered-lights knob
             bool taa = false;                 // the TAA knob
             bool bloom = false;               // the bloom knob, resolved (intensity > 0)
-            bool ssgi_specular = false;       // the glossy lobe's knob
             bool transparent_pending = false; // this frame has alpha-blended geometry to composite
             bool gbuffer_pipeline = false;    // the surface pipeline exists (the scene pass records with it)
             bool structures_ready = false;    // this frame's top level structure is built for the slot
@@ -2685,7 +2682,6 @@ namespace vulkan {
         struct render_features {
             bool unlit = false;         // the flat render mode (no lighting anywhere)
             bool gbuffer_debug = false; // the opaque pass stores the G-buffer for the debug view
-            bool ssgi_probes = false;   // update the world-space probe cache (the pass, not the tracer's fallback)
             bool shadow = false;        // record the directional shadow pass
             bool rt_shadow = false;     // record the ray-traced shadow pass (the knob, ray queries, its pipeline)
             bool clustered = false;     // record the cluster compute pass

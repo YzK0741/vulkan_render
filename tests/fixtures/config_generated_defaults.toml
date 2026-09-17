@@ -57,28 +57,11 @@ ssao_radius = 0.5
 ssao_intensity = 1.0
 ssao_samples = 8
 
-# ---- [render] screen-space global illumination ----
-ssgi = true
-ssgi_intensity = 1.0
-ssgi_radius = 0.12
-ssgi_rays = 2
-ssgi_steps = 6
-ssgi_spatial_sigma = 2.0
-ssgi_upsample = true
+# ---- [render] ray-traced effects ----
 rt_shadows = false
 rt_mask_bake = false
 rt_skin_bake = false
 animation_time = -1.0
-ssgi_ray_tracing = true
-ssgi_bounce = 0.0
-ssgi_probes = false
-ssgi_probe_rate = 0.08
-ssgi_probe_rounds = 2
-ssgi_probe_gain = 1.0
-ssgi_hit_shading = true
-ssgi_specular = true
-ssgi_specular_rays = 1
-ssgi_specular_radius = 0.5
 furnace = false
 
 # ---- [gui] debug overlay ----

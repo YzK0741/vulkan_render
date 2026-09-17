@@ -141,14 +141,8 @@ namespace vulkan::pipelines {
     export std::expected<resolve_pipeline_owned, std::string> build_resolve_pipeline(VkDevice device, VkDescriptorSetLayout pass_set_layout, uint32_t push_constant_size,
                                                                                      std::span<unsigned char const> compute_shader_code);
 
-    /// what build_gi_probe() creates: the world-space probe cache's pipeline layout and pipeline. The SET
-    /// layout comes IN as a parameter rather than being built here, because it is the PASS's (see
-    /// vulkan.pass.gi_probe): the pass generates it from its own declaration, and this builder is handed it -
-    /// which is why the caller must have run the pass's create step first.
-    export struct gi_probe_owned {
-        VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
-        std::optional<vk_pipeline> pass;
-    };
+    /// what a compute builder that owns its pipeline LAYOUT returns. (It was `gi_probe_owned` for the
+    /// world-space probe cache's builder, which went with the traced chain; nothing declares it now.)
 
     /// the passes that reuse a layout someone else owns, so theirs comes in as a parameter
     export std::expected<vk_pipeline, std::string> build_fxaa(VkDevice device, VkFormat swap_chain_format, VkPipelineLayout post_pipeline_layout, std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code);
@@ -613,7 +607,7 @@ namespace vulkan::pipelines {
         // bindings::make_set_layout): seven bindings, one of which is the storage image the resolve writes.
         // Handing it in is what makes the LAYOUT and the family's pool count the same fact.
         if (pass_set_layout == VK_NULL_HANDLE) {
-            return fail("ssgi temporal: the declaration produced no set layout");
+            return fail("temporal resolve: the declaration produced no set layout");
         }
 
         VkPushConstantRange push_range = {};
@@ -628,12 +622,12 @@ namespace vulkan::pipelines {
         pipeline_layout_info.pushConstantRangeCount = 1;
         pipeline_layout_info.pPushConstantRanges = &push_range;
         if (vkCreatePipelineLayout(device, &pipeline_layout_info, nullptr, &out.pipeline_layout) != VK_SUCCESS) {
-            return fail("ssgi temporal: pipeline layout creation failed");
+            return fail("temporal resolve: pipeline layout creation failed");
         }
 
         std::optional<vk_shader_module> const module = make_shader_module(compute_shader_code, device);
         if (!module.has_value()) {
-            return fail("ssgi temporal: compute shader module creation failed");
+            return fail("temporal resolve: compute shader module creation failed");
         }
         VkPipelineShaderStageCreateInfo stage_info = {};
         stage_info.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -648,7 +642,7 @@ namespace vulkan::pipelines {
 
         VkPipeline pipeline = VK_NULL_HANDLE;
         if (vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &pipeline) != VK_SUCCESS) {
-            return fail("ssgi temporal: vkCreateComputePipelines failed");
+            return fail("temporal resolve: vkCreateComputePipelines failed");
         }
         out.resolve = vk_pipeline(pipeline, out.pipeline_layout, device);
         return out;
