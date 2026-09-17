@@ -280,43 +280,23 @@ namespace vulkan::pipelines {
         // and its shader declares only the first four, which is legal - a binding a shader does
         // not statically use does not need a descriptor written.
         //
-        // 5..8 belong to the screen-space GI passes: the direct-radiance image the tracer samples at a
-        // hit (5), the half-resolution raw trace it writes (6), the accumulated image the spatial
-        // filter reads (7) and the filtered image that filter writes and the composite samples (8). 6
-        // and 8 are STORAGE images rather than samplers because a compute pass writes a storage image,
-        // and because those passes run at half the composite's resolution - the two ends of each are
-        // different kinds of thing.
-        //
-        // 9..12 are the world-space probe cache's four SH-2 coefficient images, sampler3D images the TRACER
-        // samples for a hit the screen cannot answer (see shaders/gi_probe.comp and shaders/probe_sh.glsl).
-        // They live here rather than in the probe pass's own set because the pass that READS them is the
-        // tracer, which binds this set - and the probe pass's own set binds the other half of the
-        // ping-pong. Four bindings rather than one because a cell holds four coefficients per channel.
-        //
-        // 13 and 14 are the GLOSSY lobe's own two outputs (shaders/ssgi_spec.comp): the correction it
-        // traced this frame, and the reprojection of the surface that reflection found. Both are STORAGE
-        // images - the lobe writes them, no descriptor of this set ever samples them - and they exist
-        // because a reflection cannot be accumulated with the diffuse signal's reprojection (see the L2.3
-        // motion section of docs/gi_hit_shading.md).
-        //
-        // 15 is the reflection's own ACCUMULATION (shaders/ssgi_temporal.comp's mode 1), which the spatial
-        // filter samples and sums the diffuse one into. A sampler, unlike its two inputs - the resolve
-        // writes it, this set only reads it.
-        // 16 and 17 are the STOCHASTIC PUNCTUAL LIGHTING image (docs/megalights.md), in the same image at two
-        // bindings because its writer and its reader are different passes: 16 is the storage image the trace
-        // writes (a compute pass writes a storage image) and 17 is the sampler the LIGHTING STAGE adds it
-        // through - the two ends of one half-resolution signal, exactly the arrangement 6/8 have for the GI.
-        std::array<VkDescriptorSetLayoutBinding, 18> bindings = {};
+        // 5 is the direct-radiance image the lighting stage samples at a hit; 6 and 7 are the STOCHASTIC
+        // PUNCTUAL LIGHTING chain (docs/megalights.md): 6 is the storage image its trace writes and 7 is the
+        // sampler the lighting stage adds the temporal resolve's output through - the two ends of one
+        // half-resolution signal. Together with albedo, normal, material, depth and velocity that is EIGHT
+        // bindings. The traced GI chain's ten (5..15 in the old numbering) went with it, which is why the
+        // lighting chain's pair sits at 6/7 rather than 16/17: a descriptor set layout's binding numbers need
+        // not be contiguous, but the owner writes them by index, so a gap is not free.
+        std::array<VkDescriptorSetLayoutBinding, 8> bindings = {};
         for (uint32_t b = 0; b < bindings.size(); ++b) {
             bindings[b].binding = b;
-            bindings[b].descriptorType = (b == 6u || b == 8u || b == 13u || b == 14u || b == 16u) ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            bindings[b].descriptorType = (b == 6u) ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
             bindings[b].descriptorCount = 1;
-            // EVERY binding lists COMPUTE as well as FRAGMENT. The layout is shared by four consumers
+            // EVERY binding lists COMPUTE as well as FRAGMENT. The layout is shared by several consumers
             // and only the shaders know which binding each of them uses: the lighting stage and the
-            // debug view are fragment stages, while the GI tracer and the GI spatial filter are COMPUTE
-            // stages that read the stored surface (albedo, normal and depth) and the GI images
-            // directly. A binding a shader does not statically use needs no descriptor, but one it
-            // DOES use has to name the stage here.
+            // debug view are fragment stages, while the lighting chain's resolve is a COMPUTE stage that
+            // reads the stored surface (albedo, normal and depth) directly. A binding a shader does not
+            // statically use needs no descriptor, but one it DOES use has to name the stage here.
             bindings[b].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT;
             bindings[b].pImmutableSamplers = nullptr;
         }

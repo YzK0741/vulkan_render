@@ -57,7 +57,7 @@ layout(set = 0, binding = 14) uniform sampler2D rt_shadow_visibility;    // the 
 // same image the trace writes at binding 16, half resolution, added by this stage instead of by its own
 // composite pass. It is read with the G-buffer's NEAREST sampler, which is what the 2x2 gather below wants -
 // these are exact texel fetches, not a filtered read.
-layout(set = 1, binding = 17) uniform sampler2D ml_lighting;
+layout(set = 1, binding = 7) uniform sampler2D ml_lighting;
 
 layout(push_constant) uniform DeferredPush {
     mat4 inv_view_proj; // clip (NDC xyz, w = 1) -> world position

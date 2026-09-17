@@ -2452,24 +2452,18 @@ namespace vulkan {
         // name its sets. on_swapchain_recreated() retires the family, which is what forces the rewrite.
         // The signature is ALSO this family's descriptors-per-set (it sizes the pool - see vulkan.bindings),
         // so it has to list every binding the layout declares, not just the ones that can move together.
-        std::array<VkImageView, 18> const signature = {
+        std::array<VkImageView, 8> const signature = {
             vk.gbuffer_image_views[0][0],
             vk.gbuffer_image_views[1][0],
             vk.gbuffer_image_views[2][0],
             vk.gbuffer_depth_image_views[0],
             vk.velocity_image_views[0],
             vk.hdr_image_views[0],
-            vk.gi_image_views[0],
-            vk.gi_resolve_image_views[0],
-            // Bindings 9..12 are the world-space probe cache's four SH-2 coefficients: ONE set of images for
-            // the whole device (the cache is anchored to the world, not to a swapchain image), so every set
-            // fingerprints the same views - and a recreated grid still invalidates them all, which is what
-            // these entries are for.
-            // 13 and 14 are the glossy lobe's own outputs. Per swapchain image, like the trace they shadow:
-            // a reflection's correction and its reprojection belong to the frame that produced them.
-            // 16 and 17: the stochastic punctual lighting chain. 16 is the storage image the TRACE writes; 17
-            // is the sampler the lighting stage adds the TEMPORAL RESOLVE's output through (the resolve's own
+            // 6 and 7: the stochastic punctual lighting chain. 6 is the storage image the TRACE writes; 7 is
+            // the sampler the lighting stage adds the TEMPORAL RESOLVE's output through (the resolve's own
             // output is written as a storage image through that pass's own set, so this set only reads it).
+            // These were 16/17 while the traced GI chain's ten bindings sat in between; they are contiguous
+            // again now that it is gone.
             vk.ml_image_views[0],
             vk.ml_resolve_image_views[0]};
         // One set per image with one descriptor per binding: the three stored targets, the depth, the
@@ -2480,30 +2474,21 @@ namespace vulkan {
         // image_count is the generation's, signature is only the fingerprint of image 0 above - the two
         // are different things and the family needs both (see vulkan.bindings).
         auto const write_sets = [this](uint32_t const image_index, std::span<VkDescriptorSet const> const sets) {
-            std::array<VkDescriptorImageInfo, 18> image_infos = {};
-            std::array<VkImageView, 18> const views = {
+            std::array<VkDescriptorImageInfo, 8> image_infos = {};
+            std::array<VkImageView, 8> const views = {
                 this->vulkan_core.gbuffer_image_views[0][image_index],
                 this->vulkan_core.gbuffer_image_views[1][image_index],
                 this->vulkan_core.gbuffer_image_views[2][image_index],
                 this->vulkan_core.gbuffer_depth_image_views[image_index],
                 this->vulkan_core.velocity_image_views[image_index],
-                this->vulkan_core.hdr_image_views[image_index],        // 5: direct radiance, what a hit returns
-                this->vulkan_core.gi_image_views[image_index],         // 6: the RAW trace the tracer writes
-                this->vulkan_core.gi_resolve_image_views[image_index], // 7: the accumulation the filter reads
-                this->vulkan_core.gi_spatial_image_views[image_index], // 8: the filtered GI the composite reads
-                // 9..12: the world-space probe cache's four SH-2 coefficients (one copy for the whole
-                // the cache side is always the one the tracer reads).
-                // 15: the reflection's own accumulation, which the spatial filter samples and sums the
-                // 16 and 17: the stochastic punctual lighting chain - the trace's storage image, and the
-                // resolved lighting the lighting stage samples (see the signature above).
-                this->vulkan_core.ml_image_views[image_index],
-                this->vulkan_core.ml_resolve_image_views[image_index]};
-            std::array<VkWriteDescriptorSet, 18> writes = {};
+                this->vulkan_core.hdr_image_views[image_index],         // 5: direct radiance, what a hit returns
+                this->vulkan_core.ml_image_views[image_index],          // 6: the lighting chain's raw estimate
+                this->vulkan_core.ml_resolve_image_views[image_index]}; // 7: the accumulated lighting the stage adds
+            std::array<VkWriteDescriptorSet, 8> writes = {};
             for (uint32_t b = 0; b < views.size(); ++b) {
-                // 6, 8, 13, 14 and 16 are STORAGE images (a compute pass writes each) and therefore have no
-                // sampler and live in GENERAL; the twelve sampler bindings are all SHADER_READ, including 15,
-                // which the spatial filter reads rather than writes.
-                bool const storage = b == 6u || b == 8u || b == 13u || b == 14u || b == 16u;
+                // 6 is STORAGE (the lighting chain's compute pass writes it) and therefore has no sampler and
+                // lives in GENERAL; the rest are sampled and SHADER_READ.
+                bool const storage = b == 6u;
                 // The probe cache is a 3D texture read with LINEAR filtering: the whole point of sampling
                 // it is interpolating between cells, so it cannot borrow the G-buffer's NEAREST sampler.
                 image_infos[b].imageView = views[b];
@@ -3316,7 +3301,7 @@ namespace vulkan {
             .slot = static_cast<uint32_t>(vk.current_frame),
             // the generation's image count, which is what a pass that owns a per-image family sizes it from -
             // and NOT the same number as the image index above
-            .image_count = static_cast<uint32_t>(vk.gi_resolve_images.size()),
+            .image_count = static_cast<uint32_t>(vk.ml_images.size()),
             .extent = vk.swap_chain_extent,
         };
     }

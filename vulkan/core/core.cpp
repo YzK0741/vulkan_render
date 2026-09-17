@@ -632,26 +632,10 @@ namespace vulkan {
             taa_history_image_views[i] = create_image_view(taa_history_images[i], hdr_format, VK_IMAGE_ASPECT_COLOR_BIT, device);
         }
 
-        // The GI image (half resolution, one per swapchain image): STORAGE for the tracer's
-        // imageStore and SAMPLED for the composite's fetch. No TRANSFER_* - nothing copies it.
+        // The GI trace image (half resolution, one per swapchain image) was created here, and the two half-extent
+        // locals it introduced stay: the stochastic punctual lighting chain's images below are the same size.
         uint32_t const gi_width = std::max(1u, swap_chain_extent.width / 2u);
         uint32_t const gi_height = std::max(1u, swap_chain_extent.height / 2u);
-        gi_images.resize(swap_chain_image_views.size());
-        gi_image_memories.resize(swap_chain_image_views.size());
-        gi_image_views.resize(swap_chain_image_views.size());
-        for (size_t i = 0; i < swap_chain_image_views.size(); i++) {
-            create_target_image(
-                gi_width,
-                gi_height,
-                hdr_format,
-                VK_IMAGE_TILING_OPTIMAL,
-                VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                gi_images[i],
-                gi_image_memories[i]);
-
-            gi_image_views[i] = create_image_view(gi_images[i], hdr_format, VK_IMAGE_ASPECT_COLOR_BIT, device);
-        }
 
         // The stochastic punctual lighting chain's raw estimate: the same allocation as the GI trace's
         // (half resolution, STORAGE for its writer and SAMPLED for the lighting stage that adds it), and
@@ -708,165 +692,16 @@ namespace vulkan {
             ml_history_image_views[i] = create_image_view(ml_history_images[i], hdr_format, VK_IMAGE_ASPECT_COLOR_BIT, device);
         }
 
-        // The denoiser's resolve target (same use as the trace target: STORAGE for the compute pass
-        // that writes it, SAMPLED for the composite) and the history it accumulates into (written by
-        // a copy and read next frame, so TRANSFER_DST | SAMPLED and nothing else).
-        gi_resolve_images.resize(swap_chain_image_views.size());
-        gi_resolve_image_memories.resize(swap_chain_image_views.size());
-        gi_resolve_image_views.resize(swap_chain_image_views.size());
-        gi_history_images.resize(swap_chain_image_views.size());
-        gi_history_image_memories.resize(swap_chain_image_views.size());
-        gi_history_image_views.resize(swap_chain_image_views.size());
-        for (size_t i = 0; i < swap_chain_image_views.size(); i++) {
-            create_target_image(
-                gi_width,
-                gi_height,
-                hdr_format,
-                VK_IMAGE_TILING_OPTIMAL,
-                VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                gi_resolve_images[i],
-                gi_resolve_image_memories[i]);
-            gi_resolve_image_views[i] = create_image_view(gi_resolve_images[i], hdr_format, VK_IMAGE_ASPECT_COLOR_BIT, device);
+        // The GI denoiser's resolve target, its history and the spatial filter's output were created here: three
+        // half-resolution families the traced chain alone used. The chain is gone, so they are.
 
-            create_target_image(
-                gi_width,
-                gi_height,
-                hdr_format,
-                VK_IMAGE_TILING_OPTIMAL,
-                VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                gi_history_images[i],
-                gi_history_image_memories[i]);
-            gi_history_image_views[i] = create_image_view(gi_history_images[i], hdr_format, VK_IMAGE_ASPECT_COLOR_BIT, device);
-        }
+        // The glossy lobe's four families (its two outputs and the reflection's accumulation/history pair) were
+        // created here. They went with the traced chain's specular lobe.
 
-        // The spatial filter's output: written as a storage image like the trace target, and sampled
-        // by the composite. No TRANSFER_SRC - nothing copies out of it. The history is copied from the
-        // temporal resolve instead, which keeps the spatial filter out of the accumulation path: its
-        // result is a fresh function of this frame's accumulated image, never of last frame's filtered
-        // one, so filtering cannot compound over frames.
-        gi_spatial_images.resize(swap_chain_image_views.size());
-        gi_spatial_image_memories.resize(swap_chain_image_views.size());
-        gi_spatial_image_views.resize(swap_chain_image_views.size());
-        for (size_t i = 0; i < swap_chain_image_views.size(); i++) {
-            create_target_image(
-                gi_width,
-                gi_height,
-                hdr_format,
-                VK_IMAGE_TILING_OPTIMAL,
-                VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                gi_spatial_images[i],
-                gi_spatial_image_memories[i]);
-            gi_spatial_image_views[i] = create_image_view(gi_spatial_images[i], hdr_format, VK_IMAGE_ASPECT_COLOR_BIT, device);
-        }
+        // The world-space probe cache's nine 3D images (four SH-2 coefficients per side of its ping-pong, plus the
+        // per-cell surface geometry) were created here, with the sampler that read them. The cache was the traced
+        // chain's answer for the hits the screen cannot resolve; it is gone.
 
-        // The glossy lobe's own two outputs: same extent, same format and the same usage pair as the trace
-        // target above (a compute pass writes each as a storage image, the resolve samples each back, and
-        // nothing copies out of either). They exist so that a reflection can be accumulated with a
-        // reprojection of its own instead of the diffuse signal's - see core.cppm's note beside these
-        // members and docs/gi_hit_shading.md's L2.3 motion section.
-        gi_spec_images.resize(swap_chain_image_views.size());
-        gi_spec_image_memories.resize(swap_chain_image_views.size());
-        gi_spec_image_views.resize(swap_chain_image_views.size());
-        gi_spec_reproject_images.resize(swap_chain_image_views.size());
-        gi_spec_reproject_image_memories.resize(swap_chain_image_views.size());
-        gi_spec_reproject_image_views.resize(swap_chain_image_views.size());
-        for (size_t i = 0; i < swap_chain_image_views.size(); i++) {
-            create_target_image(
-                gi_width,
-                gi_height,
-                hdr_format,
-                VK_IMAGE_TILING_OPTIMAL,
-                VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                gi_spec_images[i],
-                gi_spec_image_memories[i]);
-            gi_spec_image_views[i] = create_image_view(gi_spec_images[i], hdr_format, VK_IMAGE_ASPECT_COLOR_BIT, device);
-
-            create_target_image(
-                gi_width,
-                gi_height,
-                hdr_format,
-                VK_IMAGE_TILING_OPTIMAL,
-                VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                gi_spec_reproject_images[i],
-                gi_spec_reproject_image_memories[i]);
-            gi_spec_reproject_image_views[i] = create_image_view(gi_spec_reproject_images[i], hdr_format, VK_IMAGE_ASPECT_COLOR_BIT, device);
-        }
-
-        // The reflection's own accumulation and its history: the same pair the diffuse signal has, with the
-        // same usages and for the same reasons (see core.cppm's note beside these members).
-        gi_spec_resolve_images.resize(swap_chain_image_views.size());
-        gi_spec_resolve_image_memories.resize(swap_chain_image_views.size());
-        gi_spec_resolve_image_views.resize(swap_chain_image_views.size());
-        gi_spec_history_images.resize(swap_chain_image_views.size());
-        gi_spec_history_image_memories.resize(swap_chain_image_views.size());
-        gi_spec_history_image_views.resize(swap_chain_image_views.size());
-        for (size_t i = 0; i < swap_chain_image_views.size(); i++) {
-            create_target_image(
-                gi_width,
-                gi_height,
-                hdr_format,
-                VK_IMAGE_TILING_OPTIMAL,
-                VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                gi_spec_resolve_images[i],
-                gi_spec_resolve_image_memories[i]);
-            gi_spec_resolve_image_views[i] = create_image_view(gi_spec_resolve_images[i], hdr_format, VK_IMAGE_ASPECT_COLOR_BIT, device);
-
-            create_target_image(
-                gi_width,
-                gi_height,
-                hdr_format,
-                VK_IMAGE_TILING_OPTIMAL,
-                VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                gi_spec_history_images[i],
-                gi_spec_history_image_memories[i]);
-            gi_spec_history_image_views[i] = create_image_view(gi_spec_history_images[i], hdr_format, VK_IMAGE_ASPECT_COLOR_BIT, device);
-        }
-
-        // The world-space probe cache: EIGHT 3D images - four SH-2 coefficients per channel times the two
-        // sides of the ping-pong - one set of copies for the whole device rather than one per swapchain
-        // image (the grid is anchored to the world, so view independence is the point of it - see the
-        // member's comment). A 3D VIEW, because a sampler3D binding needs one: the same image looked at with
-        // a 2D view is a validation error the moment the tracer samples it.
-        gi_probe_images.assign(8, VK_NULL_HANDLE);
-        gi_probe_image_memories.assign(8, VK_NULL_HANDLE);
-        gi_probe_image_views.assign(8, VK_NULL_HANDLE);
-        for (size_t i = 0; i < gi_probe_images.size(); i++) {
-            create_target_image_3d(
-                gi_probe_grid_extent,
-                gi_probe_grid_extent,
-                gi_probe_grid_extent,
-                hdr_format,
-                VK_IMAGE_TILING_OPTIMAL,
-                VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                gi_probe_images[i],
-                gi_probe_image_memories[i]);
-            gi_probe_image_views[i] = create_image_view(gi_probe_images[i], hdr_format, VK_IMAGE_ASPECT_COLOR_BIT, device, VK_IMAGE_VIEW_TYPE_3D);
-        }
-
-        // The per-cell surface offset (one image: the ping-pong only applies to radiance, and this is
-        // geometry the injection OWNS rather than something propagation rewrites).
-        gi_probe_surface_images.assign(1, VK_NULL_HANDLE);
-        gi_probe_surface_image_memories.assign(1, VK_NULL_HANDLE);
-        gi_probe_surface_image_views.assign(1, VK_NULL_HANDLE);
-        create_target_image_3d(
-            gi_probe_grid_extent,
-            gi_probe_grid_extent,
-            gi_probe_grid_extent,
-            hdr_format,
-            VK_IMAGE_TILING_OPTIMAL,
-            VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-            gi_probe_surface_images[0],
-            gi_probe_surface_image_memories[0]);
-        gi_probe_surface_image_views[0] = create_image_view(gi_probe_surface_images[0], hdr_format, VK_IMAGE_ASPECT_COLOR_BIT, device, VK_IMAGE_VIEW_TYPE_3D);
         // The furnace verification mode's constant environment (see the member comment): TRANSFER_DST because
         // a clear is what gives it contents, SAMPLED because the IBL bindings will point at it.
         furnace_cube_images.assign(1, VK_NULL_HANDLE);
@@ -1038,19 +873,9 @@ namespace vulkan {
             destroy_images(velocity_images, velocity_image_memories, velocity_image_views);
             destroy_images(scene_color_images, scene_color_image_memories, scene_color_image_views);
             destroy_images(taa_history_images, taa_history_image_memories, taa_history_image_views);
-            destroy_images(gi_images, gi_image_memories, gi_image_views);
             destroy_images(ml_images, ml_image_memories, ml_image_views);
             destroy_images(ml_resolve_images, ml_resolve_image_memories, ml_resolve_image_views);
             destroy_images(ml_history_images, ml_history_image_memories, ml_history_image_views);
-            destroy_images(gi_resolve_images, gi_resolve_image_memories, gi_resolve_image_views);
-            destroy_images(gi_history_images, gi_history_image_memories, gi_history_image_views);
-            destroy_images(gi_spatial_images, gi_spatial_image_memories, gi_spatial_image_views);
-            destroy_images(gi_spec_images, gi_spec_image_memories, gi_spec_image_views);
-            destroy_images(gi_spec_reproject_images, gi_spec_reproject_image_memories, gi_spec_reproject_image_views);
-            destroy_images(gi_spec_resolve_images, gi_spec_resolve_image_memories, gi_spec_resolve_image_views);
-            destroy_images(gi_spec_history_images, gi_spec_history_image_memories, gi_spec_history_image_views);
-            destroy_images(gi_probe_images, gi_probe_image_memories, gi_probe_image_views);
-            destroy_images(gi_probe_surface_images, gi_probe_surface_image_memories, gi_probe_surface_image_views);
             destroy_images(furnace_cube_images, furnace_cube_memories, furnace_cube_views);
             destroy_images(rt_shadow_images, rt_shadow_image_memories, rt_shadow_image_views);
             for (auto const& level_views : bloom_image_views) {
@@ -1789,19 +1614,9 @@ namespace vulkan {
         destroy_target_set(velocity_images, velocity_image_memories, velocity_image_views);
         destroy_target_set(scene_color_images, scene_color_image_memories, scene_color_image_views);
         destroy_target_set(taa_history_images, taa_history_image_memories, taa_history_image_views);
-        destroy_target_set(gi_images, gi_image_memories, gi_image_views);
         destroy_target_set(ml_images, ml_image_memories, ml_image_views);
         destroy_target_set(ml_resolve_images, ml_resolve_image_memories, ml_resolve_image_views);
         destroy_target_set(ml_history_images, ml_history_image_memories, ml_history_image_views);
-        destroy_target_set(gi_resolve_images, gi_resolve_image_memories, gi_resolve_image_views);
-        destroy_target_set(gi_history_images, gi_history_image_memories, gi_history_image_views);
-        destroy_target_set(gi_spatial_images, gi_spatial_image_memories, gi_spatial_image_views);
-        destroy_target_set(gi_spec_images, gi_spec_image_memories, gi_spec_image_views);
-        destroy_target_set(gi_spec_reproject_images, gi_spec_reproject_image_memories, gi_spec_reproject_image_views);
-        destroy_target_set(gi_spec_resolve_images, gi_spec_resolve_image_memories, gi_spec_resolve_image_views);
-        destroy_target_set(gi_spec_history_images, gi_spec_history_image_memories, gi_spec_history_image_views);
-        destroy_target_set(gi_probe_images, gi_probe_image_memories, gi_probe_image_views);
-        destroy_target_set(gi_probe_surface_images, gi_probe_surface_image_memories, gi_probe_surface_image_views);
         destroy_target_set(furnace_cube_images, furnace_cube_memories, furnace_cube_views);
         destroy_target_set(rt_shadow_images, rt_shadow_image_memories, rt_shadow_image_views);
 
@@ -1921,7 +1736,6 @@ namespace vulkan {
         this->register_cleanup([this] {
             this->texture_sampler.release();
             this->gbuffer_sampler.release();
-            this->gi_probe_sampler.release();
             this->taa_sampler.release();
             this->post_sampler.release();
             this->post_nearest_sampler.release();
@@ -1950,10 +1764,6 @@ namespace vulkan {
         if (vkCreateSampler(this->device, &gbuffer_info, nullptr, &nearest) == VK_SUCCESS) {
             this->post_nearest_sampler = vk_sampler(nearest, this->device);
         }
-
-        // LINEAR, clamp: the probe grid's whole purpose is interpolating between cells - a nearest fetch would turn
-        // the cache into blocks - and the grid's edge IS the scene's bounds, so there is nothing to repeat or mirror.
-        this->gi_probe_sampler = this->make_sampler(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, 0.0f);
 
         // The resolve upsamples the scene colour but must NOT average neighbouring history texels: linear
         // magnification, nearest minification.
