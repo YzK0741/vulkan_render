@@ -41,15 +41,10 @@ import vulkan.pass.cluster;
 import vulkan.pass.deferred;
 import vulkan.pass.fxaa;
 import vulkan.pass.gbuffer_debug;
-import vulkan.pass.gi_probe;
 import vulkan.pass.post;
 import vulkan.pass.rt_shadow;
 import vulkan.pass.scene;
 import vulkan.pass.shadow;
-import vulkan.pass.ssgi_spatial;
-import vulkan.pass.ssgi_spec;
-import vulkan.pass.ssgi_temporal;
-import vulkan.pass.ssgi_trace;
 import vulkan.pass.megalights_trace;
 import vulkan.pass.megalights_temporal;
 import vulkan.pass.taa;
@@ -93,7 +88,6 @@ export namespace vulkan {
         /// @brief TAA on/off (`runtime::set_taa_enabled`) + the resolve's two blend weights (the pass's)
         void set_taa(bool enabled, float blend_static, float blend_min) noexcept;
         /// @brief GI on/off + the tracer's ray budget (intensity, reach as a fraction of the scene radius, rays, steps)
-        void set_ssgi(bool enabled, float intensity, float radius, uint32_t rays, uint32_t steps) noexcept;
         /**
          * @brief stochastic punctual lighting: the flag goes to the runtime, the estimator's parameters to the pass
          * @param enabled true = the punctual lights are sampled and ray-traced instead of added unshadowed
@@ -112,16 +106,11 @@ export namespace vulkan {
         /// @brief the same policy's history depth tolerance, moved on its own so a frame can A/B it
         void set_megalights_history_tolerance(float depth_tolerance) noexcept;
         /// @brief the spatial filter's width in GI texels (0 = a pass-through); the pass clamps it
-        void set_ssgi_spatial(float sigma) noexcept;
         /// @brief the composite's joint-bilateral GI upsample switch
-        void set_ssgi_upsample(bool enabled) noexcept;
         /// @brief the multi-bounce gain the tracer re-emits at a hit (the pass clamps it to [0, 1])
-        void set_ssgi_bounce(float gain) noexcept;
         /// @brief the world-space cache: its flag (the runtime's), its rate and round count (the pass's) and the
         ///        tracer's gain over it
-        void set_ssgi_probes(bool enabled, float rate, uint32_t rounds, float gain) noexcept;
         /// @brief the glossy lobe: its flag (the runtime's) and its own reach and ray count (the pass's)
-        void set_ssgi_specular(bool enabled, uint32_t rays, float radius) noexcept;
         /// @brief which G-buffer channel the debug view shows (the pass's own parameter)
         void set_gbuffer_channel(int channel) noexcept;
         /// @brief the flat render mode, which the lighting stage's own parameter decides
@@ -150,11 +139,8 @@ export namespace vulkan {
          * same seven slots. The pass does the first and calls back for the second (its frame's `record_reflection`),
          * which is what keeps the chain contiguous.
          */
-        static void record_reflection(void* owner, VkCommandBuffer command_buffer, bool history_valid);
         /// @brief the reflection's per-image sets, on the temporal pass's layout (see record_reflection)
-        void ensure_reflection_descriptors(runtime::frame_services const& services);
         /// one signal's accumulation: the barriers, the dispatch, the history copy and the hand-backs (mode 1)
-        bool record_resolve(runtime::frame_services const& services, VkDescriptorSet set, VkImage resolve_image, VkImage history_image, bool history_valid);
         /**
          * @brief THE FEATURE TABLE: what runs this frame, composed from the runtime's facts and this demo's passes
          *
@@ -189,8 +175,6 @@ export namespace vulkan {
          * frame's table, its constants) has to be reachable from the demo rather than passed through the pass. They
          * are a value of pointers to the runtime, valid for the frame that set them.
          */
-        runtime::frame_services services_ = {};
-        bindings::image_set_family reflection_family_ = {};
         pass::cluster_pass* cluster_ = nullptr;
         pass::shadow_pass* shadow_ = nullptr;
         pass::scene_pass* scene_ = nullptr;
@@ -199,16 +183,11 @@ export namespace vulkan {
         pass::deferred_pass* deferred_ = nullptr;
         pass::taa_pass* taa_ = nullptr;
         pass::gbuffer_debug_pass* gbuffer_debug_ = nullptr;
-        pass::ssgi_trace_pass* ssgi_trace_ = nullptr;
         /// the stochastic punctual lighting pass (docs/megalights.md): the estimator's parameters live on the
         /// pass, and this owner is what forwards them
         pass::megalights_trace_pass* megalights_trace_ = nullptr;
         /// the chain's temporal resolve (docs/megalights.md): the accumulation policy is the pass's
         pass::megalights_temporal_pass* megalights_temporal_ = nullptr;
-        pass::ssgi_spec_pass* ssgi_spec_ = nullptr;
-        pass::ssgi_temporal_pass* ssgi_temporal_ = nullptr;
-        pass::ssgi_spatial_pass* ssgi_spatial_ = nullptr;
-        pass::gi_probe_pass* gi_probe_ = nullptr;
         pass::post_composite_pass* composite_ = nullptr;
         pass::fxaa_pass* fxaa_ = nullptr;
     };
