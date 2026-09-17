@@ -351,10 +351,6 @@ namespace vulkan {
         // takes effect once the needed pipelines exist, so the flags can be set before setup ends.
         bool gbuffer_debug = false;
         // which channel the debug view shows (see gbuffer_debug.frag / set_gbuffer_channel)
-        // The world-space probe cache's sampler (G-buffer set binding 9): LINEAR rather than the
-        // G-buffer sampler's NEAREST, because a 3D fetch's whole purpose here is interpolating between
-        // cells - a nearest fetch would turn the cache into 32^3 blocks - and CLAMP_TO_EDGE, because the
-        // grid's edge IS the scene's bounds and there is nothing beyond them to repeat or mirror.
         // The debug view's sets, one per swapchain image, allocated from a pool this family owns and
         // retires itself (see vulkan.bindings: the pool lifetime rule is only about the pools).
         bindings::image_set_family gbuffer_family;
@@ -414,29 +410,6 @@ namespace vulkan {
         std::array<pass::frame_pass*, 1> gbuffer_debug_stage = {};
         std::array<pass::frame_pass*, 1> fxaa_stage = {};
 
-        /**
-         * THE GI CHAIN (vulkan.pass.chain): the four GI stages, in the order that makes them a chain - each one
-         * reads what the one before it wrote - as a SUB-chain over the passes `passes` owns. It is built and
-         * recorded with the chain's own calls, so the frame loop does not spell the order out.
-         *
-         * The spatial filter's "only if the temporal resolve ran" gate is NOT expressed here: it lives in the
-         * pass run this frame" - see chain.cppm's header for why a chain does not skip its own tail.
-         */
-        /**
-         * THE GI CHAIN IS TWO VALUES, and the reason is the frame's own ordering rule rather than a taste for
-         * smaller containers: between the lobe (the last writer of the raw trace) and the temporal resolve (the
-         * first sampler of the G-buffer's depth and the motion-vector target) the FRAME has to publish those two
-         * images - their "was it written this frame" flags belong to the passes that wrote them - and a frame rule
-         * that must land in the middle of a chain cannot be run from outside it. So the trace half and the denoise
-         * half are two chains, recorded one after the other with that rule between them (see
-         * `runtime::record_main_drawcalls`), and each half is still an ordered value whose order is data.
-         *
-         * THE CHAIN'S NAME IS THE STAGE NAME, spelled the same way: the names below are what
-         * `chain_wiring::prepare` is handed for that half (see `prepare_stage`, which passes the stage the chain
-         * builds), so "gi trace" with a space was a name the owner had to know in TWO spellings - the mismatch
-         * this rename removes, and it was measured rather than noticed: with `prepare_stage` handing the chain's
-         * publishes the motion-vector target.
-         */
         std::array<pass::frame_pass*, 1> rt_shadow_stage = {};
         /// the deferred lighting stage's own stage: it sits between the ray-traced shadow (whose output its
         /// descriptor samples) and the transparent pass (which composites over the image it shades), which is
@@ -460,26 +433,6 @@ namespace vulkan {
         /// Per swapchain image: whether that image's stochastic accumulation holds a frame yet. The counterpart
         /// feature's off -> on edge).
         std::vector<bool> megalights_history_valid = {};
-        // The tracer's ray sequence has to change every frame: a fixed one would feed a temporal
-        // denoiser the same error in the same place every frame instead of an average. The COUNTER is the frame
-        // loop's (it paces the chain), and both tracing stages read the frame's copy of it
-        // Trace the GI rays against the scene's acceleration structures instead of marching the depth
-        // has ray queries AND a built top level structure - the push block's frame_info.y carries the
-        // resolved answer, so the shader never has to know why it is marching instead.
-        // Shade the surface a GI ray lands on from the geometry it hit, instead of sampling the screen's
-        // stops depending on what the frame happens to show - which is what lets a hit the camera cannot
-        // see (off screen, or hidden) be answered correctly rather than approximated - at the price of the
-        // material and vertex fetches a shaded hit costs. What switches it on is the instance table's address
-        // (`frame_constants::gi_instance_table`, which the frame loop publishes when this is true): a zero
-        // address means "sample the screen", so the knob is also the A/B.
-        // shaded from its geometry, so a reflection shows the room instead of the sky. It is a REPLACEMENT
-        // for the specular ambient the lighting stage adds - the estimate falls back to exactly that term
-        // when a ray finds nothing - which is what the lobe's own subtraction takes back out, at the texel
-        // shaders/shading.glsl's `diffuse_ambient_scale`, where that term is added). ON by default:
-        // the objection that kept it off was its denoiser item, and the reflection now has an accumulation
-        // of its own, reprojected from the point it found (see the L2.3 motion sections).
-        // deliberately not the shared diffuse reach: the marched path pins that one low (its resolution is
-        // radius / steps), so a reflection's reach would make its steps too coarse to find anything between them.
         // The furnace verification mode ([render] furnace, not wired to the config yet): the sun is turned
         // off and the environment becomes a constant level, so the correct frame is computable by hand.
         bool furnace = false;
@@ -487,9 +440,6 @@ namespace vulkan {
         // per generation (see begin_recording): the level never changes, so re-clearing it every frame would
         // be a barrier pair bought for nothing, and the flag is reset with the images it describes.
         bool furnace_cube_ready = false;
-
-        // by the tracer's 128 bytes - which is the second reason it is a pass of its own: the first is
-        // the pass that pushes it, and the host only fills the values in.
 
         // THE DEFERRED LIGHTING STAGE'S SSAO PARAMETERS, ITS FLAT-RENDER FLAG AND ITS PUSH BLOCK ARE THE PASS'S
         // NOW (see vulkan.pass.deferred::set_ssao / set_unlit / push_constants): the shape belongs to the pass that
@@ -532,86 +482,12 @@ namespace vulkan {
         // next frame's history (no ping-pong, hence no per-frame descriptor rewrites).
         // The TAA resolve is a PASS (vulkan.pass.taa): it owns its set layout, pipeline layout, pipeline and
         // descriptor family, so all that is left here is the pass member and the stage the runner is handed.
-        // The pipeline, its layout, the set layout its declaration generates, the diffuse family that layout's
-        // per-image sets need AND the reflection's second family over the same layout are the chain owner's now
-        // resolved through one pipeline is THIS application's choice, so the code that expresses it lives with the
-        // passes - see `chain_wiring::recreated` for the one lifecycle duty it left behind.
         // Per swapchain image: whether that image has a GI history yet. First frame after startup or
         // after a resize there is none, and the resolve then uses the current trace alone.
-        /**
-         * How many frames a restarted GI accumulation takes to be trusted again: the temporal resolve's
-         * COLD-START widening fades out over this many frames (see `frame_facts::gi_cold_start`).
-         *
-         * 32 IS THE MEASURED KNEE, not a guess: on Sponza's interior at 1080x960 the composite's dark-region
-         * grain (mean |I - 3x3 mean| over the darkest surfaces) falls from 2.48 on frame 4 to 2.16 by frame 64
-         * and is flat after that, so the widening has to be gone well before then or it would be a permanent
-         * blur rather than a cold-start transient.
-         */
-        /**
-         * Per swapchain image: how many frames its current GI accumulation has had.
-         *
-         * Reset with the generation - the history images die with it - and incremented by the temporal
-         * resolve. It exists because the resolve's blend WEIGHT is not the count: a still pixel's weight is
-         * the asymptote (`1 - 1/N`), which says nothing about how far along the ramp is (see
-         * `frame_facts::gi_cold_start`).
-         */
-        // The GI history is accumulated with its OWN weights rather than TAA's, and they are the temporal PASS's
-        // aliasing, so it wants a longer memory, and it must not be tuned by whatever the AA sliders are set to.
-        // view distance, so one value means the same thing near and far, and both are read by the composite's
-        // joint-bilateral upsample as well - which is why they are the FRAME's settings
-        // (`frame_constants::render_settings`) and not a member of either pass. The filter's WIDTH is not here:
-        // The GI spatial filter: a joint-bilateral pass over the temporal resolve's output, which is
-        // what the composite samples. Same two set layouts as the tracer, so no set of its own - and since
-        // for it here at all.
-        // The glossy lobe is NOT here any more: its pipeline layout, its pipeline and its per-image first-use
-        // values in - which is the split every extracted pass settled on.
-        // Whether THIS frame's GI chain ran far enough to produce the image the composite samples:
-        // cleared once per frame before the GI passes and set by the SPATIAL FILTER, which is the last
-        // of them. The composite can then push a weight of exactly 0 whenever there is no GI to add -
-        // GI off, but also GI on with a missing descriptor set or a filter that declined to run, which
-        // are frames whose sampled image holds something else (or nothing at all).
-
-        // Where the screen-space chain cannot answer: a ray that leaves the frame or hits something the
-        // camera cannot see gets its radiance from a persistent 3D grid anchored to the SCENE instead of
-        // from the far-field environment probe, which is the sky at infinity rather than the light in
-        // the next room. Off by default - with it off the tracer's fallback is exactly what it was - and
-        // the whole feature costs nothing but its own dispatches, because it is not sampled at all while
-        // its gain is 0 (the tracer branches on the gain rather than multiplying by it).
-        // THE FIRST REAL PASS. It owns everything exclusive to it: the set layout it generated from its
-        // declaration, the two-set ping-pong descriptor family, the dispatch sequence with its barriers, the
-        // two pieces of state that say what the grid currently holds (its validity, and the light it was
-        // filled under), and - since the second half of the extraction - its pipeline layout and its
-        // pipeline, which it builds in its own create step. What stays here is what the RENDERER owns: the
-        // switch, and the VALUES the pass's push block needs (which are the renderer's, so it composes them).
-        // ... and the stage the runner is handed. One entry, and the pass is declared before this initialiser
-        // so it refers to a constructed object; a pass list is pointers in DECLARATION ORDER, never a
-        // container whose iteration order is an accident (the capture gate compares frames byte for byte).
-        // The storage `resolved_io::push` points into for the frame. It is the pass's own block type, so the
-        // two sides of the boundary cannot disagree about the layout; the host fills it, the pass reads it.
         // The shaders the app has loaded, by file name, for the passes that build their own pipelines. The APP
         // is the loader (it knows the shader directory); the runtime is only the place a pass asks. A copy
         // rather than a view, because the caller's buffer is a local in a startup scope.
         std::vector<std::pair<std::string, std::vector<unsigned char>>> registered_shaders = {};
-        // How much of the grid's answer the tracer adds on top of the environment probe for a hit it
-        // leaving the cache running, which is the A/B that measures what the grid actually adds.
-        //
-        // The SIGN is a second A/B, and it exists to answer one question: is this cache DIRECTIONAL? A
-        // negative value means the same gain with the cache looked up along the OPPOSITE direction of the
-        // ray - the same cell, the other side - and nothing else changes, because the far-field term is
-        // still sampled along the ray itself. So the two captures differ only through the cache, and a
-        // cell that holds a single RGB makes them byte-identical BY CONSTRUCTION. That is the L2.1
-        // acceptance test: it has to fail before the SH-2 change and pass after (see
-        // the lane it lands in is the tracer's, and the cache's own validity is the probe pass's state.
-        // Whether the grid holds anything at all, and the light it holds it for, are the PASS's own state now
-        // the pass owns the light-change trigger, which is why the current direction rides in the push block.
-        // What stays here is nothing about the first-use transition: it belongs to the TRACER (the trace pass is
-        // the frame's first reader of the grid, not its writer), and whether it has happened is the pass's own
-        // flag that used to sit here is gone: two copies of "has the batch happened" can disagree after a resize.
-        // layout transition the GI trace does. PER SWAPCHAIN IMAGE, not one flag for all of them: a single
-        // bool is set by the first slot's frame and then tells the other slots their images are already in
-        // GENERAL, so they never get a first-use transition at all - which is invisible until something
-        // READS one of them, and then it is a validation error on whichever slot ran second. (This project's
-        // per-image-lifetime trap, third occurrence.)
         // pass when the generation changed or when the chain was switched on (see on_swapchain_recreated and
         // The alphaMode MASK bake's push block is NOT here any more: its shape is the JOB's
         // (pass::mask_bake_push_constants in vulkan.pass.mask_bake), because only that job composes it.
@@ -2317,14 +2193,6 @@ namespace vulkan {
 
         /**
          * @ingroup vulkan_runtime
-         * @brief shade the surface a GI ray hits, instead of sampling the screen where it landed
-         * @note the traced GI path's two structural limits both come from reading the screen at a hit: it
-         *       cannot answer for a hit the frame does not show (those fall back to a probe, an
-         *       approximation of the light where the RAY STARTED rather than radiance arriving from where
-         *       it landed), and every sample moves with the camera. Shading the hit from the geometry and
-         *       the material removes both. It costs the vertex, index and texture fetches a shaded hit
-         *       needs, and it needs the acceleration structures (the instance table is what tells the
-         *       shader which triangle it hit) - so it is granted only where they exist, and it does
          *       nothing to the marched path, whose hits are the depth buffer's own surface.
          */
 
