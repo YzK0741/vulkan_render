@@ -681,13 +681,8 @@ set(VR_SHADER_INCLUDES
 set(VR_SHADER_SOURCES
     pbr.vert pbr.frag unlit.frag gbuffer.frag gbuffer_debug.frag deferred.frag taa.frag
     light_cluster.comp
-    ssgi.comp
-    ssgi_spec.comp
-    ssgi_temporal.comp
-    ssgi_spatial.comp
     megalights_trace.comp
     megalights_temporal.comp
-    gi_probe.comp
     rt_shadow.comp
     mask_bake.comp
     compute_skin.comp

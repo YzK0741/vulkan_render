@@ -209,31 +209,6 @@ namespace vulkan {
                 }
                 static_cast<void>(services.ensure_gbuffer_depth_sampled(services.owner, services.cmd, services.image_index));
             }
-        } else if (stage == "gi_trace") {
-            // THE ONE ANSWER THE TRACER CANNOT GET ANYWHERE ELSE, and it is about ANOTHER pass's state: whether the
-            // probe cache may be read at all (its feature is active AND that pass has written it at least once, so a
-            // grid nothing has deposited into is never sampled). The tracer's own half of the "first use" question
-            // needs no telling: the pass tracks "have I seen this generation's grid" itself, and the frame field the
-            // renderer used to fill with its negation is gone with it.
-            if (self.ssgi_trace_ != nullptr) {
-                self.ssgi_trace_->set_probe_ready(self.runtime_ != nullptr && self.runtime_->feature_active("ssgi_probes") && self.gi_probe_ != nullptr && self.gi_probe_->cache_valid());
-            }
-            // THE LOBE HAS NO FRAME AT ALL (see ssgi_spec_frame's removal): its one input used to be the target
-            // generation's image count, which the pass reads from the frame identity while recording.
-        } else if (stage == "gi_denoise") {
-            // THE REFLECTION's family, on the temporal pass's own set layout: ensured here because this is the half
-            // whose recording (the pass's `record_reflection` callback, below) is what binds it.
-            self.ensure_reflection_descriptors(services);
-            // ... and the temporal resolve's frame is its own (history_valid is a published fact); the reflection's
-            // recording is installed on the pass ONCE, in `attach`, because it does not change between frames. The
-            // spatial filter's frame is its own too (one published fact: which oracle produced the accumulation).
-            // ---- THE FRAME'S RULE, BETWEEN THE CHAIN'S TWO HALVES ----
-            // The temporal resolve is the first sampler of the G-buffer's depth (its depth guard) and of the
-            // motion-vector target (its reprojection), and whether each still needs its "the G-buffer pass wrote me"
-            // publication is the renderer's per-image bookkeeping. Both calls are idempotent, so on a frame another
-            // stage already published them they record nothing at all.
-            static_cast<void>(services.ensure_gbuffer_depth_sampled(services.owner, services.cmd, services.image_index));
-            static_cast<void>(services.ensure_velocity_sampled(services.owner, services.cmd, services.image_index));
         } else if (stage == "post_composite") {
             // No frame work left: the composite composes its own (which target it writes, who draws the overlay,
             // whether this frame's bloom sum exists), and the overlay hook was installed once in `attach`.
@@ -259,12 +234,6 @@ namespace vulkan {
             // The camera UBO's `prev_view_proj` is only advanced when the resolve actually wrote a history: a
             // resolve that bailed out (no descriptor set) must not claim one.
             out.taa_wrote_history = self.taa_ != nullptr && self.taa_->wrote_history();
-        } else if (stage == "gi_denoise") {
-            // The two answers the frame loop decides on: whether the spatial filter wrote the image the composite
-            // samples (`gi_resolved`, which the composite reads as a frame constant while recording) and whether the
-            // denoiser produced an accumulation this frame (the next frame's history flag is set from it).
-            out.gi_resolved = self.ssgi_spatial_ != nullptr && self.ssgi_spatial_->resolved();
-            out.gi_temporal_resolved = self.ssgi_temporal_ != nullptr && self.ssgi_temporal_->resolved();
         }
     }
 

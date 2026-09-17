@@ -151,8 +151,6 @@ ssao_radius = 0.5
 ssao_intensity = 1.0
 ssao_samples = 8
 
-# ssgi / ssgi_intensity / ssgi_radius / ssgi_rays / ssgi_steps / ssgi_spatial_sigma / ssgi_upsample /
-# ssgi_ray_tracing / ssgi_bounce:
 # global illumination (the `ssgi*` keys - it began as a screen-space chain and still is one whenever
 # `ssgi_ray_tracing` is off), ON BY DEFAULT: with `ssgi_ray_tracing` (also on) this IS the engine's
 # global illumination - one bounce of diffuse indirect, shaded at the hit, denoised over frames and then
@@ -193,14 +191,6 @@ ssao_samples = 8
 # it is not a strength dial - the lighting stage does not add the ambient the estimate stands in for, so
 # 1.0 means "use the estimate" and a lower value darkens the frame rather than fading the noise. Everything
 # else here (intensity, radius, steps, sigma, upsample, the traced keys) is read once at startup.
-ssgi = true
-ssgi_intensity = 1.0
-ssgi_radius = 0.12
-ssgi_rays = 2
-ssgi_steps = 6
-ssgi_spatial_sigma = 2.0
-ssgi_upsample = true
-# ssgi_ray_tracing: ON BY DEFAULT. Replace the screen-space march with an inline ray query against the
 # scene's acceleration structures. Same estimator and same rays - only the hit oracle changes - but it
 # also sees surfaces the depth buffer cannot resolve, its hits are exact, and (this is the part that
 # makes it the default rather than a variant) it is what turns the chain from an ADDITION to the probe
@@ -210,8 +200,6 @@ ssgi_upsample = true
 # with ray queries and a built acceleration structure, so the key is safe in a shared config file: where it
 # cannot be granted the frame falls back to the marched path, which is why the marched path is still
 # maintained - and why a machine that ends up on it wants `ssgi_intensity` around 0.7 (see the note above).
-ssgi_ray_tracing = true
-# ssgi_bounce: how much of the PREVIOUS frame's accumulated indirect a GI ray re-emits at the surface it
 # hit - the multi-bounce (Lumen-style) approximation. At 0 a ray carries direct light only, so a corner
 # that no light reaches directly stays black; 0.6 picks up the second and third bounce, and the rest
 # decays geometrically. It is a feedback loop, so the effective gain is this value TIMES ssgi_intensity,
@@ -219,8 +207,6 @@ ssgi_ray_tracing = true
 # below 1 with an intensity at or below 1, and the runtime clamps the gain there. Raising either one
 # inside that region fills an interior in; crossing it makes the frame brighter every frame, which is
 # why the knob is measurable (a static camera whose mean luminance must settle) rather than trusted.
-ssgi_bounce = 0.0
-# ssgi_probes: the world-space probe cache. A grid of cells covering the scene's bounds (a fixed 32^3,
 # so a cell is scene-relative), each holding the SH-2 radiance of its surroundings: four coefficients per
 # channel, so a cell answers for a DIRECTION - a bright window to its left and a dark wall to its right no
 # longer average away. A cell fills itself by TRACING ITS OWN RAYS (four per frame, uniform over the sphere
@@ -239,12 +225,9 @@ ssgi_bounce = 0.0
 # coarse (~1.2 units on Sponza), its visibility test has one surface per cell (a wall neither cell
 # recorded can still leak), a cell straddling two surfaces mixes them, and a moving object's light
 # stays behind in the grid after it moves. Off is a no-op: the tracer does not even fetch it.
-# ssgi_probe_rate: how much of a cell one frame's observation replaces. Small on purpose - this is the
 # cache that has to survive the camera turning away - and it is also the loop gain of the grid's own
 # cycle (tracer -> resolve -> grid -> tracer), so it is the number that decides whether that settles.
-# ssgi_probe_rounds: propagation rounds per frame (0 = injection only, i.e. the cache holds exactly what
 # the frame could see; that is also how the propagation's contribution is measured).
-# ssgi_probe_gain: how much of the cache's answer is added on top of the environment probe, 0 = the cache
 # still runs and is simply never sampled (the A/B that measures what the grid actually adds).
 # The SIGN of this value is a second A/B, and it asks a different question: is the cache DIRECTIONAL? A
 # negative value means the same gain with the cell looked up along the OPPOSITE direction of the ray - the
@@ -267,11 +250,6 @@ ssgi_bounce = 0.0
 # WHAT THE DIRECTIONAL PART IS WORTH, measured with the gain's sign (below): the two captures isolate the
 # cache's directional content exactly, and they were byte-identical (same SHA256) before the SH-2 change and
 # differ on 22.7% of pixels after it, by up to 14 of 255, in the same 180-frame capture.
-ssgi_probes = false
-ssgi_probe_rate = 0.08
-ssgi_probe_rounds = 2
-ssgi_probe_gain = 1.0
-# ssgi_hit_shading: ON BY DEFAULT. Shade the surface a GI ray LANDED ON from its own geometry, material
 # and textures, instead of reading the screen's direct-radiance image at the pixel it reprojects to. The
 # screen path has
 # two structural limits that both come from that reprojection: a hit the camera does not show (off screen,
@@ -285,8 +263,6 @@ ssgi_probe_gain = 1.0
 # docs/gi_hit_shading.md - and it needs the acceleration structures and the traced GI path: with the marched
 # path, or on a device without ray queries, it does nothing. Off is the previous behaviour exactly: hits are
 # read from the screen.
-ssgi_hit_shading = true
-# ssgi_specular: trace a GLOSSY REFLECTION ray per pixel and use what it finds as the surface's specular
 # ambient, instead of the lighting stage's split-sum lookup of the prefiltered environment. Until this
 # existed every indirect term in the engine was diffuse, and the specular one knew nothing but the sky: a
 # metal panel inside a room reflected the sky, and so did a polished floor. `shaders/ssgi_spec.comp` samples
@@ -364,8 +340,6 @@ ssgi_hit_shading = true
 # +1.50 of mean green over 8.67% of the material sweep, and the shipped single ray's per-pixel estimate
 # differs from an eight-ray convergence on 7.37% of pixels - a BIAS, not flicker, since TAA does not move
 # either number). The scenarios that need the frame from before the lobe existed pin it false.
-ssgi_specular = true
-# ssgi_specular_radius: how far a glossy ray reaches, as a fraction of the scene radius. ITS OWN REACH, not
 # the shared `ssgi_radius`, and the reason is that the two are different questions: a diffuse bounce's reach
 # is "how far indirect light travels before it is absorbed", while a mirror shows the whole room, and
 # `ssgi_radius` is pinned low by the MARCHED path, whose resolution is radius / ssgi_steps (at 0.5 on Sponza
@@ -378,8 +352,6 @@ ssgi_specular = true
 # 0.5 is that knee, so it is the default. Below the knee the reflection falls back to the sky instead of the
 # room; above it there is nothing left to find. The value is a fraction of the scene radius, so it means the
 # same thing on a compact model (0.5 of 6.995 = 3.5 world units) as on Sponza (0.5 of 18.548 = 9.3).
-ssgi_specular_radius = 0.5
-# ssgi_specular_rays: how many glossy rays per pixel, 1 to 8. One is the feature's definition and what its
 # cost was measured at. The hit is a POINT sample of a cone whose width is the material's roughness, so this
 # is the knob that buys a wide lobe's variance down - and the measurement says one ray is already enough
 # after the denoiser, which is the useful half of the answer: on Sponza, 1 ray against 4 differs by +0.0028
@@ -387,7 +359,6 @@ ssgi_specular_radius = 0.5
 # four times the cost buys 0.2% of the signal. Cost, same scene, the GPU timings' `gi` interval (which
 # carries the tracer, this pass and both denoisers): 1.27 ms with the feature off, 1.40 ms at one ray and
 # 2.08 ms at four, so roughly +0.13 ms for the first and +0.23 ms for each further ray at 1080x960.
-ssgi_specular_rays = 1
 # furnace: a VERIFICATION mode, not a look. The sun is turned off and the environment becomes a constant
 # level, which makes the correct frame computable by hand: a diffuse surface''s outgoing radiance is exactly
 # albedo * L, and a bounce has nothing to add because the environment already is the light. So the frame must

@@ -165,8 +165,6 @@ namespace chores {
         // estimate" and anything below it darkens the frame instead of fading the noise in (at 0 the
         // ambient is simply gone) - which the config documents at length. The two honest controls are
         // these: turn the chain off, or buy samples.
-        bool ssgi_enabled = true;
-        float ssgi_rays = 2.0f; // rays per pixel per frame (the tracer clamps to 1..16); the measured lever on the residual
         // The spatial filter's width in GI texels (0 = the filter is a pass-through). This is the knob the
         // OTHER complaint needs - the filter blurs the estimate, and in the dark that estimate is all the
         // light there is: measured on Sponza's interior over the flat dark surfaces, the temporally STABLE
@@ -176,7 +174,6 @@ namespace chores {
         // nothing (sigma 4: 0.453 / 0.153). The useful direction is the other one - with the ray budget
         // raised, a NARROWER filter is strictly better: 16 rays at sigma 1 measures 0.506 signal / 0.137
         // noise / 0.312 flicker against the default's 0.463 / 0.155 / 0.561.
-        float ssgi_spatial_sigma = 2.0f;
         // Stochastic PUNCTUAL lighting (docs/megalights.md): the switch and the estimator's sample count. The
         // switch is the A/B a user actually wants - the shadows the punctual lights never had, against the
         // unshadowed path - and the sample count is the one knob cost and noise both scale with.

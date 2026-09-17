@@ -253,8 +253,6 @@ namespace chores {
             // compute pipeline from it (see vulkan.pass.ssgi_trace) - the create_passes() call at the end of
             // this function is what runs that step, for every pass at once.
             std::vector<unsigned char> compute_code;
-            load_shader(shaders_dir, "ssgi.comp.spv", compute_code);
-            runtime.register_shader("ssgi.comp.spv", compute_code);
             // Stochastic punctual lighting (docs/megalights.md): sample a few of each pixel's clustered lights
             // and trace one visibility ray per sample. OPTIONAL - without it the lighting stage's raster
             // punctual loop stands, which is the unshadowed path every frame before this feature existed had,
@@ -279,16 +277,12 @@ namespace chores {
             // declaration), pipeline layout and compute pipeline from it (see vulkan.pass.ssgi_temporal) -
             // create_passes() below runs that step, and the pass logs its own outcome.
             std::vector<unsigned char> temporal_code;
-            load_shader(shaders_dir, "ssgi_temporal.comp.spv", temporal_code);
-            runtime.register_shader("ssgi_temporal.comp.spv", temporal_code);
             // ... and the spatial half: the joint-bilateral filter that removes the grain the temporal
             // clamp leaves behind, which is the last GI pass (its output is what the composite reads).
             // IT IS A PASS: the app loads the shader and registers it, and the pass builds its own pipeline
             // layout and compute pipeline from it (see vulkan.pass.ssgi_spatial) - create_passes() below runs
             // that step, and the pass logs its own outcome.
             std::vector<unsigned char> spatial_code;
-            load_shader(shaders_dir, "ssgi_spatial.comp.spv", spatial_code);
-            runtime.register_shader("ssgi_spatial.comp.spv", spatial_code);
             // The glossy lobe (shaders/ssgi_spec.comp). OPTIONAL, like the probe cache and for the same
             // reason: without it the lighting stage's split-sum specular ambient stands, which is what
             // every frame before this feature existed looked like - and runtime::ssgi_specular_active()
@@ -298,8 +292,6 @@ namespace chores {
             // IT IS A PASS TOO: the app registers the shader, and the pass builds its own pipeline layout and
             // compute pipeline from it (see vulkan.pass.ssgi_spec) - create_passes() below runs that step.
             std::vector<unsigned char> spec_code;
-            load_shader(shaders_dir, "ssgi_spec.comp.spv", spec_code);
-            runtime.register_shader("ssgi_spec.comp.spv", spec_code);
             // The world-space probe cache. OPTIONAL, unlike the three above: it is what answers for a hit
             // the screen cannot resolve (off screen or hidden), where the tracer otherwise falls back to
             // the far-field environment probe - so a build without it renders exactly as it did before it
@@ -311,8 +303,6 @@ namespace chores {
             // layout, pipeline layout and pipeline, and logs its own outcome. The app's job is the file (it
             // knows the shader directory); the pass's job is the pipeline.
             std::vector<unsigned char> probe_code;
-            load_shader(shaders_dir, "gi_probe.comp.spv", probe_code);
-            runtime.register_shader("gi_probe.comp.spv", probe_code);
 
             // Ray-traced sun shadows: one ray per pixel against the scene's acceleration structures. IT IS A
             // PASS, so its shader has to be registered BEFORE create_passes() below - the pass builds its own
@@ -445,18 +435,9 @@ namespace chores {
         // turns "noisy" into "converged" without giving up the indirect light. It costs what the config
         // says it costs: `ssgi_rays` x `ssgi_steps` is the per-frame ray budget.
         {
-            auto ssgi = std::make_unique<vulkan::gui::checkbox_widget>("ssgi", &bindings.ssgi_enabled);
-            ssgi->visible_when = [&runtime] { return runtime.feature_available("ssgi"); };
-            panel.push_back(std::move(ssgi));
-            auto ssgi_rays = std::make_unique<vulkan::gui::slider_widget>("ssgi rays", &bindings.ssgi_rays, 1.0f, 16.0f);
-            ssgi_rays->visible_when = [&runtime] { return runtime.feature_available("ssgi"); };
-            panel.push_back(std::move(ssgi_rays));
             // ... and the denoiser's width, which is the "the dark parts went soft" knob rather than a
             // quality dial: 0 makes the spatial filter a pass-through (the noisiest, sharpest setting) and
             // 2 is the shipped compromise. See gui_bindings::ssgi_spatial_sigma for the measured curve.
-            auto ssgi_sigma = std::make_unique<vulkan::gui::slider_widget>("ssgi sigma", &bindings.ssgi_spatial_sigma, 0.0f, 8.0f);
-            ssgi_sigma->visible_when = [&runtime] { return runtime.feature_available("ssgi"); };
-            panel.push_back(std::move(ssgi_sigma));
         }
         // stochastic punctual lighting: the shadows the point and spot lights never had (docs/megalights.md).
         // Offered only when the chain exists, and mirrored into the runtime every frame by main like the rest.

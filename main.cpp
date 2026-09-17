@@ -211,13 +211,6 @@ int main(int argc, char** argv) {
     // is missing.
     // Startup-only knobs - the intensity and the ray budget are read here rather than per frame, so
     // changing the config value needs a restart (there is no overlay control for them).
-    start_demo.set_ssgi(settings.render.ssgi,
-                        settings.render.ssgi_intensity,
-                        settings.render.ssgi_radius,
-                        static_cast<uint32_t>(settings.render.ssgi_rays),
-                        static_cast<uint32_t>(settings.render.ssgi_steps));
-    start_demo.set_ssgi_spatial(settings.render.ssgi_spatial_sigma);
-    start_demo.set_ssgi_upsample(settings.render.ssgi_upsample);
     // Stochastic punctual lighting (docs/megalights.md): the switch and the sample count, with the two bias
     // terms left at the pass's own defaults (they are self-intersection guards rather than look knobs, and the
     // pass clamps them). OFF by default, so a stock config is the unshadowed path it always was.
@@ -233,29 +226,21 @@ int main(int argc, char** argv) {
     start_demo.set_megalights_accumulation(settings.render.megalights_history_tolerance, 12.0f, settings.render.megalights_spatial_sigma);
     // Same bargain as the ray-traced shadows: a request the runtime grants only on a device with ray
     // queries and a built top level structure - otherwise the GI rays keep marching the depth buffer.
-    runtime.set_ssgi_ray_tracing(settings.render.ssgi_ray_tracing);
     // The multi-bounce gain: how much of the previous frame's accumulated indirect a GI hit re-emits.
     // 0 (the default) keeps the estimator single-bounce, and the runtime clamps the knob to [0, 1]
     // because above one the diffuse loop it closes is not guaranteed to converge.
-    start_demo.set_ssgi_bounce(settings.render.ssgi_bounce);
     // Shade the surface a GI ray hits from the geometry it landed on. A request: the runtime publishes the
     // acceleration structures' instance table to the tracer only when they exist, and a frame without it
     // samples the screen exactly as before.
-    runtime.set_ssgi_hit_shading(settings.render.ssgi_hit_shading);
     // The furnace verification mode: an analytic reference rather than another estimator of ours.
     runtime.set_furnace(settings.render.furnace);
     // The world-space probe cache: where the screen-space chain cannot answer - a ray that leaves the
     // frame or hits something hidden - the tracer reads a grid anchored to the scene instead of the
     // far-field environment probe. Optional at every level (no pipeline, no chain, or off: the tracer
     // keeps its fallback), and its gain is what makes the difference measurable.
-    start_demo.set_ssgi_probes(settings.render.ssgi_probes,
-                               settings.render.ssgi_probe_rate,
-                               static_cast<uint32_t>(settings.render.ssgi_probe_rounds),
-                               settings.render.ssgi_probe_gain);
     // The glossy lobe: a traced reflection REPLACING the lighting stage's split-sum specular ambient, so a
     // metal panel inside a room stops reflecting the sky. It needs the traced GI path and hit shading, and
     // it does nothing where either is missing (the runtime says so in the log).
-    start_demo.set_ssgi_specular(settings.render.ssgi_specular, static_cast<uint32_t>(settings.render.ssgi_specular_rays), settings.render.ssgi_specular_radius);
     // Ray-traced sun shadows: a request, not a guarantee - the runtime grants it only on a device with
     // ray queries, and the acceleration structures are built by the first frame that records with it on
     // (the caster set they are built from is only complete once the scene is loaded and culled).
@@ -267,17 +252,6 @@ int main(int argc, char** argv) {
     // caster actually is: the structures are built from the bind pose, so without it the ray sees the mesh
     // at rest (the baseline table in docs/gi_hit_shading.md's L2.2b section is that error, measured).
     runtime.set_rt_skin_bake(settings.render.rt_skin_bake);
-    if (settings.render.ssgi) {
-        // The ORACLE and the hit shading are named and not just the ray counts: the shipped configuration
-        // is the traced path with shaded hits (see the [render] ssgi note in config.example.toml), and this
-        // line is what a reader uses to tell which of the two chains is about to run. It says "as
-        // configured" because the DEVICE decides in the end - the runtime logs a pipeline it could not
-        // create, and a device without ray queries silently keeps the marched path.
-        utility::log("ssgi: GI on as configured - {}, {} (intensity {:.2f}, radius {:.2f} scene radii, {} rays x {} steps at half res)",
-                     settings.render.ssgi_ray_tracing ? "traced rays" : "marched depth",
-                     settings.render.ssgi_hit_shading ? "hits shaded from their own geometry" : "hits read from the screen",
-                     settings.render.ssgi_intensity, settings.render.ssgi_radius, settings.render.ssgi_rays, settings.render.ssgi_steps);
-    }
 
     // 7. Collect the async startup results
     auto scenes = load_future.get();
@@ -557,9 +531,6 @@ int main(int argc, char** argv) {
     // screen-space GI: the overlay's ON/OFF fallback and its ray budget, the two controls the frame loop
     // mirrors back into the tracer through start_demo.set_ssgi below (the rest of the chain's values -
     // intensity, radius, steps - have no widget and stay as the config set them).
-    gui.ssgi_enabled = settings.render.ssgi;
-    gui.ssgi_rays = static_cast<float>(settings.render.ssgi_rays);
-    gui.ssgi_spatial_sigma = settings.render.ssgi_spatial_sigma;
     gui.megalights_enabled = settings.render.megalights;
     gui.megalights_samples = static_cast<float>(settings.render.megalights_samples);
     gui.megalights_spatial_sigma = settings.render.megalights_spatial_sigma;
@@ -799,12 +770,9 @@ int main(int argc, char** argv) {
         // the first mirrored frame is exactly the startup call's. Mirroring is safe because `set_ssgi`
         // throws the accumulation away on the off -> on EDGE only (see runtime::set_ssgi_enabled), which is
         // what keeps the mirror from showing the raw trace forever; the tracer clamps the ray count.
-        start_demo.set_ssgi(gui.ssgi_enabled, settings.render.ssgi_intensity, settings.render.ssgi_radius,
-                            static_cast<uint32_t>(std::max(gui.ssgi_rays, 0.0f) + 0.5f), static_cast<uint32_t>(settings.render.ssgi_steps));
         // ... and the denoiser's width, which the user's own comparison needs to be able to move: the same
         // frame at sigma 0 / 1 / 2 is a visibly different trade between noise and how soft the dark parts
         // look (see gui_bindings::ssgi_spatial_sigma). The pass clamps it to 0..8.
-        start_demo.set_ssgi_spatial(gui.ssgi_spatial_sigma);
         // Stochastic punctual lighting: the overlay's switch and sample count, mirrored like the GI's - the two
         // bias terms are the pass's constants and are passed through at their shipped values.
         start_demo.set_megalights(gui.megalights_enabled, static_cast<uint32_t>(std::max(gui.megalights_samples, 1.0f) + 0.5f), 0.001f, 0.01f * gui.megalights_bias,
