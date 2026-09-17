@@ -81,6 +81,8 @@ export namespace vulkan::pass {
         /// documents), and the weights are clamped non-negative - a negative minimum weight would make the
         /// smooth cut invert, and a negative bias would push the ray's origin INTO the surface.
         void set_estimator(uint32_t samples, float min_weight, float bias_floor, float bias_grazing) noexcept;
+        /// @brief the emitter's angular radius in radians: 0 makes the shadows hard (a point light)
+        void set_light_angle(float radians) noexcept;
 
         /// @brief whether the pass built what it records with (the renderer gates the feature on this)
         [[nodiscard]] bool pipeline_ready() const noexcept;
@@ -119,6 +121,8 @@ export namespace vulkan::pass {
         float tmin_ = 0.01f;
         float bias_floor_ = 0.01f;
         float bias_grazing_ = 0.1f;
+        /// the emitter's angular radius in radians; 0 makes the shadows hard (see set_light_angle)
+        float light_angle_ = 0.0f;
         /**
          * The ray sequence's frame counter, and it is the PASS's rather than the frame's because this chain
          * has no other reader: the GI chain's counter lives in the renderer because TWO of its stages trace

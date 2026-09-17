@@ -93,6 +93,14 @@ export namespace vulkan::pass {
         /// neighbourhood it can read (the same argument the GI spatial filter's own clamp makes).
         void set_spatial(float sigma) noexcept;
 
+        /// @brief the two lanes a caller that moves one value has to restate (see the demo's setter)
+        [[nodiscard]] float max_frames() const noexcept {
+            return this->max_frames_;
+        }
+        [[nodiscard]] float spatial_sigma() const noexcept {
+            return this->spatial_sigma_;
+        }
+
         /// @brief this frame's answer about the history (see megalights_temporal_frame)
         void set_frame(megalights_temporal_frame const& frame) noexcept;
         /// @brief build this pass's frame from the published facts (see frame_pass::prepare_frame)

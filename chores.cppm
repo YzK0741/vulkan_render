@@ -190,6 +190,15 @@ namespace chores {
         // frame's estimate straight through), 12 is the shipped policy. It exists because the comparison a user
         // actually wants is "what does each half of the denoise do", and both halves are now one slider each.
         float megalights_frames = 12.0f;
+        // The history's relative depth tolerance: the dial between ghosting (too loose) and losing the
+        // accumulation at every depth edge TAA's jitter reprojects onto the wrong side of (too tight).
+        float megalights_history_tolerance = 0.03f;
+        // The visibility ray's normal-offset scale: the self-intersection guard, and the dial between
+        // "shadow acne / a flickering terminator" (too small) and "a shadow detached from its caster" (too big).
+        float megalights_bias = 1.0f;
+        // The emitter's angular radius (radians): the soft-shadow dial, 0 = hard. It is what moves a flickering
+        // terminator, so it is a slider rather than a constant.
+        float megalights_light_angle = 0.0f;
         // demo punctual lights (count matches vulkan::max_punctual_lights): the gui rows below
         // edit these fields live (no per-widget callbacks), and main() pushes the enabled set to
         // the runtime once per frame via chores::apply_point_lights(). Each slot is a point light

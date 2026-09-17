@@ -105,8 +105,12 @@ export namespace vulkan {
          *       lighting stage whether the punctual lights were already handled), the numbers are the pass's.
          */
         void set_megalights(bool enabled, uint32_t samples, float min_weight, float bias_floor, float bias_grazing) noexcept;
+        /// @brief the emitter's angular radius (radians): 0 keeps the shadows hard
+        void set_megalights_light_angle(float radians) noexcept;
         /// @brief the resolve's accumulation policy: the history's relative depth tolerance and the frame-count cap
         void set_megalights_accumulation(float depth_tolerance, float max_frames, float spatial_sigma) noexcept;
+        /// @brief the same policy's history depth tolerance, moved on its own so a frame can A/B it
+        void set_megalights_history_tolerance(float depth_tolerance) noexcept;
         /// @brief the spatial filter's width in GI texels (0 = a pass-through); the pass clamps it
         void set_ssgi_spatial(float sigma) noexcept;
         /// @brief the composite's joint-bilateral GI upsample switch

@@ -125,6 +125,21 @@ namespace app_config {
                     settings.render.megalights_spatial_sigma = static_cast<float>(*value);
                 }
             }
+            if (toml::node const* node = render->get("megalights_history_tolerance")) {
+                if (std::optional<double> const value = node->value<double>()) {
+                    settings.render.megalights_history_tolerance = static_cast<float>(*value);
+                }
+            }
+            if (toml::node const* node = render->get("megalights_light_angle")) {
+                if (std::optional<double> const value = node->value<double>()) {
+                    settings.render.megalights_light_angle = static_cast<float>(*value);
+                }
+            }
+            if (toml::node const* node = render->get("megalights_bias")) {
+                if (std::optional<double> const value = node->value<double>()) {
+                    settings.render.megalights_bias = static_cast<float>(*value);
+                }
+            }
             if (toml::node const* node = render->get("ssgi_intensity")) {
                 if (std::optional<double> const value = node->value<double>()) {
                     settings.render.ssgi_intensity = static_cast<float>(*value);
@@ -448,6 +463,9 @@ namespace app_config {
         // 0..4: the same bound the pass clamps to, and for the same reason (past a few texels it is wider than
         // the neighbourhood it can read).
         settings.render.megalights_spatial_sigma = std::clamp(settings.render.megalights_spatial_sigma, 0.0f, 4.0f);
+        settings.render.megalights_history_tolerance = std::clamp(settings.render.megalights_history_tolerance, 0.0f, 1.0f);
+        settings.render.megalights_bias = std::clamp(settings.render.megalights_bias, 0.0f, 32.0f);
+        settings.render.megalights_light_angle = std::clamp(settings.render.megalights_light_angle, 0.0f, 0.1f);
         if (settings.render.camera_fit != "exterior" && settings.render.camera_fit != "interior") {
             utility::log("app_config: invalid camera_fit '{}' (use exterior/interior), falling back to exterior", settings.render.camera_fit);
             settings.render.camera_fit = "exterior";

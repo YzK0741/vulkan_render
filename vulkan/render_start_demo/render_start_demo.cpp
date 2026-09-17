@@ -312,12 +312,27 @@ namespace vulkan {
         }
     }
 
+    void render_start_demo::set_megalights_light_angle(float const radians) noexcept {
+        // The estimator owns the angle, so this forwards like the other two setters do.
+        if (this->megalights_trace_ != nullptr) {
+            this->megalights_trace_->set_light_angle(radians);
+        }
+    }
+
     void render_start_demo::set_megalights_accumulation(float const depth_tolerance, float const max_frames, float const spatial_sigma) noexcept {
         // The policy is the PASS's (see megalights_temporal_pass::set_accumulation), so this forwards the way the
         // estimator's own setter does.
         if (this->megalights_temporal_ != nullptr) {
             this->megalights_temporal_->set_accumulation(depth_tolerance, max_frames);
             this->megalights_temporal_->set_spatial(spatial_sigma);
+        }
+    }
+
+    void render_start_demo::set_megalights_history_tolerance(float const depth_tolerance) noexcept {
+        // The pass owns the accumulated value, so the tolerance moves by re-stating the policy it is part of:
+        // the two other lanes keep what the pass already holds (see megalights_temporal_pass).
+        if (this->megalights_temporal_ != nullptr) {
+            this->megalights_temporal_->set_accumulation(depth_tolerance, this->megalights_temporal_->max_frames());
         }
     }
 

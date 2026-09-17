@@ -468,6 +468,15 @@ namespace chores {
             panel.push_back(std::move(megalights));
             auto samples = std::make_unique<vulkan::gui::slider_widget>("ml samples", &bindings.megalights_samples, 1.0f, 4.0f);
             auto ml_frames = std::make_unique<vulkan::gui::slider_widget>("ml history", &bindings.megalights_frames, 1.0f, 12.0f);
+            auto ml_tol = std::make_unique<vulkan::gui::slider_widget>("ml tol", &bindings.megalights_history_tolerance, 0.0f, 0.5f);
+            auto ml_bias = std::make_unique<vulkan::gui::slider_widget>("ml bias", &bindings.megalights_bias, 0.0f, 16.0f);
+            auto ml_emitter = std::make_unique<vulkan::gui::slider_widget>("ml emitter", &bindings.megalights_light_angle, 0.0f, 0.1f);
+            ml_emitter->visible_when = [&runtime] { return runtime.feature_available("megalights"); };
+            panel.push_back(std::move(ml_emitter));
+            ml_bias->visible_when = [&runtime] { return runtime.feature_available("megalights"); };
+            panel.push_back(std::move(ml_bias));
+            ml_tol->visible_when = [&runtime] { return runtime.feature_available("megalights"); };
+            panel.push_back(std::move(ml_tol));
             ml_frames->visible_when = [&runtime] { return runtime.feature_available("megalights"); };
             panel.push_back(std::move(ml_frames));
             auto ml_sigma = std::make_unique<vulkan::gui::slider_widget>("ml sigma", &bindings.megalights_spatial_sigma, 0.0f, 4.0f);

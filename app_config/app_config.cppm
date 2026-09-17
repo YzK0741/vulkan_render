@@ -175,6 +175,25 @@ namespace app_config {
         // noise at the same rate is worse than none, so this one is configurable and its own measurement is in
         // docs/megalights.md.
         float megalights_spatial_sigma = 1.5f;
+        // The temporal resolve's history depth tolerance, RELATIVE to the pixel's view depth: the reject
+        // threshold for "the history I reprojected belongs to this surface". UE's value is 0.03, widened at
+        // grazing angles by 1/lerp(0.1, 1, N dot V) - see docs/reference/megalights_stochastic_lighting.md.
+        // It is a knob because it is the balance between a stale history (ghosting) and a lost one (flicker at
+        // every depth discontinuity TAA's jitter lands on the wrong side of), and the flicker measurement needs
+        // to move it to attribute one to the other.
+        float megalights_history_tolerance = 0.03f;
+        // A scale on the ray origin's NORMAL OFFSET, which is the self-intersection guard for the visibility
+        // rays (UE's mix(0.1, 0.01, N dot L) shape, in world units). 1 is the shipped pair; raising it is the
+        // experiment that says whether a flickering terminator is the ray re-hitting its own surface.
+        float megalights_bias = 1.0f;
+        // The emitter's ANGULAR radius in radians: the soft-shadow knob, and this feature's cure for a flickering
+        // hard shadow edge (see shaders/megalights_trace.comp's soft-shadow block). A point light's visibility is
+        // binary, so a shadow boundary crossing the pixel flips it; an emitter with size makes the answer the
+        // fraction of the emitter the pixel sees, which moves gradually. DEFAULT 0 - hard shadows, the behaviour
+        // this feature shipped with - because the soft look is a choice, not a fix: measured, it does NOT reduce
+        // the edge flicker this session chased (that flicker is the renderer's, and it survives every shadow
+        // algorithm being off), so it stays an opt-in quality dial rather than a new default.
+        float megalights_light_angle = 0.0f;
         // 1.0, NOT the 0.7 a MARCHED chain wants: the traced path estimates the WHOLE diffuse indirect (its
         // rays fall back to the probe inside the ray) and the lighting stage does not add that ambient at all
         // on this path (see shaders/shading.glsl's `diffuse_ambient_scale` - the removal is exact because it

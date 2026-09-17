@@ -62,6 +62,9 @@ layout(push_constant) uniform MlTemporalPush {
 const float ML_MAX_FRAMES = 12.0;
 /// @brief how many taps the neighbourhood statistics take: a 3x3, the same window the GI resolve clamps against.
 const int ML_CLAMP_RADIUS = 1;
+/// @brief the accumulated count a history is cut to when the reprojected depth disagrees (a soft rejection: the
+///        pixel keeps a short average instead of restarting from one raw frame - see the block in main).
+const float ML_DISAGREE_FRAMES = 2.0;
 /// @brief the spatial pre-filter's radius in GI texels (a 3x3: the same window the clamp above uses, and the
 ///        radius the SSGI chain's filter settled on for the same reason - a wider one buys almost nothing).
 const int SPATIAL_RADIUS = 1;
@@ -150,8 +153,31 @@ void main() {
         // sharpen it is a change with its own measurement, not an assumption here.
         const float tolerance = max(previous_depth < 1.0 ? pc.params.w * view_here : -1.0, -1.0);
         const bool depth_agrees = previous_depth < 1.0 && abs(view_depth(previous_depth) - view_here) <= tolerance;
-        if (frames > 0.0 && depth_agrees) {
+        // ---- A SOFT REJECTION, AND THE REASON IS THE ONE THING THAT EXPLAINED THE FLICKER ----
+        //
+        // The hard version (drop the history and restart at one frame) is what this pass used to do, and it made
+        // the chain show its RAW per-frame estimate at exactly the pixels where TAA's jitter matters most: a pixel
+        // whose sub-pixel sample lands on a different surface this frame - a silhouette, a thin relief, a contact
+        // shadow's sub-pixel boundary - gets a different G-buffer position and normal, so its reprojected depth
+        // disagrees and the accumulation restarted EVERY frame. TAA resolves that same jitter by integrating it,
+        // which is why the unshadowed control moves ~2/255 at those pixels while the chain moved up to 45.
+        //
+        // Measured, before this change, at the pixels the flicker map calls hot: one sample per pixel is as
+        // stable as four (so it is not sampling noise), the history's depth tolerance makes no difference between
+        // 0.03 and 1.0 (so it is not the test's sharpness), the spatial pre-filter and the lighting stage's
+        // bilateral upsample make no difference either (so it is not the filtering), and an emitter with an
+        // angular size - soft shadows - makes no difference (a CONTACT shadow has no penumbra to widen, whatever
+        // the emitter's size). What is left is the input changing, and the answer is to average through it the
+        // way TAA does rather than to discard it.
+        //
+        // So a disagreeing history is KEPT but its accumulated count is cut to ML_DISAGREE_FRAMES: the pixel keeps
+        // a short average (which is what damps a per-frame flip) while staying responsive, and the neighbourhood
+        // clamp below is what bounds how far a history from the other surface may pull it.
+        if (frames > 0.0) {
             history = fetched.rgb;
+            if (!depth_agrees) {
+                frames = min(frames, ML_DISAGREE_FRAMES);
+            }
         } else {
             frames = 0.0;
             history = vec3(0.0);

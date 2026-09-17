@@ -66,6 +66,13 @@ namespace vulkan::pass {
         return this->pipeline_layout_;
     }
 
+    void megalights_trace_pass::set_light_angle(float const radians) noexcept {
+        // The angle is the emitter's half-size: past a tenth of a radian the "small emitter" the BRDF's
+        // representative-point approximation assumes stops being small, so the clamp is where that approximation is
+        // still honest rather than where the math breaks.
+        this->light_angle_ = std::clamp(radians, 0.0f, 0.1f);
+    }
+
     void megalights_trace_pass::set_estimator(uint32_t const samples, float const min_weight, float const bias_floor, float const bias_grazing) noexcept {
         // The clamps are this pass's, with the values: the sample count is bounded by the shader's own
         // compile-time array (see the header), and the three floats are bounded by what they MEAN - a negative
@@ -141,7 +148,7 @@ namespace vulkan::pass {
         push_constants push = {};
         push.inv_view_proj = io.constants.inv_view_proj;
         push.params = glm::vec4(static_cast<float>(this->samples_), this->min_weight_, this->tmin_, static_cast<float>(this->frame_index_));
-        push.bias = glm::vec4(this->bias_floor_, this->bias_grazing_, 0.0f, 0.0f);
+        push.bias = glm::vec4(this->bias_floor_, this->bias_grazing_, this->light_angle_, 0.0f);
         static_assert(sizeof(push) <= pass::max_push_bytes, "the estimator's push block must fit the guaranteed minimum");
         vkCmdPushConstants(io.cmd, io.pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
         vkCmdDispatch(io.cmd, (io.extent.width + group_size - 1u) / group_size, (io.extent.height + group_size - 1u) / group_size, 1);

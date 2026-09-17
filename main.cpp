@@ -221,11 +221,16 @@ int main(int argc, char** argv) {
     // Stochastic punctual lighting (docs/megalights.md): the switch and the sample count, with the two bias
     // terms left at the pass's own defaults (they are self-intersection guards rather than look knobs, and the
     // pass clamps them). OFF by default, so a stock config is the unshadowed path it always was.
-    start_demo.set_megalights(settings.render.megalights, static_cast<uint32_t>(settings.render.megalights_samples), 0.001f, 0.01f, 0.1f);
+    // The two bias radii are UE's pair scaled by the config's dial (see app_config's note): the floor at
+    // normal incidence and the larger offset at grazing incidence, where the ray leaves nearly parallel to the
+    // surface and a small offset would let it re-hit the surface it started from.
+    float const ml_bias_floor = 0.01f * settings.render.megalights_bias;
+    float const ml_bias_grazing = 0.1f * settings.render.megalights_bias;
+    start_demo.set_megalights(settings.render.megalights, static_cast<uint32_t>(settings.render.megalights_samples), 0.001f, ml_bias_floor, ml_bias_grazing);
     // ... and the chain's policy: UE's relative depth tolerance (0.03) and frame-count cap (12) for the temporal
     // running mean, plus this chain's own spatial pre-filter width, which is the config's because it is the dial
     // between grain and detail (see app_config's note and docs/megalights.md's measurement).
-    start_demo.set_megalights_accumulation(0.03f, 12.0f, settings.render.megalights_spatial_sigma);
+    start_demo.set_megalights_accumulation(settings.render.megalights_history_tolerance, 12.0f, settings.render.megalights_spatial_sigma);
     // Same bargain as the ray-traced shadows: a request the runtime grants only on a device with ray
     // queries and a built top level structure - otherwise the GI rays keep marching the depth buffer.
     runtime.set_ssgi_ray_tracing(settings.render.ssgi_ray_tracing);
@@ -558,6 +563,10 @@ int main(int argc, char** argv) {
     gui.megalights_enabled = settings.render.megalights;
     gui.megalights_samples = static_cast<float>(settings.render.megalights_samples);
     gui.megalights_spatial_sigma = settings.render.megalights_spatial_sigma;
+    gui.megalights_history_tolerance = settings.render.megalights_history_tolerance;
+    gui.megalights_bias = settings.render.megalights_bias;
+    gui.megalights_light_angle = settings.render.megalights_light_angle;
+    start_demo.set_megalights_light_angle(settings.render.megalights_light_angle);
     gui.shadow_cascades = settings.render.shadow_cascades - 1;       // cascade combo index (0 = single map)
     gui.shadow_cascade_blend = settings.render.shadow_cascade_blend; // cascaded shadow maps (M4)
     gui.clustered_lights = settings.render.clustered_lights;         // clustered light culling (M5)
@@ -798,10 +807,12 @@ int main(int argc, char** argv) {
         start_demo.set_ssgi_spatial(gui.ssgi_spatial_sigma);
         // Stochastic punctual lighting: the overlay's switch and sample count, mirrored like the GI's - the two
         // bias terms are the pass's constants and are passed through at their shipped values.
-        start_demo.set_megalights(gui.megalights_enabled, static_cast<uint32_t>(std::max(gui.megalights_samples, 1.0f) + 0.5f), 0.001f, 0.01f, 0.1f);
+        start_demo.set_megalights(gui.megalights_enabled, static_cast<uint32_t>(std::max(gui.megalights_samples, 1.0f) + 0.5f), 0.001f, 0.01f * gui.megalights_bias,
+                                  0.1f * gui.megalights_bias);
+        start_demo.set_megalights_light_angle(gui.megalights_light_angle);
         // ... and the chain's policy, so the overlay's own slider moves the spatial pre-filter live (0 = the
         // temporal-only chain, which is also the A/B the measurement uses).
-        start_demo.set_megalights_accumulation(0.03f, gui.megalights_frames, gui.megalights_spatial_sigma);
+        start_demo.set_megalights_accumulation(gui.megalights_history_tolerance, gui.megalights_frames, gui.megalights_spatial_sigma);
 
         // Order matters for the M5/M6 mirrors: their availability checks read the state the lines
         // above just set (the debug view replaces the lighting stage, clustered lighting only exists
