@@ -36,7 +36,7 @@ import vulkan.pass.compute_skin;      // ... and the compute-skinning job, which
 import vulkan.pass.gbuffer_debug;     // the fifteenth: the G-buffer debug view (and the G-buffer set layout's owner)
 import vulkan.pass.shadow;            // the sixteenth: the directional shadow map, one depth-only cascade per layer
 import vulkan.pass.chain;             // the chain container: what holds a run of passes and its ORDER
-import vulkan.render_resource.shared; // the six samplers a pass's declaration chooses between
+import vulkan.render_resource.shared; // the five samplers a pass's declaration chooses between
 import vulkan.frame_constants;        // one frame's shared constants, filled by the frame loop and read by passes
 import vulkan.shadow_fit;             // the cascade fit itself (pure CPU; the runtime gathers and caches)
 import vulkan.readback;               // GPU -> CPU buffer copies (the screenshot's staging buffer and read)
@@ -2065,7 +2065,7 @@ namespace vulkan {
          *       layout, the pipeline layout and the chain's two pipelines belong to the post composite PASS
          *       (`vulkan.pass.post`) and are built by its create step; the samplers stay here because they
          *       belong to the descriptor SETS, which this class still writes (post_family). It must be called
-         *       before create_passes(): the pass context hands every pass the six samplers a declaration may
+         *       before create_passes(): the pass context hands every pass the five samplers a declaration may
          *       choose between, and a null one in a set is a validation error rather than a skipped fetch.
          */
 
@@ -2474,7 +2474,7 @@ namespace vulkan {
          * @note THIS IS THE WHOLE OF WHAT `make_gbuffer_debug_pipeline` DID THAT IS STILL THE RENDERER'S: the
          *       set layout, its pipeline layout and the view pipeline are the debug view's PASS's now. The
          *       samplers stay here because they belong to the descriptor sets this class writes, and they must
-         *       exist before create_passes() - the pass context hands every pass the six a declaration may pick.
+         *       exist before create_passes() - the pass context hands every pass the five a declaration may pick.
          */
         /** @brief how many jitter positions the Halton(2,3) TAA sequence cycles through */
         static constexpr uint32_t taa_jitter_count = 8;

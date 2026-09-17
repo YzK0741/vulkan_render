@@ -1143,12 +1143,12 @@ namespace vulkan {
         {
             pass::stage const taa_stage = {.name = "taa", .passes = this->taa_stage, .marks = false};
             [[maybe_unused]] pass::run_report const taa_recreated = pass::recreate_stage(taa_stage, this->make_pass_host());
-            // THE STAGES ADDED SINCE THIS LIST WAS WRITTEN, and now one call per chain: the tracer's
-            // `probe_grid_seen_` and the lobe's per-image first-use flags describe a GENERATION, so a swapchain
-            // recreation owes them another first-use batch. Leaving a pass out of this list is invisible until
-            // someone resizes the window - exactly the hazard `recreate_stage` exists to remove, which is why the
-            // fix is this call and not a second hand-kept flag in the host. The chains make "all of them" the
-            // default instead of a list someone has to remember to extend.
+            // THE STAGES ADDED SINCE THIS LIST WAS WRITTEN, and now one call per chain: a pass whose per-image
+            // first-use state describes a GENERATION is owed another first-use batch by a swapchain recreation.
+            // Leaving a pass out of this list is invisible until someone resizes the window - exactly the hazard
+            // `recreate_stage` exists to remove, which is why the fix is this call and not a second hand-kept
+            // flag in the host. The chains make "all of them" the default instead of a list someone has to
+            // remember to extend.
         }
         // Every swapchain image's history died with the old generation (and its size may have
         // changed): forget the matrices, so the next frame for each image starts a new accumulation
@@ -1156,9 +1156,9 @@ namespace vulkan {
         // state, and the call above is what cleared it.)
         std::size_t const image_count = this->vulkan_core.taa_history_images.size();
         this->image_view_proj.assign(image_count, this->current_ubo.view_proj_unjittered);
-        // The lobe's per-image first-use state is the PASS's, and the recreate_stage call above is what told it
-        // its first-use batch" is the same shape and the same call cleared it - which is why there is no host
-        // flag for it any more (the renderer asks the pass: `probe_grid_seen`).
+        // The per-image first-use state of the passes in a chain is the PASS's, and the recreate_stage call
+        // above is what told each of them its first-use batch - which is why there is no host flag for it any
+        // more (the renderer asks the pass).
         //
         // Every OTHER per-image flag is the generation reset, and it is the very function the constructor
         // calls for generation 0: this list used to be hand-kept in two places (the G-buffer depth flag, the
@@ -2123,7 +2123,7 @@ namespace vulkan {
     // built by `pipelines::build_post` inside its create step). What stays is the SAMPLERS, and they are the
     // renderer's for the reason `build_post`'s own comment gives: they belong to the descriptor SETS, which this
     // class still writes (post_family). They have to exist before `create_passes()`, because the pass context
-    // hands every pass the six samplers a declaration may choose between.
+    // hands every pass the five samplers a declaration may choose between.
     // THE FXAA PASS'S FRAME (vulkan.pass.fxaa). What the pass cannot know is which image it reads and which it
     // writes (the LDR image the composite produced, and the swapchain), which variant of the post family's set is
     // the one it reads that image through (set 4, the composite's), and the push block's values.
@@ -2281,7 +2281,7 @@ namespace vulkan {
 
     // The G-buffer declarations' SAMPLERS: what is left of make_gbuffer_debug_pipeline in the renderer, because the
     // set layout, its pipeline layout and the view pipeline are the debug view's PASS's now. They have to exist
-    // before create_passes(), since the pass context hands every pass the six a declaration may choose between.
+    // before create_passes(), since the pass context hands every pass the five a declaration may choose between.
     // The deferred path's transparent pass. Everything about its position is load-bearing:
     //  - after the lighting stage, because a blended surface composites over SHADED pixels, and the
     //    G-buffer instance has no shaded image to composite over;
@@ -2509,24 +2509,12 @@ namespace vulkan {
         }
     }
 
-    // facts this renderer publishes (`make_frame_facts`), the probe cache's readiness is the chain owner's setter,
-    // and the "first dispatch of the generation" flag was this renderer filling a frame field with the NEGATION of
-    // the pass's own `probe_grid_seen()` - two copies of one answer, so the field is gone.
-    //
-    // ... AND ITS RESOLVER IS GONE (S3.10): its twelve declared images, its two shared sets, its own pipeline and
-    // the declaration's `half` extent are all the framework's to resolve now (the probe grid's eight elements and
-    // the surface image are ordinary table entries), and the push block it used to be handed is composed by the
-    // PASS from `io.constants` (the camera, the projection terms, the scene bounds, the instance table's address,
-    // the ray sequence), its own ray budget and the two answers its frame carries (which oracle, and whether the
-    // probe cache has been written).
-
-    // THE TEMPORAL RESOLVE'S RESOLVER IS GONE (S3.11) with the three before it: its seven own bindings (whose
-    // PER-IMAGE views are the channel that was added for this pass), its two barrier images, its own pipeline and
-    // the declaration's `half` extent are all the framework's to resolve, and the push block it used to be handed is
-    // composed by the PASS from `io.constants`, the two extents and its own two blend constants. The two shared
-    // per-image transitions it was handed as a callback are the FRAME's ordering rule and run between the chain's
-    // two halves (see record_main_drawcalls) - and the reflection's own recording, the last thing this file owned for
-    // it, is the chain owner's now (see `chain_wiring::recreated` and vulkan.render_start_demo).
+    // WHAT IS NOT HERE ANY MORE: no per-pass resolver. The two "S3" migrations this space used to record in
+    // detail were the traced-GI tracer's and its temporal resolve's, and both passes are gone - what they left
+    // behind is the rule every pass follows now: a pass resolves its OWN declaration (its images, its shared
+    // sets, its own bindings, its pipeline, the extent rule), and its push block is composed by the PASS from
+    // `io.constants` plus its own parameters. A frame fact is likewise the frame's (`make_frame_facts`) rather
+    // than the renderer's copy of a pass's state.
 
     bool runtime::megalights_active() const noexcept {
         // deferred lighting stage has to know whether to skip its raster punctual loop, and it has to give the
@@ -2579,12 +2567,11 @@ namespace vulkan {
         // needs no frame. ANY owner can fill this struct - that is what makes a pass usable outside this
         // renderer - and this runtime is one such owner, filling the device from the core it owns.
         //
-        // The SHARED samplers must exist before the context is filled, because a pass caches the six it may
+        // The SHARED samplers must exist before the context is filled, because a pass caches the five it may
         // choose between at create time (a declaration picks one by hint, and a null sampler in a set is a
-        // validation error rather than a skipped fetch). Two of the six are still created inside the pipeline
-        // builders that first needed them - `make_gbuffer_debug_pipeline` makes the G-buffer pair's and the
-        // probe grid's - which is the naming accident `docs/runtime_split.md` records; the TAA resolve's is
-        // made here because the pass that declares it is what needs it now.
+        // validation error rather than a skipped fetch). They are the device root's (`core::create_samplers`),
+        // which is what `shared_samplers` below reads; two of them were once made inside the pipeline builders
+        // that first needed them, which is the naming accident `docs/runtime_split.md` records.
         // THE CHAIN IS AN INPUT, and there is deliberately no fallback: with the passes constructed outside this
         // class, "no chain was handed over" means there is nothing to create or record, so the one honest answer is
         // to say so and return rather than to record a frame of this class's own empty stage sequence.
@@ -2625,7 +2612,7 @@ namespace vulkan {
     }
 
     render_resource::shared::sampler_set runtime::shared_samplers() const noexcept {
-        // The six samplers a declaration chooses between, as handles. One place, so that two passes cannot end
+        // The five samplers a declaration chooses between, as handles. One place, so that two passes cannot end
         // up with two different ideas of "the post sampler".
         // THE SAMPLERS ARE THE DEVICE ROOT'S (core::create_samplers): a sampler has no per-frame state and no owner
         // among the passes, so this function is now a READ of the handles rather than the place that made them - and

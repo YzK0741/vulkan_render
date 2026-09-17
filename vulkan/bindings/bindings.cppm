@@ -156,7 +156,7 @@ namespace vulkan::bindings {
         return VK_IMAGE_LAYOUT_UNDEFINED;
     }
 
-    // The six samplers a declaration chooses between now live in `vulkan.render_resource.shared`, with the rest
+    // The five samplers a declaration chooses between now live in `vulkan.render_resource.shared`, with the rest
     // of the shared handles, for the reason that module's header gives: the description layer stays pure CPU so
     // its invariants are testable on a machine with no GPU, and every handle lives on this side of it.
 
@@ -169,7 +169,7 @@ namespace vulkan::bindings {
      * @param target the descriptor set to write into
      * @param views the view for each binding NUMBER of that set (only the image kinds read it)
      * @param buffers the buffer for each binding NUMBER of that set (only the buffer kinds read it)
-     * @param samplers the renderer's six samplers, chosen by each binding's declared hint
+     * @param samplers the renderer's five samplers, chosen by each binding's declared hint
      * @return nothing, or a message naming the pass and the binding that could not be written
      * @ingroup vulkan_bindings
      *

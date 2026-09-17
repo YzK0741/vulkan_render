@@ -263,11 +263,10 @@ export namespace vulkan::render_resource {
         read_write,
     };
 
-    /// @brief which of this renderer's samplers a binding wants (six exist; the choice is a field, not a ternary)
+    /// @brief which of this renderer's samplers a binding wants (five exist; the choice is a field, not a ternary)
     enum class sampler_hint : uint8_t {
         none,
         gbuffer,
-        probe_grid,
         taa,
         post,
         nearest,
@@ -851,24 +850,13 @@ export namespace vulkan::render_resource {
     }
 
     // =============================================================================================
-    // 4. THE FIRST DECLARATION - the probe cache, read off shaders/gi_probe.comp
+    // 4. THE FIRST REAL DECLARATION - the TAA resolve (see section 5 below)
     // =============================================================================================
 
-    /**
-     * @brief the world-space probe cache's I/O, as its shader actually declares it
-     *
-     * Set 1 is the pass's own: bindings 0..3 are the ping-pong side being READ and 4..7 the side being
-     * WRITTEN, both in coefficient order - which is exactly the `side*4+coefficient` indexing the schema's
-     * `probe_grid` counts, and the reason a binding names an ELEMENT of a resource rather than a resource.
-     * Binding 8 is the per-cell surface geometry the propagation tests visibility with.
-     *
-     * Set 0 is the SHARED scene set: a cell's own ray needs the top level structure to trace, and the shared
-     * hit shading needs the material table, the texture array, the light UBO and the environment cubes to
-     * shade what it finds. Those bindings reference the SAME schema the pass's own do - which is the point of
-     * keeping the schema in one place and the usage with the pass.
-     */
-    // The probe cache's declaration (gi_probe_bindings, gi_probe_shared_sets, gi_probe_io) stood here. It went
-    // with the traced GI subsystem: the pass that declared it was deleted, and nothing names it now.
+    // The world-space probe cache's declaration (gi_probe_bindings, gi_probe_shared_sets, gi_probe_io) stood
+    // here, and it is what taught the schema to name an ELEMENT of a resource rather than a resource: its own
+    // set was a ping-pong side in coefficient order, `side*4+coefficient`. It went with the traced GI subsystem
+    // - the pass that declared it was deleted, and nothing names it now.
 
     // =============================================================================================
     // 5. THE SECOND DECLARATION - the TAA resolve, read off shaders/taa.frag
@@ -985,28 +973,8 @@ export namespace vulkan::render_resource {
     };
 
     // =============================================================================================
-    // 6. THE GI CHAIN'S DECLARATIONS - the passes that reach their images without binding them
+    // 6. THE SHARED SET PAIRS - the set indices a pass may bind without owning them
     // =============================================================================================
-
-    /**
-     * @brief the images the SSGI tracer transitions, in the order its record() indexes them
-     *
-     * EVERY ONE OF THESE IS IN THE G-BUFFER SET, not in the tracer's own: the tracer binds the shared scene set
-     * (0) and the shared G-buffer set (1) and owns no descriptor at all - so before this list existed it could
-     * not name a single image it is responsible for moving between layouts, and those barriers had to live in
-     * the renderer. See `barrier_image` for why a transition is a use that needs no descriptor.
-     *
-     * THE ORDER IS THE INTERFACE. The pass indexes this list by position (a compile-time constant per slot, not
-     * a search), because the layout pair each entry needs is the pass's own knowledge and the declaration
-     * deliberately does not carry it:
-     *
-     *   0: `gi_trace`          this frame's raw trace, written as a storage image
-     *   1: `gi_spec_resolve`   the reflection's accumulation, sampled by the G-buffer set at binding 15
-     *   2: `gi_resolve`        last frame's diffuse accumulation (the bounce feedback the tracer samples)
-     *   3-6: `probe_grid` 0-3  the cache's four SH-2 coefficient volumes, sampled by the tracer
-     *   7-10: `probe_grid` 4-7 the cache's four scratch volumes, written by the propagation
-     *   11: `probe_surface`    the per-cell geometry, written by the injection
-     */
     // The tracer's declaration (ssgi_trace_barriers, ssgi_trace_io) stood here, with the DOCUMENTED ORDER of its
     // twelve barrier images. The pass - and the whole traced chain - is gone. What STAYS is the shared-set pair it
     // introduced, because two declarations that outlived it bind exactly these two sets - the stochastic punctual
@@ -1070,16 +1038,17 @@ export namespace vulkan::render_resource {
     /**
      * @brief the temporal resolve's own bindings, in the order its shader declares them
      *
-     * THREE, and the depth and the velocity it also needs come from the SHARED G-buffer set (bindings 3 and 4)
-     * instead - which is the difference from `ssgi_temporal_io`'s seven own bindings and it is a deliberate
-     * simplification: a pass that reaches the G-buffer through the shared set has its depth and velocity
-     * transitions published by the STAGE's prepare (the same two calls the GI denoise stage makes), so this
-     * chain needs no second stage of its own for that ordering rule. What has to be per-image views is only
-     * what lives in the stochastic chain's own families.
+     * FIVE: the three images of the stochastic chain plus the two G-buffer targets the resolve needs - the
+     * velocity it reprojects with and the depth it rejects the history against. Those two are sampled as
+     * per-image views like the chain's own, so they ride in the set this pass writes per swapchain image
+     * instead of the frame's shared G-buffer set, and their transitions are this pass's to publish
+     * (`megalights_temporal_barriers` carries all five resources for that reason).
      *
      *   0: `ml_trace`   this frame's raw estimate (the temporal pass's input)
      *   1: `ml_history` last frame's accumulation, radiance in rgb and the frame count in alpha
-     *   2: `ml_resolve` the accumulation this dispatch WRITES (a storage image)
+     *   2: `velocity`   the G-buffer's motion vectors (the reprojection source)
+     *   3: `gbuffer_depth` the G-buffer's depth (what the history is rejected against)
+     *   4: `ml_resolve` the accumulation this dispatch WRITES (a storage image)
      */
     inline constexpr std::array<pass_binding, 5> megalights_temporal_bindings = {{
         {.set = 0, .binding = 0, .owner = set_owner::own, .kind = binding_kind::sampled_image, .resource = resource_id::ml_trace, .access = binding_access::read, .sampler = sampler_hint::gbuffer},
@@ -1103,12 +1072,9 @@ export namespace vulkan::render_resource {
     /**
      * @brief the temporal resolve's declaration: a half-resolution compute dispatch over its own set
      *
-     * Its own set is index 1 and the SHARED G-buffer set is index 0 - the `gi_probe` shape, and the reason is
-     * mechanical rather than aesthetic: a pipeline layout needs a descriptor set layout for every index up to
-     * the highest one used, so a pass whose own bindings sit at set 2 would have to declare something at set 1
-     * as well. Set 0 carries the depth it rejects on and the velocity it reprojects with; set 1 carries the
-     * three images of its own chain. Its push block is the projection's linearization pair, the three accumulation bounds
-     * and the extents.
+     * ONE set, index 0, and NO shared sets: the five bindings above are everything its shader declares, so
+     * there is no second set to hand over and nothing for the frame to publish on its behalf. Its push block
+     * is the projection's linearization pair, the three accumulation bounds and the extents.
      */
     inline constexpr pass_io megalights_temporal_io = {
         .name = "megalights_temporal",

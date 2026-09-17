@@ -61,7 +61,7 @@ namespace {
     VkDescriptorSet const fake_scene = reinterpret_cast<VkDescriptorSet>(0x5E);
     VkDevice const fake_device = reinterpret_cast<VkDevice>(0xDD);
     VkPipelineLayout const fake_layout = reinterpret_cast<VkPipelineLayout>(0x1A);
-    VkSampler const fake_probe_sampler = reinterpret_cast<VkSampler>(0x22);
+    VkSampler const fake_shadow_sampler = reinterpret_cast<VkSampler>(0x22);
     std::array<VkPipeline, 4> const fake_pipelines = {
         reinterpret_cast<VkPipeline>(0x1), reinterpret_cast<VkPipeline>(0x2), reinterpret_cast<VkPipeline>(0x3), reinterpret_cast<VkPipeline>(0x4)};
     /// the push block the fake host composes: raw bytes, as a real host does (the framework has no pass's type)
@@ -179,7 +179,7 @@ namespace {
     vp::pass_context make_context() {
         return vp::pass_context{
             .device = fake_device,
-            .samplers = {.probe_grid = fake_probe_sampler},
+            .samplers = {.shadow = fake_shadow_sampler},
             .shared_set_layout = fake_shared_layout,
             .shared_pipeline_layout = fake_shared_pipeline_layout,
             .shader = fake_shader,
@@ -236,7 +236,7 @@ namespace {
         void create(vp::pass_context const& context) override {
             state_->log.emplace_back(std::string("create:") + std::string(io_.name));
             state_->created_with_device = context.device;
-            state_->created_with_sampler = context.samplers.of(rr::sampler_hint::probe_grid);
+            state_->created_with_sampler = context.samplers.of(rr::sampler_hint::shadow);
         }
         void on_swapchain_recreated(vp::pass_host const&) override {
             state_->log.emplace_back(std::string("recreate:") + std::string(io_.name));
@@ -419,7 +419,7 @@ int main() {
         // a pass is built from the CONTEXT alone: no frame, no runner, no runtime - the property that makes a
         // pass constructible outside this renderer
         CHECK(context.device == fake_device);
-        CHECK(context.samplers.of(rr::sampler_hint::probe_grid) == fake_probe_sampler);
+        CHECK(context.samplers.of(rr::sampler_hint::shadow) == fake_shadow_sampler);
         CHECK(context.shared_set_layout(context.owner, 0) == reinterpret_cast<VkDescriptorSetLayout>(0x0C));
         CHECK(context.shared_set_layout(context.owner, 1) == VK_NULL_HANDLE);
         // ... and the SECOND lookup a pass that owns a pipeline still needs when the layout that pipeline must be
@@ -438,7 +438,7 @@ int main() {
         CHECK(context.depth_format == VK_FORMAT_D32_SFLOAT);
     }
 
-    // ---- what a pass is given at CREATE time: a device, the six samplers, and two lookups - and nothing that
+    // ---- what a pass is given at CREATE time: a device, the five samplers, and two lookups - and nothing that
     //      allocates or runs a frame ----
     {
         std::array<frame_pass*, 1> passes = {&probe};
@@ -449,7 +449,7 @@ int main() {
         run_report const built = create_stage(st, make_context());
         CHECK(built.created == 1);
         CHECK(state.created_with_device == fake_device);
-        CHECK(state.created_with_sampler == fake_probe_sampler); // chosen by hint, never named by the pass
+        CHECK(state.created_with_sampler == fake_shadow_sampler); // chosen by hint, never named by the pass
     }
 
     // ---- an inactive feature is skipped WITHOUT being resolved: what makes an off feature byte-exact ----
@@ -523,8 +523,8 @@ int main() {
         // a render TARGET's layout: no descriptor declares it, but the pass that renders into it leaves the
         // image there, so the one enum has one mapping
         CHECK(image_layout_of(rr::image_layout::color_attachment) == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-        rr::shared::sampler_set const samplers = {.gbuffer = reinterpret_cast<VkSampler>(0x11), .probe_grid = reinterpret_cast<VkSampler>(0x22)};
-        CHECK(samplers.of(rr::sampler_hint::probe_grid) == reinterpret_cast<VkSampler>(0x22));
+        rr::shared::sampler_set const samplers = {.gbuffer = reinterpret_cast<VkSampler>(0x11), .shadow = reinterpret_cast<VkSampler>(0x22)};
+        CHECK(samplers.of(rr::sampler_hint::shadow) == reinterpret_cast<VkSampler>(0x22));
         CHECK(samplers.of(rr::sampler_hint::gbuffer) == reinterpret_cast<VkSampler>(0x11));
         CHECK(samplers.of(rr::sampler_hint::none) == VK_NULL_HANDLE); // "no sampler", which the validator enforces
         // a declaration's own set is exactly the bindings its shader declares, in order - checked against the

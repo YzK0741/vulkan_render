@@ -1,9 +1,10 @@
 // The temporal resolve's implementation: the barriers around its accumulation, the copy that becomes the next
 // frame's history, the hand-off to the lighting stage, and the two things it owns outside a frame - the set
 // layout generated from its declaration plus the family that holds one set per swapchain image, and its
-// compute pipeline. The barrier reasoning is `ssgi_temporal.cpp`'s (read that file's comments); what differs
-// here is which images are involved and that the depth/velocity it reads are the shared set's, whose
-// transitions the stage's prepare publishes.
+// compute pipeline. Its barrier reasoning is the shape any running mean has: the accumulation is read as history
+// at one end of the frame and written at the other, so it needs a transition on each side, and the copy that
+// becomes the next frame's history is a second one. The depth and velocity it also reads are its OWN bindings,
+// so those two transitions belong to the pass as well.
 
 module;
 
@@ -102,7 +103,7 @@ namespace vulkan::pass {
     void megalights_temporal_pass::on_swapchain_recreated(pass_host const&) {
         this->resolved_ = false;
         // The family is OURS to retire: its sets name that generation's images, so they are stale the moment
-        // the swapchain is rebuilt (the same duty `ssgi_temporal_pass` has).
+        // the swapchain is rebuilt.
         this->family_.retire_all();
     }
 

@@ -19,10 +19,10 @@
  * rule for admitting something is that more than one consumer needs it and none of them owns it - a pass's own
  * family stays with that pass, and anything only the frame loop touches stays in the frame loop.
  *
- * WHAT IS HERE TODAY AND WHAT WILL JOIN IT: the samplers, because they are six process-wide objects that a
+ * WHAT IS HERE TODAY AND WHAT WILL JOIN IT: the samplers, because they are process-wide objects that a
  * declaration CHOOSES between (`sampler_hint`) and must never name directly - a pass that could name a raw
- * `VkSampler` could name the wrong one, and the six exist for six reasons (the probe grid's is LINEAR over a 3D
- * image, the G-buffer's is NEAREST, the post chain's is LINEAR over 2D). The shared IMAGE and BUFFER handles
+ * `VkSampler` could name the wrong one, and each exists for a reason (the G-buffer's is NEAREST, the post
+ * chain's is LINEAR over 2D). The shared IMAGE and BUFFER handles
  * (the IBL cubes and the BRDF LUT, the bindless texture array, the top level structure) are NOT here yet, and
  * deliberately: this layer has learned that its shape is discovered by a consumer, and the consumer that will
  * need them is whichever writes the scene set through a declaration. Inventing the table before that would
@@ -44,7 +44,7 @@ export namespace vulkan::render_resource::shared {
      * @brief the samplers this renderer owns, addressed by what a declaration asks for
      * @ingroup vulkan_render_resource_shared
      *
-     * SIX of them have a `sampler_hint` a declaration can choose by (see `of`). `textures` is the seventh and
+     * FIVE of them have a `sampler_hint` a declaration can choose by (see `of`). `textures` is the sixth and
      * has none YET: it is the sampler the bindless texture ARRAY is read through (repeat addressing, a long LOD
      * range), it was reachable only from the renderer's hand-written set code, and it joined this struct when
      * the alphaMode MASK bake - a job with no declaration of its own - had to write the scene layout's binding 1
@@ -52,7 +52,6 @@ export namespace vulkan::render_resource::shared {
      */
     struct sampler_set {
         VkSampler gbuffer = VK_NULL_HANDLE;
-        VkSampler probe_grid = VK_NULL_HANDLE;
         VkSampler taa = VK_NULL_HANDLE;
         VkSampler post = VK_NULL_HANDLE;
         VkSampler nearest = VK_NULL_HANDLE;
@@ -68,8 +67,6 @@ export namespace vulkan::render_resource::shared {
                 return VK_NULL_HANDLE;
             case sampler_hint::gbuffer:
                 return gbuffer;
-            case sampler_hint::probe_grid:
-                return probe_grid;
             case sampler_hint::taa:
                 return taa;
             case sampler_hint::post:

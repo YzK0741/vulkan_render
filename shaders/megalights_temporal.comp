@@ -65,8 +65,8 @@ const int ML_CLAMP_RADIUS = 1;
 /// @brief the accumulated count a history is cut to when the reprojected depth disagrees (a soft rejection: the
 ///        pixel keeps a short average instead of restarting from one raw frame - see the block in main).
 const float ML_DISAGREE_FRAMES = 2.0;
-/// @brief the spatial pre-filter's radius in GI texels (a 3x3: the same window the clamp above uses, and the
-///        radius the SSGI chain's filter settled on for the same reason - a wider one buys almost nothing).
+/// @brief the spatial pre-filter's radius (a 3x3: the same window the clamp above uses - a wider one buys
+///        almost nothing, which is also why every other denoiser here settled on 3x3).
 const int SPATIAL_RADIUS = 1;
 
 /** @brief view-space distance of a depth-buffer value (the inversion every pass in this chain uses) */

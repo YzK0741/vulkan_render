@@ -12,10 +12,11 @@
  * `shaders/megalights_temporal.comp` and in `docs/reference/megalights_stochastic_lighting.md` (section 4 is
  * Unreal's policy, which this is ported from).
  *
- * ITS SHAPE IS `ssgi_temporal_pass`'s with one simplification: the depth it rejects on and the velocity it
- * reprojects with come from the SHARED G-buffer set rather than from per-image own bindings, so its own set is
- * three bindings and the frame's rule that publishes those two targets runs in the STAGE's prepare instead of
- * needing a stage of its own (see `megalights_temporal_io`'s note).
+ * ITS SET IS ONE SET OF FIVE BINDINGS and no shared set: the three images of the chain, plus the G-buffer
+ * velocity it reprojects with and the depth it rejects the history against - both per-image views, so they
+ * ride in the same set the pass writes per swapchain image (see `megalights_temporal_io`'s note). Nothing
+ * about the frame's ordering is delegated either: the two G-buffer transitions are its own barriers, which is
+ * why this chain needs no second stage.
  */
 
 module;

@@ -399,11 +399,11 @@ export namespace vulkan::pass {
      * a frame loop needs things a create step does not. Merging them produced one struct that grew with every
      * pass - the shape this layer exists to avoid - and it made "who may create a pass" the same question as
      * "who may run a frame", which is not true: an editor, a test or another renderer's main() can build these
-     * three facts (a device, six samplers, two lookups) and own a pass.
+     * three facts (a device, five samplers, two lookups) and own a pass.
      *
-     * WHAT IS IN IT, and what is deliberately not: the device; the renderer's six samplers, which a
-     * declaration CHOOSES between by `sampler_hint` (a pass never names a `VkSampler` of its own, or the six
-     * would become seven); the layout that occupies a shared set, asked BY SET INDEX - the same vocabulary the
+     * WHAT IS IN IT, and what is deliberately not: the device; the renderer's five samplers, which a
+     * declaration CHOOSES between by `sampler_hint` (a pass never names a `VkSampler` of its own, or the five
+     * would become six); the layout that occupies a shared set, asked BY SET INDEX - the same vocabulary the
      * declaration already uses; and a pass's own shader bytes, asked by name. NOT here: no instance, no
      * physical device, no allocator, no queue, no command pool, and no frame. `vulkan.core` remains the only
      * thing that creates an IMAGE, so a pass cannot take over an image family through this struct.
