@@ -134,16 +134,11 @@ target_sources(vulkancorekit
         vulkan/render_resource/shared.cppm
         vulkan/frame_constants/frame_constants.cppm
         vulkan/pass/pass.cppm
-        vulkan/pass/gi_probe.cppm
         vulkan/pass/taa.cppm
         vulkan/pass/scene.cppm
         vulkan/pass/transparent.cppm
-        vulkan/pass/ssgi_trace.cppm
         vulkan/pass/megalights_trace.cppm
         vulkan/pass/megalights_temporal.cppm
-        vulkan/pass/ssgi_spec.cppm
-        vulkan/pass/ssgi_temporal.cppm
-        vulkan/pass/ssgi_spatial.cppm
         vulkan/pass/rt_shadow.cppm
         vulkan/pass/mask_bake.cppm
         vulkan/pass/compute_skin.cppm
@@ -177,16 +172,11 @@ target_sources(vulkancorekit
         vulkan/math/math.cpp
         vulkan/core/pipeline/spirv_parser.cpp
         vulkan/runtime.cpp
-        vulkan/pass/gi_probe.cpp
         vulkan/pass/taa.cpp
         vulkan/pass/scene.cpp
         vulkan/pass/transparent.cpp
-        vulkan/pass/ssgi_trace.cpp
         vulkan/pass/megalights_trace.cpp
         vulkan/pass/megalights_temporal.cpp
-        vulkan/pass/ssgi_spec.cpp
-        vulkan/pass/ssgi_temporal.cpp
-        vulkan/pass/ssgi_spatial.cpp
         vulkan/pass/rt_shadow.cpp
         vulkan/pass/mask_bake.cpp
         vulkan/pass/compute_skin.cpp
