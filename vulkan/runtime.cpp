@@ -2572,32 +2572,6 @@ namespace vulkan {
                this->pass_ready("ssgi_spatial") && this->deferred_lit_active() && !this->scene_unlit_;
     }
 
-    bool runtime::set_ssgi_enabled(bool const enabled) noexcept {
-        // Same split as TAA's: the FLAG is the renderer's (`ssgi_active` gates the chain, `rt_structures_wanted`
-        // asks it, and the frame's GI facts are built from it), the ray BUDGET is the tracer's and the demo sets it.
-        bool const was_on = this->ssgi_on;
-        this->ssgi_on = enabled;
-        if (enabled && !this->pass_ready("ssgi_trace")) {
-            this->warn_missing_feature("ssgi", "screen-space GI has no effect: its compute pipeline was not created (see the startup log)");
-        } else if (enabled && !this->pass_ready("ssgi_temporal")) {
-            this->warn_missing_feature("ssgi", "screen-space GI has no effect: its temporal resolve was not created (see the startup log)");
-        } else if (enabled && !this->pass_ready("ssgi_spatial")) {
-            this->warn_missing_feature("ssgi", "screen-space GI has no effect: its spatial filter was not created (see the startup log)");
-        }
-        bool const turned_on = enabled && !was_on;
-        if (turned_on) {
-            // A fresh accumulation, on the off -> on EDGE only. Today the one caller is startup
-            // (main.cpp applies the config once), so this is mostly a guard for the shape of the
-            // setter: it mirrors set_taa, and a future overlay control that calls it every frame must
-            // not have the history thrown away on each of those calls - the resolve would show the raw
-            // trace forever, which looks like a denoiser running while doing nothing.
-            this->gi_history_valid.assign(this->vulkan_core.gi_history_images.size(), false);
-            this->gi_frames_accumulated.assign(this->vulkan_core.gi_history_images.size(), 0);
-        }
-        // ... and the lobe's first-use flags are the PASS's half of that edge, which the caller applies.
-        return turned_on;
-    }
-
     // THE TRACER'S FRAME IS THE TRACER'S NOW (see `ssgi_trace_pass::prepare_frame`): the four values it needs are
     // facts this renderer publishes (`make_frame_facts`), the probe cache's readiness is the chain owner's setter,
     // and the "first dispatch of the generation" flag was this renderer filling a frame field with the NEGATION of
@@ -2659,51 +2633,11 @@ namespace vulkan {
         return this->ssgi_specular && this->ssgi_hit_shading && this->ssgi_traced_active() && this->pass_ready("ssgi_spec");
     }
 
-    void runtime::set_ssgi_specular_enabled(bool const enabled) noexcept {
-        // The FLAG is the renderer's (`ssgi_specular_active` is read by the tracer's frame and by the features);
-        // the lobe's own reach and ray count are the PASS's and the demo sets them. The argument for those two
-        // values' clamps lives with the pass now, where the measurements that chose them are recorded.
-        this->ssgi_specular = enabled;
-        if (enabled && !this->ssgi_hit_shading) {
-            this->warn_missing_feature("ssgi", "glossy reflections have no effect: without hit shading a reflection ray cannot be shaded where it lands");
-        } else if (enabled && !this->ssgi_ray_tracing) {
-            this->warn_missing_feature("ssgi", "glossy reflections have no effect: they need the traced GI path, not the marched one");
-        }
-    }
-
-    void runtime::set_ssgi_ray_tracing(bool const enabled) noexcept {
-        this->ssgi_ray_tracing = enabled;
-        if (enabled && !this->vulkan_core.ray_query_available) {
-            this->warn_missing_feature("ssgi", "GI rays are marched, not traced: this device has no ray queries");
-        } else if (enabled && !this->pass_ready("rt_shadow")) {
-            this->warn_missing_feature("ssgi", "GI rays are marched, not traced: the ray-traced pipelines were not created");
-        }
-    }
-
     void runtime::set_furnace(bool const enabled) noexcept {
         this->furnace = enabled;
     }
 
-    void runtime::set_ssgi_hit_shading(bool const enabled) noexcept {
-        this->ssgi_hit_shading = enabled;
-        if (enabled && !this->vulkan_core.ray_query_available) {
-            this->warn_missing_feature("ssgi", "hits are read from the screen, not shaded: this device has no ray queries");
-        } else if (enabled && !this->ssgi_ray_tracing) {
-            this->warn_missing_feature("ssgi", "hit shading has no effect: only the traced GI path lands on a surface to shade");
-        }
-    }
-
     // ---- the world-space probe cache (see shaders/gi_probe.comp) ----
-    void runtime::set_ssgi_probes_enabled(bool const enabled) noexcept {
-        // The FLAG is the renderer's (`gi_probe_active` gates the pass and the tracer's frame asks it); its rate,
-        // its dispatch count and its gain are the PASSES' (the probe's and the tracer's) and the demo sets them.
-        this->gi_probe_enabled = enabled;
-        if (enabled && !this->ssgi_on) {
-            this->warn_missing_feature("ssgi", "the probe cache has no effect: it is injected from the screen-space GI chain, which is off");
-        } else if (enabled && !this->pass_ready("gi_probe")) {
-            this->warn_missing_feature("ssgi", "the probe cache has no effect: it has not built its pipeline (see the startup log)");
-        }
-    }
 
     bool runtime::gi_probe_active() const noexcept {
         // The cache is deposited from the screen-space chain's resolved image and lives on the deferred

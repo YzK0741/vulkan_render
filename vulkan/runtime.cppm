@@ -1632,9 +1632,6 @@ namespace vulkan {
          * answer, so this is the narrow channel it writes it through rather than handing over the whole constants
          * value to scribble on.
          */
-        void set_gi_spec_resolved(bool resolved) noexcept {
-            this->frame_facts.gi_spec_resolved = resolved;
-        }
 
         /**
          * @ingroup vulkan_runtime
@@ -2361,7 +2358,6 @@ namespace vulkan {
          * @return whether this call turned the feature ON (the off -> on edge), which is the one thing the pass's
          *         owner has to act on too (a fresh accumulation on both sides) - see the definition
          */
-        [[nodiscard]] bool set_ssgi_enabled(bool enabled) noexcept;
 
         /**
          * @ingroup vulkan_runtime
@@ -2387,7 +2383,6 @@ namespace vulkan {
          *       estimator is the same either way: only the hit oracle differs, so a hit that is off screen
          *       or hidden contributes nothing in both and the IBL probe still owns the off-screen light.
          */
-        void set_ssgi_ray_tracing(bool enabled) noexcept;
 
         /**
          * @ingroup vulkan_runtime
@@ -2402,7 +2397,6 @@ namespace vulkan {
          *       shader which triangle it hit) - so it is granted only where they exist, and it does
          *       nothing to the marched path, whose hits are the depth buffer's own surface.
          */
-        void set_ssgi_hit_shading(bool enabled) noexcept;
 
         /**
          * @ingroup vulkan_runtime
@@ -2426,7 +2420,6 @@ namespace vulkan {
          *        0.12 (the marched default, i.e. 39% of what is available), -2.126 at 0.5 and -2.350 at
          *        2.0, the cost rising +0.94 ms from the first to the second and not at all after it.
          */
-        void set_ssgi_specular_enabled(bool enabled) noexcept;
 
         /**
          * @ingroup vulkan_runtime
@@ -2466,7 +2459,6 @@ namespace vulkan {
          *       (it is injected from that chain's result) and the deferred path, and it is a no-op on a
          *       device where either is missing: with the gain at 0 the tracer never samples it.
          */
-        void set_ssgi_probes_enabled(bool enabled) noexcept;
 
         /**
          * @ingroup vulkan_runtime
