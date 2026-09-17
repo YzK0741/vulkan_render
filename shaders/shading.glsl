@@ -550,24 +550,6 @@ struct shade_input {
     float metallic; // 0 = dielectric, 1 = metal
     float roughness; // perceptual roughness
     float ao;       // ambient occlusion: scales the IBL ambient only, never the direct light
-    // 1 = this stage adds the IBL diffuse ambient, which is the normal case. 0 = the TRACED GI chain
-    // supplies the WHOLE diffuse indirect this frame, so adding it here as well counts the same light
-    // twice - the chain estimates it including the off-screen half (a ray that leaves the frame falls back
-    // to this same irradiance probe), which is why `[render] ssgi_intensity = 1.0` means "use the traced
-    // estimate" (see config.example.toml's note on the traced path).
-    //
-    // THE TERM HAS TO DISAPPEAR WHERE IT IS ADDED, and the reason is resolution rather than taste. The
-    // chain used to remove it one pass later instead (shaders/ssgi_spatial.comp's ambient_removed_at,
-    // since deleted), where the ambient it removed was evaluated at HALF resolution from the G-buffer
-    // while this line adds it per FULL-resolution pixel. The frame therefore kept the difference between
-    // the two samplings, and that difference is not a constant: the TAA jitter moves the G-buffer under
-    // both of them every frame, so it read as flicker. Measured on Sponza's interior at 1080x960 (traced
-    // GI, hit shading, 180 frames, two captures one frame apart, mean |difference| over the dark smooth
-    // surfaces): the frame moved 0.81/255 per frame with 22.8% of those pixels moving more than 1/255,
-    // against 0.07 and 0.2% with GI off - and 0.54 of the 0.81 SURVIVES with the chain's radiance estimate
-    // forced to exactly zero (`ssgi_intensity = 0`), i.e. two thirds of it was never ray noise and did not
-    // respond to the ray budget (16 rays: 0.63). Scaling the term here instead leaves nothing to
-    // disagree about, by construction.
     /**
      * 1 = the PUNCTUAL lights are somebody else's business this frame, so this stage must not add them.
      *
@@ -656,12 +638,9 @@ vec3 shade_surface(shade_input s) {
     // shade_input). A BRANCH rather than a fifth factor, and it is not an optimisation: multiplying the
     // finished term by 1.0 is algebraically the identity but NOT bit-identical - folding a fifth operand
     // into the expression changes how the compiler contracts the chain, and it moved one 8-bit texel of
-    // 1036800 on the GI-off Sponza frame (blue, one step), which is the same class of change the temporal
-    // resolve's accumulation cap is guarded against in shaders/ssgi_temporal.comp. Zeroing the finished
-    // value leaves every frame that does not use the switch bit for bit what it was, and that is what makes
-    // "the GI-off and marched frames are unchanged" a check rather than a claim.
-    // The SPECULAR ambient is NOT gated: that half is removed exactly, one pass earlier, by the pass that
-    // replaces it (shaders/ssgi_spec.comp, at its own texel).
+    // 1036800 on one measured frame (blue, one step). Zeroing the finished value leaves every frame that
+    // does not use the switch bit for bit what it was, and that is what makes "the frames that do not use
+    // it are unchanged" a check rather than a claim.
     vec3 specular_ibl = ibl_specular * fresnel_ibl * s.ao;
 
     vec3 color = ambient + direct + specular_ibl + s.emissive;

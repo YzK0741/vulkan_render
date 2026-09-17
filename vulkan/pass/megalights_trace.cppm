@@ -9,9 +9,8 @@
  * binds (the scene set, which carries the camera, the light UBO and the cluster lists, and the G-buffer set,
  * which carries the surface it evaluates those lights for), the push block and the half-resolution dispatch -
  * plus its OWN pipeline layout and compute pipeline, built at create time from its declaration's push-block
- * size and the two shared set layouts its owner hands over. That is `ssgi_trace_pass`'s shape exactly, and
- * deliberately: this pass is one compute dispatch over the same two sets with a different estimator in it,
- * so the differences between the two files are the estimator's parameters and nothing structural.
+ * size and the two shared set layouts its owner hands over: one compute dispatch over the same two sets every
+ * traced pass binds, with the estimator's parameters in the push block.
  *
  * WHAT IT DOES NOT OWN: any descriptor. Its output image is reached through the shared G-buffer set (binding
  * 16, the storage image; the lighting stage samples the same image at binding 17), so the only handles it

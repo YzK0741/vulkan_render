@@ -115,18 +115,6 @@
  * and the deferred path's `deferred.frag` (the pixels whose G-buffer depth is still the far plane).
  * Two backgrounds from one function means the two paths cannot disagree about the sky.
  *
- * @section shader_probe_sh The SH-2 basis (probe_sh.glsl)
- *
- * `probe_sh.glsl` is the one place this renderer's SH-2 basis is defined: `probe_sh_basis()` projects a
- * direction onto four coefficients, `probe_sh_reconstruct()` turns them back into radiance, and
- * `probe_sh_sample()` is the wrapper `hit_shading.glsl` calls for its cached-probe path. The projection
- * carries the 4*pi that makes a uniform radiance field reconstruct as itself, which is the identity the
- * furnace verification mode checks, so that constant is load-bearing. The basis is WORLD-aligned on
- * purpose: it makes a blend of two cells' coefficients the coefficients of the blend of their radiance
- * functions, with no rotation between neighbours. The world-space probe cache that filled those four
- * coefficient volumes belonged to the traced-GI chain, which is gone; the basis file stays because the
- * shared hit shading - still compiled into the material and skin bakes - includes it.
- *
  * @section shader_clusters Clustered light culling (M5)
  *
  * `shaders/light_cluster.comp` runs once per frame on the graphics queue, one invocation per

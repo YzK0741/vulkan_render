@@ -28,7 +28,7 @@
  *    descriptor set from the core's pool, and it exposes the allocator a pass that must create its own buffers
  *    or images needs. It does NOT hand out per-generation views: those change with every swapchain, and a pass
  *    receives them per frame through `resolved_io` - the framework's own per-image channel (see
- *    docs/pass_chain_plan.md, where the two failed extractions that established this are recorded).
+ *    `resolved_io::own_per_image`).
  *
  * WHAT NEITHER FILTER FORWARDS: frame management (acquire/present/submit) and the core's own initialization
  * internals. Those are the runtime's, and a consumer that needs one of them needs the runtime, not a filter.

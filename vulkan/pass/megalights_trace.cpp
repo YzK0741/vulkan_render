@@ -3,10 +3,9 @@
 // two things it owns outside a frame - its pipeline layout and its compute pipeline, built from
 // `megalights_trace.comp` and the two shared set layouts its owner hands over at create time.
 //
-// THE SHAPE IS `ssgi_trace.cpp`'s, and the two differ only in what the estimator's parameters are: the tracer
-// pushes a ray budget, a reach and a world-space origin bias, this pass pushes a sample count, a minimum sample
-// weight, a tmin and the two bias terms the shader's `lerp` takes. Read that file's comments for the barrier
-// reasoning; what is repeated here is only what a reader of this pass needs.
+// THE ESTIMATOR'S PARAMETERS ARE THE PUSH BLOCK: a sample count, a minimum sample weight, a tmin and the two
+// bias terms the shader's `lerp` takes. The barrier reasoning is the two transitions around its output image
+// that the hazard rules require, and `megalights_trace.cppm` describes what else the pass owns.
 
 module;
 

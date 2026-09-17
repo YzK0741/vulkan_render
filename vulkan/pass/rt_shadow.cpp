@@ -9,8 +9,7 @@
 // twelve reference frames were captured with the pass NOT running - which is why the 12 x 2 gate is green for
 // this change and why that green is NOT the evidence. The evidence is an A/B against the parent commit's binary
 // with a scenario that pins `rt_shadows = true`: both builds produce the SAME hash
-// (AEEB757EA347CC4178006F7FD5C1795AFD7274556D72C9028ABB3970B3DA72BB, twice each, validation clean). See
-// docs/pass_chain_plan.md for the exact command and what it means for the gate's coverage.
+// (AEEB757EA347CC4178006F7FD5C1795AFD7274556D72C9028ABB3970B3DA72BB, twice each, validation clean).
 
 module;
 

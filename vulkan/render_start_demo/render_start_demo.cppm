@@ -16,7 +16,7 @@
  * the STAGE name - which is the frame's own structure, so the seam needs no new vocabulary. A second application
  * that wants a different chain writes a module like this one; nothing in `vulkan.pass` or `vulkan.runtime` changes.
  *
- * WHERE IT IS HEADED (see docs/pass_chain_plan.md): the knobs and their setters move here next (today they are
+ * WHERE IT IS HEADED: the knobs and their setters move here next (today they are
  * still the runtime's public API and forward into the passes), then the three descriptor families the runtime
  * still builds from a pass's set layout, and finally the CONSTRUCTION - at which point the runtime is handed the
  * chain through `set_pass_chain` instead of owning it, and the transitional `runtime::passes()` accessor goes away.
@@ -95,7 +95,7 @@ export namespace vulkan {
          * @param min_weight the minimum sample weight below which a light's sampling weight rolls to zero
          * @param bias_floor / @param bias_grazing the ray origin's self-intersection offset at normal and at
          *        grazing incidence (a world-space length, like every other bias in this engine)
-         * @note the split is `set_ssgi`'s: the FLAG is the runtime's policy (it is what tells the deferred
+         * @note the split is the runtime-flag one: the FLAG is the runtime's policy (it is what tells the deferred
          *       lighting stage whether the punctual lights were already handled), the numbers are the pass's.
          */
         void set_megalights(bool enabled, uint32_t samples, float min_weight, float bias_floor, float bias_grazing) noexcept;

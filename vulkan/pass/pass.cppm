@@ -6,7 +6,7 @@
  * @defgroup vulkan_pass Frame Pass Framework
  *
  * THE PROBLEM THIS REMOVES, measured rather than asserted. Adding one render pass to this renderer today costs,
- * by the inventory in `docs/runtime_split.md`: a push-constant struct, a pipeline, a pipeline layout, a
+ * at the time: a push-constant struct, a pipeline, a pipeline layout, a
  * descriptor family, a `make_*`, an `ensure_*`, a `record_*`, a `gpu_mark_id` enumerator and its call, a
  * `render_features` field, two feature strings, a viewport-resync line, a flag reset in the constructor AND in
  * `on_swapchain_recreated`, and a destroy in the destructor. This module is the shape that replaces that list
@@ -188,7 +188,7 @@ export namespace vulkan::pass {
     /// @brief how many images one pass may render into (one fullscreen pass has one; the deferred scene has five,
     ///        and the shadow pass's cascade RUN is the widest single declaration at four)
     inline constexpr uint32_t max_render_targets = 8;
-    /// @brief how many images one pass may declare for its own transitions (the SSGI tracer's twelve are the most)
+    /// @brief how many images one pass may declare for its own transitions (the most any pass declares today)
     inline constexpr uint32_t max_barrier_images = 16;
     /// @brief how many BUFFERS one pass may declare for its own ordering (the cluster sort's two are the only ones today)
     inline constexpr uint32_t max_barrier_buffers = 8;
@@ -225,8 +225,7 @@ export namespace vulkan::pass {
          * has to write EACH IMAGE's views into THAT IMAGE's set - `image_set_family::ensure` hands its write
          * callback an image index for exactly that reason - and `own` only carries the CURRENT frame's handles.
          * The host-written families reach into the core for this (`vulkan_core.gi_images[i]` and friends); a pass
-         * cannot, which is what blocked the GI denoiser's extraction twice (see docs/pass_chain_plan.md: the
-         * second failure was a descriptor pointing at another image, in another layout).
+         * cannot - the failure mode this guards against is a descriptor pointing at another image, in another layout.
          *
          * The FIRST entry is also what a per-generation fingerprint wants: `own_per_image[k][0]` is stable for as
          * long as the target generation lives, while `own[k].view` changes with every frame's image.
@@ -567,9 +566,7 @@ export namespace vulkan::pass {
      * host composes from things a pass cannot see (the frame's image index, the device's ray-query support,
      * whether this frame's structures were built, the chain owner's own feature table). The rule the framework
      * settled on is exactly this one: a per-frame decision a pass cannot derive is an explicit frame FIELD, and
-     * what the pass cannot derive is what the host publishes here. (The one PARAMETER in the struct -
-     * `hit_shading` - is published for the reason a knob with several readers is shared: the host's own composed
-     * predicate reads it, so neither the host nor the tracer could own it alone.)
+     * what the pass cannot derive is what the host publishes here.
      *
      * A FIELD IS FILLED WITH THE SAME EXPRESSION IT REPLACED, never with a similarly named one, and two names in
      * this struct exist to make that explicit rather than to be tidy: `gi_specular` is the LOBE's COMPOSED
@@ -579,8 +576,6 @@ export namespace vulkan::pass {
      * scenario would catch (the knob is off in all of them).
      */
     struct frame_facts {
-        /// `ssgi_traced_active()`: the GI knob AND ray queries AND this frame's top level structure
-        /// `ssgi_specular_active()`: the lobe's knob AND hit shading AND this frame's structure (see the note above)
         /**
          * `megalights_active()`: the stochastic punctual lighting knob AND its pass AND the deferred shading
          * path. Published as a FRAME fact rather than read from the knob because the DEFERRED LIGHTING STAGE
@@ -608,7 +603,7 @@ export namespace vulkan::pass {
         /// whether the accumulation the temporal resolve blends into exists FOR THIS IMAGE
         /**
          * How much the diffuse accumulation is still COLD: 1 = it restarted this frame, 0 = converged
-         * (`runtime::gi_cold_start_frames` is the ramp's length, `vulkan.pass.ssgi_temporal` applies it).
+         * (the chain's own frame policy is the ramp's length, and the temporal resolve applies it).
          *
          * WHY THE RENDERER COMPUTES IT: the accumulation restarts when the generation changes, because that
          * is what destroys the history images (a resize, a minimize/restore). On the frames that follow there
@@ -624,9 +619,6 @@ export namespace vulkan::pass {
         bool debug_view = false;
         /// the clustered lighting's bin count, which is the sort's only input beyond its own dispatch
         uint32_t cluster_count = 0;
-        /// the hit-shading knob: the ONE PARAMETER here, published because the host's own composed predicates
-        /// (`ssgi_specular_active`) read it too - a value two readers compose cannot move into either pass
-        bool hit_shading = false;
     };
 
     // =============================================================================================
@@ -1188,8 +1180,7 @@ export namespace vulkan::pass {
      *  - the EXTENT comes from the behaviour's rule (resolve_extent).
      *
      * WHAT IT DELIBERATELY LEAVES ALONE: `own_set` (a pass that owns a descriptor family fills that itself in its
-     * own override), `own_per_image` (the per-image channel the GI chain needs - its shape is the next step, see
-     * docs/pass_chain_plan.md) and `push` (a push block's values are the pass's own parameters and this frame's
+     * own override), `own_per_image` (the per-image channel a pass that owns a per-image family writes) and `push` (a push block's values are the pass's own parameters and this frame's
      * constants, so the pass composes it).
      *
      * @param pass the pass whose declaration is being resolved

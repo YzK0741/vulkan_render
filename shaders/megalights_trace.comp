@@ -94,7 +94,7 @@ layout(push_constant) uniform MlPush {
     mat4 inv_view_proj; // clip -> world, the same reconstruction the lighting stage and rt_shadow use
     // x = samples per pixel (1..ML_MAX_SAMPLES), y = the minimum sample weight (UE's
     // r.MegaLights.MinSampleWeight, the threshold its smooth cut rolls to zero at),
-    // z = the ray tmin (the engine's fixed self-intersection guard, as in shaders/ssgi.comp),
+    // z = the ray tmin (the engine's fixed self-intersection guard),
     // w = a per-frame counter so the sample sequence differs every frame.
     vec4 params;
     // x = the normal-offset floor, y = the offset at grazing incidence (UE's lerp(0.1, 0.01, N dot L)),
@@ -155,8 +155,7 @@ float smooth_falloff_mask(float x, float threshold) {
  *
  * A ray SHORTER than tmin has no interval to search - `rayQueryInitializeEXT` with tmax <= tmin is
  * forbidden by the specification - and a light inside the surface it lights is the honest reading of
- * that, so the query is skipped and the light counts as unblocked. `shaders/ssgi.comp` carries the same
- * guard for the same reason.
+ * that, so the query is skipped and the light counts as unblocked.
  */
 float visibility(vec3 origin, vec3 dir, float distance, float tmin) {
     if (distance <= tmin) {

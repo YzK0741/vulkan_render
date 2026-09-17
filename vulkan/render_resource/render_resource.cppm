@@ -443,11 +443,6 @@ export namespace vulkan::render_resource {
     /**
      * @brief an image a pass must TRANSITION but does not bind as a descriptor
      *
-     * WHY THIS IS A THIRD LIST, and it is the GI chain that forced it rather than a wish for symmetry: the SSGI
-     * tracer writes `gi_trace` as a storage image, reads last frame's `gi_resolve` as a bounce feedback and
-     * samples the probe grid - and NONE of those descriptors is in its own set. They live in the G-buffer set,
-     * which its owner writes (see `pass_io::shared_sets`), so the pass cannot describe them without copying a
-     * fact that is not its own. What it CAN say is which images it is responsible for moving between layouts,
      * because a layout transition names an IMAGE and no descriptor at all - the same argument that made
      * `render_target` a separate list from `bindings`.
      *
@@ -853,11 +848,6 @@ export namespace vulkan::render_resource {
     // 4. THE FIRST REAL DECLARATION - the TAA resolve (see section 5 below)
     // =============================================================================================
 
-    // The world-space probe cache's declaration (gi_probe_bindings, gi_probe_shared_sets, gi_probe_io) stood
-    // here, and it is what taught the schema to name an ELEMENT of a resource rather than a resource: its own
-    // set was a ping-pong side in coefficient order, `side*4+coefficient`. It went with the traced GI subsystem
-    // - the pass that declared it was deleted, and nothing names it now.
-
     // =============================================================================================
     // 5. THE SECOND DECLARATION - the TAA resolve, read off shaders/taa.frag
     // =============================================================================================
@@ -975,41 +965,17 @@ export namespace vulkan::render_resource {
     // =============================================================================================
     // 6. THE SHARED SET PAIRS - the set indices a pass may bind without owning them
     // =============================================================================================
-    // The tracer's declaration (ssgi_trace_barriers, ssgi_trace_io) stood here, with the DOCUMENTED ORDER of its
-    // twelve barrier images. The pass - and the whole traced chain - is gone. What STAYS is the shared-set pair it
-    // introduced, because two declarations that outlived it bind exactly these two sets - the stochastic punctual
-    // lighting chain's tracer and the ray-traced shadow - so it is named for what it is rather than for the pass
-    // that first needed it.
     /// @brief the shared scene set (0) and the shared G-buffer set (1), the pair a full-screen compute pass binds
     inline constexpr std::array<shared_set, 2> scene_and_gbuffer_shared_sets = {{{.family = 0}, {.family = 1}}};
-
-    // The glossy lobe's barrier documentation and the temporal resolve's declaration
-    // (ssgi_temporal_bindings, ssgi_temporal_barriers, ssgi_temporal_io) stood here. The lobe went with the
-    // chain; the declaration went with it too - the stochastic punctual lighting chain's resolve has a
-    // declaration of its own (megalights_temporal_io) and only reuses the PIPELINE BUILDER that was written for
-    // this pass, never this shape. That is what made the last references to the gi_* resources disappear.
-
-    /**
-     * @brief the image the spatial filter transitions
-     *
-     * One entry, and it is the filter's OUTPUT: `gi_spatial` lives in the G-buffer set as a storage image, so the
-     * pass needs its handle for the two barriers (UNDEFINED -> GENERAL, then GENERAL -> SHADER_READ for the
-     * composite) and no descriptor of its own. Its INPUT needs nothing - the temporal resolve handed it to
-     * SHADER_READ with a transition that names COMPUTE as well as FRAGMENT - which is why this list is one entry
-     * where the tracer's is twelve.
-     */
-    // The spatial filter's declaration (ssgi_spatial_barriers, ssgi_spatial_io) stood here: the joint-bilateral
-    // filter that ended the chain, the third pass on the shared-sets + barrier-images shape. It is gone, and the
-    // shape itself is still carried by the ray-traced shadow's declaration.
 
     /**
      * @brief the image the stochastic punctual lighting pass rewrites, and the only resource it names
      *
-     * It reaches the image through the SHARED G-buffer set (bindings 16 and 17, see
-     * `pipelines::make_gbuffer_set_layout`), so - like the tracer - this pass owns no descriptor at all and
-     * declares no binding: what it has to say is which image it moves, because only the writer can place the
-     * transitions (UNDEFINED -> GENERAL to write it as a storage image, GENERAL -> SHADER_READ to hand it to
-     * the lighting stage that adds it, both recorded by this pass).
+     * It reaches the image through the SHARED G-buffer set (binding 6 to write, the storage one, and binding 7
+     * to hand the resolve's output over - see `pipelines::make_gbuffer_set_layout`), so this pass owns no
+     * descriptor of its own and declares no binding: what it has to say is which image it moves, because only
+     * the writer can place the transitions (UNDEFINED -> GENERAL to write it as a storage image, GENERAL ->
+     * SHADER_READ to hand it to the lighting stage that adds it, both recorded by this pass).
      */
     inline constexpr std::array<barrier_image, 1> megalights_trace_barriers = {{
         {.resource = resource_id::ml_trace, .element = 0},
@@ -1175,8 +1141,7 @@ export namespace vulkan::render_resource {
      * THE TARGET IS A RECORDED DEVIATION: it names `scene_color`, and the host hands over whichever image the frame
      * actually lights - `scene_color` while the TAA resolve runs and `hdr` when it does not (the accessor the
      * renderer always used). A `render_target` names one resource today, and a "frame-dependent target" is a
-     * framework decision this pass does not get to make on its own; the deviation is written down here and in
-     * docs/pass_chain_plan.md rather than hidden.
+     * framework decision this pass does not get to make on its own; the deviation is written down here rather than hidden.
      *
      * The push block is 92 bytes - a mat4, a vec4 (the SSAO knobs) and three floats (the render mode, whether the
      * traced chain replaces the ambient this frame, and whether the stochastic punctual lighting pass answered it) -

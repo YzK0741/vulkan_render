@@ -206,11 +206,6 @@ int main(int argc, char** argv) {
     // ... and the CREATE step runs over that chain (the shaders above are registered by now): every pass builds what
     // it owns, and the renderer's two jobs - which are not passes - are created with them.
     runtime.create_passes();
-    // Screen-space GI has to be told AFTER the passes exist: its compute pipeline and its denoiser are
-    // built by the passes' own create step inside setup_pipeline above, and set_ssgi() warns when either
-    // is missing.
-    // Startup-only knobs - the intensity and the ray budget are read here rather than per frame, so
-    // changing the config value needs a restart (there is no overlay control for them).
     // Stochastic punctual lighting (docs/megalights.md): the switch and the sample count, with the two bias
     // terms left at the pass's own defaults (they are self-intersection guards rather than look knobs, and the
     // pass clamps them). OFF by default, so a stock config is the unshadowed path it always was.
@@ -250,7 +245,7 @@ int main(int argc, char** argv) {
     runtime.set_rt_mask_bake(settings.render.rt_mask_bake);
     // ... and the per-frame skinning pass, which is what keeps an ANIMATED caster's traced shadow where the
     // caster actually is: the structures are built from the bind pose, so without it the ray sees the mesh
-    // at rest (the baseline table in docs/gi_hit_shading.md's L2.2b section is that error, measured).
+    // at rest.
     runtime.set_rt_skin_bake(settings.render.rt_skin_bake);
 
     // 7. Collect the async startup results
@@ -528,9 +523,6 @@ int main(int argc, char** argv) {
     // in all three). `taa_enabled` alone happened to look wired because it IS copied here.
     gui.taa_blend_static = settings.render.taa_blend_static;
     gui.taa_blend_min = settings.render.taa_blend_min;
-    // screen-space GI: the overlay's ON/OFF fallback and its ray budget, the two controls the frame loop
-    // mirrors back into the tracer through start_demo.set_ssgi below (the rest of the chain's values -
-    // intensity, radius, steps - have no widget and stay as the config set them).
     gui.megalights_enabled = settings.render.megalights;
     gui.megalights_samples = static_cast<float>(settings.render.megalights_samples);
     gui.megalights_spatial_sigma = settings.render.megalights_spatial_sigma;
@@ -765,14 +757,6 @@ int main(int argc, char** argv) {
         // TAA (the engine's anti-aliasing): mirrored like the other render toggles. The jitter
         // follows automatically - it is applied to the projection when TAA is active.
         start_demo.set_taa(gui.taa_enabled, gui.taa_blend_static, gui.taa_blend_min);
-        // Screen-space GI: the overlay's ON/OFF fallback and its ray budget, mirrored every frame like the
-        // toggles above. Intensity, radius and steps are the config's and are passed through unchanged, so
-        // the first mirrored frame is exactly the startup call's. Mirroring is safe because `set_ssgi`
-        // throws the accumulation away on the off -> on EDGE only (see runtime::set_ssgi_enabled), which is
-        // what keeps the mirror from showing the raw trace forever; the tracer clamps the ray count.
-        // ... and the denoiser's width, which the user's own comparison needs to be able to move: the same
-        // frame at sigma 0 / 1 / 2 is a visibly different trade between noise and how soft the dark parts
-        // look (see gui_bindings::ssgi_spatial_sigma). The pass clamps it to 0..8.
         // Stochastic punctual lighting: the overlay's switch and sample count, mirrored like the GI's - the two
         // bias terms are the pass's constants and are passed through at their shipped values.
         start_demo.set_megalights(gui.megalights_enabled, static_cast<uint32_t>(std::max(gui.megalights_samples, 1.0f) + 0.5f), 0.001f, 0.01f * gui.megalights_bias,

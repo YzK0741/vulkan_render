@@ -1,8 +1,8 @@
 #version 460
 #extension GL_EXT_buffer_reference : require
 #extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
-// The bindless texture array is indexed by the material's own index, exactly as shaders/surface.glsl and
-// shaders/hit_shading.glsl index it: plain indices into a partially-bound array.
+// The bindless texture array is indexed by the material's own index, exactly as shaders/surface.glsl does
+// it: plain indices into a partially-bound array.
 #extension GL_EXT_nonuniform_qualifier : enable
 
 /**
@@ -22,8 +22,7 @@
  * which traversal can never report a hit against. That is only safe when the triangle OWNS its vertices: a
  * shared vertex would drag its neighbours with it. So the geometry is EXPANDED - three unique vertices per
  * triangle, no index buffer - into the buffer this pass fills, and the instance table points at that buffer
- * instead of the original one. The zero index address is what tells the hit shader the geometry is not
- * indexed (see shaders/hit_shading.glsl).
+ * instead of the original one. A zero index address marks the geometry as not indexed.
  *
  * THE RULE IS "THE WHOLE TRIANGLE IS CUT", sampled on a grid over the triangle's AREA - not at its
  * vertices. Vertex sampling is cheaper and wrong in a way that REMOVES VISIBLE GEOMETRY: a quad whose mask
@@ -45,8 +44,7 @@ layout(local_size_x = 64) in;
 // The two things the bake reads from the shared scene set: the material table (the alpha texture's index,
 // the base colour factor's alpha and the cutoff) and the bindless texture array. Declared here rather than
 // included from shaders/surface.glsl, which owns them for the raster path, because that file also declares
-// the shared push-constant block and a shader may declare only one - the same reason shaders/hit_shading.glsl
-// copies the material struct (see its comment). The layout must stay byte-identical to material_record in
+// the shared push-constant block and a shader may declare only one. The layout must stay byte-identical to material_record in
 // vulkan/primitive.cppm: it is a CPU/GPU contract, not a convenience.
 layout(set = 0, binding = 1) uniform sampler2D textures[];
 struct MaskMaterial {
@@ -118,7 +116,7 @@ void main() {
         const uint i = triangle * 3u + k;
         uint vertex = i;
         if (pc.source_indices != uvec2(0u)) {
-            // VkIndexType: UINT16 is 0 and UINT32 is 1 (the same trap shaders/hit_shading.glsl records).
+            // VkIndexType: UINT16 is 0 and UINT32 is 1.
             if (pc.index_type == 0u) {
                 const uint word = indices.values[i >> 1u];
                 vertex = (i & 1u) == 0u ? (word & 0xFFFFu) : (word >> 16u);

@@ -3,7 +3,7 @@
 // level). Moved out of `runtime::record_composite` and `runtime::record_bloom_chain` UNCHANGED in behaviour - the
 // same barriers in the same order, the same clear instances over the same views, the same one-set binds, the same
 // 52-byte push block with the same lanes and the same fullscreen draw - so the capture gate decides the move on
-// all twelve scenarios, every one of which runs the composite and (measured, see docs/pass_chain_plan.md) the
+// all nine scenarios, every one of which runs the composite and (measured) the
 // bloom chain as well.
 
 module;

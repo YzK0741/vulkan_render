@@ -400,7 +400,7 @@ namespace vulkan {
         // THE PASSES ARE NOT CONSTRUCTED HERE ANY MORE, and the stage arrays below are what is left of this class's
         // knowledge of them: the APPLICATION builds its chain (vulkan.render_start_demo) and hands it over through
         // `set_pass_chain`, which fills these arrays and the two GI halves BY DECLARATION NAME - the stage sequence,
-        // its order and the marks are the frame loop's and stay (see docs/pass_chain_plan.md). The two JOBS are not
+        // its order and the marks are the frame loop's and stay. The two JOBS are not
         // passes and are still created here, from the same context the passes are.
         /// the bloom chain's stage, in level order (the runner walks the array; a stage IS the order, which is why
         /// it is an array of pointers and never a container whose iteration order is an accident)
@@ -744,7 +744,7 @@ namespace vulkan {
          * Every feature answer used to read `deferred.pipeline_ready()`, `taa_resolve.pipeline_ready()` and ten more
          * like them; they now ask the chain by the name the declaration carries, which is the only key a renderer
          * handed a chain from OUTSIDE has - and "handed from outside" is where this layer is going (see
-         * docs/pass_chain_plan.md and `vulkan.render_start_demo`).
+         * `vulkan.render_start_demo`).
          * @note the frame's own pipelines that no pass owns (the G-buffer's, the shadow fit's) are still the
          *       renderer's members, so a feature that needs one of those AND a pass's still reads both
          */
@@ -1416,16 +1416,15 @@ namespace vulkan {
          * @ingroup vulkan_runtime
          * @brief what the runtime reports back after a stage, for the passes' owner to fill
          *
-         * The frame loop's own decisions, read from the passes that answer them: whether the GI chain produced an
-         * accumulation the composite may add (the runtime writes it into the frame's constants), whether THIS
-         * frame's temporal resolve ran (the next frame's history flag is set from it), and whether the TAA resolve
-         * wrote a history (the camera UBO's `prev_view_proj` is only advanced when it did).
+         * The frame loop's own decisions, read from the passes that answer them: whether the stochastic
+         * lighting chain's resolve wrote an accumulation this frame (the next frame's history flag is set from
+         * it), and whether the TAA resolve wrote a history (the camera UBO's `prev_view_proj` is only advanced
+         * when it did).
          */
         struct frame_results {
-            /// the stochastic punctual lighting chain's resolve wrote its accumulation this frame: the next frame's
-            /// history flag for THIS image is set from it, exactly as `gi_temporal_resolved` sets the GI's
+            /// the stochastic punctual lighting chain's resolve wrote its accumulation this frame: the next
+            /// frame's history flag for THIS image is set from it
             bool megalights_temporal_resolved = false;
-            bool gi_temporal_resolved = false;
             bool taa_wrote_history = false;
         };
 
@@ -2516,7 +2515,7 @@ namespace vulkan {
         [[nodiscard]] pass::transparent_frame make_transparent_frame() noexcept;
 
         // =============================================================================================
-        // THE CHAIN OWNER'S SEAM (see docs/pass_chain_plan.md): the frames ONLY this renderer can build (they
+        // THE CHAIN OWNER'S SEAM: the frames ONLY this renderer can build (they
         // carry its own recording machinery), the per-image ordering rules its stages run, and the two callbacks
         // whoever owns the passes implements. Nothing here names a pass's TYPE as a member - the point is that
         // this renderer stops holding one reference per pass and is handed a chain instead - and since the frame

@@ -1,7 +1,7 @@
 # `vulkan.pass_io`: describing a pass's inputs and outputs the way Vulkan already does
 
-The design for the layer that `docs/runtime_split.md` names as the precondition of per-pass modules. It is
-written before any code, and it is a DESIGN: nothing below is implemented yet.
+The layer every pass in this renderer describes its inputs and outputs with, and the design the code
+implements: the types below live in `vulkan/render_resource`, and the per-pass declarations are its consumers.
 
 ## 1. Why this shape, and what it is not
 

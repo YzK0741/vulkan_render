@@ -77,9 +77,7 @@ int main() {
     CHECK(rr::find(rr::resource_id::ml_history)->scope == rr::resource_scope::per_swapchain_image);
     CHECK(rr::find(rr::resource_id::furnace_cube)->scope == rr::resource_scope::device_wide);
 
-    // The probe cache's declaration used to be asserted here, read off shaders/gi_probe.comp. That pass - and
-    // the whole traced GI subsystem - is gone, so the shared-set rule it taught the validator is checked below
-    // against a declaration built for the purpose.
+    // The shared-set rule the validator enforces is checked below against a declaration built for the purpose.
     {
         // One of the SCENE set's bindings: something a pass reaches through a shared set rather than owning, which
         // is the shape the rule is about. (static: the declaration holds a span, so the array must outlive it.)

@@ -245,64 +245,23 @@ namespace chores {
         }
 
         {
-            // Screen-space global illumination tracer: one bounce of diffuse indirect, marched against
-            // the depth buffer. Optional - without it set_ssgi(true) does nothing, and the frame is
-            // exactly what it was before GI existed (the composite's GI weight is 0).
-            //
-            // IT IS A PASS: the app registers the shader and the pass builds its own pipeline layout and
-            // compute pipeline from it (see vulkan.pass.ssgi_trace) - the create_passes() call at the end of
-            // this function is what runs that step, for every pass at once.
-            std::vector<unsigned char> compute_code;
             // Stochastic punctual lighting (docs/megalights.md): sample a few of each pixel's clustered lights
             // and trace one visibility ray per sample. OPTIONAL - without it the lighting stage's raster
             // punctual loop stands, which is the unshadowed path every frame before this feature existed had,
             // and `runtime::megalights_active()` then keeps the frame from recording the pass (so the knob-off
-            // frame is byte-identical by construction: the gate's four scenarios were verified to that).
+            // frame is byte-identical by construction: the gate's scenarios were verified to that).
             //
             // IT IS A PASS: the app registers the shader and the pass builds its own pipeline layout and compute
             // pipeline from it (see vulkan.pass.megalights_trace) - `create_passes()` below runs that step.
             std::vector<unsigned char> megalights_code;
             load_shader(shaders_dir, "megalights_trace.comp.spv", megalights_code);
             runtime.register_shader("megalights_trace.comp.spv", megalights_code);
-            // ... and the chain's temporal resolve, required like the GI denoiser: what the lighting stage adds
-            // is the ACCUMULATION, so a chain whose resolve is missing has nothing to add and
-            // runtime::megalights_active() stays false - the rule the GI chain's three passes already follow.
+            // ... and the chain's temporal resolve, required for the reason any two-pass chain requires its
+            // second: what the lighting stage adds is the ACCUMULATION, so a chain whose resolve is missing has
+            // nothing to add and runtime::megalights_active() stays false.
             std::vector<unsigned char> megalights_temporal_code;
             load_shader(shaders_dir, "megalights_temporal.comp.spv", megalights_temporal_code);
             runtime.register_shader("megalights_temporal.comp.spv", megalights_temporal_code);
-            // The denoiser's temporal resolve, next to the tracer it denoises. Required, not optional:
-            // the composite samples the FILTERED image, so GI with any pass of the chain missing has
-            // nothing to show and runtime::ssgi_active() stays false.
-            // IT IS A PASS: the app registers the shader and the pass builds its own set layout (from its
-            // declaration), pipeline layout and compute pipeline from it (see vulkan.pass.ssgi_temporal) -
-            // create_passes() below runs that step, and the pass logs its own outcome.
-            std::vector<unsigned char> temporal_code;
-            // ... and the spatial half: the joint-bilateral filter that removes the grain the temporal
-            // clamp leaves behind, which is the last GI pass (its output is what the composite reads).
-            // IT IS A PASS: the app loads the shader and registers it, and the pass builds its own pipeline
-            // layout and compute pipeline from it (see vulkan.pass.ssgi_spatial) - create_passes() below runs
-            // that step, and the pass logs its own outcome.
-            std::vector<unsigned char> spatial_code;
-            // The glossy lobe (shaders/ssgi_spec.comp). OPTIONAL, like the probe cache and for the same
-            // reason: without it the lighting stage's split-sum specular ambient stands, which is what
-            // every frame before this feature existed looked like - and runtime::ssgi_specular_active()
-            // then keeps the frame from even recording the pass, so the knob-off frame is byte-identical
-            // by construction.
-            //
-            // IT IS A PASS TOO: the app registers the shader, and the pass builds its own pipeline layout and
-            // compute pipeline from it (see vulkan.pass.ssgi_spec) - create_passes() below runs that step.
-            std::vector<unsigned char> spec_code;
-            // The world-space probe cache. OPTIONAL, unlike the three above: it is what answers for a hit
-            // the screen cannot resolve (off screen or hidden), where the tracer otherwise falls back to
-            // the far-field environment probe - so a build without it renders exactly as it did before it
-            // existed, and runtime::gi_probe_active() keeps the tracer from sampling a grid that is not
-            // there.
-            //
-            // IT IS A PASS, so there is no make_* here any more: the app loads the shader and hands the bytes
-            // over, then asks the runtime to run the passes' create step - and the pass builds its own set
-            // layout, pipeline layout and pipeline, and logs its own outcome. The app's job is the file (it
-            // knows the shader directory); the pass's job is the pipeline.
-            std::vector<unsigned char> probe_code;
 
             // Ray-traced sun shadows: one ray per pixel against the scene's acceleration structures. IT IS A
             // PASS, so its shader has to be registered BEFORE create_passes() below - the pass builds its own
@@ -421,23 +380,6 @@ namespace chores {
             make_ssao_slider("ssao radius", &bindings.ssao_radius, 0.05f, 3.0f);
             make_ssao_slider("ssao intensity", &bindings.ssao_intensity, 0.0f, 1.0f);
             make_ssao_slider("ssao samples", &bindings.ssao_samples, 1.0f, 16.0f);
-        }
-        // screen-space global illumination: the ON/OFF fallback and its ray budget, offered only when the
-        // chain exists (the same predicate the startup log reports as "ssgi=on/UNAVAILABLE"). No callback
-        // here - main mirrors both fields into the runtime every frame, exactly like TAA's, and
-        // `set_ssgi` is edge-triggered on the off -> on transition so the GI accumulation is discarded
-        // once rather than on every frame of the mirror.
-        //
-        // The RAY SLIDER is the second half of the fallback and not decoration: with the half-resolution
-        // ambient removal moved to where the ambient is added, the remaining dark-region flicker is the
-        // 2-ray estimate's own variance - 0.56/255 at the default against 0.28 at 16 rays (measured, same
-        // frame and scene as the checkbox's note) - so on a machine with headroom this is the knob that
-        // turns "noisy" into "converged" without giving up the indirect light. It costs what the config
-        // says it costs: `ssgi_rays` x `ssgi_steps` is the per-frame ray budget.
-        {
-            // ... and the denoiser's width, which is the "the dark parts went soft" knob rather than a
-            // quality dial: 0 makes the spatial filter a pass-through (the noisiest, sharpest setting) and
-            // 2 is the shipped compromise. See gui_bindings::ssgi_spatial_sigma for the measured curve.
         }
         // stochastic punctual lighting: the shadows the point and spot lights never had (docs/megalights.md).
         // Offered only when the chain exists, and mirrored into the runtime every frame by main like the rest.

@@ -213,10 +213,8 @@ namespace vulkan {
         // same rule the extracted passes follow. The compute-skinning job's layout, pipeline and per-slot sets
         // left the same way (vulkan.pass.compute_skin_job), so this destructor no longer names either of the two
         // traced-feature jobs.
-        // The glossy lobe's layout and pipeline are NOT destroyed here any more either: they are the pass's
-        // the only SSGI layout this destructor still names is the temporal resolve's - whose pass is next.
-        // The probe cache's pipeline and its layout are NOT destroyed here any more: they are the pass's
-        // handle only that pass names is that pass's to release. The TAA resolve's set layout, pipeline
+        // The traced-feature pipelines and layouts are NOT destroyed here any more: each belongs to the pass
+        // that built it, so this destructor names no handle for any of them. The TAA resolve's set layout, pipeline
         // layout, pipeline AND descriptor family left the same way (vulkan.pass.taa), so nothing about it is
         // torn down here either.
 
@@ -344,7 +342,7 @@ namespace vulkan {
     // they must exist before the first recorded frame - but nothing else in the constructor depends on
     // them, and they depend on nothing else but the two capacities below (hence a function of their
     // own). This is also where the command pools would move to the core (the "command pools and
-    // secondaries" item of the trim list in docs/pass_chain_plan.md): the SHAPE is policy and stays
+    // secondaries" item of the trim list): the SHAPE is policy and stays
     // here, the objects are device resources.
     void runtime::init_recording_resources() {
         // One command buffer per frame slot, owned and reused every frame
@@ -2571,7 +2569,7 @@ namespace vulkan {
         // choose between at create time (a declaration picks one by hint, and a null sampler in a set is a
         // validation error rather than a skipped fetch). They are the device root's (`core::create_samplers`),
         // which is what `shared_samplers` below reads; two of them were once made inside the pipeline builders
-        // that first needed them, which is the naming accident `docs/runtime_split.md` records.
+        // that first needed them, which is the naming accident that comment records.
         // THE CHAIN IS AN INPUT, and there is deliberately no fallback: with the passes constructed outside this
         // class, "no chain was handed over" means there is nothing to create or record, so the one honest answer is
         // to say so and return rather than to record a frame of this class's own empty stage sequence.
@@ -3059,7 +3057,7 @@ namespace vulkan {
     // being empty in `feature_active`), which is the frame's content rather than the declaration's shape.
 
     // =============================================================================================
-    // THE CHAIN OWNER'S SEAM (see runtime::frame_services and docs/pass_chain_plan.md)
+    // THE CHAIN OWNER'S SEAM (see runtime::frame_services)
     // =============================================================================================
     //
     // WHAT IS LEFT HERE IS THE THREE FRAMES THAT CARRY THIS RENDERER'S RECORDING MACHINERY, and that is the

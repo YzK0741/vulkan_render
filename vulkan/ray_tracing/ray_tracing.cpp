@@ -319,7 +319,7 @@ namespace vulkan::ray_tracing {
         if (mask_baked != 0 || skipped_mask_buffers != 0) {
             // The measurement this feature is read with: how much geometry the mask actually removed is a property
             // of the asset (a two-quad MASK plane whose pattern is in the middle keeps every triangle; a vase of
-            // flowers loses 40% of them - see docs/gi_hit_shading.md).
+            // flowers loses 40% of them).
             utility::log("ray-traced shadows: {} MASK casters baked into their structures ({} could not be - those stay solid to a ray)", mask_baked, skipped_mask_buffers);
         }
         if (skinned_baked != 0 || skipped_skin_buffers != 0) {

@@ -84,9 +84,8 @@ namespace vulkan::pipelines {
         std::optional<vk_pipeline> resolve;
     };
 
-    /// what build_ssgi() creates: the tracer's COMPUTE pipeline. It owns no set layout - it binds
-    /// the shared scene set plus the G-buffer set, which already carries the radiance sampler and
-    /// the GI storage image it needs - so only the pipeline layout is new.
+    /// what a compute builder that owns its PIPELINE LAYOUT returns: that layout plus the COMPUTE pipeline,
+    /// and no set layout of its own - the sets it binds belong to the scene and the pass.
     export struct compute_pipeline_owned {
         VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
         std::optional<vk_pipeline> trace;
@@ -98,11 +97,7 @@ namespace vulkan::pipelines {
     export std::expected<taa_owned, std::string> build_taa(VkDevice device, VkDescriptorSetLayout pass_set_layout, uint32_t push_constant_size, std::span<unsigned char const> vertex_shader_code,
                                                            std::span<unsigned char const> fragment_shader_code);
 
-    /// the spatial half of the same denoiser: same two set layouts, same shape, its own push block
-
-    /// the glossy lobe (see shaders/ssgi_spec.comp) - the tracer's set layouts and its own push block
-
-    /// the ray-traced sun shadow: the same two set layouts as the GI tracer (the scene set carries the
+    /// the ray-traced sun shadow: the same two set layouts the traced compute passes use (the scene set carries the
     /// camera, the light UBO and - when the device has ray tracing - the top level structure; the
     /// G-buffer set carries the surface the ray starts from)
     export std::expected<compute_pipeline_owned, std::string> build_rt_shadow(VkDevice device, VkDescriptorSetLayout scene_layout, VkDescriptorSetLayout gbuffer_layout, uint32_t push_constant_size, std::span<unsigned char const> compute_shader_code);
@@ -129,10 +124,8 @@ namespace vulkan::pipelines {
 
     /// what build_resolve_pipeline() creates: the pipeline layout and the resolve pipeline. The SET layout comes IN
     /// as a parameter now - it is generated from the denoiser's own DECLARATION (see
-    /// render_resource::ssgi_temporal_io), which is what stops the seven bindings and the family's descriptor
-    /// pool count from drifting apart: they were written by hand in two places once and the validation layer
-    /// named the mismatch ("Trying to allocate 15 of VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER descriptors ...
-    /// but this pool only has a total of 12").
+    /// its own DECLARATION), which is what stops the bindings and the family's descriptor pool count from
+    /// drifting apart: written by hand in two places once, the validation layer named the mismatch.
     export struct resolve_pipeline_owned {
         VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
         std::optional<vk_pipeline> resolve;
@@ -140,9 +133,6 @@ namespace vulkan::pipelines {
 
     export std::expected<resolve_pipeline_owned, std::string> build_resolve_pipeline(VkDevice device, VkDescriptorSetLayout pass_set_layout, uint32_t push_constant_size,
                                                                                      std::span<unsigned char const> compute_shader_code);
-
-    /// what a compute builder that owns its pipeline LAYOUT returns. (It was `gi_probe_owned` for the
-    /// world-space probe cache's builder, which went with the traced chain; nothing declares it now.)
 
     /// the passes that reuse a layout someone else owns, so theirs comes in as a parameter
     export std::expected<vk_pipeline, std::string> build_fxaa(VkDevice device, VkFormat swap_chain_format, VkPipelineLayout post_pipeline_layout, std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code);
@@ -384,10 +374,10 @@ namespace vulkan::pipelines {
         return out;
     }
 
-    // ssgi: a COMPUTE pipeline. Two set layouts rather than one (the shared scene set and the
-    // G-buffer set) because that is where its inputs already are: the camera UBO, the stored
-    // surface, the direct-radiance image and the GI image it writes. Creating a third layout for
-    // this pass alone would mean duplicating four descriptor writes to gain nothing.
+    // A traced COMPUTE pipeline over TWO set layouts rather than one (the shared scene set and the
+    // G-buffer set) because that is where its inputs already are: the camera UBO, the stored surface and
+    // the images it writes. Creating a third layout for one pass would duplicate descriptor writes to gain
+    // nothing.
 
     // The mask bake (see shaders/mask_bake.comp): a compute pipeline over the shared scene set ALONE, because
     // everything it needs is there - the material table for the alpha texture's index and the cutoff, and the
@@ -590,22 +580,16 @@ namespace vulkan::pipelines {
     // G-buffer set, which carries the normal, the depth, the accumulated image it reads and the
     // filtered image it writes), so only the pipeline layout and the push block are new.
 
-    // The glossy lobe (see shaders/ssgi_spec.comp): the tracer's two set layouts again and a push block of
-    // its own. It is a separate pass rather than a branch in the tracer for two reasons - the tracer's push
-    // block is exactly 128 bytes (the smallest range Vulkan guarantees) and has no lane left for a ray
-    // count, and a pass that is not recorded cannot perturb the frame at all, which is a stronger statement
-    // than "a branch that arithmetically cancels".
-
-    // The GI temporal resolve: its own set layout, because it groups four things no other pass puts
-    // together (the raw trace, the accumulated history, the motion vectors and the depth). It binds
-    // no scene set: the push block carries the two projection terms its depth guard needs.
+    // The temporal resolve: its own set layout, because it groups things no other pass puts together
+    // (this frame's estimate, the accumulated history, the motion vectors and the depth). It binds no scene
+    // set: the push block carries the two projection terms its depth guard needs.
     std::expected<resolve_pipeline_owned, std::string> build_resolve_pipeline(VkDevice const device, VkDescriptorSetLayout const pass_set_layout, uint32_t const push_constant_size, std::span<unsigned char const> const compute_shader_code) {
         using fail = std::unexpected<std::string>;
         resolve_pipeline_owned out;
 
-        // THE SET LAYOUT IS THE DECLARATION'S (render_resource::ssgi_temporal_io, generated by the caller with
-        // bindings::make_set_layout): seven bindings, one of which is the storage image the resolve writes.
-        // Handing it in is what makes the LAYOUT and the family's pool count the same fact.
+        // THE SET LAYOUT IS THE DECLARATION'S (generated by the caller with bindings::make_set_layout): one of
+        // its bindings is the storage image the resolve writes. Handing it in is what makes the LAYOUT and the
+        // family's pool count the same fact.
         if (pass_set_layout == VK_NULL_HANDLE) {
             return fail("temporal resolve: the declaration produced no set layout");
         }

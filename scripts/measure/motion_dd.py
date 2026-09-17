@@ -10,7 +10,7 @@ other is the motion loss only the reflection has.
 
 THE FOUR ARMS HAVE TO SHARE A POSE, and the one that is easy to get wrong is the static pair. The swept
 arm's captured frame is rendered at `yaw = base + sweep_deg_per_frame * frames` (the pose convention in
-docs/gi_hit_shading.md's L2.3 motion section, established there by a control), so the static arm has to
+the pose convention these arms were established with, by a control), so the static arm has to
 be captured at THAT pose:
 
     capture.ps1 -Base <the scenario's config> -Camera ""            -Sweep 0.5 -Frames 40   # swept
@@ -25,7 +25,7 @@ needs `-Camera ""` to leave the pose to the scene's `camera_fit`; and `-Base` re
 `-WorkDir`, so a config outside the work directory has to be copied into it.
 
 Green channel throughout, like every other number in these records. The recorded arms are in
-docs/gi_hit_shading.md's L2.3 motion section: the reflection's own loss measured 0.4029 before the
+The recorded arms: the reflection's own loss measured 0.4029 before the
 accumulation cap and 0.3492 after it, with the change confined to the smooth-material tiles and the
 rough ones coming out bit-identical.
 """

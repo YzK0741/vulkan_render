@@ -151,37 +151,14 @@ namespace chores {
         bool taa_enabled = false;
         float taa_blend_static = 0.9f; // history weight for a static pixel (0.9 = 10% of the new frame)
         float taa_blend_min = 0.5f;    // history weight floor under motion (lower = less ghosting)
-        // Screen-space global illumination (render_start_demo::set_ssgi, mirrored into the runtime every
-        // frame like the toggles above): the ON/OFF FALLBACK and its ray budget. It exists because the
-        // traced chain's indirect estimate is the one term whose noise the denoiser leaves visible where
-        // the ambient is all the light a pixel gets - measured at the shipped default on Sponza's interior,
-        // 0.56/255 of frame-to-frame flicker over the dark smooth surfaces (22.8% of them moving by more
-        // than 1/255 per frame) against 0.07 with GI off - so a user looking at a noisy interior needs a
-        // way out that is neither a config edit and a restart nor a promise.
-        //
-        // THERE IS NO `ssgi_intensity` SLIDER NEXT TO THESE, and that is deliberate rather than an
-        // omission: intensity is not a strength dial on this path. The lighting stage does not add the
-        // diffuse ambient that the estimate stands in for, so 1.0 is the value that means "use the
-        // estimate" and anything below it darkens the frame instead of fading the noise in (at 0 the
-        // ambient is simply gone) - which the config documents at length. The two honest controls are
-        // these: turn the chain off, or buy samples.
-        // The spatial filter's width in GI texels (0 = the filter is a pass-through). This is the knob the
-        // OTHER complaint needs - the filter blurs the estimate, and in the dark that estimate is all the
-        // light there is: measured on Sponza's interior over the flat dark surfaces, the temporally STABLE
-        // high-frequency detail the frame carries goes 0.698 (no filter) -> 0.516 (sigma 1) -> 0.463
-        // (sigma 2, the default), while the frame-to-frame variation only goes 0.258 -> 0.172 -> 0.155. So
-        // the filter removes signal and noise at nearly the same rate, and a wider kernel buys almost
-        // nothing (sigma 4: 0.453 / 0.153). The useful direction is the other one - with the ray budget
-        // raised, a NARROWER filter is strictly better: 16 rays at sigma 1 measures 0.506 signal / 0.137
-        // noise / 0.312 flicker against the default's 0.463 / 0.155 / 0.561.
         // Stochastic PUNCTUAL lighting (docs/megalights.md): the switch and the estimator's sample count. The
         // switch is the A/B a user actually wants - the shadows the punctual lights never had, against the
         // unshadowed path - and the sample count is the one knob cost and noise both scale with.
         bool megalights_enabled = false;
         float megalights_samples = 4.0f;
-        // The chain's spatial pre-filter width in GI texels: the dial between grain and detail, and 0 makes the
-        // chain temporal-only. The SSGI work's lesson is why it is a slider rather than a constant - a filter
-        // that removes signal and noise at the same rate is worse than none, so it is moved and measured.
+        // The chain's spatial pre-filter width in half-resolution texels: the dial between grain and detail,
+        // and 0 makes the chain temporal-only. A slider rather than a constant, because a filter that removes
+        // signal and noise at the same rate is worse than none - so it is moved and measured.
         float megalights_spatial_sigma = 1.5f;
         // How many frames the running mean may average: 1 turns the ACCUMULATION off (the resolve writes this
         // frame's estimate straight through), 12 is the shipped policy. It exists because the comparison a user

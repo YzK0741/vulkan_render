@@ -632,10 +632,10 @@ namespace vulkan {
             taa_history_image_views[i] = create_image_view(taa_history_images[i], hdr_format, VK_IMAGE_ASPECT_COLOR_BIT, device);
         }
 
-        // The GI trace image (half resolution, one per swapchain image) was created here, and the two half-extent
-        // locals it introduced stay: the stochastic punctual lighting chain's images below are the same size.
-        uint32_t const gi_width = std::max(1u, swap_chain_extent.width / 2u);
-        uint32_t const gi_height = std::max(1u, swap_chain_extent.height / 2u);
+        // The stochastic punctual lighting chain's images are HALF resolution, one per swapchain image: the
+        // trace, the history and the resolve all share these two extents.
+        uint32_t const half_width = std::max(1u, swap_chain_extent.width / 2u);
+        uint32_t const half_height = std::max(1u, swap_chain_extent.height / 2u);
 
         // The stochastic punctual lighting chain's raw estimate: the same allocation as the GI trace's
         // (half resolution, STORAGE for its writer and SAMPLED for the lighting stage that adds it), and
@@ -646,8 +646,8 @@ namespace vulkan {
         ml_image_views.resize(swap_chain_image_views.size());
         for (size_t i = 0; i < swap_chain_image_views.size(); i++) {
             create_target_image(
-                gi_width,
-                gi_height,
+                half_width,
+                half_height,
                 hdr_format,
                 VK_IMAGE_TILING_OPTIMAL,
                 VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
@@ -670,8 +670,8 @@ namespace vulkan {
         ml_history_image_views.resize(swap_chain_image_views.size());
         for (size_t i = 0; i < swap_chain_image_views.size(); i++) {
             create_target_image(
-                gi_width,
-                gi_height,
+                half_width,
+                half_height,
                 hdr_format,
                 VK_IMAGE_TILING_OPTIMAL,
                 VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
@@ -681,8 +681,8 @@ namespace vulkan {
             ml_resolve_image_views[i] = create_image_view(ml_resolve_images[i], hdr_format, VK_IMAGE_ASPECT_COLOR_BIT, device);
 
             create_target_image(
-                gi_width,
-                gi_height,
+                half_width,
+                half_height,
                 hdr_format,
                 VK_IMAGE_TILING_OPTIMAL,
                 VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,

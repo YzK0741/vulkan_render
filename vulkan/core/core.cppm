@@ -324,7 +324,7 @@ namespace vulkan {
         std::vector<VkImageView> ml_history_image_views = {};
         // ... and the GLOSSY lobe's four families - its two outputs, the reflection's own accumulation and the
         // reflection's history - stood here. They went with the traced chain's specular lobe, whose whole reason
-        // for existing was a reprojection of its own (docs/gi_hit_shading.md's L2.3 motion section).
+        // for existing was a reprojection of its own.
 
         // ---- the world-space radiance probe cache ----
         // Its eight 3D radiance images (four SH-2 coefficients per side of the propagation's ping-pong) and the
@@ -451,7 +451,7 @@ namespace vulkan {
         // passes: a pass DECLARES one by hint (see render_resource::shared::sampler_set) and the renderer hands over
         // the handles, so the object's owner has to be the device root - the same argument every image in this class
         // answers. Before this they were scattered across the runtime's scene setup, a pipeline builder and two
-        // ensure_* functions, which is the "naming accident" docs/runtime_split.md records.
+        // ensure_* functions - the "naming accident" this comment records.
         //
         // `env_sampler` is deliberately NOT here: its max_lod is the app's environment mip count, not a device fact.
         vk_sampler texture_sampler = {};      // the bindless texture array: REPEAT, and all its mip levels

@@ -4,8 +4,7 @@ Usage: python tiletab.py <with_cache.png> <without_cache.png>
 
 Prints a 4x4 table of the green-channel difference (with - without) for each tile, both
 as an absolute mean and as a percentage of that tile's own mean in the "without" frame -
-which is the form docs/gi_hit_shading.md records the L2.0 cache tables in ("-0.14% to
--6.78%, ordered by the scene: interior tiles lose 4-7%, sky-facing tiles 0.1-0.6%").
+which is the form that shows whether an effect is ordered by the scene or by the material.
 """
 import sys
 from PIL import Image

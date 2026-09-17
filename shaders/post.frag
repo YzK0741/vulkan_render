@@ -37,7 +37,6 @@ layout(set = 0, binding = 4) uniform sampler2D bloom_l3;
 // needs to decide which half-res texel belongs to this pixel's surface. All three are read with a
 // NEAREST sampler (see runtime::post_nearest_sampler): interpolating depth would invent a surface
 // between two real ones, which is precisely what the edge test below must not see.
-layout(set = 0, binding = 6) uniform sampler2D gi_indirect;
 layout(set = 0, binding = 7) uniform sampler2D gbuffer_depth;
 layout(set = 0, binding = 8) uniform sampler2D gbuffer_normal;
 

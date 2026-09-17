@@ -3,23 +3,17 @@
  * @brief The specular half of the split-sum IBL, shared by every pass that has to agree about it.
  * @ingroup shaders
  *
- * WHY THIS FILE EXISTS. Four call sites now need the same two things - "what does the prefiltered
+ * WHY THIS FILE EXISTS. More than one call site needs the same two things - "what does the prefiltered
  * environment contribute along this reflection direction" and "what weight does the BRDF give it" - and
  * they have to agree to the last bit, because two of them are the two sides of a SUBTRACTION: the
- * lighting stage ADDS `ibl_specular_radiance(...) * ibl_specular_fresnel(...) * ao` for every pixel, and
- * the GI chain now has to remove exactly that for the pixels where tracing replaces it
- * (shaders/ssgi_spatial.comp) with an estimate of the same quantity made by tracing
- * (shaders/ssgi_spec.comp). Before this file the expressions existed twice already, once in
- * shaders/shading.glsl (the lighting stage's ambient) and once inline in shaders/hit_shading.glsl (a
- * shaded hit's ambient); both now call these functions, so the definitions went from two to one. The
- * move was verified the way every shader change here is: `scripts/windows/check_render.ps1`, 8 scenarios
- * x 2, 0 changed - a refactor of an expression a TAA resolve reads was measured at 2 changed scenarios
- * once, so "arithmetically identical" is not accepted as an argument on its own.
+ * lighting stage ADDS `ibl_specular_radiance(...) * ibl_specular_fresnel(...) * ao` for every pixel, and a
+ * pass that replaces that term has to remove exactly the same expression. Before this file the expression
+ * was written twice, once in shaders/shading.glsl (the lighting stage's ambient) and once inline in a
+ * shaded hit's ambient; both now call these functions, so the definition went from two to one.
  *
  * WHAT THE INCLUDER MUST PROVIDE: `env_sampler` (scene set binding 2, the prefiltered GGX environment)
- * and `brdf_lut_sampler` (binding 4). shaders/shading.glsl and shaders/hit_shading.glsl already declare
- * both for their own reasons; shaders/ssgi_spatial.comp and shaders/ssgi_spec.comp declare them because
- * of this file. A binding declared twice in one translation unit does not compile, which is why nothing
+ * and `brdf_lut_sampler` (binding 4). shaders/shading.glsl declares both. A binding declared twice in one
+ * translation unit does not compile, which is why nothing
  * is declared here - and why this file is included AFTER those declarations.
  */
 

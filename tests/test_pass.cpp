@@ -28,8 +28,7 @@ namespace {
     namespace rr = vulkan::render_resource;
 
     /// The own-binding + shared-set pair every fake pass carries: one sampled image of its OWN at set 1, and the
-    /// shared scene set. It was the probe cache's declaration before, reused rather than invented; that pass is
-    /// gone, so the shape - which is all a fake pass needs from the schema - is spelled out here.
+    /// shared scene set - the shape a fake pass needs from the schema, spelled out here.
     std::array<rr::pass_binding, 1> const fake_own_bindings = {{{.set = 1,
                                                                  .binding = 0,
                                                                  .owner = rr::set_owner::own,
@@ -45,9 +44,8 @@ namespace {
             .name = name,
             .own_set = 1,
             .bindings = fake_own_bindings,
-            // ... WITH the set those bindings come from: the validator refuses non-own bindings whose shared set is
-            // not declared, which is the rule the probe cache's missing `shared_sets` entry bought (see
-            // test_render_resources).
+            // ... WITH the set those bindings come from: the validator refuses non-own bindings whose shared set
+            // is not declared (the rule test_render_resources checks).
             .shared_sets = fake_shared_sets,
             .targets = targets,
             .push = std::nullopt,
@@ -390,7 +388,7 @@ int main() {
         CHECK(tail.last_target_image == reinterpret_cast<VkImage>(0x80));
         // ... and the PER-IMAGE VIEW LISTS reached the pass untouched: a pass that owns a per-image descriptor
         // family writes each image's set from that image's own handles, which `own` (the current frame's) cannot
-        // supply - see resolved_io::own_per_image and docs/pass_chain_plan.md
+        // supply - see resolved_io::own_per_image
         CHECK(probe.last_per_image_length == 3); // one entry per swapchain image of the frame
         CHECK(probe.last_per_image_first != VK_NULL_HANDLE);
     }

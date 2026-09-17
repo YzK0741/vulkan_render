@@ -84,7 +84,7 @@ namespace vulkan {
             // without it. Saying so once at startup is what keeps "the pass did not run" from looking like a
             // rendering bug. NO FORMAT ARGUMENT, and that is not a style choice: `utility::log` with one crashes
             // THIS translation unit's code generation (clang 22.1.8, `EmitBuiltinNewDeleteCall` - a toolchain bug
-            // this branch has now seen twice, see docs/pass_chain_plan.md).
+            // this branch has seen twice).
             utility::log("render_start_demo: a pass this demo wires is missing from the chain - it is not fed a frame and will not record");
         }
         // ---- AND HAND IT OVER ----
@@ -238,7 +238,7 @@ namespace vulkan {
     }
 
     void render_start_demo::set_megalights(bool const enabled, uint32_t const samples, float const min_weight, float const bias_floor, float const bias_grazing) noexcept {
-        // The same split `set_ssgi` makes: the FLAG is the runtime's (it decides whether the deferred lighting
+        // The same split every knob with a runtime-side flag makes: the FLAG is the runtime's (it decides whether the deferred lighting
         // stage adds the punctual lights itself, so it is frame state the renderer publishes), the estimator's
         // NUMBERS are the pass's and are clamped there. The return value (the off -> on edge) is ignored: there is
         // no accumulation to restart until the temporal resolve lands.
@@ -317,7 +317,7 @@ namespace vulkan {
         bool const gbuffer_debug = facts.gbuffer_debug && facts.gbuffer_pipeline && self.gbuffer_debug_ != nullptr && self.gbuffer_debug_->ready();
         bool const shaded_scene = !gbuffer_debug && self.deferred_ != nullptr && self.deferred_->ready() && facts.gbuffer_pipeline;
         // THE FLAT RENDER FLAG AND THE SSAO SWITCH LIVE IN THE LIGHTING PASS (they are its parameters), so the table
-        // ASKS it - the same shape `ssgi_spatial` below uses for the temporal pass's own answer. One copy of each
+        // ASKS it - the same shape the other "ask the pass" answers below use. One copy of each
         // value, and the pass that pushes them is the one that owns them.
         bool const unlit = self.deferred_ != nullptr && self.deferred_->unlit();
 
@@ -407,8 +407,8 @@ namespace vulkan {
             return self.cluster_ != nullptr && self.cluster_->ready();
         }
         if (name == "megalights") {
-            // BOTH passes, and not just the tracer, for the reason the `ssgi` answer above includes its whole
-            // chain: what the lighting stage adds is the temporal resolve's ACCUMULATION, so a chain whose
+            // BOTH passes, and not just the tracer: what the lighting stage adds is the temporal resolve's
+            // ACCUMULATION, so a chain whose
             // resolve did not build has nothing to show and the overlay must not offer a switch that would do
             // nothing. (This branch was MISSING when the widgets were added, which is why they were invisible:
             // every `visible_when` on them was false.)
@@ -418,18 +418,10 @@ namespace vulkan {
     }
 
     // =================================================================================================
-    // THE REFLECTION: this app's second signal through the temporal pass's one pipeline
-    // =================================================================================================
-    // MOVED VERBATIM out of `runtime::ensure_ssgi_denoise_descriptors` + `runtime::record_reflection` +
-    // `runtime::record_ssgi_resolve_pass`'s mode-1 path, with exactly two substitutions: the per-image views come
-    // from the frame's RESOURCE TABLE (the families the runtime publishes, in the declaration's vocabulary) instead
-    // of from the core's arrays, and the toolkit (device, samplers, frame, constants) comes from `frame_services`.
-    // What did NOT move is mode 0: that is the temporal PASS's own recording, which the pass does itself.
 
     void render_start_demo::recreated([[maybe_unused]] void* const owner) {
-        // The reflection's sets name this generation's images, so they are stale the moment the swapchain is
-        // rebuilt - the same duty the runner performs for every pass in a chain, for the one family this demo keeps
-        // outside it.
+        // This demo keeps no descriptor family of its own: every pass in the chain retires its own, which the
+        // runner does through recreate_stage, so there is nothing left here to reset.
     }
 
 } // namespace vulkan

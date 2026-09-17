@@ -11,8 +11,7 @@
  * deformation belongs for rasterisation - and which means the deformed positions never exist in memory an
  * acceleration structure build can read. So a skinned mesh's ray-traced shadow is its BIND POSE, a
  * limitation documented since the ray-traced shadows were added and measured before this pass was written
- * (docs/gi_hit_shading.md's L2.2b section: the traced shadow's pose dependence is zero where the raster
- * one's is up to 3.8 per tile). A compute pass writing the SAME vertex positions the vertex shader
+ * (the traced shadow's pose dependence is zero where the raster one's is up to 3.8 per tile). A compute pass writing the SAME vertex positions the vertex shader
  * computes removes the difference at its source: the structure is then built from, and refitted against,
  * the deformed geometry.
  *
@@ -38,8 +37,8 @@ layout(local_size_x = 64) in;
 
 // The scene set's per-joint matrices (binding 9), declared here because this pass includes no shared
 // include: shaders/surface.glsl owns the same binding for the raster path and also declares the shared
-// push-constant block, which a shader may only declare once (the same reason shaders/hit_shading.glsl
-// copies the material struct).
+// push-constant block, which a shader may only declare once - which is why this pass copies the material
+// struct rather than including that file.
 layout(set = 0, binding = 9) readonly buffer SkinMatrices { mat4 matrices[]; } skins;
 
 layout(push_constant) uniform SkinPush {

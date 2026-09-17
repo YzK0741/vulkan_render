@@ -658,14 +658,8 @@ set(VR_SHADER_INCLUDES
     "${VR_SHADER_SRC_DIR}/surface.glsl"
     "${VR_SHADER_SRC_DIR}/shading.glsl"
     "${VR_SHADER_SRC_DIR}/sky.glsl"
-    # hit_shading.glsl was MISSING here since it was added: the two passes that include it (ssgi.comp and
-    # gi_probe.comp) did not list it as a dependency, so editing it alone left the SPIR-V stale - the exact
-    # trap the comment above describes, from the other side. Found while adding probe_sh.glsl next to it.
-    "${VR_SHADER_SRC_DIR}/hit_shading.glsl"
-    "${VR_SHADER_SRC_DIR}/probe_sh.glsl"
-    # ibl_specular.glsl is included by four shaders now (shading.glsl, hit_shading.glsl and the two GI
-    # passes that compute the specular ambient's removal), so it belongs here for the same reason the two
-    # above do: editing it alone must not leave stale SPIR-V behind.
+    # ibl_specular.glsl is included by shading.glsl, so it belongs here for the same reason the three above
+    # do: editing it alone must not leave stale SPIR-V behind.
     "${VR_SHADER_SRC_DIR}/ibl_specular.glsl"
 )
 set(VR_SHADER_SOURCES

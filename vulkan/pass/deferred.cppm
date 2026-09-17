@@ -13,7 +13,7 @@
  * THE TARGET IS THE FRAME'S, NOT THE DECLARATION'S: the host resolves `scene_color` while the TAA resolve is on and
  * `hdr` when it is off (the accessor the renderer always used), because those two paths light different images. A
  * `render_target` names one resource today, so the declaration names the TAA path's and the resolver hands over the
- * frame's; the deviation is recorded in `render_resource::deferred_io` and in docs/pass_chain_plan.md.
+ * frame's; the deviation is recorded in `render_resource::deferred_io`.
  *
  * WHAT IT DOES NOT OWN: the descriptor families. The scene set and the G-buffer set are shared resources whose
  * OWNERS write them, so this pass receives them resolved and binds them - and a frame with no G-buffer set does not

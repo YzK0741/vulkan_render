@@ -67,22 +67,6 @@ layout(push_constant) uniform DeferredPush {
     vec4 ssao;
     // 1.0 = "unlit" render mode: write the stored albedo, unshaded (see runtime::set_unlit)
     float unlit;
-    // 1.0 = the traced GI chain answers for BOTH ambient terms this frame. The DIFFUSE one is not added
-    // here at all (`si.diffuse_ambient_scale` below): the chain estimates the whole diffuse indirect -
-    // including the off-screen half, since a ray that leaves the frame falls back to this same irradiance
-    // probe - so adding it here would count that light twice, and removing it one pass later at half
-    // resolution left the frame with the difference between the two samplings (see
-    // shade_input::diffuse_ambient_scale for the measurement). The SPECULAR one IS still added here, and
-    // removed exactly by the pass that replaces it (shaders/ssgi_spec.comp, at its own texel).
-    //
-    // SSAO must not scale either of them, and that is this lane's other job: the chain's answer is
-    // UN-occluded (it evaluates `albedo * ao * irradiance * (1 - metallic)` from the G-buffer, where the
-    // material's baked AO is all it can see - the SSAO term is computed here and never stored), so scaling
-    // the ambient by SSAO here left an `ambient * (ssao - 1)` term in the frame rather than occluding
-    // anything the chain does not already answer with real rays: measured, applying it cost -1.90 of mean
-    // green on the reference scene with 37.6% of pixels differing, on a frame whose documented intent is
-    // that SSAO does nothing at all there. 0.0 on the marched path and with GI off, so nothing else in the
-    // frame moves.
     // 1.0 = the stochastic punctual lighting pass ANSWERED this frame, so the cluster loop below must not add
     // the punctual lights a second time (and this stage adds `ml_lighting` instead, see the end of main). It is
     // set from whether that pass actually recorded, not from its knob - a frame whose pass was gated off keeps

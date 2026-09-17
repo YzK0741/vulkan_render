@@ -787,10 +787,9 @@ export namespace vulkan {
     /** @brief SHADER_READ_ONLY_OPTIMAL -> GENERAL: an image that is read as a sample going back to being
      *         written as a compute storage image, KEEPING its contents.
      * @note the opposite of general_to_sampling_transition, and the reason it exists rather than the
-     *       write simply claiming UNDEFINED (which is legal and cheaper): the GI resolve is READ across
-     *       frames - the tracer samples the previous frame's copy at a hit, which is what makes the
-     *       estimator multi-bounce (see shaders/ssgi.comp) - so a write that discarded its contents
-     *       would throw away exactly the image the feedback exists to read.
+     *       write simply claiming UNDEFINED (which is legal and cheaper): a history image is READ across
+     *       frames, so a write that discarded its contents would throw away exactly what the next frame's
+     *       reader needs.
      * @note the reading stages are named on the src side and COMPUTE on the dst: the previous frame's
      *       resolve is sampled by the tracer and by the spatial filter (COMPUTE), and by the composite
      *       (FRAGMENT). */

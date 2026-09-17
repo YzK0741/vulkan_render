@@ -75,10 +75,6 @@ namespace vulkan {
         /// FXAA's two thresholds (its own pass, and the composite, which pushes the same block)
         float fxaa_subpixel = 0.75f;
         float fxaa_edge_threshold = 0.166f;
-        /// the GI upsample's silhouette test: the composite and the spatial filter must use ONE criterion, or what
-        /// the filter keeps is undone by the upsample
-        float gi_depth_sigma = 0.02f;
-        float gi_normal_power = 16.0f;
     };
 
     /**
@@ -109,50 +105,6 @@ namespace vulkan {
         glm::vec4 light_dir = glm::vec4(0.0f);
         /// the renderer settings more than one pass reads (see render_settings for the rule that decides)
         render_settings settings = {};
-        /**
-         * Whether THIS frame's GI resolve ran, which is what weighs the composite's added indirect term.
-         *
-         * THE ONE FIELD FILLED MID-FRAME, and it has to be: the frame loop knows the answer only after the GI
-         * chain has recorded (it reads it back from the chain's last pass) and the composite records after that,
-         * so a pass reading it reads the value as of its OWN resolution - the only point where the answer exists.
-         */
-        /**
-         * Whether THIS frame's REFLECTION accumulation was resolved, which the spatial filter's `spec_weight` lane
-         * is read from: a frame whose reflection's descriptor set could not be had must not sum an older
-         * accumulation in, and "the lobe is enabled" is not the same statement.
-         *
-         * THE SECOND MID-FRAME FIELD, and for the same reason `gi_resolved` is the first: the reflection is
-         * recorded by the renderer's own callback INSIDE the temporal pass's recording, so the answer exists only
-         * once the chain is halfway through - before the spatial filter, which is the one pass that reads it,
-         * resolves. (The renderer kept this in a member until the filter's own push block moved into the filter;
-         * a member is a second copy of a frame fact the moment the pass that reads it can read this one.)
-         */
-        /**
-         * The instance table this frame HAS, as a device address; 0 means "this frame has none" (no acceleration
-         * structures), and a shader that reads it must fall back (the marched oracle distinguishes hit faces by
-         * depth instead). Every stage that shades a hit fetches the instance's data through it - the diffuse tracer,
-         * the glossy lobe and the world-space probe cache - which is why it is the frame's rather than any pass's.
-         *
-         * WHAT IT IS NOT: it is not gated by `ssgi_hit_shading`. That gate belongs to the CONSUMERS, because they do
-         * not agree about it: the tracer zeroes the lane when hit shading is off (a zero address is how its shader
-         * is told to sample the screen instead), the lobe only ever runs with hit shading on, and the probe cache
-         * shades its world-space hits whenever a table exists, since a cell's hit has no screen to fall back to. The
-         * frame reports what it HAS; `ssgi_trace_frame::shade_hits` is the tracer's half of the gate.
-         *
-         * FILLED BEFORE THE GI CHAIN, NOT IN `update_frame_constants`, and that placement is the whole reason it
-         * is a field with a note: the address belongs to a buffer the frame's structure phase (re)builds, and
-         * `update_frame_constants` runs before that phase - so an address read there could be a buffer that the
-         * same frame is about to replace. The value is this frame's the moment the structures exist, which is the
-         * point the chain starts at.
-         */
-        /**
-         * The ray sequence this frame's GI dispatches seed themselves with, so that two frames do not trace the
-         * SAME rays (an estimator that repeated its samples would only average its own noise).
-         *
-         * The frame loop owns the counter (it is the chain's pacing state, not a pass's) and copies it here before
-         * the chain; both tracing stages read this copy, which is what keeps them on one sequence.
-         */
-        uint32_t gi_frame_index = 0;
     };
 
 } // namespace vulkan
