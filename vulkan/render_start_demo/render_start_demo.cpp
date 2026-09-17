@@ -35,13 +35,8 @@ namespace vulkan {
         this->chain_.emplace<pass::shadow_pass>();
         this->chain_.emplace<pass::scene_pass>();
         this->chain_.emplace<pass::transparent_pass>();
-        this->chain_.emplace<pass::ssgi_trace_pass>();
         this->chain_.emplace<pass::megalights_trace_pass>();
         this->chain_.emplace<pass::megalights_temporal_pass>();
-        this->chain_.emplace<pass::ssgi_spec_pass>();
-        this->chain_.emplace<pass::ssgi_temporal_pass>();
-        this->chain_.emplace<pass::ssgi_spatial_pass>();
-        this->chain_.emplace<pass::gi_probe_pass>();
         this->chain_.emplace<pass::taa_pass>();
         this->chain_.emplace<pass::rt_shadow_pass>();
         this->chain_.emplace<pass::cluster_pass>();
@@ -67,13 +62,8 @@ namespace vulkan {
         this->deferred_ = this->find<pass::deferred_pass>("deferred");
         this->taa_ = this->find<pass::taa_pass>("taa");
         this->gbuffer_debug_ = this->find<pass::gbuffer_debug_pass>("gbuffer-debug");
-        this->ssgi_trace_ = this->find<pass::ssgi_trace_pass>("ssgi_trace");
         this->megalights_trace_ = this->find<pass::megalights_trace_pass>("megalights_trace");
         this->megalights_temporal_ = this->find<pass::megalights_temporal_pass>("megalights_temporal");
-        this->ssgi_spec_ = this->find<pass::ssgi_spec_pass>("ssgi_spec");
-        this->ssgi_temporal_ = this->find<pass::ssgi_temporal_pass>("ssgi_temporal");
-        this->ssgi_spatial_ = this->find<pass::ssgi_spatial_pass>("ssgi_spatial");
-        this->gi_probe_ = this->find<pass::gi_probe_pass>("gi_probe");
         this->composite_ = this->find<pass::post_composite_pass>("post_composite");
         this->fxaa_ = this->find<pass::fxaa_pass>("fxaa");
 
@@ -86,11 +76,6 @@ namespace vulkan {
         found += this->deferred_ != nullptr ? 1u : 0u;
         found += this->taa_ != nullptr ? 1u : 0u;
         found += this->gbuffer_debug_ != nullptr ? 1u : 0u;
-        found += this->ssgi_trace_ != nullptr ? 1u : 0u;
-        found += this->ssgi_spec_ != nullptr ? 1u : 0u;
-        found += this->ssgi_temporal_ != nullptr ? 1u : 0u;
-        found += this->ssgi_spatial_ != nullptr ? 1u : 0u;
-        found += this->gi_probe_ != nullptr ? 1u : 0u;
         found += this->composite_ != nullptr ? 1u : 0u;
         found += this->fxaa_ != nullptr ? 1u : 0u;
         if (found != 15) {
@@ -119,9 +104,6 @@ namespace vulkan {
         if (this->fxaa_ != nullptr) {
             this->fxaa_->set_overlay(self.overlay_draw());
         }
-        if (this->ssgi_temporal_ != nullptr) {
-            this->ssgi_temporal_->set_reflection_recorder(&render_start_demo::record_reflection, this);
-        }
         return found;
     }
 
@@ -129,7 +111,6 @@ namespace vulkan {
         render_start_demo& self = *static_cast<render_start_demo*>(owner);
         // THE FRAME'S TOOLKIT, cached for the callbacks that are carried by a PASS's frame and therefore cannot be
         // handed it (the reflection's recording - see the member's own note).
-        self.services_ = services;
         // ... and the one fact the renderer's own policy reads about a pass it no longer holds: whether the lighting
         // stage is in the flat render mode, which is what makes the GI chain pointless on such a frame. Published on
         // every stage prepare rather than once, because it is one bool and the app can flip it between frames.
@@ -256,18 +237,6 @@ namespace vulkan {
         }
     }
 
-    void render_start_demo::set_ssgi(bool const enabled, float const intensity, float const radius, uint32_t const rays, uint32_t const steps) noexcept {
-        bool const turned_on = this->runtime_ != nullptr && this->runtime_->set_ssgi_enabled(enabled);
-        if (this->ssgi_trace_ != nullptr) {
-            this->ssgi_trace_->set_reach(intensity, radius, rays, steps);
-        }
-        if (turned_on && this->ssgi_spec_ != nullptr) {
-            // ... and the same edge on the lobe's side: its two outputs are re-transitioned from UNDEFINED, which is
-            // what "switched on" means for a pass that has not run yet in this generation.
-            this->ssgi_spec_->reset_first_use();
-        }
-    }
-
     void render_start_demo::set_megalights(bool const enabled, uint32_t const samples, float const min_weight, float const bias_floor, float const bias_grazing) noexcept {
         // The same split `set_ssgi` makes: the FLAG is the runtime's (it decides whether the deferred lighting
         // stage adds the punctual lights itself, so it is frame state the renderer publishes), the estimator's
@@ -302,52 +271,6 @@ namespace vulkan {
         // the two other lanes keep what the pass already holds (see megalights_temporal_pass).
         if (this->megalights_temporal_ != nullptr) {
             this->megalights_temporal_->set_accumulation(depth_tolerance, this->megalights_temporal_->max_frames());
-        }
-    }
-
-    void render_start_demo::set_ssgi_spatial(float const sigma) noexcept {
-        if (this->ssgi_spatial_ != nullptr) {
-            this->ssgi_spatial_->set_sigma(sigma);
-        }
-    }
-
-    void render_start_demo::set_ssgi_upsample(bool const enabled) noexcept {
-        if (this->composite_ != nullptr) {
-            this->composite_->set_gi_upsample(enabled);
-        }
-    }
-
-    void render_start_demo::set_ssgi_bounce(float const gain) noexcept {
-        if (this->ssgi_trace_ != nullptr) {
-            this->ssgi_trace_->set_bounce(gain);
-        }
-    }
-
-    void render_start_demo::set_ssgi_probes(bool const enabled, float const rate, uint32_t const rounds, float const gain) noexcept {
-        if (this->runtime_ != nullptr) {
-            this->runtime_->set_ssgi_probes_enabled(enabled);
-        }
-        if (this->gi_probe_ != nullptr) {
-            this->gi_probe_->set_rate(rate);
-            // The dispatch count is the pass's own update sequence, and the renderer's clamp (0..4 propagation
-            // rounds) travels with it: each round is two ping-pong dispatches, and beyond four the trust has already
-            // halved away.
-            this->gi_probe_->set_rounds(std::clamp(rounds, 0u, 4u));
-        }
-        if (this->ssgi_trace_ != nullptr) {
-            // The SIGN is the cache's direction A/B rather than a mistake: |gain| is the gain, and a negative value
-            // looks the cache up along the opposite direction of the ray - the same cell, the other side. The
-            // tracer's clamp keeps it in [-4, 4].
-            this->ssgi_trace_->set_probe_gain(gain);
-        }
-    }
-
-    void render_start_demo::set_ssgi_specular(bool const enabled, uint32_t const rays, float const radius) noexcept {
-        if (this->runtime_ != nullptr) {
-            this->runtime_->set_ssgi_specular_enabled(enabled);
-        }
-        if (this->ssgi_spec_ != nullptr) {
-            this->ssgi_spec_->set_reach(radius, rays);
         }
     }
 
@@ -412,9 +335,6 @@ namespace vulkan {
         if (name == "gbuffer-debug") {
             return gbuffer_debug;
         }
-        if (name == "ssgi") {
-            return facts.ssgi;
-        }
         if (name == "megalights") {
             // THE STOCHASTIC PUNCTUAL LIGHTING PASS'S OWN GATE: the runtime's composed predicate (the knob, the
             // deferred shading path, and the flat-render-mode exclusion - the pass evaluates the BRDF from the
@@ -422,28 +342,6 @@ namespace vulkan {
             // built its pipeline. The same predicate is what the frame loop asks before recording the stage, so
             // the runner and the loop cannot disagree about whether the punctual lights were handled this frame.
             return facts.megalights && self.megalights_trace_ != nullptr && self.megalights_trace_->ready();
-        }
-        if (name == "ssgi_spatial") {
-            // THE CHAIN'S LAST STAGE, and the one pass whose gate is not just "the chain is on": the filter must not
-            // filter a STALE accumulation, so it runs only when THIS frame's temporal resolve recorded. The answer
-            // comes from the pass that owns it (the temporal pass clears its flag when the host sets the frame, so
-            // this cannot read an earlier frame's answer) - which is what replaced the frame loop's
-            // `if (record_ssgi_denoise_pass(...))` around the filter's stage.
-            //
-            // NOTE WHICH FUNCTION THIS IS: the runner asks `feature_active`, NOT `feature_available` (which answers
-            // "could this feature run this session"). The first version of this branch was added to
-            // `feature_available` by mistake, and the symptom was precise: the filter was skipped on every frame
-            // (`skipped_inactive 1`), so the composite sampled an image nothing had written.
-            return facts.ssgi && self.ssgi_temporal_ != nullptr && self.ssgi_temporal_->resolved();
-        }
-        if (name == "ssgi_probes") {
-            return facts.ssgi_probes;
-        }
-        if (name == "ssgi_specular") {
-            // The lobe's own feature name: "the knob is on, the frame can shade a hit, and the pass built its
-            // pipeline". It has to be this exact predicate because the tracer reads it too (`specular_next`, which
-            // the runtime composes into the tracer's frame) to decide who owes the denoiser the hand-off barrier.
-            return facts.ssgi_specular && facts.ssgi_hit_shading && facts.ssgi_traced && self.ssgi_spec_ != nullptr && self.ssgi_spec_->ready();
         }
         if (name == "taa") {
             return facts.taa && self.taa_ != nullptr && self.taa_->ready() && shaded_scene;
@@ -508,9 +406,6 @@ namespace vulkan {
         if (name == "clustered") {
             return self.cluster_ != nullptr && self.cluster_->ready();
         }
-        if (name == "ssgi") {
-            return self.ssgi_trace_ != nullptr && self.ssgi_trace_->ready();
-        }
         if (name == "megalights") {
             // BOTH passes, and not just the tracer, for the reason the `ssgi` answer above includes its whole
             // chain: what the lighting stage adds is the temporal resolve's ACCUMULATION, so a chain whose
@@ -518,9 +413,6 @@ namespace vulkan {
             // nothing. (This branch was MISSING when the widgets were added, which is why they were invisible:
             // every `visible_when` on them was false.)
             return self.megalights_trace_ != nullptr && self.megalights_trace_->ready() && self.megalights_temporal_ != nullptr && self.megalights_temporal_->ready();
-        }
-        if (name == "ssgi_spatial") {
-            return self.ssgi_spatial_ != nullptr && self.ssgi_spatial_->ready();
         }
         return false;
     }
@@ -534,91 +426,10 @@ namespace vulkan {
     // of from the core's arrays, and the toolkit (device, samplers, frame, constants) comes from `frame_services`.
     // What did NOT move is mode 0: that is the temporal PASS's own recording, which the pass does itself.
 
-    void render_start_demo::recreated(void* const owner) {
+    void render_start_demo::recreated([[maybe_unused]] void* const owner) {
         // The reflection's sets name this generation's images, so they are stale the moment the swapchain is
         // rebuilt - the same duty the runner performs for every pass in a chain, for the one family this demo keeps
         // outside it.
-        static_cast<render_start_demo*>(owner)->reflection_family_.retire_all();
-    }
-
-    void render_start_demo::ensure_reflection_descriptors(runtime::frame_services const& services) {
-        if (this->ssgi_temporal_ == nullptr || services.table == nullptr || services.device == VK_NULL_HANDLE) {
-            return;
-        }
-        VkDescriptorSetLayout const set_layout = this->ssgi_temporal_->set_layout();
-        if (!this->ssgi_temporal_->pipeline_ready() || set_layout == VK_NULL_HANDLE) {
-            return;
-        }
-        // THE VIEWS, ONE RUN PER BINDING, from the frame's table: this is what `resource_table::views_of` is for,
-        // and it is why the demo does not need the renderer's image arrays. The order is the declaration's own (the
-        // seven bindings of `ssgi_temporal_io`).
-        std::span<VkImageView const> const spec_trace = services.table->views_of(render_resource::resource_id::gi_spec_trace, 0);
-        std::span<VkImageView const> const spec_history = services.table->views_of(render_resource::resource_id::gi_spec_history, 0);
-        std::span<VkImageView const> const velocity = services.table->views_of(render_resource::resource_id::velocity, 0);
-        std::span<VkImageView const> const depth = services.table->views_of(render_resource::resource_id::gbuffer_depth, 0);
-        std::span<VkImageView const> const spec_resolve = services.table->views_of(render_resource::resource_id::gi_spec_resolve, 0);
-        std::span<VkImageView const> const normals = services.table->views_of(render_resource::resource_id::gbuffer_targets, 1);
-        std::span<VkImageView const> const spec_reproject = services.table->views_of(render_resource::resource_id::gi_spec_reproject, 0);
-        std::size_t const image_count = spec_trace.size();
-        if (image_count == 0 || spec_history.size() != image_count || velocity.size() != image_count || depth.size() != image_count ||
-            spec_resolve.size() != image_count || normals.size() != image_count || spec_reproject.size() != image_count) {
-            return; // a family this frame does not have: the reflection is not resolved this frame
-        }
-        // THE COUNT COMES FROM THE DECLARATION, which is what makes it impossible for the pool and the layout to
-        // disagree: this number and the layout the PASS generated in its create are both derived from
-        // `ssgi_temporal_io`.
-        uint32_t const descriptors_per_set = render_resource::descriptor_counts_for(render_resource::ssgi_temporal_io, render_resource::ssgi_temporal_io.own_set).total();
-        // Bindings 2 and 3 (the surface's motion vectors and depth) are unused in mode 1 - its reprojection carries
-        // its own depth - but every binding of the layout has to name a real view, so they carry the same ones the
-        // diffuse set uses; binding 6 is the lobe's reprojection, which is what mode 1 actually reprojects by.
-        std::array<VkImageView, 7> const signature = {spec_trace[0], spec_history[0], velocity[0], depth[0], spec_resolve[0], normals[0], spec_reproject[0]};
-        auto const write_sets = [&services, spec_trace, spec_history, velocity, depth, spec_resolve, normals, spec_reproject](uint32_t const image_index,
-                                                                                                                              std::span<VkDescriptorSet const> const sets) {
-            std::array<VkImageView, 7> const views = {
-                spec_trace[image_index], spec_history[image_index], velocity[image_index], depth[image_index], spec_resolve[image_index], normals[image_index], spec_reproject[image_index]};
-            // The write is GENERATED from the pass's declaration, exactly as the pass's own family does it: the
-            // binding numbers, the descriptor types, the layouts and the sampler are the declaration's, so this
-            // family cannot drift from the layout it shares with the pass.
-            auto const written = bindings::write_set(services.device, render_resource::ssgi_temporal_io, render_resource::ssgi_temporal_io.own_set, sets[0], views, {}, services.samplers);
-            if (!written) {
-                // NO FORMAT ARGUMENT: see the note on the log above (clang 22.1.8 crashes on a formatted one here).
-                utility::log("render_start_demo: the reflection's descriptor set could not be written");
-            }
-        };
-        if (!this->reflection_family_.ensure(services.device, set_layout, static_cast<uint32_t>(image_count), 1u, descriptors_per_set, signature, write_sets)) {
-            utility::log("render_start_demo: the reflection's descriptor sets are unavailable - this frame's reflection is not resolved");
-        }
-    }
-
-    void render_start_demo::record_reflection(void* const owner, VkCommandBuffer const command_buffer, [[maybe_unused]] bool const history_valid) {
-        render_start_demo& self = *static_cast<render_start_demo*>(owner);
-        runtime::frame_services const& services = self.services_;
-        // The command buffer the pass handed us IS the frame's (services.cmd was built for the same frame), so the
-        // recording below reads it from the toolkit rather than threading it through - and the parameter is kept
-        // because the pass's callback signature says what it passes.
-        static_cast<void>(command_buffer);
-        bool spec_resolved = false;
-        // THE SAME PREDICATE THE LOBE'S OWN FEATURE USES (`ssgi_specular`: the knob, hit shading, the traced path and
-        // the pass's pipeline): the reflection is resolved exactly when the lobe ran, which is what keeps the
-        // spatial filter's `spec_weight` lane and the accumulation in step. Asking the registry rather than the
-        // pass's readiness is the difference this line exists for - a lobe that is OFF must not have its
-        // accumulation advanced.
-        bool const lobe_runs = self.runtime_ != nullptr && self.runtime_->feature_active("ssgi_specular");
-        if (lobe_runs && services.table != nullptr) {
-            uint32_t const image_index = services.frame.image_index;
-            VkDescriptorSet const spec_set = self.reflection_family_.set(image_index, 0);
-            pass::resolved_binding const resolve = services.table->find(render_resource::resource_id::gi_spec_resolve, 0, image_index);
-            pass::resolved_binding const history = services.table->find(render_resource::resource_id::gi_spec_history, 0, image_index);
-            if (spec_set != VK_NULL_HANDLE && resolve.image != VK_NULL_HANDLE && history.image != VK_NULL_HANDLE) {
-                spec_resolved = self.record_resolve(services, spec_set, resolve.image, history.image, history_valid);
-            }
-        }
-        // THE FRAME'S ANSWER: the spatial filter's `spec_weight` lane is read from it, and the filter resolves AFTER
-        // this callback (the temporal pass calls it at the end of its own recording), so the value it copies out of
-        // the frame's constants is this frame's. See frame_constants::gi_spec_resolved.
-        if (self.runtime_ != nullptr) {
-            self.runtime_->set_gi_spec_resolved(spec_resolved);
-        }
     }
 
     bool render_start_demo::record_resolve(runtime::frame_services const& services, VkDescriptorSet const set, VkImage const resolve_image, VkImage const history_image,
