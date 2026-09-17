@@ -116,7 +116,6 @@ namespace vulkan {
          * chain has recorded (it reads it back from the chain's last pass) and the composite records after that,
          * so a pass reading it reads the value as of its OWN resolution - the only point where the answer exists.
          */
-        bool gi_resolved = false;
         /**
          * Whether THIS frame's REFLECTION accumulation was resolved, which the spatial filter's `spec_weight` lane
          * is read from: a frame whose reflection's descriptor set could not be had must not sum an older
@@ -128,7 +127,6 @@ namespace vulkan {
          * resolves. (The renderer kept this in a member until the filter's own push block moved into the filter;
          * a member is a second copy of a frame fact the moment the pass that reads it can read this one.)
          */
-        bool gi_spec_resolved = false;
         /**
          * The instance table this frame HAS, as a device address; 0 means "this frame has none" (no acceleration
          * structures), and a shader that reads it must fall back (the marched oracle distinguishes hit faces by
@@ -147,7 +145,6 @@ namespace vulkan {
          * same frame is about to replace. The value is this frame's the moment the structures exist, which is the
          * point the chain starts at.
          */
-        uint64_t gi_instance_table = 0;
         /**
          * The ray sequence this frame's GI dispatches seed themselves with, so that two frames do not trace the
          * SAME rays (an estimator that repeated its samples would only average its own noise).

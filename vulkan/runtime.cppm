@@ -279,11 +279,9 @@ namespace vulkan {
                              // forward path, where both of those happen inside the scene instance)
             taa_end,         // after the TAA resolve + its history copy (~0 when TAA is off)
             main_end,        // after the last scene-side work of the frame (the debug view, when it runs)
-            gi_end,          // after the screen-space GI chain (~0 when GI is off). Its own mark because
                              // those passes are the only compute work in the post chain: without it their
                              // cost was reported as bloom time, which is where a traced GI's price was
                              // invisible in the one report a user reads
-            gi_probe_end,    // after the world-space probe cache's dispatches (~0 when it is off). Its
                              // own mark for the same reason gi_end has one: it is compute work in the
                              // same stretch of the frame, and folding it into "gi" would hide which of
                              // the two the GI budget is going to
@@ -315,8 +313,6 @@ namespace vulkan {
             {"lighting", false},
             {"taa", false},
             {"debug", true},
-            {"gi", false},
-            {"gi probe", false},
             {"bloom", false},
             {"composite", false},
             {"fxaa", false},
@@ -551,7 +547,6 @@ namespace vulkan {
          * and is flat after that, so the widening has to be gone well before then or it would be a permanent
          * blur rather than a cold-start transient.
          */
-        static constexpr float gi_cold_start_frames = 32.0f;
         /**
          * Per swapchain image: how many frames its current GI accumulation has had.
          *
@@ -560,7 +555,6 @@ namespace vulkan {
          * the asymptote (`1 - 1/N`), which says nothing about how far along the ramp is (see
          * `frame_facts::gi_cold_start`).
          */
-        std::vector<uint32_t> gi_frames_accumulated = {};
         // The GI history is accumulated with its OWN weights rather than TAA's, and they are the temporal PASS's
         // aliasing, so it wants a longer memory, and it must not be tuned by whatever the AA sliders are set to.
         // view distance, so one value means the same thing near and far, and both are read by the composite's
@@ -1454,7 +1448,6 @@ namespace vulkan {
             /// the runtime's own predicates, each of which the renderer also acts on (see the list above)
             bool gbuffer_pass = false; // gbuffer_pass_active(): the surface pipeline exists and this frame shades
             bool deferred_lit = false; // deferred_lit_active(): the lighting stage is this frame's shading path
-            bool ssgi = false;         // ssgi_active(): the knob, all three GI pipelines, the deferred path
             bool megalights = false;   // megalights_active(): the knob, the pass, and the deferred shading path
             bool ssgi_traced = false;  // ssgi_traced_active(): the above plus ray queries and this frame's structure
             bool ssgi_probes = false;  // gi_probe_active(): the cache's knob, its pipeline and the chain
@@ -2692,7 +2685,6 @@ namespace vulkan {
         struct render_features {
             bool unlit = false;         // the flat render mode (no lighting anywhere)
             bool gbuffer_debug = false; // the opaque pass stores the G-buffer for the debug view
-            bool ssgi = false;          // trace one bounce of screen-space diffuse indirect
             bool ssgi_probes = false;   // update the world-space probe cache (the pass, not the tracer's fallback)
             bool shadow = false;        // record the directional shadow pass
             bool rt_shadow = false;     // record the ray-traced shadow pass (the knob, ray queries, its pipeline)

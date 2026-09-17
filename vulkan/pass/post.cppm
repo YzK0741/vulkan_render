@@ -194,7 +194,6 @@ export namespace vulkan::pass {
          * It is read by the composite alone (the spatial filter has its own criterion), so it lives here rather
          * than in the frame's settings - the rule `vulkan.frame_constants::render_settings` states.
          */
-        void set_gi_upsample(bool enabled) noexcept;
 
         /// @brief install the host's overlay hook (recorded inside this pass's instance when it is the last writer)
         void set_overlay(draw_callback overlay) noexcept;
@@ -232,7 +231,6 @@ export namespace vulkan::pass {
         /// frame's target choice), and a session-stable device fact is exactly what a create step may cache
         VkFormat swap_chain_format_ = VK_FORMAT_UNDEFINED;
         /// the GI upsample's lane (see set_gi_upsample)
-        bool gi_upsample_ = true;
         /// the host's overlay hook, installed once (see set_overlay); the frame decides whether this pass uses it
         draw_callback overlay_ = {};
         composite_frame frame_ = {};

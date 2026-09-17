@@ -163,10 +163,6 @@ namespace vulkan::pass {
         this->set_frame(frame);
     }
 
-    void post_composite_pass::set_gi_upsample(bool const enabled) noexcept {
-        this->gi_upsample_ = enabled;
-    }
-
     bool post_composite_pass::resolve(resolve_context const& context, resolved_io& out) const {
         if (!resolve_declaration(*this, context, out)) {
             return false;

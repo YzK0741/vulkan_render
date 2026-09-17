@@ -285,7 +285,7 @@ namespace {
     };
 
     // the names are `vulkan.runtime`'s own pipeline keys, which is what makes this cost nothing new
-    constexpr std::array<std::string_view, 1> compute_pipeline_names = {"gi_probe"};
+    constexpr std::array<std::string_view, 1> compute_pipeline_names = {"megalights_trace"};
     constexpr std::array<std::string_view, 2> fullscreen_pipeline_names = {"post_composite", "fxaa"};
     /// the fullscreen fake pass also declares one render TARGET: an attachment is a use that cannot be a
     /// descriptor, so it is declared in its own list (see vulkan.render_resource::render_target)

@@ -3112,13 +3112,6 @@ namespace vulkan {
             .megalights = this->megalights_active(),
             .megalights_resolved = this->megalights_resolved,
             .megalights_history_valid = index < this->megalights_history_valid.size() && this->megalights_history_valid[index],
-            // The cold-start amount the temporal resolve widens by: 1 while this image's accumulation has no
-            // frames in it, falling to 0 once `gi_cold_start_frames` frames have landed. A PIXEL's history can
-            // restart earlier than the image's (it was off screen, or its depth disagreed); those cases are the
-            // shader's own guards, and this is the image-wide part they cannot see.
-            .gi_cold_start = index < this->gi_frames_accumulated.size()
-                                 ? std::max(0.0f, 1.0f - static_cast<float>(this->gi_frames_accumulated[index]) / gi_cold_start_frames)
-                                 : 0.0f,
             .fxaa_resolves = this->post_fxaa_active(),
             .debug_view = this->active_features().gbuffer_debug,
             .cluster_count = this->cluster_tiles_x * this->cluster_tiles_y * vulkan::cluster_slice_count,
@@ -3744,26 +3737,12 @@ namespace vulkan {
         //
         // through the temporal pass's callback, and a frame whose reflection did not run must not leave the
         // previous frame's answer for the filter's `spec_weight` lane to read.
-        //
-        // THE TWO FACTS THE TRACING STAGES SHARE go in here as well, and this is the earliest point they CAN be
-        // this frame's: the instance table belongs to a buffer the structure phase above (re)builds, so an address
-        // read in `update_frame_constants` - which runs before that phase - could be a buffer this same frame is
-        // about to replace. The address is the table this frame HAS and nothing more: the hit-shading gate belongs
-        // to the stages that push it, and they do not agree about it (see frame_constants::gi_instance_table).
-        uint64_t instance_table = 0;
-        if (this->structures.ready()) {
-            VkBuffer const table = this->structures.instance_table(static_cast<uint32_t>(vk.current_frame));
-            if (table != VK_NULL_HANDLE) {
-                VkBufferDeviceAddressInfo const table_info = {.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .pNext = nullptr, .buffer = table};
-                instance_table = vkGetBufferDeviceAddress(vk.device, &table_info);
-            }
-        }
-        this->frame_facts.gi_instance_table = instance_table;
+        // The instance table's device address, which the traced chain's hit-shading gate needed, was read here
+        // (frame_constants::gi_instance_table). Both the gate and the field went with the chain.
 
         // GPU timing: the GI chain ends here (trace, temporal resolve, spatial filter; the composite's
         // bilateral upsample is part of the composite). Written unconditionally like every mark, so a
         // frame with GI off reports 0 ms and the positional labels stay aligned.
-        this->gpu_mark(command_buffer, gpu_mark_id::gi_end, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
 
         // The world-space probe cache, last in the GI stretch: it deposits THIS frame's resolved GI into
         // the cells the frame can see, so it has to run after the spatial filter (the image it reads is

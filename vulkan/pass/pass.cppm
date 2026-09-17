@@ -580,9 +580,7 @@ export namespace vulkan::pass {
      */
     struct frame_facts {
         /// `ssgi_traced_active()`: the GI knob AND ray queries AND this frame's top level structure
-        bool gi_traced = false;
         /// `ssgi_specular_active()`: the lobe's knob AND hit shading AND this frame's structure (see the note above)
-        bool gi_specular = false;
         /**
          * `megalights_active()`: the stochastic punctual lighting knob AND its pass AND the deferred shading
          * path. Published as a FRAME fact rather than read from the knob because the DEFERRED LIGHTING STAGE
@@ -608,7 +606,6 @@ export namespace vulkan::pass {
          */
         bool megalights_history_valid = false;
         /// whether the accumulation the temporal resolve blends into exists FOR THIS IMAGE
-        bool gi_history_valid = false;
         /**
          * How much the diffuse accumulation is still COLD: 1 = it restarted this frame, 0 = converged
          * (`runtime::gi_cold_start_frames` is the ramp's length, `vulkan.pass.ssgi_temporal` applies it).
@@ -621,7 +618,6 @@ export namespace vulkan::pass {
          * UE's spatial denoiser drives the same kind of widening from its frames-accumulated texture
          * (LumenReflectionDenoiserSpatial.usf:81-86).
          */
-        float gi_cold_start = 0.0f;
         /// `post_fxaa_active()`: the FXAA knob and the pass having built its pipeline, i.e. who writes the LDR image
         bool fxaa_resolves = false;
         /// the composed `gbuffer-debug` answer (see the note above), which is what suppresses the bloom sum
