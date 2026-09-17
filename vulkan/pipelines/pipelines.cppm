@@ -97,13 +97,11 @@ namespace vulkan::pipelines {
     export std::expected<gbuffer_owned, std::string> build_gbuffer_debug(VkDevice device, VkDescriptorSetLayout gbuffer_set_layout, uint32_t push_constant_size, std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code);
     export std::expected<taa_owned, std::string> build_taa(VkDevice device, VkDescriptorSetLayout pass_set_layout, uint32_t push_constant_size, std::span<unsigned char const> vertex_shader_code,
                                                            std::span<unsigned char const> fragment_shader_code);
-    export std::expected<ssgi_owned, std::string> build_ssgi(VkDevice device, VkDescriptorSetLayout scene_layout, VkDescriptorSetLayout gbuffer_layout, uint32_t push_constant_size,
-                                                             std::span<unsigned char const> compute_shader_code);
+
     /// the spatial half of the same denoiser: same two set layouts, same shape, its own push block
-    export std::expected<ssgi_owned, std::string> build_ssgi_spatial(VkDevice device, VkDescriptorSetLayout scene_layout, VkDescriptorSetLayout gbuffer_layout, uint32_t push_constant_size, std::span<unsigned char const> compute_shader_code);
+
     /// the glossy lobe (see shaders/ssgi_spec.comp) - the tracer's set layouts and its own push block
-    export std::expected<ssgi_owned, std::string> build_ssgi_spec(VkDevice device, VkDescriptorSetLayout scene_layout, VkDescriptorSetLayout gbuffer_layout, uint32_t push_constant_size,
-                                                                  std::span<unsigned char const> compute_shader_code);
+
     /// the ray-traced sun shadow: the same two set layouts as the GI tracer (the scene set carries the
     /// camera, the light UBO and - when the device has ray tracing - the top level structure; the
     /// G-buffer set carries the surface the ray starts from)
@@ -151,9 +149,6 @@ namespace vulkan::pipelines {
         VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
         std::optional<vk_pipeline> pass;
     };
-
-    export std::expected<gi_probe_owned, std::string> build_gi_probe(VkDevice device, VkDescriptorSetLayout scene_layout, VkDescriptorSetLayout pass_set_layout, uint32_t push_constant_size,
-                                                                     std::span<unsigned char const> compute_shader_code);
 
     /// the passes that reuse a layout someone else owns, so theirs comes in as a parameter
     export std::expected<vk_pipeline, std::string> build_fxaa(VkDevice device, VkFormat swap_chain_format, VkPipelineLayout post_pipeline_layout, std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code);
@@ -419,48 +414,6 @@ namespace vulkan::pipelines {
     // G-buffer set) because that is where its inputs already are: the camera UBO, the stored
     // surface, the direct-radiance image and the GI image it writes. Creating a third layout for
     // this pass alone would mean duplicating four descriptor writes to gain nothing.
-    std::expected<ssgi_owned, std::string> build_ssgi(VkDevice const device, VkDescriptorSetLayout const scene_layout, VkDescriptorSetLayout const gbuffer_layout, uint32_t const push_constant_size, std::span<unsigned char const> const compute_shader_code) {
-        using fail = std::unexpected<std::string>;
-        ssgi_owned out;
-
-        VkPushConstantRange push_range = {};
-        push_range.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-        push_range.offset = 0;
-        push_range.size = push_constant_size;
-
-        std::array<VkDescriptorSetLayout, 2> const set_layouts = {scene_layout, gbuffer_layout};
-        VkPipelineLayoutCreateInfo pipeline_layout_info = {};
-        pipeline_layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-        pipeline_layout_info.setLayoutCount = static_cast<uint32_t>(set_layouts.size());
-        pipeline_layout_info.pSetLayouts = set_layouts.data();
-        pipeline_layout_info.pushConstantRangeCount = 1;
-        pipeline_layout_info.pPushConstantRanges = &push_range;
-        if (vkCreatePipelineLayout(device, &pipeline_layout_info, nullptr, &out.pipeline_layout) != VK_SUCCESS) {
-            return fail("ssgi: pipeline layout creation failed");
-        }
-
-        std::optional<vk_shader_module> const module = make_shader_module(compute_shader_code, device);
-        if (!module.has_value()) {
-            return fail("ssgi: compute shader module creation failed");
-        }
-        VkPipelineShaderStageCreateInfo stage_info = {};
-        stage_info.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-        stage_info.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-        stage_info.module = **module;
-        stage_info.pName = "main"; // the SPIR-V entry point, as everywhere else
-
-        VkComputePipelineCreateInfo pipeline_info = {};
-        pipeline_info.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-        pipeline_info.stage = stage_info;
-        pipeline_info.layout = out.pipeline_layout;
-
-        VkPipeline pipeline = VK_NULL_HANDLE;
-        if (vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &pipeline) != VK_SUCCESS) {
-            return fail("ssgi: vkCreateComputePipelines failed");
-        }
-        out.trace = vk_pipeline(pipeline, out.pipeline_layout, device);
-        return out;
-    }
 
     // The mask bake (see shaders/mask_bake.comp): a compute pipeline over the shared scene set ALONE, because
     // everything it needs is there - the material table for the alpha texture's index and the cutoff, and the
@@ -662,96 +615,12 @@ namespace vulkan::pipelines {
     // The GI spatial filter: the same two set layouts the tracer binds (the shared scene set and the
     // G-buffer set, which carries the normal, the depth, the accumulated image it reads and the
     // filtered image it writes), so only the pipeline layout and the push block are new.
-    std::expected<ssgi_owned, std::string> build_ssgi_spatial(VkDevice device, VkDescriptorSetLayout const scene_layout, VkDescriptorSetLayout const gbuffer_layout, uint32_t const push_constant_size, std::span<unsigned char const> const compute_shader_code) {
-        using fail = std::unexpected<std::string>;
-        ssgi_owned out;
-
-        VkPushConstantRange push_range = {};
-        push_range.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-        push_range.offset = 0;
-        push_range.size = push_constant_size;
-
-        std::array<VkDescriptorSetLayout, 2> const set_layouts = {scene_layout, gbuffer_layout};
-        VkPipelineLayoutCreateInfo pipeline_layout_info = {};
-        pipeline_layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-        pipeline_layout_info.setLayoutCount = static_cast<uint32_t>(set_layouts.size());
-        pipeline_layout_info.pSetLayouts = set_layouts.data();
-        pipeline_layout_info.pushConstantRangeCount = 1;
-        pipeline_layout_info.pPushConstantRanges = &push_range;
-        if (vkCreatePipelineLayout(device, &pipeline_layout_info, nullptr, &out.pipeline_layout) != VK_SUCCESS) {
-            return fail("ssgi spatial: pipeline layout creation failed");
-        }
-
-        std::optional<vk_shader_module> const module = make_shader_module(compute_shader_code, device);
-        if (!module.has_value()) {
-            return fail("ssgi spatial: compute shader module creation failed");
-        }
-        VkPipelineShaderStageCreateInfo stage_info = {};
-        stage_info.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-        stage_info.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-        stage_info.module = **module;
-        stage_info.pName = "main";
-
-        VkComputePipelineCreateInfo pipeline_info = {};
-        pipeline_info.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-        pipeline_info.stage = stage_info;
-        pipeline_info.layout = out.pipeline_layout;
-
-        VkPipeline pipeline = VK_NULL_HANDLE;
-        if (vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &pipeline) != VK_SUCCESS) {
-            return fail("ssgi spatial: vkCreateComputePipelines failed");
-        }
-        out.trace = vk_pipeline(pipeline, out.pipeline_layout, device);
-        return out;
-    }
 
     // The glossy lobe (see shaders/ssgi_spec.comp): the tracer's two set layouts again and a push block of
     // its own. It is a separate pass rather than a branch in the tracer for two reasons - the tracer's push
     // block is exactly 128 bytes (the smallest range Vulkan guarantees) and has no lane left for a ray
     // count, and a pass that is not recorded cannot perturb the frame at all, which is a stronger statement
     // than "a branch that arithmetically cancels".
-    std::expected<ssgi_owned, std::string> build_ssgi_spec(VkDevice const device, VkDescriptorSetLayout const scene_layout, VkDescriptorSetLayout const gbuffer_layout, uint32_t const push_constant_size, std::span<unsigned char const> const compute_shader_code) {
-        using fail = std::unexpected<std::string>;
-        ssgi_owned out;
-
-        VkPushConstantRange push_range = {};
-        push_range.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-        push_range.offset = 0;
-        push_range.size = push_constant_size;
-
-        std::array<VkDescriptorSetLayout, 2> const set_layouts = {scene_layout, gbuffer_layout};
-        VkPipelineLayoutCreateInfo pipeline_layout_info = {};
-        pipeline_layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-        pipeline_layout_info.setLayoutCount = static_cast<uint32_t>(set_layouts.size());
-        pipeline_layout_info.pSetLayouts = set_layouts.data();
-        pipeline_layout_info.pushConstantRangeCount = 1;
-        pipeline_layout_info.pPushConstantRanges = &push_range;
-        if (vkCreatePipelineLayout(device, &pipeline_layout_info, nullptr, &out.pipeline_layout) != VK_SUCCESS) {
-            return fail("ssgi spec: pipeline layout creation failed");
-        }
-
-        std::optional<vk_shader_module> const module = make_shader_module(compute_shader_code, device);
-        if (!module.has_value()) {
-            return fail("ssgi spec: compute shader module creation failed");
-        }
-        VkPipelineShaderStageCreateInfo stage_info = {};
-        stage_info.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-        stage_info.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-        stage_info.module = **module;
-        stage_info.pName = "main";
-
-        VkComputePipelineCreateInfo pipeline_info = {};
-        pipeline_info.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-        pipeline_info.stage = stage_info;
-        pipeline_info.layout = out.pipeline_layout;
-
-        VkPipeline pipeline = VK_NULL_HANDLE;
-        if (vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &pipeline) != VK_SUCCESS) {
-            return fail("ssgi spec: vkCreateComputePipelines failed");
-        }
-        out.trace = vk_pipeline(pipeline, out.pipeline_layout, device);
-        return out;
-    }
 
     // The GI temporal resolve: its own set layout, because it groups four things no other pass puts
     // together (the raw trace, the accumulated history, the motion vectors and the depth). It binds
@@ -810,67 +679,7 @@ namespace vulkan::pipelines {
     // resolved GI, the depth, and the grid image it is reading - and 3 is the STORAGE 3D image it
     // writes, plus the per-cell surface offsets the filter tests visibility with, which is why two bindings
     // differ from the rest.
-    std::expected<gi_probe_owned, std::string> build_gi_probe(VkDevice const device, VkDescriptorSetLayout const scene_layout, VkDescriptorSetLayout const pass_set_layout, uint32_t const push_constant_size,
-                                                              std::span<unsigned char const> const compute_shader_code) {
-        using fail = std::unexpected<std::string>;
-        gi_probe_owned out;
 
-        // THE SET LAYOUT IS THE PASS'S. Nine bindings - the four SH-2 coefficient images being READ (0..3),
-        // the four being WRITTEN (4..7), and the per-cell surface offsets the propagation tests visibility
-        // with (8) - generated from `vulkan.render_resource::gi_probe_io` by the pass that declares them
-        // (`vulkan.pass.gi_probe`), which is also where the descriptor WRITES come from. One fact, one
-        // source: that is what removed the pair of hand-written halves that drifted twice in this project's
-        // history (a pool sized for four descriptors per set while the layout asked for five, and a binding
-        // whose type changed without its writer noticing).
-        //
-        // THAT THE GENERATED LAYOUT IS THE ONE THIS FUNCTION USED TO CARRY IS ASSERTED BY THE CAPTURE GATE,
-        // not by a comment: `sponza_gi` is the scenario that runs with the probe cache ON, so its frame is
-        // compared byte for byte across the change.
-        if (pass_set_layout == VK_NULL_HANDLE) {
-            return fail("gi probe: the pass has no set layout yet (its create step must run first)");
-        }
-
-        // The shared scene set comes FIRST, because the tracing this pass will do needs what the tracer
-        // already has: the top level structure, the material records, the texture array, the light UBO.
-        std::array<VkDescriptorSetLayout, 2> const set_layouts = {scene_layout, pass_set_layout};
-
-        VkPushConstantRange push_range = {};
-        push_range.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-        push_range.offset = 0;
-        push_range.size = push_constant_size;
-
-        VkPipelineLayoutCreateInfo pipeline_layout_info = {};
-        pipeline_layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-        pipeline_layout_info.setLayoutCount = static_cast<uint32_t>(set_layouts.size());
-        pipeline_layout_info.pSetLayouts = set_layouts.data();
-        pipeline_layout_info.pushConstantRangeCount = 1;
-        pipeline_layout_info.pPushConstantRanges = &push_range;
-        if (vkCreatePipelineLayout(device, &pipeline_layout_info, nullptr, &out.pipeline_layout) != VK_SUCCESS) {
-            return fail("gi probe: pipeline layout creation failed");
-        }
-
-        std::optional<vk_shader_module> const module = make_shader_module(compute_shader_code, device);
-        if (!module.has_value()) {
-            return fail("gi probe: compute shader module creation failed");
-        }
-        VkPipelineShaderStageCreateInfo stage_info = {};
-        stage_info.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-        stage_info.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-        stage_info.module = **module;
-        stage_info.pName = "main";
-
-        VkComputePipelineCreateInfo pipeline_info = {};
-        pipeline_info.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-        pipeline_info.stage = stage_info;
-        pipeline_info.layout = out.pipeline_layout;
-
-        VkPipeline pipeline = VK_NULL_HANDLE;
-        if (vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &pipeline) != VK_SUCCESS) {
-            return fail("gi probe: vkCreateComputePipelines failed");
-        }
-        out.pass = vk_pipeline(pipeline, out.pipeline_layout, device);
-        return out;
-    }
     std::expected<deferred_owned, std::string> build_deferred(VkDevice device, VkDescriptorSetLayout const scene_layout, VkDescriptorSetLayout const gbuffer_layout, uint32_t const push_constant_size, std::span<VkPipelineColorBlendAttachmentState const> const color_blend, std::span<unsigned char const> const vertex_shader_code, std::span<unsigned char const> const fragment_shader_code) {
         using fail = std::unexpected<std::string>;
         deferred_owned out;
