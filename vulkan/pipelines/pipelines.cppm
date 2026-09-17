@@ -62,8 +62,8 @@ namespace vulkan::pipelines {
      * @brief the G-BUFFER set's layout, on its own
      *
      * SEPARATE FROM `build_gbuffer_debug` FOR THE SAME REASON `make_post_set_layout` is separate from `build_post`:
-     * the sixteen bindings describe how the RENDERER writes the G-buffer sets (the stored surface, the GI chain's
-     * images, the probe cache's coefficient volumes, the lobe's two outputs and the reflection's accumulation), and
+     * the sixteen bindings describe how the RENDERER writes the G-buffer sets (the stored surface, the chain's
+     * images, a removed pass's coefficient volumes, the lobe's two outputs and the reflection's accumulation), and
      * the runtime owns that family - so the runtime creates the layout, hands it to every pass that binds the set
      * (`pass_context::shared_set_layout(owner, 1)`) and uses the same object for the family it writes.
      */
@@ -268,7 +268,7 @@ namespace vulkan::pipelines {
         // PUNCTUAL LIGHTING chain (docs/megalights.md): 6 is the storage image its trace writes and 7 is the
         // sampler the lighting stage adds the temporal resolve's output through - the two ends of one
         // half-resolution signal. Together with albedo, normal, material, depth and velocity that is EIGHT
-        // bindings. The traced GI chain's ten (5..15 in the old numbering) went with it, which is why the
+        // bindings. A set that once carried sixteen is back to eight, which is why the
         // lighting chain's pair sits at 6/7 rather than 16/17: a descriptor set layout's binding numbers need
         // not be contiguous, but the owner writes them by index, so a gap is not free.
         std::array<VkDescriptorSetLayoutBinding, 8> bindings = {};
@@ -381,7 +381,7 @@ namespace vulkan::pipelines {
 
     // The mask bake (see shaders/mask_bake.comp): a compute pipeline over the shared scene set ALONE, because
     // everything it needs is there - the material table for the alpha texture's index and the cutoff, and the
-    // bindless texture array to sample it. It owns no set layout, like the tracer, and it is the only compute
+    // bindless texture array to sample it. It owns no set layout, like every traced compute pass, and it is the only compute
     // pass here whose output is not an image: it writes vertices into a buffer the acceleration structure is
     // then built from.
     std::expected<compute_pipeline_owned, std::string> build_mask_bake(VkDevice device, VkDescriptorSetLayout const scene_layout, uint32_t const push_constant_size, std::span<unsigned char const> const compute_shader_code) {
@@ -514,7 +514,7 @@ namespace vulkan::pipelines {
         return out;
     }
 
-    // The ray-traced sun shadow: a COMPUTE pipeline over the same two set layouts the GI tracer uses,
+    // The ray-traced sun shadow: a COMPUTE pipeline over the same two set layouts the traced compute passes use,
     // because its inputs are in the same places (the camera block and the light UBO in the scene set,
     // the stored surface in the G-buffer set) plus the top level structure, which lives in the scene set
     // as binding 16 when the device has ray tracing. Nothing new is created here beyond the layout.
@@ -631,12 +631,6 @@ namespace vulkan::pipelines {
         out.resolve = vk_pipeline(pipeline, out.pipeline_layout, device);
         return out;
     }
-
-    // The world-space probe cache: injection and propagation share one pipeline (the mode is a push
-    // constant), so there is one shader and one layout. 0..2 are the samplers it reads - this frame's
-    // resolved GI, the depth, and the grid image it is reading - and 3 is the STORAGE 3D image it
-    // writes, plus the per-cell surface offsets the filter tests visibility with, which is why two bindings
-    // differ from the rest.
 
     std::expected<deferred_owned, std::string> build_deferred(VkDevice device, VkDescriptorSetLayout const scene_layout, VkDescriptorSetLayout const gbuffer_layout, uint32_t const push_constant_size, std::span<VkPipelineColorBlendAttachmentState const> const color_blend, std::span<unsigned char const> const vertex_shader_code, std::span<unsigned char const> const fragment_shader_code) {
         using fail = std::unexpected<std::string>;

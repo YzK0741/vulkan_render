@@ -200,22 +200,10 @@ void main() {
     si.albedo = albedo_metallic.rgb;
     si.metallic = albedo_metallic.a;
     si.roughness = normal_roughness.w;
-    // ambient occlusion: the material's baked AO map times the screen-space term (M6). With SSAO
-    // off ssao_occlusion() returns exactly 1.0, so this is the pre-M6 value bit for bit - and with the
-    // traced chain running it is ALSO exactly 1.0, because that chain replaces both ambient terms and
-    // answers un-occluded (see the push block's gi_replaces_ambient). It now scales the SPECULAR ambient
-    // alone - the diffuse one is not added on this path at all (`diffuse_ambient_scale` below) - but it is
-    // still exactly 1.0 there, because the lobe's own subtraction evaluates that term un-occluded too.
-    // Skipping the computation rather than multiplying by it is what makes an SSAO-on and an SSAO-off
-    // traced frame BIT-IDENTICAL, which is the acceptance for that: on a traced frame the rays are the
-    // occlusion.
+    // ambient occlusion: the material's baked AO map times the screen-space term (M6). With SSAO off
+    // ssao_occlusion() returns exactly 1.0, so this is the pre-M6 value bit for bit. It scales the IBL
+    // ambient (diffuse and specular) and never the direct sun.
     si.ao = material.b * ssao_occlusion(v_uv, depth, si.normal);
-    // The diffuse ambient's own switch, and the ONE place the traced chain's replacement of that term is
-    // expressed on this side: 0 means the chain already carries it, so this stage adds none of it. Its own
-    // comment (shade_input::diffuse_ambient_scale) has the measurement that moved it here.
-    // emissive is NOT re-evaluated here: the G-buffer pass already added it into the HDR target,
-    // because it needs the material's emissive texture and the UVs - neither of which the G-buffer
-    // stores (see gbuffer.frag). Adding it again would double it.
     si.emissive = vec3(0.0);
     // Ray-traced sun visibility, or NEGATIVE to keep the cascaded shadow maps: the flag is the light
     // UBO's, and it is only ever set when the pass ran and the device has ray queries - so a frame with
@@ -244,7 +232,7 @@ void main() {
         const vec2 base = floor(v_uv * ml_extent - 0.5);
         const float view_here = -length(si.world_pos - camera.camera_pos.xyz);
         // The tolerance is relative to the pixel's own view distance: the same absolute depth error means far
-        // less at 5 units than at 50 (the argument the GI chain's filters make).
+        // less at 5 units than at 50 (the argument the chain's filters make).
         const float depth_tolerance = max(0.02 * abs(view_here), 1e-5);
         vec3 ml_sum = vec3(0.0);
         float ml_weight_sum = 0.0;

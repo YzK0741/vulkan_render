@@ -302,12 +302,12 @@ namespace vulkan {
         std::vector<VkDeviceMemory> velocity_image_memories = {};
         std::vector<VkImageView> velocity_image_views = {};
 
-        // ---- the traced GI chain's images ----
+        // ---- the stochastic punctual lighting chain's images ----
         // Its raw trace, its accumulation, its history and its spatial filter's output (four half-resolution
         // families) stood here. They went with the chain. The half-resolution pair below belongs to the
         // stochastic punctual lighting chain, which is a different feature that happens to share the size.
         // The stochastic PUNCTUAL LIGHTING chain's first image (see docs/megalights.md): the raw estimate
-        // the trace writes, at half resolution like the GI chain's - STORAGE for the compute pass that
+        // the trace writes, at half resolution - STORAGE for the compute pass that
         // writes it and SAMPLED for the lighting stage that adds it. One per swapchain image, because what
         // it holds depends on the frame's jittered camera.
         std::vector<VkImage> ml_images = {};
@@ -322,12 +322,6 @@ namespace vulkan {
         std::vector<VkImage> ml_history_images = {};
         std::vector<VkDeviceMemory> ml_history_image_memories = {};
         std::vector<VkImageView> ml_history_image_views = {};
-        // ... and the GLOSSY lobe's four families - its two outputs, the reflection's own accumulation and the
-        // reflection's history - stood here. They went with the traced chain's specular lobe, whose whole reason
-        // for existing was a reprojection of its own.
-
-        // ---- the world-space radiance probe cache ----
-        // Its eight 3D radiance images (four SH-2 coefficients per side of the propagation's ping-pong) and the
         // per-cell surface-offset image stood here, with the sampler that read them. The cache was the traced
         // chain's answer for the hits the screen cannot resolve; it is gone.
         // The furnace verification mode's constant environment: one texel per face, all six faces at the

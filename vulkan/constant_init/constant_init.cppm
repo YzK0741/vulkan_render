@@ -808,8 +808,7 @@ export namespace vulkan {
         .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
     };
     /** @brief GENERAL -> GENERAL: one compute storage-image write followed by another dispatch that
-     *         reads it and writes again - the ping-pong of the world-space probe cache, whose two grid
-     *         images stay in GENERAL for a whole update.
+     *         reads it and writes again - a ping-pong's two images, which stay in GENERAL for a whole update.
      * @note a SAME-layout barrier, which is not a no-op: it is the memory dependency between two
      *       dispatches that touch the same image, and consecutive vkCmdDispatch calls in one command
      *       buffer have none. The layout is named anyway so the barrier reads like every other one here.

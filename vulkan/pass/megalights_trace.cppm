@@ -124,8 +124,8 @@ export namespace vulkan::pass {
         float light_angle_ = 0.0f;
         /**
          * The ray sequence's frame counter, and it is the PASS's rather than the frame's because this chain
-         * has no other reader: the GI chain's counter lives in the renderer because TWO of its stages trace
-         * (the tracer and the glossy lobe share one sequence), while here one pass does. What it is FOR is the
+         * has no other reader: the chain's counter lives in the renderer because TWO of its stages trace
+         * (two of its stages share one sequence), while here one pass does. What it is FOR is the
          * same in both: a fixed sequence would feed the temporal resolve the same error in the same place
          * every frame instead of an average of different ones.
          */

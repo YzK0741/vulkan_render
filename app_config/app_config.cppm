@@ -182,7 +182,7 @@ namespace app_config {
         bool rt_skin_bake = false;
         // The furnace verification mode ([render] furnace): the sun is turned off and the environment becomes
         // a constant level, so the correct frame is computable by hand - a diffuse surface's outgoing
-        // radiance is exactly albedo * L, and a GI chain that adds anything on top of it is double counting.
+        // radiance is exactly albedo * L, so anything added on top of it is double counting.
         // It is the one reference in this project that no estimator of its own can flatter, because it is not
         // an estimator. Off by default, and off is byte-exact.
         bool furnace = false;

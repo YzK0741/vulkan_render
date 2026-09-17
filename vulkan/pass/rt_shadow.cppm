@@ -2,7 +2,7 @@
 
 /**
  * @file vulkan/pass/rt_shadow.cppm
- * @brief The ninth real pass, and the first one that is NOT part of the GI chain: the ray-traced sun shadow.
+ * @brief The ninth real pass, and the only one that traces outside the chain: the ray-traced sun shadow.
  * @defgroup vulkan_pass_rt_shadow Ray-Traced Shadow Pass
  *
  * WHAT IT OWNS: its pipeline layout and its compute pipeline (built at create time from its own declaration's

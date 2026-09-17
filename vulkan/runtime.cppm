@@ -30,7 +30,7 @@ import vulkan.pass;                   // the pass framework: the host the runner
 import vulkan.pass.taa;               // the second, and the first GRAPHICS one
 import vulkan.pass.scene;             // the third: the scene itself, whose work is DATA rather than a declaration
 import vulkan.pass.transparent;       // the fourth: the blended geometry, over the shaded frame
-import vulkan.pass.rt_shadow;         // the ninth, and the first one OUTSIDE the GI chain: the ray-traced shadow
+import vulkan.pass.rt_shadow;         // the ninth, and the only pass that traces outside the chain: the ray-traced shadow
 import vulkan.pass.mask_bake;         // ... and the one-shot MASK bake, which is a JOB rather than a frame pass
 import vulkan.pass.compute_skin;      // ... and the compute-skinning job, which is a job for the same reason
 import vulkan.pass.gbuffer_debug;     // the fifteenth: the G-buffer debug view (and the G-buffer set layout's owner)
@@ -418,13 +418,13 @@ namespace vulkan {
         // The stochastic PUNCTUAL LIGHTING chain ([render] megalights, docs/megalights.md): the pass's own
         // stage, which runs between the G-buffer and the deferred lighting stage - the lighting stage is what
         // ADDS its result, so it has to have it, and the G-buffer is what it evaluates its lights against.
-        /// TWO passes, the tracer then its temporal resolve - the GI chain's two-halves split without the
+        /// TWO passes, a tracer then its temporal resolve - a two-half split without a second
         /// second STAGE, because the ordering rule the resolve needs (the G-buffer's depth and the motion-vector
         /// target have to be published for it) runs in this stage's own prepare before either pass records.
         std::array<pass::frame_pass*, 2> megalights_stage = {};
         // Whether the punctual lights are the stochastic pass's business this frame. When it is, the deferred
         // lighting stage skips its own raster punctual loop (the `punctual_replaced` lane) rather than adding
-        // the same lights twice - a REPLACE, like the traced GI chain's relation to the ambient.
+        // the same lights twice - a REPLACE rather than an addition.
         bool megalights_on = false;
         /// Whether the stochastic pass RECORDED this frame (see `frame_facts::megalights_resolved`): cleared
         /// immediately before the stage is recorded and set from its report, so the lighting stage's lane can
@@ -561,8 +561,8 @@ namespace vulkan {
          */
         VkDescriptorSetLayout post_set_layout_ = VK_NULL_HANDLE;
         /// @brief the G-BUFFER set's layout, on the same terms as the post one above: the renderer writes every
-        ///        G-buffer set (the stored surface, the GI chain's images, the probe volumes, the lobe's outputs,
-        ///        the reflection's accumulation), so the layout is its own and the passes that bind the set ask for
+        ///        G-buffer set (the stored surface, the direct-radiance image and the stochastic chain's own trace
+        ///        and resolve), so the layout is its own and the passes that bind the set ask for
         ///        it through `pass_context::shared_set_layout(owner, 1)`
         VkDescriptorSetLayout gbuffer_set_layout_ = VK_NULL_HANDLE;
         /// @brief whether the LIGHTING STAGE is in the flat render mode this frame, published by the chain's owner
@@ -1055,8 +1055,8 @@ namespace vulkan {
          * on, because the caster set is only known once the scene has been culled), refitted and RE-INSTANCED
          * every frame, from the casters this frame's culling produced and the two jobs below.
          *
-         * WHY IT IS THIS RENDERER'S AND NOT A PASS'S: three consumers read it (the ray-traced shadow pass's
-         * binding, the GI tracer's and lobe's instance table, and the probe cache's world-space hits), so by the
+         * WHY IT IS THIS RENDERER'S AND NOT A PASS'S: the ray-traced shadow pass's binding is what reads it, and
+         * the structures are one build per frame feeding every ray-traced effect, so by the
          * ownership rule it belongs to the shared owner - and the phase records BEFORE any rendering instance
          * opens. What stays here beside it is the POLICY: the three knobs, the two predicates
          * (`rt_structures_wanted` / `rt_shadows_active`), the caster set, the ORDER of the phase in the frame, and
@@ -1386,8 +1386,8 @@ namespace vulkan {
             bool (*ensure_gbuffer_depth_sampled)(void* owner, VkCommandBuffer cmd, uint32_t image_index) = nullptr;
             bool (*ensure_velocity_sampled)(void* owner, VkCommandBuffer cmd, uint32_t image_index) = nullptr;
             /// clear that flag WITHOUT recording a transition: what a stage whose own pass samples the image
-            /// does when the resolve that would have published it runs LATER in the frame (the TAA resolve and the
-            /// debug view both leave the GI chain to publish the motion-vector target - see the runtime's comment)
+            /// does when the resolve that would have published it runs LATER in the frame (the TAA resolve and
+            /// the debug view both leave a later pass to publish the motion-vector target)
             void (*require_velocity_publish)(void* owner, uint32_t image_index) = nullptr;
             /// the renderer's feature registry, for a stage preamble gated on the same predicate the runner gates
             /// the stage on (the ray-traced shadow's and the TAA resolve's preambles are the two that ask)
@@ -1451,8 +1451,9 @@ namespace vulkan {
          * @brief publish the LIGHTING STAGE's flat-render state, which the renderer's own policy reads
          *
          * The flag itself is the lighting pass's parameter (the shader returns the stored albedo), and the renderer
-         * needs it for one thing it decides on its own: whether the screen-space GI chain is worth running at all
-         * albedos rather than a transport term). Since the pass left the renderer, the owner that holds it publishes
+         * needs it for one thing it decides on its own: whether a screen-space effect that reads the G-buffer is
+         * worth running at all (the flat mode's image is stored albedos rather than a transport term). Since the
+         * pass left the renderer, the owner that holds it publishes
          * a policy predicate without keeping a pass.
          */
         void set_scene_unlit(bool unlit) noexcept {
@@ -2000,7 +2001,7 @@ namespace vulkan {
          * @ingroup vulkan_runtime
          * @brief whether the alphaMode MASK bake runs when the structures are built ([render] rt_mask_bake)
          * @param enabled false = masked geometry is built OPAQUE, i.e. solid to every ray
-         * @note a no-op without ray-traced shadows or the probe cache (no structures, no bake), so a frame
+         * @note a no-op without ray-traced shadows (no structures, no bake), so a frame
          *       with them off is byte-identical either way. It exists as a knob because the bake is an
          *       approximation - a triangle is either in the structure or not, while the raster path discards
          *       per fragment - and the size of that difference is what its measurement compares (see
@@ -2155,20 +2156,6 @@ namespace vulkan {
 
         /**
          * @ingroup vulkan_runtime
-         * @brief turn screen-space GI on or off - the FLAG only
-         *
-         * THE SPLIT the handover forces, and it is a real one rather than a convenience: the renderer needs this
-         * structures from it, and the frame's GI facts are filled from it), while the ray BUDGET - intensity, reach,
-         * rays, steps - is read by the tracer alone and is set by whoever owns that pass
-         * (`vulkan.render_start_demo`). The same split is repeated for TAA's flag and weights, the lobe's flag and
-         * reach, and the probe cache's flag and rate, so each value has exactly one owner.
-         * @param enabled trace one bounce of diffuse indirect from the G-buffer and add it
-         * @return whether this call turned the feature ON (the off -> on edge), which is the one thing the pass's
-         *         owner has to act on too (a fresh accumulation on both sides) - see the definition
-         */
-
-        /**
-         * @ingroup vulkan_runtime
          * @brief stochastic punctual lighting: sample a few lights per pixel and trace one shadow ray each
          * @param enabled true = the punctual lights are the stochastic pass's business (and the deferred
          *        stage stops adding them raster-style), false = the engine's historic unshadowed loop
@@ -2180,16 +2167,6 @@ namespace vulkan {
 
         /// @brief whether the stochastic punctual lighting chain runs this frame (its own composed predicate)
         [[nodiscard]] bool megalights_active() const noexcept;
-
-        /**
-         * @ingroup vulkan_runtime
-         * @brief trace the GI rays against the acceleration structures instead of marching the depth buffer
-         * @param enabled true = ray query, false = the screen-space march (the default)
-         * @note granted only when the device has ray queries, the tracer exists and the top level
-         *       structure has been built - otherwise the march keeps running and nothing changes. The
-         *       estimator is the same either way: only the hit oracle differs, so a hit that is off screen
-         *       or hidden contributes nothing in both and the IBL probe still owns the off-screen light.
-         */
 
         /**
          * @ingroup vulkan_runtime
@@ -2226,37 +2203,12 @@ namespace vulkan {
          * @brief the furnace verification mode ([render] furnace)
          * @param enabled true = the sun is off; the constant-environment half is not implemented yet
          * @note the intent is an analytic reference: with the sun off and the environment a constant level L,
-         *       a diffuse surface's outgoing radiance is exactly albedo * L and a bounce has nothing to add,
-         *       so the frame must not change when the GI chain is switched on. What is wired today is the
-         *       sun lane; forcing the environment needs the constant cube bound to the IBL bindings, which
-         *       is the next slice. Until then this mode is a DIAGNOSTIC, not the acceptance test.
+         *       a diffuse surface's outgoing radiance is exactly albedo * L, so a frame with the mode on is
+         *       computable by hand and an independent estimate can be checked against it rather than agreed with.
+         *       Both lanes are wired: the sun is off, and the environment is the constant cube the frame clears
+         *       (see `furnace_cube_ready`).
          */
         void set_furnace(bool enabled) noexcept;
-
-        /**
-         * @ingroup vulkan_runtime
-         * @brief the world-space probe cache: what the tracer answers with where the screen cannot
-         * @param rate how much of a cell one frame's observation replaces, clamped to [0, 1]
-         * @param rounds propagation rounds per frame, clamped to [0, 4]
-         * @param gain how much of the grid's answer is added on top of the environment probe, clamped
-         *        to [-4, 4]: a NEGATIVE value is the direction A/B (the same cell, looked up along the
-         *        opposite side of the ray), which is why the clamp is symmetric
-         * @note a CACHE, not a lighting model: it exists so that a ray which leaves the frame, or hits
-         *       something hidden behind a nearer surface, can be answered from a grid anchored to the
-         *       scene - the environment probe it replaces there is the sky at infinity, and it is the
-         *       same value in the middle of a room as on the roof. It requires the screen-space chain
-         *       (it is injected from that chain's result) and the deferred path, and it is a no-op on a
-         *       device where either is missing: with the gain at 0 the tracer never samples it.
-         */
-
-        /**
-         * @ingroup vulkan_runtime
-         * @brief whether this frame's tracer will sample the world-space probe cache
-         * @note the predicate the tracer's push block composes the grid's gain from. False until the
-         *       grid has been written once: the images exist from startup, but a grid nothing has
-         *       deposited into holds undefined texels, and the pass that would fill it runs AFTER the
-         *       tracer in the frame it is first enabled on.
-         */
 
         /**
          * @ingroup vulkan_runtime
@@ -2279,16 +2231,6 @@ namespace vulkan {
          *       existed - which is why a startup failure here is a log line and not a broken frame.
          */
         void create_passes();
-
-        /**
-         * @ingroup vulkan_runtime
-         * @brief whether this frame's GI pass will actually TRACE its rays
-         * @note the predicate both the tracer's push block and the light UBO's gi_full_indirect are
-         *       composed from, because the second one is a PREDICTION: it tells the lighting stage to
-         *       drop its own diffuse ambient, and predicting wrong darkens the frame (which is what
-         *       happened when it was composed from the config alone: the tracer pipeline was missing, so
-         *       the ambient was removed and nothing replaced it).
-         */
 
         /**
          * @brief re-skin every skinned caster and REFIT its structure, for this frame
@@ -2335,8 +2277,8 @@ namespace vulkan {
 
         /**
          * @ingroup vulkan_runtime
-         * @brief create the two samplers the G-buffer declarations choose between (the debug view's NEAREST one and
-         *        the probe cache's LINEAR one, which the tracer's set writes whether or not that pipeline exists)
+         * @brief create the samplers the G-buffer set's own declarations choose between (the G-buffer's NEAREST
+         *        one and the post chain's LINEAR one, which the renderer's set writes)
          * @return success, or an error message on failure
          * @note THIS IS THE WHOLE OF WHAT `make_gbuffer_debug_pipeline` DID THAT IS STILL THE RENDERER'S: the
          *       set layout, its pipeline layout and the view pipeline are the debug view's PASS's now. The

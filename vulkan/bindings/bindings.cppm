@@ -314,12 +314,11 @@ namespace vulkan::bindings {
          * @param image_count how many images the family must serve (the swapchain generation's count, NOT
          *        the number of fingerprint views - the first version of this class conflated the two)
          * @param sets_per_image how many sets each image needs (1 unless a chain like post's needs more,
-         *        or a ping-pong like the probe cache's)
+         *        or a ping-pong)
          * @param descriptors_per_set how many descriptors of each declared kind one of those sets holds
          *        (the caller decides the pool size, so a wrong count shows up as an allocation failure)
          * @param signatures the fingerprints: the views whose identity decides whether a rebind is needed
-         *        - one list per KIND of thing the sets point at (the probe cache passes its coefficients,
-         *        its scratch and its per-cell geometry), or a single list of the few views of image 0 that
+         *        - one list per KIND of thing the sets point at (a pass hands over the images it owns), or a single list of the few views of image 0 that
          *        identify the generation. It says NOTHING about how many images there are (image_count
          *        does), which is exactly the distinction the first version of this class got wrong
          * @param write called for each image that needs (re)binding, with that image's sets

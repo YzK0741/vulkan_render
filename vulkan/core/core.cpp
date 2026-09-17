@@ -660,7 +660,7 @@ namespace vulkan {
 
         // The stochastic chain's temporal resolve (docs/megalights.md): the accumulation - STORAGE for the
         // compute pass that writes it, SAMPLED for the lighting stage that adds it, TRANSFER_SRC because it is
-        // what the next frame's history is copied FROM - and the history beside the GI chain's, written only by
+        // what the next frame's history is copied FROM - and the history beside the chain's, written only by
         // that copy (TRANSFER_DST | SAMPLED and nothing else).
         ml_resolve_images.resize(swap_chain_image_views.size());
         ml_resolve_image_memories.resize(swap_chain_image_views.size());
@@ -693,14 +693,6 @@ namespace vulkan {
         }
 
         // The GI denoiser's resolve target, its history and the spatial filter's output were created here: three
-        // half-resolution families the traced chain alone used. The chain is gone, so they are.
-
-        // The glossy lobe's four families (its two outputs and the reflection's accumulation/history pair) were
-        // created here. They went with the traced chain's specular lobe.
-
-        // The world-space probe cache's nine 3D images (four SH-2 coefficients per side of its ping-pong, plus the
-        // per-cell surface geometry) were created here, with the sampler that read them. The cache was the traced
-        // chain's answer for the hits the screen cannot resolve; it is gone.
 
         // The furnace verification mode's constant environment (see the member comment): TRANSFER_DST because
         // a clear is what gives it contents, SAMPLED because the IBL bindings will point at it.

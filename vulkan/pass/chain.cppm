@@ -21,7 +21,7 @@
  * replaced, down to the per-pass `resolved_io` the runner builds for each of them.
  *
  * THE ORDER IS THE DATA, and that is the point of the container: `trace -> lobe -> denoise -> filter` is what
- * makes the GI chain work (each stage reads what the one before it wrote), and in this class that order is a
+ * makes a chain work (each stage reads what the one before it wrote), and in this class that order is a
  * sequence of `add` calls rather than the line order of a frame loop that also has to interleave barriers,
  * marks and the renderer's own work between the stages.
  *

@@ -6,7 +6,7 @@
  * @defgroup vulkan_render_resource Render Resource Descriptions
  *
  * WHY THIS MODULE EXISTS. In this renderer a pass's inputs and outputs already ARE descriptor sets - the
- * G-buffer set is the interface between the G-buffer pass, the lighting stage, the GI chain, the probe cache
+ * G-buffer set is the interface between the G-buffer pass, the lighting stage, the stochastic lighting chain
  * and the ray-traced shadow pass; the scene set is the substrate; each pass's private family is its own I/O.
  * What exists today is that interface written TWICE BY HAND and kept in agreement by discipline: the layout
  * in `vulkan/pipelines`, the descriptor writes in `vulkan/runtime`'s `ensure_*_descriptors()`. Both drifts
@@ -165,7 +165,7 @@ export namespace vulkan::render_resource {
      *
      * EACH ENTRY'S PROVENANCE, so the table can be re-derived rather than trusted: the HDR chain, the
      * G-buffer, the velocity and scene-colour targets and the TAA history are created in
-     * `core::create_render_targets` (`core.cpp:506-693`); the GI chain's images at `636-749`; the probe grid
+     * `core::create_render_targets` (`core.cpp:506-693`); the chain's images at `636-749`; the probe grid
      * and its geometry at `798-811`; the furnace cube at `814-825`; the ray-traced shadow visibility at
      * `831-844`, one per FRAME SLOT rather than per image; the shadow map is the one family `vulkan.runtime`
      * creates itself (`runtime.cpp:495-560`, layered, one image per slot); the scene buffers and the IBL
@@ -192,12 +192,6 @@ export namespace vulkan::render_resource {
         {.id = resource_id::velocity, .name = "velocity", .kind = resource_kind::image2d, .scope = resource_scope::per_swapchain_image, .lifetime = resource_lifetime::per_frame},
         {.id = resource_id::scene_color, .name = "scene_color", .kind = resource_kind::image2d, .scope = resource_scope::per_swapchain_image, .lifetime = resource_lifetime::per_frame},
         {.id = resource_id::taa_history, .name = "taa_history", .kind = resource_kind::image2d, .scope = resource_scope::per_swapchain_image, .lifetime = resource_lifetime::persistent},
-        // The traced GI chain's eight images (its raw trace, accumulation, history, spatial filter's output and
-        // the glossy lobe's four) stood here, and the probe cache's two 3D images below. They went with the chain.
-        // The stochastic punctual lighting chain's raw estimate: written as a storage image by the trace,
-        // read as a sampled image by the lighting stage that adds it (and, from the next stage, by the
-        // temporal resolve). HALF resolution, like the GI chain's images, because the signal is a
-        // light-level quantity rather than a shaded surface.
         {.id = resource_id::ml_trace, .name = "ml_trace", .kind = resource_kind::image2d, .scope = resource_scope::per_swapchain_image, .lifetime = resource_lifetime::per_frame},
         // The temporal resolve's output - what the lighting stage actually samples - and the accumulation it
         // reads back next frame. The history holds the radiance in rgb and the FRAME COUNT in alpha (an
@@ -254,7 +248,7 @@ export namespace vulkan::render_resource {
     /**
      * @brief what the pass DOES with it, which is NOT derivable from the kind
      *
-     * The spatial filter only READS its `gi_input` storage image while writing its output; the tracer writes
+     * A filter only READS its input storage image while writing its output; another pass writes
      * `gi_trace` and reads it back in the same dispatch. A barrier stage keys on this, not on the kind.
      */
     enum class binding_access : uint8_t {
@@ -277,7 +271,7 @@ export namespace vulkan::render_resource {
      * @brief the image layout a binding's DESCRIPTOR declares
      *
      * THIS FIELD EXISTS BECAUSE THE KIND DOES NOT IMPLY THE LAYOUT, which the first real conversion found
-     * rather than assumed: the probe cache keeps ALL NINE of its own bindings in `GENERAL` - both ping-pong
+     * rather than assumed: a pass's ping-pong images can all stay in `GENERAL` - both sides of
      * sides and the per-cell geometry - because the propagation's barriers are same-layout ones for the whole
      * update, and a descriptor claiming `SHADER_READ_ONLY_OPTIMAL` for one of those images would be a lie the
      * validation layer rejects. Deriving the layout from "storage versus sampled" would have been wrong for
@@ -517,7 +511,7 @@ export namespace vulkan::render_resource {
          * WHY THIS IS SEPARATE FROM `bindings`, and the reason is a measured one rather than a stylistic
          * preference: a pass that binds a whole set it does not own cannot enumerate that set's bindings
          * without copying a fact its OWNER owns. The G-buffer set is the case that proved it - it carries the
-         * GI chain's four images, the world-space probe's four SH-2 coefficients, the post chain's depth and
+         * the stochastic chain's images, the post chain's depth and
          * normal, and the scene pass that binds it reads exactly one of those. A declaration that listed them
          * would be the drift this module exists to remove, in the one place where nothing can be GENERATED
          * from it (this pass builds no layout from that set; its owner does).
@@ -629,7 +623,7 @@ export namespace vulkan::render_resource {
      * inside its family - plus uniqueness, because two targets naming one image would be a pass rendering into
      * itself twice. A target that claims a RUN of elements (`render_target::count`) is checked as the run it
      * is: the last element has to be inside the family, and two runs of one resource may not overlap. And a
-     * declaration that binds a SHARED set has to NAME one, which is the rule the probe cache's missing
+     * declaration that binds a SHARED set has to NAME one, - the rule a declaration's missing
      * `shared_sets` entry taught this function (a null descriptor set at bind time).
      * @ingroup vulkan_render_resource
      */
@@ -770,7 +764,7 @@ export namespace vulkan::render_resource {
         // layout it generates and whose bindings it describes) and one it merely binds.
         //
         // ... AND A DECLARATION THAT BINDS A SHARED SET HAS TO DECLARE IT. This rule was ADDED because a pass got
-        // it wrong in the one way nothing caught: the probe cache's seven scene-owned bindings give its pipeline
+        // it wrong in the one way nothing caught: a declaration's scene-owned bindings give its pipeline
         // layout a set 0, but its declaration listed no shared set at all - so the framework had nothing to
         // resolve for set 0, the pass bound a NULL descriptor set, and the only scenario that runs the cache
         // reported `pDBindDescriptorSets(): pDescriptorSets[0] (VkDescriptorSet 0x0) is not a valid
@@ -984,7 +978,7 @@ export namespace vulkan::render_resource {
     /**
      * @brief the stochastic punctual lighting pass's declaration: a half-resolution compute dispatch
      *
-     * The tracer's shape exactly - two shared sets, no own binding, one image named through
+     * Two shared sets, no own binding, one image named through
      * `barrier_images` - because its inputs (the camera, the light UBO, the cluster lists, the G-buffer
      * surface) and its output (a half-resolution storage image) are all reached through those two sets.
      *
@@ -995,7 +989,7 @@ export namespace vulkan::render_resource {
         .name = "megalights_trace",
         .own_set = 2, // unused: no own bindings (everything it reads and writes is in the shared sets)
         .bindings = {},
-        .shared_sets = scene_and_gbuffer_shared_sets, // the scene set (0) and the G-buffer set (1), like the tracer
+        .shared_sets = scene_and_gbuffer_shared_sets, // the scene set (0) and the G-buffer set (1), the pair every full-screen compute pass binds
         .targets = {},
         .barrier_images = megalights_trace_barriers,
         .push = push_block{.offset = 0, .size = 96, .stages = stage_flag::compute},
@@ -1068,7 +1062,7 @@ export namespace vulkan::render_resource {
     /**
      * @brief the ray-traced sun shadow pass's declaration: a full-resolution compute dispatch over two shared sets
      *
-     * The same shape as the tracer's, with the frame's resolution instead of half: it binds the shared scene set
+     * The traced-compute shape, with the frame's resolution instead of half: it binds the shared scene set
      * (the camera, the light UBO, the top level structure at binding 16) and the shared G-buffer set (the surface
      * each ray starts from), owns no descriptor at all, and names the one image it rewrites through
      * `barrier_images`. Its push block is the camera's inverse view-projection and four ray-offset terms.
@@ -1135,7 +1129,7 @@ export namespace vulkan::render_resource {
      *
      * Every binding it uses belongs to one of its TWO SHARED SETS (the scene set: the camera, the IBL, the light
      * UBO, the shadow map; the G-buffer set: the three surface targets, the depth, the velocity), so it declares
-     * no binding of its own - the shape the tracer, the lobe and the spatial filter have, with one render target
+     * no binding of its own - the shape a traced compute pass has, with one render target
      * instead of a compute dispatch.
      *
      * THE TARGET IS A RECORDED DEVIATION: it names `scene_color`, and the host hands over whichever image the frame
@@ -1144,7 +1138,7 @@ export namespace vulkan::render_resource {
      * framework decision this pass does not get to make on its own; the deviation is written down here rather than hidden.
      *
      * The push block is 92 bytes - a mat4, a vec4 (the SSAO knobs) and three floats (the render mode, whether the
-     * traced chain replaces the ambient this frame, and whether the stochastic punctual lighting pass answered it) -
+     * stochastic punctual lighting pass answered this frame's punctual lights) -
      * and the attachment is LOADed, because the lighting ADDS to the emissive the G-buffer pass already wrote (which
      * is also why the pass builds its pipeline with the additive blend).
      */

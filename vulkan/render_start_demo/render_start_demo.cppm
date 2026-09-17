@@ -110,7 +110,6 @@ export namespace vulkan {
         /// @brief the multi-bounce gain the tracer re-emits at a hit (the pass clamps it to [0, 1])
         /// @brief the world-space cache: its flag (the runtime's), its rate and round count (the pass's) and the
         ///        tracer's gain over it
-        /// @brief the glossy lobe: its flag (the runtime's) and its own reach and ray count (the pass's)
         /// @brief which G-buffer channel the debug view shows (the pass's own parameter)
         void set_gbuffer_channel(int channel) noexcept;
         /// @brief the flat render mode, which the lighting stage's own parameter decides

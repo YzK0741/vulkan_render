@@ -2,7 +2,7 @@
 // to live in `runtime::record_opaque_scene` / `record_main_segment` / `sub_render_task`. Moved unchanged in
 // behaviour - same attachment order, same clear values, same segment count rule, same per-segment bind and
 // draw order, same secondary inheritance - so the capture gate decides the move on the twelve scenarios, which
-// between them cover the deferred surface write, the forward shading path and the GI chain that reads the
+// between them cover the deferred surface write, the forward shading path and the lighting stage that reads the
 // depth this pass writes.
 
 module;
@@ -157,7 +157,7 @@ namespace vulkan::pass {
         }
 
         // THE INSTANCE ENDS HERE, which is the whole point of the pass owning it: the lighting stage, the
-        // transparent pass, the resolve and the GI chain all run after this, each opening its own.
+        // transparent pass, the resolve and the lighting stage all run after this, each opening its own.
         vkCmdEndRendering(io.cmd);
     }
 

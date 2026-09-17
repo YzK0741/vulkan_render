@@ -145,12 +145,6 @@ namespace vulkan {
         // later generation gets the very same reset from on_swapchain_recreated - one function, so the
         // two lists cannot drift (which they already had).
         this->reset_image_generation_state();
-        // The lobe's per-image first-use state starts where its images do (empty, which reads as "nothing has
-
-        // The probe cache's remaining flag starts where the images do: nothing has transitioned the grid out
-        // of UNDEFINED, so the tracer's gain is 0 until the TRACE pass - the frame's first reader of the grid
-        // - has taken its first-use transition once. (What the grid HOLDS is the pass's own state now:
-        // `on_swapchain_recreated` clears it, which is what the recreate_stage call in the swapchain path runs.)
         // (The furnace cube is a new image too - its level is part of the generation reset above.)
         // NOTE: the shadow resources (map layers + light UBO buffers) are created LAZILY, by
         // ensure_shadow_resources() from ensure_scene_set(). The shadow map is a layered 2D array
@@ -1135,7 +1129,7 @@ namespace vulkan {
         }
         // AND THE PASSES ARE TOLD, by the runner rather than by this list. That is the hazard this layer was
         // built to remove: the retires above are a hand-kept list and it covered four of the six families -
-        // the probe cache's and the reflection denoiser's survived only because `ensure` re-detects changed
+        // two of the six survived only because `ensure` re-detects changed
         // views. A pass that owns a family now cannot be missed here, because it is not this function that
         // remembers: `recreate_stage` calls every pass in the stage, and a pass added to it is covered.
         {
@@ -1470,7 +1464,7 @@ namespace vulkan {
 
         // The constant 1x1x6 environment cube, written here and ONCE per target generation: this is the
         // frame's first command buffer, and the cube is sampled by the SKYBOX - which runs long before
-        // the lighting stage and the GI chain - so any later point would leave the background of every
+        // the lighting stage - so any later point would leave the background of every
         // frame reading the previous contents. Two features share it, which is why the clear is NOT
         // gated on `furnace` any more: the furnace verification mode points the IBL bindings at it as
         // the constant environment (level 1.0, the same value the light UBO's furnace lane carries, so
@@ -2189,9 +2183,8 @@ namespace vulkan {
 
             VkImageView const hdr = this->vulkan_core.hdr_image_views[image_index];
             VkImageView const ldr = this->vulkan_core.ldr_image_views[image_index];
-            // The FILTERED GI (the last pass of the GI chain), not the raw trace or the temporal
-            // accumulation: the composite is the consumer of the denoiser's output, and the earlier
-            // images are bound in the G-buffer set or in the denoiser's own set instead.
+            // This set's binding 6, the traced indirect it used to sample, is an unused slot now: the lighting
+            // stage reads the stochastic chain's resolve from the shared G-buffer set instead.
             VkImageView const depth = this->vulkan_core.gbuffer_depth_image_views[image_index];
             // The GI image's binding is still DECLARED - the composite's shader is written against these nine
             // numbers, and renumbering them is a change to that shader and to this layout at once - so it takes
@@ -2460,15 +2453,11 @@ namespace vulkan {
             // 6 and 7: the stochastic punctual lighting chain. 6 is the storage image the TRACE writes; 7 is
             // the sampler the lighting stage adds the TEMPORAL RESOLVE's output through (the resolve's own
             // output is written as a storage image through that pass's own set, so this set only reads it).
-            // These were 16/17 while the traced GI chain's ten bindings sat in between; they are contiguous
-            // again now that it is gone.
             vk.ml_image_views[0],
             vk.ml_resolve_image_views[0]};
         // One set per image with one descriptor per binding: the three stored targets, the depth, the
-        // motion-vector target, the direct-radiance image the tracer samples at a hit, the raw trace it
-        // writes, the accumulated image the spatial filter reads, the filtered image it writes, the four
-        // probe coefficients it reads for a hit the screen cannot answer, and the glossy lobe's two outputs -
-        // the same fifteen the signature above fingerprints.
+        // motion-vector target, the direct-radiance image, the stochastic chain's raw estimate and the
+        // resolved image the lighting stage adds - the same eight the signature above fingerprints.
         // image_count is the generation's, signature is only the fingerprint of image 0 above - the two
         // are different things and the family needs both (see vulkan.bindings).
         auto const write_sets = [this](uint32_t const image_index, std::span<VkDescriptorSet const> const sets) {
@@ -2488,8 +2477,7 @@ namespace vulkan {
                 // lives in GENERAL; the rest are sampled and SHADER_READ.
                 bool const storage = b == 6u;
                 // EVERY sampled binding takes the G-buffer's NEAREST sampler: these views are the stored
-                // surface and the two images the lighting chain hands over per texel, and the one sampler that
-                // used to differ here belonged to the world-space probe cache, which is gone.
+                // surface and the two images the stochastic lighting chain hands over per texel.
                 image_infos[b].sampler = storage ? VK_NULL_HANDLE : *this->vulkan_core.gbuffer_sampler;
                 image_infos[b].imageView = views[b];
                 image_infos[b].imageLayout = storage ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -2646,7 +2634,7 @@ namespace vulkan {
             .samplers = this->shared_samplers(),
             .shared_set_layout = [](void* owner, uint32_t const set) {
                 // THREE shared sets now, and each one is there because a pass needs a layout it does not own:
-                // 0 = the scene set (the tracer, the lobe, the spatial filter and the raytraced shadow bind it),
+                // 0 = the scene set (the scene pass, the lighting stage and the ray-traced shadow bind it),
                 // 1 = the G-buffer set (the same four, plus the debug view) and 2 = the POST set (the composite,
                 // the bloom chain and the FXAA pass). A pass asking for any other index gets "none", which makes
                 // it build nothing and say so.
@@ -2657,7 +2645,7 @@ namespace vulkan {
                 if (set == 1u) {
                     // The G-BUFFER set's layout is the renderer's for the same reason the post one is: it writes
                     // every set (see the member). Everything that binds the set - the debug view, the lighting
-                    // stage, the tracer, the lobe and the spatial filter - gets it from here.
+                    // stage and the stochastic chain - gets it from here.
                     if (self->gbuffer_set_layout_ == VK_NULL_HANDLE) {
             auto created = pipelines::make_gbuffer_set_layout(self->vulkan_core.device);
             if (!created) {
@@ -2742,7 +2730,7 @@ namespace vulkan {
         this->frame_facts.camera_pos = glm::vec3(this->current_ubo.camera_pos);
         this->frame_facts.scene_center = this->shadow_scene_center;
         this->frame_facts.scene_radius = this->scene_radius;
-        // The sun, normalized for the same reason the probe cache's resolve normalizes it (the shader wants a
+        // The sun, normalized here because the shader wants a
         // direction, the UBO's own lane stays as the app set it). A zero direction - nothing has set a light yet
         // - is kept as zero rather than turned into a NaN by normalize().
         glm::vec3 const sun = glm::vec3(this->light_state.light_dir);
@@ -3151,9 +3139,8 @@ namespace vulkan {
         this->post_composite_stage = {at("post_composite")};
         this->bloom_stage = {at("post_bloom_0"), at("post_bloom_1"), at("post_bloom_2"), at("post_bloom_3")};
         this->fxaa_stage = {at("fxaa")};
-        // ... and the two GI HALVES, in the order the FRAME records them: the trace half (the tracer, then the lobe -
-        // the two writers of the raw trace) and the denoise half (the temporal resolve, then the spatial filter, whose
-        // output the composite samples). Two halves rather than one chain because the frame has an ordering rule to
+        // ... and the stochastic lighting chain's two passes, in the order the FRAME records them: the tracer
+        // and its temporal resolve. Two passes rather than one because the frame has an ordering rule to
         // run BETWEEN them - it publishes the G-buffer depth and the motion-vector target that the resolve is the
         // first sampler of - and a frame rule cannot run from inside a chain.
     }
@@ -3297,9 +3284,8 @@ namespace vulkan {
             .feature_active = [](void* context, std::string_view const feature) { return static_cast<runtime*>(context)->feature_active(feature); },
             .resolve = [](void* context, pass::frame_pass const& pass, pass::resolved_io& out) { return static_cast<runtime*>(context)->resolve_pass(pass, out); },
             .apply_behaviour = [](void* context, pass::frame_pass const& pass, pass::resolved_io const& io) { static_cast<runtime*>(context)->apply_pass_behaviour(pass, io); },
-            // No mark pair for the probe's stage yet, and deliberately: the frame has an END mark for the
-            // cache and no begin mark (its interval is measured from the GI chain's end), so adding a query
-            // pair here would change the timing report for a pass whose cost is ~0. The runtime keeps writing
+            // No mark pair for this stage, and deliberately: its cost is already accounted for by the marks around
+            // the passes it records, so adding a query pair here would only change the report. The runtime keeps writing
             // the end mark itself, right after the stage.
             .mark_begin = nullptr,
             .mark_end = nullptr,
@@ -3417,22 +3403,6 @@ namespace vulkan {
     // the command stream, because the stages carry no marks of their own (`make_pass_host` leaves the mark pair
     // null), so nothing is emitted between them.
 
-    // THE SPATIAL FILTER'S RESOLVER IS GONE (S3.9), and it was the simplest of the four GI ones: its two shared sets,
-    // its one barrier image and its own pipeline are all its declaration, its extent is the declaration's `half`
-    // rule, and the push block it used to be handed is now composed by the PASS from `io.constants` (the projection
-    // terms and the two depth/normal criteria the composite's upsample shares), `io.extent`/`io.frame.extent`, its
-    // own filter width and two frame answers - which oracle ran, and whether the reflection's accumulation was
-
-    // THE GLOSSY LOBE HAS NO FRAME AT ALL, and the builder that used to be here was DEAD before it was removed: the
-    // one number it produced (the generation's image count, for the lobe's per-image first-use state) was never
-    // identity's own answer, which cannot disagree with it. Its frame struct is gone with the builder.
-    //
-    // ... AND ITS RESOLVER IS GONE (S3.10) with the tracer's, and the two went together because they push the
-    // same frame facts: three declared images, the same two shared sets, its own pipeline, the declaration's `half`
-    // extent - and a push block the PASS composes from `io.constants` and its own reach. Its "no instance table" gate
-    // is the frame constant `gi_instance_table`, which the pass checks before recording (the feature registry already
-    // refuses such a frame, so the check is the pass being unable to proceed rather than a path the gate depends on).
-
     void runtime::record_scene_tail(VkCommandBuffer const command_buffer) {
         // NO vkCmdEndRendering HERE ANY MORE: the scene PASS owns its instance and closes it at the end of its
         // own record (see vulkan.pass.scene). That line used to be the far half of a pair whose near half was
@@ -3483,13 +3453,13 @@ namespace vulkan {
             // stage above states: AFTER the G-buffer pass, whose stored surface is what the estimator evaluates
             // its sampled lights against and which it traces its rays from, and BEFORE the lighting stage, which
             // is what ADDS the result to the frame (the stochastic estimate is a lighting term, not a screen
-            // effect, so it belongs in the lit scene target where the GI chain's own input can see it).
+            // effect, so it belongs in the lit scene target with the rest of the lighting).
             //
             // THE LIGHTING STAGE ACTS ON WHETHER THIS RECORDED, not on whether the feature is on: the run
             // report is the answer pushed into the frame facts the lighting stage then reads, so a frame whose
             // pass was gated off keeps the raster punctual loop instead of losing its lights. That is the same
-            // "one predicate, two readers" arrangement the traced GI chain has with the ambient, with the
-            // difference that here the predicate is a RECORDED FACT rather than a knob.
+            // "one predicate, two readers" arrangement, with the difference that here the predicate is a
+            // RECORDED FACT rather than a knob.
             this->megalights_resolved = false;
             if (this->megalights_active()) {
                 pass::stage const megalights_stage = {.name = "megalights", .passes = this->megalights_stage, .marks = false};
@@ -3518,7 +3488,7 @@ namespace vulkan {
                 vkCmdPipelineBarrier2(command_buffer, &sampling_dependency);
             }
             // THE LIGHTING STAGE IS A PASS (vulkan.pass.deferred), and what the frame still owes it is one answer
-            // (whether the traced chain is replacing the ambient) plus the stage's own frame-order duty: it is a
+            // plus the stage's own frame-order duty: it is a
             // sampler of the stored surface, and whoever samples it FIRST publishes the G-buffer instance's
             // attachment writes. Both are the chain OWNER's now (see prepare_stage) - the runtime's `prepare` call
             // sits exactly where the pass's frame used to be set, and nothing is emitted between it and
@@ -3549,7 +3519,7 @@ namespace vulkan {
         //
         //  * the G-buffer depth's transition to a sampled layout, whose "was it written this frame" flag
         //    belongs to the G-buffer pass, and
-        //  * clearing the motion-vector flag, which is what stops the GI chain (later in the same frame) from
+        //  * clearing the motion-vector flag, which is what stops a later pass in the same frame from
         //    transitioning the velocity image a second time.
         //
         // BOTH ARE THE CHAIN OWNER'S NOW, run from its `prepare` for this stage and gated on the same predicate the
@@ -3724,20 +3694,10 @@ namespace vulkan {
         //
         // through the temporal pass's callback, and a frame whose reflection did not run must not leave the
         // previous frame's answer for the filter's `spec_weight` lane to read.
-        // The instance table's device address, which the traced chain's hit-shading gate needed, was read here
-        // (frame_constants::gi_instance_table). Both the gate and the field went with the chain.
 
-        // GPU timing: the GI chain ends here (trace, temporal resolve, spatial filter; the composite's
-        // bilateral upsample is part of the composite). Written unconditionally like every mark, so a
-        // frame with GI off reports 0 ms and the positional labels stay aligned.
+        // GPU timing: the lighting chain ends here (its tracer and its temporal resolve). Written
+        // unconditionally like every mark, so a frame that skips it reports 0 ms and the labels stay aligned.
 
-        // The world-space probe cache, last in the GI stretch: it deposits THIS frame's resolved GI into
-        // the cells the frame can see, so it has to run after the spatial filter (the image it reads is
-        // this frame's) and before the composite (nothing about it is needed for this frame's image -
-        // what it produces is read by the NEXT frame's tracer, which is what a cache costs). The RUNNER
-        // feature is skipped WITHOUT being resolved - which is what keeps a cache that is off bit for bit
-        // what the frame was before it existed. Its stage writes no mark pair (the interval is measured
-        // from the GI chain's end), so `marks = false` and the end mark below is the runtime's.
         {
         }
 
@@ -3837,7 +3797,7 @@ namespace vulkan {
 
     frame_status runtime::submit_and_present() {
         // The resource table's differential check reports itself HERE, once, at the end of the frame that closes
-        // its window - the last point of a frame, so the counters cover EVERY stage (the post and GI stages record
+        // its window - the last point of a frame, so the counters cover EVERY stage (the post and lighting stages record
         // inside `end_recording`, which is why this cannot sit there). THREE frames rather than one, because a
         // pass may legitimately resolve only from the second frame on (TAA needs a history), and a check that
         // watched one frame would report those as uncovered. See verify_resource_table: a mismatch is a table
@@ -4387,8 +4347,8 @@ namespace vulkan {
     }
 
     bool runtime::rt_structures_wanted() const noexcept {
-        // Only the ray-traced SUN now: the traced GI chain was the other reason a frame needed a top level
-        // structure and had to have the binding written whether or not its traced branch ran, and it is gone.
+        // The ray-traced sun is the only reason a frame needs a top level structure: the binding is written
+        // whenever it is wanted, whether or not the traced branch runs.
         return this->vulkan_core.ray_query_available && this->rt_shadows;
     }
 

@@ -49,7 +49,7 @@ void main() {
     si.metallic = s.metallic;
     si.roughness = s.roughness;
     si.ao = s.ao;
-    // The forward path has no GI chain behind it, so this stage always adds the diffuse ambient itself.
+    // The forward path adds the diffuse ambient itself.
 
     const float out_alpha = ((s.flags & 32u) != 0u) ? s.alpha : 1.0;
     out_color = vec4(shade_surface(si), out_alpha);

@@ -45,8 +45,8 @@ layout(set = 0, binding = 0) uniform CameraUBO {
 layout(set = 0, binding = 2) uniform samplerCube env_sampler;        // prefiltered environment (roughness mip chain)
 layout(set = 0, binding = 3) uniform samplerCube irradiance_sampler; // irradiance map (diffuse IBL)
 layout(set = 0, binding = 4) uniform sampler2D brdf_lut_sampler;     // BRDF integration LUT
-// ... and the specular half of the split sum, which now lives in a file of its own because the GI chain
-// subtracts exactly this term and has to compute it from the same expressions (see that file's header).
+// ... and the specular half of the split sum, which lives in a file of its own so that the two sides of a
+// subtraction compute it from the same expressions (see that file's header).
 #include "ibl_specular.glsl"
 
 // Light UBO (scene set binding 7): the orthographic light view-proj (world -> shadow map) and the
@@ -428,8 +428,8 @@ vec3 get_diffuse_light(vec3 n) {
 }
 
 // The specular half - get_specular_sample / get_ibl_ggx_fresnel / get_ibl_radiance_ggx - is
-// shaders/ibl_specular.glsl's, included above. It moved there when the GI chain needed the same
-// expressions for a subtraction rather than as a third copy; see that file's header for what was
+// shaders/ibl_specular.glsl's, included above. It moved there so a subtraction would use the same
+// expressions rather than a third copy; see that file's header for what was
 // verified. The three below are the call sites' names for it.
 
 /**
@@ -634,7 +634,7 @@ vec3 shade_surface(shade_input s) {
     // Metals have no diffuse term: diffuse ambient is scaled by (1 - metallic),
     // metal color comes entirely from specular environment (matches the official mix(dielectric, metal, metallic))
     vec3 ambient = ibl_diffuse * s.albedo * s.ao * (1.0 - s.metallic);
-    // ... and dropped entirely on a frame the traced GI chain answers for the whole diffuse indirect (see
+    // ... and dropped entirely on a frame that does not add the diffuse ambient at all (see
     // shade_input). A BRANCH rather than a fifth factor, and it is not an optimisation: multiplying the
     // finished term by 1.0 is algebraically the identity but NOT bit-identical - folding a fifth operand
     // into the expression changes how the compiler contracts the chain, and it moved one 8-bit texel of

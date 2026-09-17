@@ -281,7 +281,7 @@ export VkImageView create_image_view(VkImage image, VkFormat format, VkImageAspe
  * @param aspect_flags the image aspect mask
  * @param device the logical device
  * @param view_type the view's dimensionality (VK_IMAGE_VIEW_TYPE_2D for everything the engine drew
- *        before the probe grid existed, VK_IMAGE_VIEW_TYPE_3D for the world-space probe cache)
+ *        before this, VK_IMAGE_VIEW_TYPE_3D for a 3D image
  * @return the created image view
  * @note a view's type has to agree with the image's: a 2D view of a 3D image is a validation error the
  *       moment it is used, and a sampler3D binding needs the 3D one. One mip and one layer, like the

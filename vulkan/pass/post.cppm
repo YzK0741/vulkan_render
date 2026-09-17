@@ -24,7 +24,7 @@
  * WHAT THE BLOOM PASSES OWN: their own recording - the transition of the level they read, the clear-instance over
  * the level they write, the one-lane push and the fullscreen draw - and the deepest level's HAND-BACK (it moves
  * its own output to a sampled layout, because the composite samples all four levels and the last level has no
- * successor to do it for it, the same writer's hand-back the GI chain's passes use). They build no pipeline: the
+ * successor to do it for it, the same writer's hand-back every traced pass uses). They build no pipeline: the
  * runner binds the chain's R16F variant, which their `behaviour` names and the host resolves (the shape the
  * temporal resolve's first extraction had, and the reason it needed no new framework).
  *

@@ -332,17 +332,15 @@ int main() {
         CHECK(!rr::validate(dup).has_value());
     }
 
-    // The glossy lobe's declaration was asserted here. It went with the rest of the traced chain.
-
-    // ---- the SIXTH declaration was the GI denoiser's, the first GI stage with a set of its OWN ----
-    // It went with the chain. The declaration that replaced its role in the engine - the stochastic punctual
+    // ---- the SIXTH declaration: the stochastic punctual lighting chain's temporal resolve ----
+    // (the GI denoiser's declaration stood here; it went with that chain) - the stochastic punctual
     // lighting chain's resolve - is a declaration of its own (megalights_temporal_io) with the same shape, and
     // it is covered by the lighting chain's own tests rather than by a GI scenario.
 
     // The spatial filter's declaration was asserted here - the third pass on the shared-sets shape. It went with
     // the chain; the shape itself is still covered by the ray-traced shadow's declaration below.
 
-    // ---- the EIGHTH declaration, and the first one OUTSIDE the GI chain: the ray-traced shadow, the same
+    // ---- the EIGHTH declaration, and the first one OUTSIDE the chain: the ray-traced shadow, the same
     //      shared-sets shape as the tracer and the spatial filter but at the FRAME's resolution, and its one
     //      barrier image is a per-frame-slot resource rather than a per-swapchain-image family ----
     {
@@ -397,7 +395,7 @@ int main() {
     }
 
     // ---- the TENTH declaration: the deferred lighting stage, a fullscreen pass over the same two shared sets the
-    //      GI chain binds, whose only resource of its own is the target it renders into - and whose target is a
+    //      traced compute passes bind, whose only resource of its own is the target it renders into - and whose target is a
     //      recorded deviation (it names scene_color; the host hands over hdr on the frames TAA is off) ----
     {
         CHECK(rr::validate(rr::deferred_io).has_value());

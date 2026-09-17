@@ -196,8 +196,8 @@ void main() {
 
     vec3 color = texture(source_color, v_uv).rgb;
     // The screen-space GI that used to be added here (a joint-bilateral upsample of the half-resolution
-    // indirect, weight `pc.gi_intensity`) went with the traced chain. What the scene target holds is the
-    // direct radiance plus the ambient and the IBL, which is what every GI-off frame has always shown.
+    // indirect) is not added here any more. What the scene target holds is the
+    // direct radiance plus the ambient and the IBL.
     color += bloom * pc.bloom_intensity;
     color *= pc.exposure;
     color = aces_tone_mapping(color);

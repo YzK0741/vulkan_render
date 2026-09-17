@@ -527,7 +527,7 @@ int main() {
         CHECK(samplers.of(rr::sampler_hint::none) == VK_NULL_HANDLE); // "no sampler", which the validator enforces
         // a declaration's own set is exactly the bindings its shader declares, in order - checked against the
         // stochastic punctual lighting chain's temporal resolve, which is the shape the pipeline builder this
-        // test covers still builds from (the GI denoiser's own declaration went with the traced chain)
+        // test covers still builds from (that declaration went with the removed chain)
         uint32_t own = 0;
         for (rr::pass_binding const& b : rr::megalights_temporal_io.bindings) {
             if (b.set == rr::megalights_temporal_io.own_set) {

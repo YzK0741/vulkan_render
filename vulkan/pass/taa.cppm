@@ -5,7 +5,7 @@
  * @brief The SECOND real pass, and the first GRAPHICS one: the temporal anti-aliasing resolve.
  * @defgroup vulkan_pass_taa Temporal Anti-Aliasing Pass
  *
- * WHY THIS PASS IS THE INTERESTING ONE: the probe cache proved the shape for a compute pass, and this one
+ * WHY THIS PASS IS THE INTERESTING ONE: a compute pass proved the shape first, and this one
  * proves it for the other half of the frame. A fullscreen pass owns a render TARGET (an attachment is not a
  * descriptor: it is declared as a `render_target` and bound by a rendering instance), it opens that instance
  * itself (the load op is its knowledge, not the runner's), and the two things it must not be able to forget -
@@ -20,7 +20,7 @@
  * WHAT IT DELIBERATELY DOES NOT OWN, and this is the second discovery this extraction produced: TWO LINES OF
  * ITS OWN SEQUENCE BELONG TO OTHER PASSES. The resolve transitions the G-buffer depth (a transition the
  * G-buffer pass's per-image flag decides) and clears the flag that says the motion vectors have been handed
- * to a fragment sampler (which stops the GI chain from transitioning them again). Both are shared per-image
+ * to a fragment sampler (which stops a later pass from transitioning them again). Both are shared per-image
  * bookkeeping, both are the barrier/order stage's job in the long run, and neither is expressible here while a
  * pass can only declare its OWN bindings - so they stay with the host, which is the one that knows the flags.
  * The order the host has to preserve is recorded at the call site.

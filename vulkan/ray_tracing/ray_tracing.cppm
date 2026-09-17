@@ -13,8 +13,7 @@
 // GATHER (here).
 //
 // WHY IT IS NOT A PASS, although it is one of the frame's phases: the structures are read by THREE consumers
-// (the ray-traced shadow pass's binding, the GI tracer's and lobe's instance table, and the probe cache's world
-// space hits), so by this project's ownership rule they belong to the SHARED owner rather than to any one pass -
+// (the ray-traced shadow pass's binding), so by this project's ownership rule they belong to the SHARED owner rather than to any one pass -
 // and the phase is recorded BEFORE any rendering instance opens, which no pass's stage can express. What the
 // renderer keeps is the POLICY (the three knobs and the two predicates), the caster set, the ORDER of the phase,
 // and the scene-set binding it publishes the handle through.

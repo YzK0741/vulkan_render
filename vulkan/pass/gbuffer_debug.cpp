@@ -70,7 +70,7 @@ namespace vulkan::pass {
             return;
         }
         // THE G-BUFFER SET LAYOUT COMES FROM THE CONTEXT, not from this pass: its sixteen bindings describe how the
-        // OWNER writes the sets (the stored surface, the GI chain's images, the probe volumes, the lobe's outputs,
+        // OWNER writes the sets (the stored surface, the chain's images, the probe volumes, the lobe's outputs,
         // the reflection's accumulation), so the owner creates it and this pass builds a pipeline layout around it
         // (see make_gbuffer_set_layout and pass_context::shared_set_layout).
         VkDescriptorSetLayout const gbuffer_layout = context.shared_set_layout != nullptr ? context.shared_set_layout(context.owner, 1) : VK_NULL_HANDLE;

@@ -97,7 +97,7 @@ export namespace vulkan::pass {
      * @brief the frame's scene: the primitives, drawn into the surface targets the declaration names
      *
      * The instance it opens covers EXACTLY this pass - the lighting stage, the transparent pass, the resolve
-     * and the GI chain all run after it ends, each opening its own - which is why it can own the whole thing.
+     * and the lighting chain all run after it ends, each opening its own - which is why it can own the whole thing.
      */
     class scene_pass final : public frame_pass {
     public:

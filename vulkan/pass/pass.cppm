@@ -64,7 +64,7 @@ export namespace vulkan::pass {
     /// @brief where a pass's dispatch or draw extent comes from
     enum class extent_rule : uint8_t {
         full,     // the frame's extent
-        half,     // half the frame's extent - the GI chain's resolution
+        half,     // half the frame's extent - the stochastic chain's resolution
         resource, // the extent of the resource named in `extent_of` (the probe grid is not the frame's size)
         /**
          * The pass sizes its OWN work and `resolved_io::extent` stays empty.
@@ -145,7 +145,7 @@ export namespace vulkan::pass {
         uint32_t image_index = 0; // per-swapchain-image resources (GI, TAA, the G-buffer)
         uint32_t slot = 0;        // per-frame-slot resources (shadow maps, the light/camera buffers)
         /// how many swapchain images THIS generation has, which is not the same number as `image_index` and
-        /// is what a pass that owns a per-image descriptor family sizes it from. The probe cache needs it,
+        /// is what a pass that owns a per-image descriptor family sizes it from. The passes that own one need it,
         /// and it is the kind of fact that used to be reachable only from inside `vulkan.runtime`
         uint32_t image_count = 0;
         VkExtent2D extent = {0, 0};
@@ -158,7 +158,7 @@ export namespace vulkan::pass {
         /**
          * The image BEHIND @c view, because a descriptor takes a view and a BARRIER takes an image.
          *
-         * This field exists because the first real pass needed it: the probe cache transitions and clears
+         * This field exists because a pass that owns a per-image family needs it: the transitions and clears
          * its own nine images (same-layout storage barriers for the propagation, a clear when the global
          * lighting changed), and a pass that has only views cannot name them. It is resolved from the same
          * declaration element as the view, so a pass still reaches nothing it did not declare.
@@ -170,7 +170,7 @@ export namespace vulkan::pass {
      * @brief the SHARED sets, as they are: a pass that declared usage of one may bind it directly
      *
      * Three owners exist today (the scene set, the G-buffer set, the post set) and they are shared by
-     * construction - the G-buffer set alone carries the GI chain's images, the probe's SH-2 coefficients and
+     * construction - the G-buffer set alone carries the stored surface and the stochastic chain's images, and
      * the post pass's depth and normal. A pass DECLARES that it uses a shared binding (`set_owner`) and this
      * is the set behind it; who actually binds it is the host's business, and the runtime already binds the
      * scene set before a draw.
@@ -181,7 +181,7 @@ export namespace vulkan::pass {
         VkDescriptorSet post = VK_NULL_HANDLE;
     };
 
-    /// @brief how many own bindings one pass may resolve (the probe cache's nine are the most today)
+    /// @brief how many own bindings one pass may resolve (the most any pass declares today)
     inline constexpr uint32_t max_own_bindings = 16;
     /// @brief how many pipelines one pass may name (the post chain's five are the most today)
     inline constexpr uint32_t max_pass_pipelines = 8;
@@ -283,7 +283,7 @@ export namespace vulkan::pass {
         /**
          * The layout of the pipelines this pass names - ONE, not one per pipeline, because that is what this
          * renderer's passes have: a pass builds one `VkPipelineLayout` and every pipeline it records with
-         * (post's five, TAA's two, the probe cache's one) is created from it.
+         * (post's five, TAA's two, the lighting chain's five) is created from it.
          *
          * WHY A PASS NEEDS IT AT ALL, which the first real pass made unavoidable: a pass that records its own
          * dispatches pushes its own constants and binds its own sets, and both calls take the layout. The
@@ -298,7 +298,7 @@ export namespace vulkan::pass {
          * block is the size contract, and the pass reads the bytes as the struct it declared. The host
          * composes it because the values in it - the scene's bounds, an instance table's device address, the
          * global light direction - are the renderer's, not the pass's; what the pass owns is the block's
-         * SHAPE and the fields it changes per dispatch (the probe cache's mode lane).
+         * SHAPE and the fields it changes per dispatch (a chain's mode lane).
          */
         std::array<std::byte, max_push_bytes> push_storage = {};
         std::span<std::byte const> push = {};
@@ -695,7 +695,7 @@ export namespace vulkan::pass {
          * already in that position; the eight that were not override this.
          *
          * A PASS'S FRAME IS NOT A CHANNEL FOR ITS OWNER. What the chain owner must tell a pass per frame (that
-         * the probe cache may be read, that the reflection's recording is its own) is a SETTER on that pass, set
+         * a structure exists, that a pass's own recording is its own) is a SETTER on that pass, set
          * where the owner holds the pass - because a frame field written from outside the pass is a second owner
          * for the pass's own state, which is the defect this framework keeps removing.
          */

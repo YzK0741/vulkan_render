@@ -39,10 +39,10 @@ import vulkan.core.handles; // vk_pipeline: the RAII owner of the pipeline this 
 
 export namespace vulkan::pass {
 
-    /// @brief what the renderer hands the lighting stage: the frame's answer to what the traced chain is doing
+    /// @brief what the renderer hands the lighting stage: the frame's answer to what the lighting chain is doing
     struct deferred_frame {
         /**
-         * Whether the TRACED chain is answering for the ambient this frame, which the lighting stage needs for two
+         * Whether the lighting chain is answering for the ambient this frame, which the lighting stage needs for two
          * things and both of them belong to the same answer: it must not ADD the diffuse ambient, because the chain
          * estimates that whole term (including the off-screen half), and it must not scale the ambient it does add
          * by SSAO, because the chain answers un-occluded (see the push block's `gi_replaces_ambient`).
@@ -74,9 +74,9 @@ export namespace vulkan::pass {
             glm::mat4 inv_view_proj = glm::mat4(1.0f);           // clip -> world, reconstructed per pixel
             glm::vec4 ssao = glm::vec4(0.5f, 0.0f, 8.0f, 0.02f); // radius, intensity (0 = off), samples, bias
             float unlit = 0.0f;                                  // 1.0 = write the stored albedo, unshaded
-            /// 1.0 = the traced GI chain answers for the ambient this frame, so the diffuse one is not added at
+            /// 1.0 = the lighting chain answers for the ambient this frame, so the diffuse one is not added at
             /// all (`shade_input::diffuse_ambient_scale`) and SSAO must not scale the one that IS added - the
-            /// specular term, which the glossy lobe takes back out un-occluded. An SSAO-darkened ambient left an
+            /// specular term, which the chain's own subtraction takes back out un-occluded. An SSAO-darkened ambient left an
             /// `ambient * (ssao - 1)` term behind: measured on the reference scene, -1.90 of mean green with 37.6%
             /// of pixels differing and 13.7% off by more than 4/255, on a frame where SSAO is supposed to do NOTHING
             /// because the rays ARE the occlusion (see shaders/deferred.frag and shaders/shading.glsl). 0.0

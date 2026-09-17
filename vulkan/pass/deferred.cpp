@@ -164,7 +164,7 @@ namespace vulkan::pass {
         // THE PUSH BLOCK IS THE PASS'S OWN (S3): its shape was always the pass's (`push_constants`, `static_assert`ed
         // against the declaration), and its VALUES are now the pass's too - the SSAO parameters and the flat-render
         // flag it owns, the frame's inverse view-projection from `resolved_io::constants`, and the frame's answer to
-        // what the traced chain is doing. The renderer used to compose all of it and hand it over as raw bytes.
+        // what the lighting chain is doing. The renderer used to compose all of it and hand it over as raw bytes.
         push_constants push = {};
         push.inv_view_proj = io.constants.inv_view_proj;
         push.ssao = glm::vec4(this->ssao_radius_, this->ssao_enabled_ ? this->ssao_intensity_ : 0.0f, static_cast<float>(this->ssao_samples_), this->ssao_bias_);

@@ -221,24 +221,8 @@ int main(int argc, char** argv) {
     start_demo.set_megalights_accumulation(settings.render.megalights_history_tolerance, 12.0f, settings.render.megalights_spatial_sigma);
     // Same bargain as the ray-traced shadows: a request the runtime grants only on a device with ray
     // queries and a built top level structure - otherwise the GI rays keep marching the depth buffer.
-    // The multi-bounce gain: how much of the previous frame's accumulated indirect a GI hit re-emits.
-    // 0 (the default) keeps the estimator single-bounce, and the runtime clamps the knob to [0, 1]
-    // because above one the diffuse loop it closes is not guaranteed to converge.
-    // Shade the surface a GI ray hits from the geometry it landed on. A request: the runtime publishes the
-    // acceleration structures' instance table to the tracer only when they exist, and a frame without it
-    // samples the screen exactly as before.
     // The furnace verification mode: an analytic reference rather than another estimator of ours.
     runtime.set_furnace(settings.render.furnace);
-    // The world-space probe cache: where the screen-space chain cannot answer - a ray that leaves the
-    // frame or hits something hidden - the tracer reads a grid anchored to the scene instead of the
-    // far-field environment probe. Optional at every level (no pipeline, no chain, or off: the tracer
-    // keeps its fallback), and its gain is what makes the difference measurable.
-    // The glossy lobe: a traced reflection REPLACING the lighting stage's split-sum specular ambient, so a
-    // metal panel inside a room stops reflecting the sky. It needs the traced GI path and hit shading, and
-    // it does nothing where either is missing (the runtime says so in the log).
-    // Ray-traced sun shadows: a request, not a guarantee - the runtime grants it only on a device with
-    // ray queries, and the acceleration structures are built by the first frame that records with it on
-    // (the caster set they are built from is only complete once the scene is loaded and culled).
     runtime.set_rt_shadows(settings.render.rt_shadows);
     // ... and the alphaMode MASK bake, which is what keeps a masked surface from being SOLID to those rays:
     // a compute pass collapses the triangles the material's alpha cuts out, before the structures are built.

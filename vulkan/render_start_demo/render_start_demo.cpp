@@ -112,7 +112,7 @@ namespace vulkan {
         // THE FRAME'S TOOLKIT, cached for the callbacks that are carried by a PASS's frame and therefore cannot be
         // handed it (the reflection's recording - see the member's own note).
         // ... and the one fact the renderer's own policy reads about a pass it no longer holds: whether the lighting
-        // stage is in the flat render mode, which is what makes the GI chain pointless on such a frame. Published on
+        // stage is in the flat render mode, which is what makes a screen-space effect pointless on such a frame. Published on
         // every stage prepare rather than once, because it is one bool and the app can flip it between frames.
         if (self.runtime_ != nullptr && self.deferred_ != nullptr) {
             self.runtime_->set_scene_unlit(self.deferred_->unlit());
@@ -121,7 +121,7 @@ namespace vulkan {
         // switch is the frame ORDER written once, where the passes live. WHAT IS NOT HERE ANY MORE: the frames.
         // Every pass builds its own before this runs (see frame_pass::prepare_frame), so what is left per stage is
         // only what is genuinely this owner's - the frame-ORDER duties (whose first sample publishes an image) and
-        // the one answer no one else can give the tracer (whether the probe cache may be read).
+        // the one answer no one else can give a pass (whether this frame's structures exist).
         // THE THREE FRAMES THIS DEMO STILL HANDS OVER, and they are the three the runtime still builds (see
         // `frame_services`): each carries the renderer's own recording machinery - the per-slot secondary buffers
         // for the scene and the transparent pass, the per-cascade secondaries for the shadow - so the frame cannot
@@ -159,7 +159,7 @@ namespace vulkan {
                 static_cast<void>(services.ensure_gbuffer_targets_sampled(services.owner, services.cmd, services.image_index));
                 static_cast<void>(services.ensure_gbuffer_depth_sampled(services.owner, services.cmd, services.image_index));
                 // ... AND THE MOTION-VECTOR TARGET, which this stage's second pass is the first sampler of: the
-                // resolve reprojects its history with it. This is the ordering rule the GI chain runs between its
+                // resolve reprojects its history with it. This is the ordering rule the chain runs between its
                 // two halves; here both passes are in one stage, so the rule runs before either records - correct
                 // for the same reason, because nothing between them writes that target.
                 static_cast<void>(services.ensure_velocity_sampled(services.owner, services.cmd, services.image_index));
@@ -171,9 +171,9 @@ namespace vulkan {
             static_cast<void>(services.ensure_gbuffer_depth_sampled(services.owner, services.cmd, services.image_index));
         } else if (stage == "taa" || stage == "gbuffer_debug") {
             // BOTH STAGES HAND THE STORED SURFACE TO SAMPLERS THIS FRAME, and both are gated exactly as the runner
-            // gates the stage. The motion-vector flag is CLEARED rather than published: the GI chain later in the
+            // gates the stage. The motion-vector flag is CLEARED rather than published: the chain later in the
             // frame is what will publish that image, and clearing it here is what stops this stage's own accessor
-            // from claiming it (and, on the debug view's path, from letting the GI chain transition it twice).
+            // from claiming it (and, on the debug view's path, from letting a later pass transition it twice).
             if (services.feature_active != nullptr && services.feature_active(services.owner, stage == "taa" ? "taa" : "gbuffer-debug")) {
                 if (stage == "taa") {
                     // PUBLISHED, NOT CLEARED, for the TAA stage: its resolve samples the motion vectors and the
