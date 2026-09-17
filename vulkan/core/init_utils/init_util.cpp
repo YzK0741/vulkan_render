@@ -75,6 +75,11 @@ void device_capabilities::query(VkPhysicalDevice const physical_device, uint32_t
     };
     bool const ray_tracing_extensions = has_extension(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME) && has_extension(VK_KHR_RAY_QUERY_EXTENSION_NAME) &&
                                         has_extension(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
+    // The RT pipeline needs the acceleration-structure set as well (it traces the same structures), and
+    // the micromap needs the pipeline (its state is consumed by a traced ray, not by a query).
+    bool const ray_tracing_pipeline_extensions = ray_tracing_extensions && has_extension(VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME) &&
+                                                 has_extension(VK_KHR_RAY_TRACING_MAINTENANCE_1_EXTENSION_NAME);
+    bool const opacity_micromap_extension = ray_tracing_pipeline_extensions && has_extension(VK_EXT_OPACITY_MICROMAP_EXTENSION_NAME);
 
     // ---- Feature pNext chain: features_2 -> 1_1 -> 1_2 -> 1_3 -> 1_4 (truncated by api_version),
     //      then the extension features when the device has them. The TAIL is tracked rather than
@@ -104,13 +109,29 @@ void device_capabilities::query(VkPhysicalDevice const physical_device, uint32_t
     // VkBaseOutStructure's own pNext is typed - and the tail is reached through the base type)
     static_cast<VkBaseOutStructure*>(feature_tail)->pNext = ray_tracing_extensions ? reinterpret_cast<VkBaseOutStructure*>(&acceleration_structure_features) : nullptr;
     acceleration_structure_features.pNext = ray_tracing_extensions ? &ray_query_features : nullptr;
-    ray_query_features.pNext = nullptr;
+    // ... and the rest of the ray-tracing chain hangs off ray query, each link present only when its own
+    // extensions are: an extension feature struct whose extension is NOT enabled must not appear in the
+    // vkCreateDevice chain at all.
+    ray_query_features.pNext = ray_tracing_pipeline_extensions ? reinterpret_cast<VkBaseOutStructure*>(&ray_tracing_pipeline_features) : nullptr;
+    ray_tracing_pipeline_features.pNext = ray_tracing_pipeline_extensions ? &ray_tracing_maintenance1_features : nullptr;
+    ray_tracing_maintenance1_features.pNext = opacity_micromap_extension ? reinterpret_cast<VkBaseOutStructure*>(&opacity_micromap_features) : nullptr;
+    opacity_micromap_features.pNext = nullptr;
     vkGetPhysicalDeviceFeatures2(physical_device, &features_2);
 
     // Both feature bits have to be true for the two structs to be worth keeping in the chain: the
     // extensions can be advertised by a device that does not actually support ray queries. Unlinking
     // here is what keeps "enabled at device creation" and "available to the renderer" the same thing.
     ray_query_available = ray_tracing_extensions && acceleration_structure_features.accelerationStructure == VK_TRUE && ray_query_features.rayQuery == VK_TRUE;
+    ray_tracing_pipeline_available = ray_tracing_pipeline_extensions && ray_query_available && ray_tracing_pipeline_features.rayTracingPipeline == VK_TRUE;
+    opacity_micromap_available = opacity_micromap_extension && ray_tracing_pipeline_available && opacity_micromap_features.micromap == VK_TRUE;
+    // Unlink every struct whose feature came back false: the extension may be advertised by a device
+    // that does not actually support it, and an enabled-but-unsupported struct is a device-creation error.
+    if (!opacity_micromap_available) {
+        ray_tracing_maintenance1_features.pNext = nullptr;
+    }
+    if (!ray_tracing_pipeline_available) {
+        ray_query_features.pNext = nullptr;
+    }
     if (!ray_query_available) {
         static_cast<VkBaseOutStructure*>(feature_tail)->pNext = nullptr;
         acceleration_structure_features.pNext = nullptr;
@@ -123,7 +144,8 @@ void device_capabilities::query(VkPhysicalDevice const physical_device, uint32_t
     subgroup_properties.pNext = &descriptor_indexing_properties;
     descriptor_indexing_properties.pNext = &maintenance4_properties;
     maintenance4_properties.pNext = ray_query_available ? &acceleration_structure_properties : nullptr;
-    acceleration_structure_properties.pNext = nullptr;
+    acceleration_structure_properties.pNext = opacity_micromap_available ? reinterpret_cast<VkBaseOutStructure*>(&opacity_micromap_properties) : nullptr;
+    opacity_micromap_properties.pNext = nullptr;
     vkGetPhysicalDeviceProperties2(physical_device, &properties_2);
 
     // ---- Feature policy: pass through driver support except explicitly disabled ones (take most features except ray tracing) ----
@@ -307,6 +329,9 @@ void print_device_capabilities(device_capabilities const& capabilities) {
     // ---- Ray tracing: whether the optional extension features joined the chain (see query) ----
     if (capabilities.ray_query_available) {
         utility::log(" ray tracing   : ray query available (VK_KHR_acceleration_structure + VK_KHR_ray_query)");
+        utility::log("                 {} / opacity micromap {}",
+                     capabilities.ray_tracing_pipeline_available ? "ray pipeline available (VK_KHR_ray_tracing_pipeline + maintenance1)" : "ray pipeline NOT available",
+                     capabilities.opacity_micromap_available ? std::format("available (VK_EXT_opacity_micromap, max subdivision level {} 2-state / {} 4-state)", capabilities.opacity_micromap_properties.maxOpacity2StateSubdivisionLevel, capabilities.opacity_micromap_properties.maxOpacity4StateSubdivisionLevel) : "not available");
         utility::log("   limits      : {} instances, {} geometries, scratch alignment {}",
                      capabilities.acceleration_structure_properties.maxInstanceCount,
                      capabilities.acceleration_structure_properties.maxGeometryCount,

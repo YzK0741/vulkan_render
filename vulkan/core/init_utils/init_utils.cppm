@@ -87,6 +87,18 @@ export struct device_capabilities {
     //      builds asynchronously - it builds on the frame thread and waits. ----
     VkPhysicalDeviceAccelerationStructureFeaturesKHR acceleration_structure_features = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR};
     VkPhysicalDeviceRayQueryFeaturesKHR ray_query_features = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR};
+    // ---- Ray tracing, the rest of it: the RT PIPELINE (with its maintenance1 features) and the OPACITY
+    //      MICROMAP. Both are chained AFTER ray query and only when their own extensions are advertised,
+    //      so "is it linked" is again the availability flag (see the note above). The pipeline is what
+    //      turns the traced shadow from a per-pixel ray query into a traceRaysEXT dispatch that can run an
+    //      any-hit shader; the micromap is what makes an alphaMode MASK surface opaque/transparent per
+    //      MICROtriangle instead of per triangle - the hardware answer to the limitation rt_mask_bake's
+    //      triangle-collapse rule measured as worse than doing nothing. ----
+    VkPhysicalDeviceRayTracingPipelineFeaturesKHR ray_tracing_pipeline_features = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR};
+    VkPhysicalDeviceRayTracingMaintenance1FeaturesKHR ray_tracing_maintenance1_features = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_MAINTENANCE_1_FEATURES_KHR};
+    VkPhysicalDeviceOpacityMicromapFeaturesEXT opacity_micromap_features = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_OPACITY_MICROMAP_FEATURES_EXT};
+    /// the subdivision levels the device allows, queried with the feature that gates them
+    VkPhysicalDeviceOpacityMicromapPropertiesEXT opacity_micromap_properties = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_OPACITY_MICROMAP_PROPERTIES_EXT};
     // The two limits the builder needs are in here, next to the features that gate them:
     // minAccelerationStructureScratchOffsetAlignment (a scratch buffer's device address must be a
     // multiple of it) and maxInstanceCount/maxGeometryCount (what fits in one level).
@@ -96,6 +108,11 @@ export struct device_capabilities {
      *        features, i.e. whether the two structs above are in the query/device chains
      */
     bool ray_query_available = false;
+    /// @brief whether the device has VK_KHR_ray_tracing_pipeline + maintenance1 AND the rayTracingPipeline
+    ///        feature: a traceRaysEXT dispatch with a shader binding table needs both
+    bool ray_tracing_pipeline_available = false;
+    /// @brief whether the device has VK_EXT_opacity_micromap AND its feature (it needs the RT pipeline too)
+    bool opacity_micromap_available = false;
 
     // ---- Property chain (query only, for renderer decisions/diagnostics) ----
     VkPhysicalDeviceProperties2 properties_2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};

@@ -270,6 +270,21 @@ namespace vulkan {
                 creation_info.extensions.push_back(extension);
             }
         }
+        // The RT pipeline and its maintenance1 features, then the micromap: each name is pushed only when
+        // the capability query proved BOTH the extension and its feature, so an enabled extension and an
+        // available feature cannot disagree (the rule the ray-query block above follows).
+        constexpr std::array<char const*, 2> ray_tracing_pipeline_extensions = {
+            VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME,
+            VK_KHR_RAY_TRACING_MAINTENANCE_1_EXTENSION_NAME,
+        };
+        if (capabilities.ray_tracing_pipeline_available) {
+            for (char const* extension : ray_tracing_pipeline_extensions) {
+                creation_info.extensions.push_back(extension);
+            }
+        }
+        if (capabilities.opacity_micromap_available) {
+            creation_info.extensions.push_back(VK_EXT_OPACITY_MICROMAP_EXTENSION_NAME);
+        }
 
         if (!check_device_extension_support(physical_device, creation_info.extensions)) {
             utility::panic("Required device extensions not supported");
@@ -289,7 +304,10 @@ namespace vulkan {
         // What the device ended up with, for the passes that need it (see the members: the ray-traced
         // paths are skipped rather than broken on a device without them).
         this->ray_query_available = capabilities.ray_query_available;
+        this->ray_tracing_pipeline_available = capabilities.ray_tracing_pipeline_available;
+        this->opacity_micromap_available = capabilities.opacity_micromap_available;
         this->acceleration_structure_properties = capabilities.acceleration_structure_properties;
+        this->opacity_micromap_properties = capabilities.opacity_micromap_properties;
 
         utility::log("device and queue init succeeded");
 

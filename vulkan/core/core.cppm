@@ -213,7 +213,15 @@ namespace vulkan {
         // plain data holder like device_properties above (assigned from the query, never passed to
         // Vulkan), so they are zero-initialized rather than carrying a fixed sType.
         bool ray_query_available = false;
+        /// @brief whether the RT pipeline (traceRaysEXT + a shader binding table) can be used at all:
+        ///        the extension set AND the feature, enabled together at device creation
+        bool ray_tracing_pipeline_available = false;
+        /// @brief whether VK_EXT_opacity_micromap is enabled: the micromap state that makes an
+        ///        alphaMode MASK surface opaque/transparent per microtriangle. Needs the RT pipeline.
+        bool opacity_micromap_available = false;
         VkPhysicalDeviceAccelerationStructurePropertiesKHR acceleration_structure_properties = {};
+        /// @brief the micromap subdivision levels the device allows (queried with its feature)
+        VkPhysicalDeviceOpacityMicromapPropertiesEXT opacity_micromap_properties = {};
         uint32_t graphics_family_index = 0;
         uint32_t present_family_index = 0;
         VkDebugUtilsMessengerEXT debug_messenger = VK_NULL_HANDLE;
