@@ -2899,17 +2899,9 @@ namespace vulkan {
         family(render_resource::resource_id::gbuffer_depth, 0, vk.gbuffer_depth_image_views, vk.gbuffer_depth_images);
         family(render_resource::resource_id::velocity, 0, vk.velocity_image_views, vk.velocity_images);
         family(render_resource::resource_id::taa_history, 0, vk.taa_history_image_views, vk.taa_history_images);
-        family(render_resource::resource_id::gi_trace, 0, vk.gi_image_views, vk.gi_images);
         family(render_resource::resource_id::ml_trace, 0, vk.ml_image_views, vk.ml_images);
         family(render_resource::resource_id::ml_resolve, 0, vk.ml_resolve_image_views, vk.ml_resolve_images);
         family(render_resource::resource_id::ml_history, 0, vk.ml_history_image_views, vk.ml_history_images);
-        family(render_resource::resource_id::gi_resolve, 0, vk.gi_resolve_image_views, vk.gi_resolve_images);
-        family(render_resource::resource_id::gi_history, 0, vk.gi_history_image_views, vk.gi_history_images);
-        family(render_resource::resource_id::gi_spatial, 0, vk.gi_spatial_image_views, vk.gi_spatial_images);
-        family(render_resource::resource_id::gi_spec_trace, 0, vk.gi_spec_image_views, vk.gi_spec_images);
-        family(render_resource::resource_id::gi_spec_reproject, 0, vk.gi_spec_reproject_image_views, vk.gi_spec_reproject_images);
-        family(render_resource::resource_id::gi_spec_resolve, 0, vk.gi_spec_resolve_image_views, vk.gi_spec_resolve_images);
-        family(render_resource::resource_id::gi_spec_history, 0, vk.gi_spec_history_image_views, vk.gi_spec_history_images);
         for (std::size_t target = 0; target < vk.gbuffer_image_views.size() && target < vk.gbuffer_images.size(); ++target) {
             family(render_resource::resource_id::gbuffer_targets, static_cast<uint32_t>(target), vk.gbuffer_image_views[target], vk.gbuffer_images[target]);
         }
