@@ -222,6 +222,9 @@ namespace vulkan {
         VkPhysicalDeviceAccelerationStructurePropertiesKHR acceleration_structure_properties = {};
         /// @brief the micromap subdivision levels the device allows (queried with its feature)
         VkPhysicalDeviceOpacityMicromapPropertiesEXT opacity_micromap_properties = {};
+        /// @brief the SBT numbers (handle size, region base alignment, handle alignment, recursion depth)
+        ///        a ray-tracing pipeline's shader binding table has to be built against
+        VkPhysicalDeviceRayTracingPipelinePropertiesKHR ray_tracing_pipeline_properties = {};
         uint32_t graphics_family_index = 0;
         uint32_t present_family_index = 0;
         VkDebugUtilsMessengerEXT debug_messenger = VK_NULL_HANDLE;

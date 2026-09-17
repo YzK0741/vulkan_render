@@ -308,6 +308,7 @@ namespace vulkan {
         this->opacity_micromap_available = capabilities.opacity_micromap_available;
         this->acceleration_structure_properties = capabilities.acceleration_structure_properties;
         this->opacity_micromap_properties = capabilities.opacity_micromap_properties;
+        this->ray_tracing_pipeline_properties = capabilities.ray_tracing_pipeline_properties;
 
         utility::log("device and queue init succeeded");
 

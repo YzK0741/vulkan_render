@@ -99,6 +99,13 @@ export struct device_capabilities {
     VkPhysicalDeviceOpacityMicromapFeaturesEXT opacity_micromap_features = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_OPACITY_MICROMAP_FEATURES_EXT};
     /// the subdivision levels the device allows, queried with the feature that gates them
     VkPhysicalDeviceOpacityMicromapPropertiesEXT opacity_micromap_properties = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_OPACITY_MICROMAP_PROPERTIES_EXT};
+    /// The three numbers a SHADER BINDING TABLE cannot be built without, and they are the reason this is
+    /// queried before any pipeline exists: shaderGroupHandleSize is how many bytes one group's handle is,
+    /// shaderGroupBaseAlignment is what an SBT REGION's device address must be a multiple of, and
+    /// shaderGroupHandleAlignment is what a handle's address inside a region must be. A region whose
+    /// stride is the handle size alone is invalid on a device whose handle alignment is larger - the
+    /// classic first-attempt VUID - so the stride is this struct's business, not the pass's.
+    VkPhysicalDeviceRayTracingPipelinePropertiesKHR ray_tracing_pipeline_properties = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_PROPERTIES_KHR};
     // The two limits the builder needs are in here, next to the features that gate them:
     // minAccelerationStructureScratchOffsetAlignment (a scratch buffer's device address must be a
     // multiple of it) and maxInstanceCount/maxGeometryCount (what fits in one level).
