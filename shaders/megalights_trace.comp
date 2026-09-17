@@ -65,7 +65,7 @@ layout(local_size_x = 8, local_size_y = 8) in;
 #include "shading.glsl"
 
 // ... and the scene set's top level structure, declared by the includer because `shading.glsl` has no
-// use for it (same split as shaders/ssgi.comp and shaders/rt_shadow.comp).
+// use for it (same split as shaders/rt_shadow.comp).
 layout(set = 0, binding = 16) uniform accelerationStructureEXT tlas;
 
 // The G-buffer set (1): the stored surface this pixel's lights are evaluated for. The same four bindings
@@ -76,11 +76,11 @@ layout(set = 1, binding = 1) uniform sampler2D gbuffer_normal;   // RGBA16F: wor
 layout(set = 1, binding = 2) uniform sampler2D gbuffer_material; // RGBA8: .b = the material's baked AO
 layout(set = 1, binding = 3) uniform sampler2D gbuffer_depth;    // the pass's own 1x depth
 
-// This pass's output, through the SHARED G-buffer set (binding 16 - see
+// This pass's output, through the SHARED G-buffer set (binding 6 - the one STORAGE binding of
 // `pipelines::make_gbuffer_set_layout`): rgb = the punctual lights' contribution, a = the fraction of the
 // samples whose ray found the light (see the header). The lighting stage samples the SAME image at binding
-// 17, which is why this pass hands it on as SHADER_READ at the end of its record.
-layout(set = 1, binding = 16, rgba16f) uniform image2D ml_output;
+// 7, which is why this pass hands it on as SHADER_READ at the end of its record.
+layout(set = 1, binding = 6, rgba16f) uniform image2D ml_output;
 
 /// @brief the compile-time bound on samples per pixel: UE supports 1, 2 and 4, and the loop is bounded by
 ///        the constant so the reservoir arrays have a size (the ACTIVE count is a push lane).

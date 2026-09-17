@@ -2489,8 +2489,10 @@ namespace vulkan {
                 // 6 is STORAGE (the lighting chain's compute pass writes it) and therefore has no sampler and
                 // lives in GENERAL; the rest are sampled and SHADER_READ.
                 bool const storage = b == 6u;
-                // The probe cache is a 3D texture read with LINEAR filtering: the whole point of sampling
-                // it is interpolating between cells, so it cannot borrow the G-buffer's NEAREST sampler.
+                // EVERY sampled binding takes the G-buffer's NEAREST sampler: these views are the stored
+                // surface and the two images the lighting chain hands over per texel, and the one sampler that
+                // used to differ here belonged to the world-space probe cache, which is gone.
+                image_infos[b].sampler = storage ? VK_NULL_HANDLE : *this->vulkan_core.gbuffer_sampler;
                 image_infos[b].imageView = views[b];
                 image_infos[b].imageLayout = storage ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
                 writes[b].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
