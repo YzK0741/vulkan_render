@@ -424,7 +424,6 @@ namespace vulkan {
          * recorded with the chain's own calls, so the frame loop does not spell the order out.
          *
          * The spatial filter's "only if the temporal resolve ran" gate is NOT expressed here: it lives in the
-         * feature registry (`feature_active("ssgi_spatial")`), which is the one place that answers "does this
          * pass run this frame" - see chain.cppm's header for why a chain does not skip its own tail.
          */
         /**
@@ -440,17 +439,13 @@ namespace vulkan {
          * `chain_wiring::prepare` is handed for that half (see `prepare_stage`, which passes the stage the chain
          * builds), so "gi trace" with a space was a name the owner had to know in TWO spellings - the mismatch
          * this rename removes, and it was measured rather than noticed: with `prepare_stage` handing the chain's
-         * own name, the owner's `gi_trace` branch stopped running and the GI chain lost the frame-order rule that
          * publishes the motion-vector target.
          */
-        pass::pass_chain gi_trace_chain{"gi_trace"};
-        pass::pass_chain gi_denoise_chain{"gi_denoise"};
         std::array<pass::frame_pass*, 1> rt_shadow_stage = {};
         /// the deferred lighting stage's own stage: it sits between the ray-traced shadow (whose output its
         /// descriptor samples) and the transparent pass (which composites over the image it shades), which is
         /// where the frame loop records it and the only fact about it the renderer still spells out.
         std::array<pass::frame_pass*, 1> deferred_stage = {};
-        bool ssgi_on = false;
         // The stochastic PUNCTUAL LIGHTING chain ([render] megalights, docs/megalights.md): the pass's own
         // stage, which runs between the G-buffer and the deferred lighting stage - the lighting stage is what
         // ADDS its result, so it has to have it, and the G-buffer is what it evaluates its lights against.
@@ -467,39 +462,28 @@ namespace vulkan {
         /// never disagree with what actually ran.
         bool megalights_resolved = false;
         /// Per swapchain image: whether that image's stochastic accumulation holds a frame yet. The counterpart
-        /// of `gi_history_valid` for this chain, and reset in the same two places (a new generation, and the
         /// feature's off -> on edge).
         std::vector<bool> megalights_history_valid = {};
         // The tracer's ray sequence has to change every frame: a fixed one would feed a temporal
         // denoiser the same error in the same place every frame instead of an average. The COUNTER is the frame
         // loop's (it paces the chain), and both tracing stages read the frame's copy of it
-        // (`frame_constants::gi_frame_index`) - one sequence, so the two cannot trace the same rays twice.
-        uint32_t ssgi_frame = 0;
         // Trace the GI rays against the scene's acceleration structures instead of marching the depth
-        // buffer ([render] ssgi_ray_tracing). Only meaningful with the tracer enabled and a device that
         // has ray queries AND a built top level structure - the push block's frame_info.y carries the
         // resolved answer, so the shader never has to know why it is marching instead.
-        bool ssgi_ray_tracing = false;
         // Shade the surface a GI ray lands on from the geometry it hit, instead of sampling the screen's
-        // direct-radiance image there ([render] ssgi_hit_shading). Off by default: on, a hit's answer
         // stops depending on what the frame happens to show - which is what lets a hit the camera cannot
         // see (off screen, or hidden) be answered correctly rather than approximated - at the price of the
         // material and vertex fetches a shaded hit costs. What switches it on is the instance table's address
         // (`frame_constants::gi_instance_table`, which the frame loop publishes when this is true): a zero
         // address means "sample the screen", so the knob is also the A/B.
-        bool ssgi_hit_shading = false;
-        // The glossy lobe ([render] ssgi_specular): a GGX-sampled reflection ray per pixel whose hit is
         // shaded from its geometry, so a reflection shows the room instead of the sky. It is a REPLACEMENT
         // for the specular ambient the lighting stage adds - the estimate falls back to exactly that term
         // when a ray finds nothing - which is what the lobe's own subtraction takes back out, at the texel
-        // it adds its own (see shaders/ssgi_spec.comp; the DIFFUSE half of the same argument now lives in
         // shaders/shading.glsl's `diffuse_ambient_scale`, where that term is added). ON by default:
         // the objection that kept it off was its denoiser item, and the reflection now has an accumulation
         // of its own, reprojected from the point it found (see the L2.3 motion sections).
-        // Its REACH and its RAY COUNT are the pass's own parameters (`set_ssgi_specular` forwards), and they are
         // deliberately not the shared diffuse reach: the marched path pins that one low (its resolution is
         // radius / steps), so a reflection's reach would make its steps too coarse to find anything between them.
-        bool ssgi_specular = true;
         // The furnace verification mode ([render] furnace, not wired to the config yet): the sun is turned
         // off and the environment becomes a constant level, so the correct frame is computable by hand.
         bool furnace = false;
@@ -508,10 +492,7 @@ namespace vulkan {
         // be a barrier pair bought for nothing, and the flag is reset with the images it describes.
         bool furnace_cube_ready = false;
 
-        // The glossy lobe's own block (shaders/ssgi_spec.comp). It is a separate pass, so it is not bound
         // by the tracer's 128 bytes - which is the second reason it is a pass of its own: the first is
-        // that a pass that is not recorded cannot perturb the frame at all (see ssgi_specular_active).
-        // THE PUSH BLOCK ITSELF IS THE PASS'S NOW (pass::ssgi_spec_pass::push_constants): its shape belongs to
         // the pass that pushes it, and the host only fills the values in.
 
         // THE DEFERRED LIGHTING STAGE'S SSAO PARAMETERS, ITS FLAT-RENDER FLAG AND ITS PUSH BLOCK ARE THE PASS'S
@@ -555,15 +536,12 @@ namespace vulkan {
         // next frame's history (no ping-pong, hence no per-frame descriptor rewrites).
         // The TAA resolve is a PASS (vulkan.pass.taa): it owns its set layout, pipeline layout, pipeline and
         // descriptor family, so all that is left here is the pass member and the stage the runner is handed.
-        // ---- the GI denoiser's temporal resolve (see shaders/ssgi_temporal.comp) ----
         // The pipeline, its layout, the set layout its declaration generates, the diffuse family that layout's
         // per-image sets need AND the reflection's second family over the same layout are the chain owner's now
-        // (vulkan.pass.ssgi_temporal for the first four, vulkan.render_start_demo for the reflection): two signals
         // resolved through one pipeline is THIS application's choice, so the code that expresses it lives with the
         // passes - see `chain_wiring::recreated` for the one lifecycle duty it left behind.
         // Per swapchain image: whether that image has a GI history yet. First frame after startup or
         // after a resize there is none, and the resolve then uses the current trace alone.
-        std::vector<bool> gi_history_valid = {};
         /**
          * How many frames a restarted GI accumulation takes to be trusted again: the temporal resolve's
          * COLD-START widening fades out over this many frames (see `frame_facts::gi_cold_start`).
@@ -584,22 +562,14 @@ namespace vulkan {
          */
         std::vector<uint32_t> gi_frames_accumulated = {};
         // The GI history is accumulated with its OWN weights rather than TAA's, and they are the temporal PASS's
-        // constants now (`ssgi_temporal_pass::blend_static` / `blend_min`): the signal is far noisier than shading
         // aliasing, so it wants a longer memory, and it must not be tuned by whatever the AA sliders are set to.
-        // The spatial filter's two EDGE CRITERIA (see shaders/ssgi_spatial.comp): sigma_depth is a FRACTION of the
         // view distance, so one value means the same thing near and far, and both are read by the composite's
         // joint-bilateral upsample as well - which is why they are the FRAME's settings
         // (`frame_constants::render_settings`) and not a member of either pass. The filter's WIDTH is not here:
-        // one pass reads it, so it is that pass's own parameter (`ssgi_spatial_pass::set_sigma`).
-        float gi_spatial_depth_sigma = 0.02f;
-        float gi_spatial_normal_power = 16.0f;
         // The GI spatial filter: a joint-bilateral pass over the temporal resolve's output, which is
         // what the composite samples. Same two set layouts as the tracer, so no set of its own - and since
-        // the pass owns its pipeline layout and its pipeline (vulkan.pass.ssgi_spatial), there is no handle
         // for it here at all.
         // The glossy lobe is NOT here any more: its pipeline layout, its pipeline and its per-image first-use
-        // state are the PASS's (see vulkan.pass.ssgi_spec). The spatial filter's push block left the same way:
-        // its SHAPE is the pass's now (pass::ssgi_spatial_pass::push_constants), and the renderer only fills the
         // values in - which is the split every extracted pass settled on.
         // Whether THIS frame's GI chain ran far enough to produce the image the composite samples:
         // cleared once per frame before the GI passes and set by the SPATIAL FILTER, which is the last
@@ -607,7 +577,6 @@ namespace vulkan {
         // GI off, but also GI on with a missing descriptor set or a filter that declined to run, which
         // are frames whose sampled image holds something else (or nothing at all).
 
-        // ---- the world-space radiance probe cache (see shaders/gi_probe.comp) ----
         // Where the screen-space chain cannot answer: a ray that leaves the frame or hits something the
         // camera cannot see gets its radiance from a persistent 3D grid anchored to the SCENE instead of
         // from the far-field environment probe, which is the sky at infinity rather than the light in
@@ -629,11 +598,7 @@ namespace vulkan {
         // is the loader (it knows the shader directory); the runtime is only the place a pass asks. A copy
         // rather than a view, because the caller's buffer is a local in a startup scope.
         std::vector<std::pair<std::string, std::vector<unsigned char>>> registered_shaders = {};
-        bool gi_probe_enabled = false;
-        // The grid's own blend rate ([render] ssgi_probe_rate) is the PROBE PASS's now (`set_ssgi_probes`
-        // forwards to `gi_probe_pass::set_rate`): it is the injection's loop gain, and only that pass reads it.
         // How much of the grid's answer the tracer adds on top of the environment probe for a hit it
-        // cannot resolve on screen ([render] ssgi_probe_gain). 0 turns the contribution off while
         // leaving the cache running, which is the A/B that measures what the grid actually adds.
         //
         // The SIGN is a second A/B, and it exists to answer one question: is this cache DIRECTIONAL? A
@@ -642,25 +607,18 @@ namespace vulkan {
         // still sampled along the ray itself. So the two captures differ only through the cache, and a
         // cell that holds a single RGB makes them byte-identical BY CONSTRUCTION. That is the L2.1
         // acceptance test: it has to fail before the SH-2 change and pass after (see
-        // shaders/ssgi.comp's probe_radiance and docs/gi_hit_shading.md).
-        // THE VALUE LIVES IN THE TRACER (`set_ssgi_probes` forwards to `ssgi_trace_pass::set_probe_gain`):
         // the lane it lands in is the tracer's, and the cache's own validity is the probe pass's state.
         // Whether the grid holds anything at all, and the light it holds it for, are the PASS's own state now
-        // (see gi_probe_pass::cache_valid): it is the pass's cache, so its invalidation is the pass's - and
         // the pass owns the light-change trigger, which is why the current direction rides in the push block.
         // What stays here is nothing about the first-use transition: it belongs to the TRACER (the trace pass is
         // the frame's first reader of the grid, not its writer), and whether it has happened is the pass's own
-        // per-generation flag - the renderer asks it (`ssgi_trace_pass::probe_grid_seen`), which is why the host
         // flag that used to sit here is gone: two copies of "has the batch happened" can disagree after a resize.
-        // The glossy lobe's own two output images (core.cppm's gi_spec_*), which need the same first-use
         // layout transition the GI trace does. PER SWAPCHAIN IMAGE, not one flag for all of them: a single
         // bool is set by the first slot's frame and then tells the other slots their images are already in
         // GENERAL, so they never get a first-use transition at all - which is invisible until something
         // READS one of them, and then it is a validation error on whichever slot ran second. (This project's
         // per-image-lifetime trap, third occurrence.)
-        // THE FLAG ITSELF IS THE PASS'S NOW (pass::ssgi_spec_pass's per-image state): the host only tells the
         // pass when the generation changed or when the chain was switched on (see on_swapchain_recreated and
-        // set_ssgi), because those are the two moments the renderer knows and the pass cannot.
         // The alphaMode MASK bake's push block is NOT here any more: its shape is the JOB's
         // (pass::mask_bake_push_constants in vulkan.pass.mask_bake), because only that job composes it.
         // THE SCENE PASS (vulkan.pass.scene): it owns the surface instance, the segment strategy and the draw
@@ -738,7 +696,6 @@ namespace vulkan {
         ///        it through `pass_context::shared_set_layout(owner, 1)`
         VkDescriptorSetLayout gbuffer_set_layout_ = VK_NULL_HANDLE;
         /// @brief whether the LIGHTING STAGE is in the flat render mode this frame, published by the chain's owner
-        ///        (see set_scene_unlit): the renderer's own ssgi_active gate reads it
         bool scene_unlit_ = false;
         /**
          * @brief fill this frame's shared constants (`pass::resolved_io::constants`) from the camera/light state
@@ -1269,13 +1226,11 @@ namespace vulkan {
         // chain's `kept_alive_` used to give them. A `job_chain` is the shape to reach for if a THIRD job appears.
         pass::mask_bake_job mask_bake = {};
         // Whether that bake runs at all ([render] rt_mask_bake). Off by default: the per-triangle rule
-        // measured WORSE than the raster path (see the member comment above and docs/gi_hit_shading.md).
         bool rt_mask_bake = false;
 
         // ---- skinned meshes (see shaders/compute_skin.comp) ----
         // This engine skins in the VERTEX shader, so the deformed positions never reach memory a build can
         // read, and a skinned mesh's traced shadow is its BIND POSE (measured: the traced shadow's pose
-        // dependence is zero where the raster one's is up to 3.8 per tile - docs/gi_hit_shading.md's L2.2b
         // section). The pass below writes the same vertices the vertex shader computes into the buffer the
         // structure is built from, once per frame, and the structure is REFITTED rather than rebuilt
         // because only the bytes change.
@@ -1476,7 +1431,6 @@ namespace vulkan {
             /// the stochastic punctual lighting chain's resolve wrote its accumulation this frame: the next frame's
             /// history flag for THIS image is set from it, exactly as `gi_temporal_resolved` sets the GI's
             bool megalights_temporal_resolved = false;
-            bool gi_resolved = false;
             bool gi_temporal_resolved = false;
             bool taa_wrote_history = false;
         };
@@ -1493,7 +1447,6 @@ namespace vulkan {
          *
          * WHAT IS NOT HERE: anything a pass answers about itself (`unlit`, `ssao_enabled`, whether this frame's
          * temporal resolve recorded) - the owner holds those passes and asks them - and the *composed* predicates the
-         * RENDERER still needs for its own policy (`ssgi_active` decides whether the acceleration structures are
          * built; `taa_active` picks the scene target and jitters the projection), which appear here as atoms so that
          * the two sides cannot implement the same composition twice.
          */
@@ -1508,13 +1461,12 @@ namespace vulkan {
             bool rt_shadow = false;    // rt_shadows_active(): the knob and the device
             bool fxaa = false;         // post_fxaa_active(): the knob and the FXAA pass
             /// the knobs the feature table composes with, and the frame's own content
-            bool gbuffer_debug = false; // the debug view's knob
-            bool shadow = false;        // the checkbox AND enable_shadows() having succeeded
-            bool clustered = false;     // the clustered-lights knob
-            bool taa = false;           // the TAA knob
-            bool bloom = false;         // the bloom knob, resolved (intensity > 0)
-            bool ssgi_specular = false; // the glossy lobe's knob
-            bool ssgi_hit_shading = false;
+            bool gbuffer_debug = false;       // the debug view's knob
+            bool shadow = false;              // the checkbox AND enable_shadows() having succeeded
+            bool clustered = false;           // the clustered-lights knob
+            bool taa = false;                 // the TAA knob
+            bool bloom = false;               // the bloom knob, resolved (intensity > 0)
+            bool ssgi_specular = false;       // the glossy lobe's knob
             bool transparent_pending = false; // this frame has alpha-blended geometry to composite
             bool gbuffer_pipeline = false;    // the surface pipeline exists (the scene pass records with it)
             bool structures_ready = false;    // this frame's top level structure is built for the slot
@@ -1623,7 +1575,6 @@ namespace vulkan {
          * @ingroup vulkan_runtime
          * @brief publish the ONE frame constant a chain owner produces mid-chain
          *
-         * `frame_constants::gi_spec_resolved` is written by the reflection's recording - which this application runs
          * INSIDE the temporal pass's recording - and read by the spatial filter later in the same chain, so it
          * cannot travel through `collect` (that runs after the whole chain). The owner is the only one that knows the
          * answer, so this is the narrow channel it writes it through rather than handing over the whole constants
@@ -1636,9 +1587,7 @@ namespace vulkan {
          *
          * The flag itself is the lighting pass's parameter (the shader returns the stored albedo), and the renderer
          * needs it for one thing it decides on its own: whether the screen-space GI chain is worth running at all
-         * (`ssgi_active` - a flat frame's radiance is an albedo, so the bounce it would trace is a product of two
          * albedos rather than a transport term). Since the pass left the renderer, the owner that holds it publishes
-         * this per frame - the same one-way channel `set_gi_spec_resolved` uses, and the reason the renderer can keep
          * a policy predicate without keeping a pass.
          */
         void set_scene_unlit(bool unlit) noexcept {
@@ -2190,7 +2139,6 @@ namespace vulkan {
          *       with them off is byte-identical either way. It exists as a knob because the bake is an
          *       approximation - a triangle is either in the structure or not, while the raster path discards
          *       per fragment - and the size of that difference is what its measurement compares (see
-         *       docs/gi_hit_shading.md).
          */
         void set_rt_mask_bake(bool enabled) noexcept;
 
@@ -2201,7 +2149,6 @@ namespace vulkan {
          * @param enabled false = the structures keep whatever pose they were last built or refitted in
          * @note the structures are built from the model-space bind pose (see acceleration_structure::add), so
          *       without this pass a traced shadow of an animated mesh is cast by the mesh where it is NOT -
-         *       which is exactly what the L2.2b baseline table in docs/gi_hit_shading.md measures. Off by
          *       default, and unlike set_rt_mask_bake it is read every frame: the pass runs per frame, so the
          *       flag can be flipped at any time and the next frame's traced shadows follow.
          */
@@ -2346,7 +2293,6 @@ namespace vulkan {
          * @brief turn screen-space GI on or off - the FLAG only
          *
          * THE SPLIT the handover forces, and it is a real one rather than a convenience: the renderer needs this
-         * flag for its OWN policy (`ssgi_active` gates the chain, `rt_structures_wanted` builds the acceleration
          * structures from it, and the frame's GI facts are filled from it), while the ray BUDGET - intensity, reach,
          * rays, steps - is read by the tracer alone and is set by whoever owns that pass
          * (`vulkan.render_start_demo`). The same split is repeated for TAA's flag and weights, the lobe's flag and
@@ -2364,7 +2310,6 @@ namespace vulkan {
          * @return whether this call turned the feature ON (the off -> on edge)
          * @note the SAMPLE COUNT, the minimum sample weight and the origin bias are the PASS's parameters and
          *       are set by whoever owns that pass (`vulkan.render_start_demo::set_megalights`), by the same
-         *       split `set_ssgi_enabled` and the tracer's ray budget already have.
          */
         [[nodiscard]] bool set_megalights_enabled(bool enabled) noexcept;
 
@@ -2384,7 +2329,6 @@ namespace vulkan {
         /**
          * @ingroup vulkan_runtime
          * @brief shade the surface a GI ray hits, instead of sampling the screen where it landed
-         * @param enabled [render] ssgi_hit_shading
          * @note the traced GI path's two structural limits both come from reading the screen at a hit: it
          *       cannot answer for a hit the frame does not show (those fall back to a probe, an
          *       approximation of the light where the RAY STARTED rather than radiance arriving from where
@@ -2398,8 +2342,6 @@ namespace vulkan {
         /**
          * @ingroup vulkan_runtime
          * @brief trace a glossy reflection ray per pixel, so a reflection shows the scene and not the sky
-         * @param enabled [render] ssgi_specular
-         * @param rays per-pixel glossy ray count ([render] ssgi_specular_rays), clamped to [1, 8]
          * @note a REPLACEMENT for the specular ambient the lighting stage adds, not an addition: the
          *       estimate falls back to exactly `ibl_specular * F * ao` (the lighting stage's own term, from
          *       the same expressions) wherever a ray finds no geometry, and the spatial filter removes that
@@ -2410,9 +2352,6 @@ namespace vulkan {
          *       where all three hold, and the pass is not even recorded otherwise (which is what makes the
          *       knob-off frame byte-identical by construction rather than by arithmetic).
          * @param radius how far the rays reach as a fraction of the scene radius
-         *        ([render] ssgi_specular_radius), clamped to [0.01, 8]. It is NOT the shared
-         *        `ssgi_radius`, and the difference matters: that one is pinned low by the MARCHED path,
-         *        whose resolution is radius / ssgi_steps, so a reflection's reach would make its steps too
          *        coarse to find anything between them. Measured on Sponza, the lobe's effect is -0.907 at
          *        0.12 (the marched default, i.e. 39% of what is available), -2.126 at 0.5 and -2.350 at
          *        2.0, the cost rising +0.94 ms from the first to the second and not at all after it.
@@ -2420,13 +2359,10 @@ namespace vulkan {
 
         /**
          * @ingroup vulkan_runtime
-         * @brief whether THIS frame records the glossy lobe (shaders/ssgi_spec.comp)
          * @note the predicate the frame's record order and the spatial filter's second subtraction are BOTH
-         *       composed from, for the same reason ssgi_traced_active() exists: an addition and a
          *       subtraction that disagree about whether the pass ran leave the frame wrong by the whole
          *       term, and the two are evaluated in different functions.
          */
-        [[nodiscard]] bool ssgi_specular_active() const noexcept;
 
         /**
          * @ingroup vulkan_runtime
@@ -2443,7 +2379,6 @@ namespace vulkan {
         /**
          * @ingroup vulkan_runtime
          * @brief the world-space probe cache: what the tracer answers with where the screen cannot
-         * @param enabled master switch ([render] ssgi_probes); false is a byte-exact no-op
          * @param rate how much of a cell one frame's observation replaces, clamped to [0, 1]
          * @param rounds propagation rounds per frame, clamped to [0, 4]
          * @param gain how much of the grid's answer is added on top of the environment probe, clamped
@@ -2465,7 +2400,6 @@ namespace vulkan {
          *       deposited into holds undefined texels, and the pass that would fill it runs AFTER the
          *       tracer in the frame it is first enabled on.
          */
-        [[nodiscard]] bool gi_probe_active() const noexcept;
 
         /**
          * @ingroup vulkan_runtime
@@ -2498,7 +2432,6 @@ namespace vulkan {
          *       happened when it was composed from the config alone: the tracer pipeline was missing, so
          *       the ambient was removed and nothing replaced it).
          */
-        [[nodiscard]] bool ssgi_traced_active() const noexcept;
 
         /**
          * @brief re-skin every skinned caster and REFIT its structure, for this frame
@@ -2514,9 +2447,6 @@ namespace vulkan {
         bool record_compute_skin_pass(VkCommandBuffer command_buffer, std::span<ray_tracing::caster_level const> casters);
         /// @brief refill the job's request list from the skinned casters the structure set built
         void fill_compute_skin_requests(std::span<ray_tracing::caster_level const> casters);
-
-        /** @brief whether the tracer runs this frame (see set_ssgi) */
-        [[nodiscard]] bool ssgi_active() const noexcept;
 
         /**
          * @ingroup vulkan_runtime
@@ -2618,7 +2548,6 @@ namespace vulkan {
          * EVERY FIELD IS FILLED WITH THE EXPRESSION THE BUILDER IT REPLACED USED, which is a correctness rule
          * rather than tidiness: `gi_specular` and `debug_view` are COMPOSED answers (the knob AND this frame's
          * structures, the chain owner's own feature table), and the feature facts carry knobs of the same names.
-         * @note evaluated PER STAGE, not once per frame, and it has to be: `gi_traced` depends on this frame's
          *       top level structure, which the structure phase REBUILDS during the frame - a value computed at
          *       `pace_and_acquire` would be the previous frame's answer. This is the same timing trap
          *       `frame_constants::gi_instance_table` is filled late for.
@@ -2790,7 +2719,6 @@ namespace vulkan {
          * @ingroup vulkan_runtime
          * @brief whether a feature is available AND switched on right now (name-keyed)
          * @param name "gbuffer-debug", "taa", "fxaa", "shadow", "clustered",
-         *        "ssao", "bloom", "unlit", "transparent", "ssgi" - the same vocabulary as
          *        feature_available()
          *
          * This is what the overlay gates its controls on (`vulkan::gui::widget::visible_when`): a

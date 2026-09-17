@@ -146,12 +146,10 @@ namespace vulkan {
         // two lists cannot drift (which they already had).
         this->reset_image_generation_state();
         // The lobe's per-image first-use state starts where its images do (empty, which reads as "nothing has
-        // been transitioned"), and the pass owns it - see vulkan.pass.ssgi_spec.
 
         // The probe cache's remaining flag starts where the images do: nothing has transitioned the grid out
         // of UNDEFINED, so the tracer's gain is 0 until the TRACE pass - the frame's first reader of the grid
         // - has taken its first-use transition once. (What the grid HOLDS is the pass's own state now:
-        // gi_probe_pass::cache_valid, and whether the batch happened is the TRACER's - its own
         // `on_swapchain_recreated` clears it, which is what the recreate_stage call in the swapchain path runs.)
         // (The furnace cube is a new image too - its level is part of the generation reset above.)
         // NOTE: the shadow resources (map layers + light UBO buffers) are created LAZILY, by
@@ -208,9 +206,6 @@ namespace vulkan {
         // (vulkan.pass.deferred::release_owned), built by the pass from the two shared set layouts its owner
         // hands it at create time.
         // ... and the GI tracer is NOT here any more: its pipeline layout and its pipeline are the PASS's (see
-        // vulkan.pass.ssgi_trace::release_owned), which is what the create/record split is for. The SPATIAL
-        // FILTER's left the same way (vulkan.pass.ssgi_spatial), and so did the TEMPORAL resolve's set layout,
-        // pipeline layout and pipeline (vulkan.pass.ssgi_temporal) - so no SSGI pipeline handle is torn down in
         // this destructor at all now, and the only GI object still the renderer's is the denoiser's two
         // descriptor FAMILIES (the diffuse and the reflection), which one declaration cannot describe.
         // The bake's pipeline layout is NOT destroyed here: it is the JOB's (vulkan.pass.mask_bake_job), which
@@ -219,11 +214,8 @@ namespace vulkan {
         // left the same way (vulkan.pass.compute_skin_job), so this destructor no longer names either of the two
         // traced-feature jobs.
         // The glossy lobe's layout and pipeline are NOT destroyed here any more either: they are the pass's
-        // (vulkan.pass.ssgi_spec::release_owned), the same way the probe cache's and the TAA resolve's left.
-        // ... and the SPATIAL FILTER's left the same way with it (vulkan.pass.ssgi_spatial::release_owned), so
         // the only SSGI layout this destructor still names is the temporal resolve's - whose pass is next.
         // The probe cache's pipeline and its layout are NOT destroyed here any more: they are the pass's
-        // (vulkan.pass.gi_probe builds and destroys them), which is the whole point of the extraction - a
         // handle only that pass names is that pass's to release. The TAA resolve's set layout, pipeline
         // layout, pipeline AND descriptor family left the same way (vulkan.pass.taa), so nothing about it is
         // torn down here either.
@@ -413,15 +405,11 @@ namespace vulkan {
         this->velocity_written.assign(this->vulkan_core.velocity_images.size(), false);
         this->rt_binding_written.assign(this->vulkan_core.velocity_images.size(), VK_NULL_HANDLE);
         this->gbuffer_targets_written.assign(this->vulkan_core.gbuffer_images[0].size(), false);
-        // The GI accumulation starts empty for the same reason (see gi_history_valid): the first frame of
         // a generation has nothing to blend with, and it is reset HERE rather than only on the off -> on
-        // edge in set_ssgi, because a run that starts with GI enabled never sees that edge (an empty
         // vector reads as "no history" for every frame, which silently turns the temporal resolve into a
         // pass-through of the raw trace).
-        this->gi_history_valid.assign(this->vulkan_core.gi_history_images.size(), false);
         // ... and its FRAME COUNT restarts with it: the cold-start widening is measured in frames since the
         // accumulation restarted, and a new generation IS that restart (see frame_facts::gi_cold_start).
-        this->gi_frames_accumulated.assign(this->vulkan_core.gi_history_images.size(), 0);
         // ... and the furnace cube is a new image too, so its level has to be written again.
         this->furnace_cube_ready = false;
     }
@@ -1161,8 +1149,6 @@ namespace vulkan {
             // someone resizes the window - exactly the hazard `recreate_stage` exists to remove, which is why the
             // fix is this call and not a second hand-kept flag in the host. The chains make "all of them" the
             // default instead of a list someone has to remember to extend.
-            [[maybe_unused]] pass::run_report const gi_trace_recreated = pass::recreate_stage(this->gi_trace_chain.as_stage(), this->make_pass_host());
-            [[maybe_unused]] pass::run_report const gi_denoise_recreated = pass::recreate_stage(this->gi_denoise_chain.as_stage(), this->make_pass_host());
         }
         // Every swapchain image's history died with the old generation (and its size may have
         // changed): forget the matrices, so the next frame for each image starts a new accumulation
@@ -1171,7 +1157,6 @@ namespace vulkan {
         std::size_t const image_count = this->vulkan_core.taa_history_images.size();
         this->image_view_proj.assign(image_count, this->current_ubo.view_proj_unjittered);
         // The lobe's per-image first-use state is the PASS's, and the recreate_stage call above is what told it
-        // (vulkan.pass.ssgi_spec::on_swapchain_recreated). The tracer's "this generation's probe grid has had
         // its first-use batch" is the same shape and the same call cleared it - which is why there is no host
         // flag for it any more (the renderer asks the pass: `probe_grid_seen`).
         //
@@ -2158,7 +2143,7 @@ namespace vulkan {
         }
         std::size_t const image_count = vk.hdr_image_views.size();
         if (image_count == 0 || vk.bloom_image_views[0].size() != image_count || vk.ldr_image_views.size() != image_count ||
-            vk.gi_spatial_image_views.size() != image_count || vk.gbuffer_depth_image_views.size() != image_count ||
+            vk.gbuffer_depth_image_views.size() != image_count ||
             vk.gbuffer_image_views[1].size() != image_count) {
             return;
         }
@@ -2166,8 +2151,11 @@ namespace vulkan {
         // each) and the retirement (see vulkan.bindings); what stays here is what is specific to the
         // post chain: six fingerprints - HDR, bloom, LDR, GI, depth and normal views - and how one
         // image's five sets are written.
-        std::array<std::span<VkImageView const>, 6> const fingerprints = {
-            vk.hdr_image_views, vk.bloom_image_views[0], vk.ldr_image_views, vk.gi_spatial_image_views, vk.gbuffer_depth_image_views, vk.gbuffer_image_views[1]};
+        // The post chain's fingerprints, and there are FIVE of them now: HDR, the bloom levels, the LDR
+        // target, the G-buffer depth and its normal. The GI image that used to sit between the LDR and the depth
+        // went with the chain.
+        std::array<std::span<VkImageView const>, 5> const fingerprints = {
+            vk.hdr_image_views, vk.bloom_image_views[0], vk.ldr_image_views, vk.gbuffer_depth_image_views, vk.gbuffer_image_views[1]};
         auto const write_sets = [this](uint32_t const image_index, std::span<VkDescriptorSet const> const sets) {
             // every set gets all nine bindings; the unused ones point at the same view as binding 0
             // (binding 5 is the LDR image, which only the FXAA pass reads, and 7/8 are the G-buffer
@@ -2206,8 +2194,11 @@ namespace vulkan {
             // The FILTERED GI (the last pass of the GI chain), not the raw trace or the temporal
             // accumulation: the composite is the consumer of the denoiser's output, and the earlier
             // images are bound in the G-buffer set or in the denoiser's own set instead.
-            VkImageView const gi = this->vulkan_core.gi_spatial_image_views[image_index];
             VkImageView const depth = this->vulkan_core.gbuffer_depth_image_views[image_index];
+            // The GI image's binding is still DECLARED - the composite's shader is written against these nine
+            // numbers, and renumbering them is a change to that shader and to this layout at once - so it takes
+            // the same view as binding 0, which is what this set does for every binding no shader reads.
+            VkImageView const gi = hdr;
             VkImageView const normal = this->vulkan_core.gbuffer_image_views[1][image_index];
             std::array<VkImageView, 9> const hdr_set = {hdr, hdr, hdr, hdr, hdr, ldr, gi, depth, normal};
             write_set(sets[0], hdr_set);
@@ -2451,10 +2442,8 @@ namespace vulkan {
             return;
         }
         std::size_t const image_count = vk.gbuffer_image_views[0].size();
-        if (image_count == 0 || vk.gbuffer_depth_image_views.size() != image_count || vk.hdr_image_views.size() != image_count || vk.gi_image_views.size() != image_count ||
-            vk.gi_spec_image_views.size() != image_count || vk.gi_spec_reproject_image_views.size() != image_count ||
-            vk.gi_spec_resolve_image_views.size() != image_count ||
-            vk.gi_probe_image_views.empty() || vk.gi_probe_sampler.get() == VK_NULL_HANDLE) {
+        if (image_count == 0 || vk.gbuffer_depth_image_views.size() != image_count || vk.hdr_image_views.size() != image_count ||
+            vk.gbuffer_image_views[1].size() != image_count) {
             return;
         }
         // The family owns the rebinding rule now (see vulkan.bindings): the sets stay allocated, their
@@ -2472,20 +2461,12 @@ namespace vulkan {
             vk.hdr_image_views[0],
             vk.gi_image_views[0],
             vk.gi_resolve_image_views[0],
-            vk.gi_spatial_image_views[0],
             // Bindings 9..12 are the world-space probe cache's four SH-2 coefficients: ONE set of images for
             // the whole device (the cache is anchored to the world, not to a swapchain image), so every set
             // fingerprints the same views - and a recreated grid still invalidates them all, which is what
             // these entries are for.
-            vk.gi_probe_image_views[0],
-            vk.gi_probe_image_views[1],
-            vk.gi_probe_image_views[2],
-            vk.gi_probe_image_views[3],
             // 13 and 14 are the glossy lobe's own outputs. Per swapchain image, like the trace they shadow:
             // a reflection's correction and its reprojection belong to the frame that produced them.
-            vk.gi_spec_image_views[0],
-            vk.gi_spec_reproject_image_views[0],
-            vk.gi_spec_resolve_image_views[0],
             // 16 and 17: the stochastic punctual lighting chain. 16 is the storage image the TRACE writes; 17
             // is the sampler the lighting stage adds the TEMPORAL RESOLVE's output through (the resolve's own
             // output is written as a storage image through that pass's own set, so this set only reads it).
@@ -2511,18 +2492,8 @@ namespace vulkan {
                 this->vulkan_core.gi_resolve_image_views[image_index], // 7: the accumulation the filter reads
                 this->vulkan_core.gi_spatial_image_views[image_index], // 8: the filtered GI the composite reads
                 // 9..12: the world-space probe cache's four SH-2 coefficients (one copy for the whole
-                // device, so index 0 rather than this image's - see the ping-pong in vulkan.pass.gi_probe:
                 // the cache side is always the one the tracer reads).
-                this->vulkan_core.gi_probe_image_views[0],
-                this->vulkan_core.gi_probe_image_views[1],
-                this->vulkan_core.gi_probe_image_views[2],
-                this->vulkan_core.gi_probe_image_views[3],
-                // 13 and 14: the glossy lobe's own two outputs (see core.cppm's gi_spec_*).
-                this->vulkan_core.gi_spec_image_views[image_index],
-                this->vulkan_core.gi_spec_reproject_image_views[image_index],
                 // 15: the reflection's own accumulation, which the spatial filter samples and sums the
-                // diffuse one into (see shaders/ssgi_spatial.comp and ssgi_temporal.comp's mode 1).
-                this->vulkan_core.gi_spec_resolve_image_views[image_index],
                 // 16 and 17: the stochastic punctual lighting chain - the trace's storage image, and the
                 // resolved lighting the lighting stage samples (see the signature above).
                 this->vulkan_core.ml_image_views[image_index],
@@ -2535,7 +2506,6 @@ namespace vulkan {
                 bool const storage = b == 6u || b == 8u || b == 13u || b == 14u || b == 16u;
                 // The probe cache is a 3D texture read with LINEAR filtering: the whole point of sampling
                 // it is interpolating between cells, so it cannot borrow the G-buffer's NEAREST sampler.
-                image_infos[b].sampler = storage ? VK_NULL_HANDLE : (b >= 9u && b <= 12u ? *this->vulkan_core.gi_probe_sampler : *this->vulkan_core.gbuffer_sampler);
                 image_infos[b].imageView = views[b];
                 image_infos[b].imageLayout = storage ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
                 writes[b].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -2552,25 +2522,6 @@ namespace vulkan {
         }
     }
 
-    bool runtime::ssgi_active() const noexcept {
-        // The tracer reads the direct radiance the lighting stage produced and the G-buffer depth it
-        // wrote, so that stage has to have run. The debug view replaces it, so there is no GI there.
-        // The FLAT render mode is excluded for the same reason and it is not a style choice: in that
-        // mode the lighting stage returns the stored albedo, so the image the tracer averages is not
-        // radiance, and the GI it would add is a product of two albedos rather than a transport term.
-        // It became reachable when `ssgi` defaulted to true, which is why the `unlit` reference frame is
-        // the check for it: with this exclusion in place that frame comes out byte-identical to what it
-        // was before the default moved.
-        // The whole denoise chain is required as well, and not merely as a quality step: what the
-        // composite samples is the SPATIAL filter's output, so a build with any one of the three
-        // passes missing has nothing to composite. Treating that as "GI off" keeps the composite's
-        // weight at 0 - the alternative is a full-resolution frame of whatever the last image happens
-        // to contain.
-        return this->ssgi_on && this->pass_ready("ssgi_trace") && this->pass_ready("ssgi_temporal") &&
-               this->pass_ready("ssgi_spatial") && this->deferred_lit_active() && !this->scene_unlit_;
-    }
-
-    // THE TRACER'S FRAME IS THE TRACER'S NOW (see `ssgi_trace_pass::prepare_frame`): the four values it needs are
     // facts this renderer publishes (`make_frame_facts`), the probe cache's readiness is the chain owner's setter,
     // and the "first dispatch of the generation" flag was this renderer filling a frame field with the NEGATION of
     // the pass's own `probe_grid_seen()` - two copies of one answer, so the field is gone.
@@ -2591,16 +2542,13 @@ namespace vulkan {
     // it, is the chain owner's now (see `chain_wiring::recreated` and vulkan.render_start_demo).
 
     bool runtime::megalights_active() const noexcept {
-        // THE PASS'S OWN GATE, composed here for the same reason `ssgi_active` composes the GI chain's: the
         // deferred lighting stage has to know whether to skip its raster punctual loop, and it has to give the
         // same answer the runner gives when it decides whether to record the pass - one predicate, one answer.
         // The flat render mode is excluded because this pass EVALUATES THE BRDF from the G-buffer and the flat
-        // mode's lighting stage returns the stored albedo instead (the same exclusion `ssgi_active` makes).
         return this->megalights_on && this->pass_ready("megalights_trace") && this->deferred_lit_active() && !this->scene_unlit_;
     }
 
     bool runtime::set_megalights_enabled(bool const enabled) noexcept {
-        // Same split as `set_ssgi_enabled`: the FLAG is the renderer's (it decides whether the deferred stage
         // adds the punctual lights itself, so it is a frame fact this renderer publishes), the sample count and
         // the bias are the PASS's and the demo sets them. There is no history to reset on the off -> on edge
         // yet - the chain is one pass until the temporal resolve lands (see docs/megalights.md's staging).
@@ -2618,30 +2566,8 @@ namespace vulkan {
         return enabled && !was_on;
     }
 
-    bool runtime::ssgi_traced_active() const noexcept {
-        return this->ssgi_active() && this->ssgi_ray_tracing && this->vulkan_core.ray_query_available && this->structures.ready();
-    }
-
-    bool runtime::ssgi_specular_active() const noexcept {
-        // Hit shading is part of the predicate, and not as a quality preference: without the instance
-        // table a glossy ray that LANDS on geometry cannot be shaded, so the pass would have nothing to
-        // add for the only samples that make it more than the lighting stage's own term. The table is the
-        // same switch the tracer uses, and the pipeline is the PASS's - so this predicate and the pass's own
-        // feature are the same answer to "does the lobe run", which is what the tracer relies on.
-        return this->ssgi_specular && this->ssgi_hit_shading && this->ssgi_traced_active() && this->pass_ready("ssgi_spec");
-    }
-
     void runtime::set_furnace(bool const enabled) noexcept {
         this->furnace = enabled;
-    }
-
-    // ---- the world-space probe cache (see shaders/gi_probe.comp) ----
-
-    bool runtime::gi_probe_active() const noexcept {
-        // The cache is deposited from the screen-space chain's resolved image and lives on the deferred
-        // path's G-buffer, so it needs both of those, plus the pass having built what it records with: a
-        // build without the cache keeps the tracer's environment-probe fallback and changes nothing else.
-        return this->gi_probe_enabled && this->pass_ready("gi_probe") && this->ssgi_active();
     }
 
     void runtime::register_shader(std::string_view const name, std::span<unsigned char const> const bytecode) {
@@ -2719,7 +2645,6 @@ namespace vulkan {
         // it stays the single place the renderer maps them onto the declaration layer's hints.
         core const& vk = this->vulkan_core;
         return {.gbuffer = *vk.gbuffer_sampler,
-                .probe_grid = *vk.gi_probe_sampler,
                 .taa = *vk.taa_sampler,
                 .post = *vk.post_sampler,
                 .nearest = *vk.post_nearest_sampler,
@@ -2858,8 +2783,6 @@ namespace vulkan {
         this->frame_facts.settings.bloom_threshold = this->bloom_threshold;
         this->frame_facts.settings.fxaa_subpixel = this->fxaa_subpixel;
         this->frame_facts.settings.fxaa_edge_threshold = this->fxaa_edge_threshold;
-        this->frame_facts.settings.gi_depth_sigma = this->gi_spatial_depth_sigma;
-        this->frame_facts.settings.gi_normal_power = this->gi_spatial_normal_power;
     }
 
     void runtime::publish_frame_resources() {
@@ -2969,14 +2892,6 @@ namespace vulkan {
         }
 
         // ---- device-wide: the probe grid's eight elements, its geometry, the cubes and the textures ----
-        for (std::size_t element = 0; element < vk.gi_probe_image_views.size() && element < vk.gi_probe_images.size(); ++element) {
-            single(render_resource::resource_id::probe_grid, static_cast<uint32_t>(element), 0,
-                   pass::resolved_binding{.view = vk.gi_probe_image_views[element], .buffer = VK_NULL_HANDLE, .image = vk.gi_probe_images[element]});
-        }
-        if (!vk.gi_probe_surface_image_views.empty() && !vk.gi_probe_surface_images.empty()) {
-            single(render_resource::resource_id::probe_surface, 0, 0,
-                   pass::resolved_binding{.view = vk.gi_probe_surface_image_views[0], .buffer = VK_NULL_HANDLE, .image = vk.gi_probe_surface_images[0]});
-        }
         if (!vk.furnace_cube_views.empty() && !vk.furnace_cube_images.empty()) {
             single(render_resource::resource_id::furnace_cube, 0, 0,
                    pass::resolved_binding{.view = vk.furnace_cube_views[0], .buffer = VK_NULL_HANDLE, .image = vk.furnace_cube_images[0]});
@@ -3209,12 +3124,9 @@ namespace vulkan {
         // composed, the feature facts of those names are the raw knobs).
         std::size_t const index = this->current_image_index;
         return pass::frame_facts{
-            .gi_traced = this->ssgi_traced_active(),
-            .gi_specular = this->ssgi_specular_active(),
             .megalights = this->megalights_active(),
             .megalights_resolved = this->megalights_resolved,
             .megalights_history_valid = index < this->megalights_history_valid.size() && this->megalights_history_valid[index],
-            .gi_history_valid = index < this->gi_history_valid.size() && this->gi_history_valid[index],
             // The cold-start amount the temporal resolve widens by: 1 while this image's accumulation has no
             // frames in it, falling to 0 once `gi_cold_start_frames` frames have landed. A PIXEL's history can
             // restart earlier than the image's (it was off screen, or its depth disagreed); those cases are the
@@ -3225,7 +3137,6 @@ namespace vulkan {
             .fxaa_resolves = this->post_fxaa_active(),
             .debug_view = this->active_features().gbuffer_debug,
             .cluster_count = this->cluster_tiles_x * this->cluster_tiles_y * vulkan::cluster_slice_count,
-            .hit_shading = this->ssgi_hit_shading,
         };
     }
 
@@ -3280,20 +3191,6 @@ namespace vulkan {
         // output the composite samples). Two halves rather than one chain because the frame has an ordering rule to
         // run BETWEEN them - it publishes the G-buffer depth and the motion-vector target that the resolve is the
         // first sampler of - and a frame rule cannot run from inside a chain.
-        this->gi_trace_chain.clear();
-        this->gi_denoise_chain.clear();
-        if (pass::frame_pass* const trace = at("ssgi_trace")) {
-            this->gi_trace_chain.add(*trace);
-        }
-        if (pass::frame_pass* const lobe = at("ssgi_spec")) {
-            this->gi_trace_chain.add(*lobe);
-        }
-        if (pass::frame_pass* const temporal = at("ssgi_temporal")) {
-            this->gi_denoise_chain.add(*temporal);
-        }
-        if (pass::frame_pass* const spatial = at("ssgi_spatial")) {
-            this->gi_denoise_chain.add(*spatial);
-        }
     }
 
     void runtime::set_pass_chain(pass::pass_chain& chain, chain_wiring const wiring) noexcept {
@@ -3309,7 +3206,6 @@ namespace vulkan {
 
     void runtime::prepare_stage(pass::stage const& stage, VkCommandBuffer const command_buffer) {
         // THE PASSES BUILD THEIR OWN FRAMES FIRST, from the facts this renderer publishes for THIS STAGE:
-        //   * per stage and not once per frame, because `gi_traced` depends on the top level structure the
         //     structure phase rebuilds DURING this frame (see make_frame_facts);
         //   * before the owner's `prepare`, so an owner that still wants to add to a frame (or override one)
         //     has the last word - the ordering the seam has always had.
@@ -3334,18 +3230,6 @@ namespace vulkan {
         // WHAT THE FRAME LOOP DECIDES ON, once per stage that reports: the composite's GI weight is a frame
         // CONSTANT (the composite reads it while recording), and the two flags are the renderer's per-image
         // bookkeeping.
-        if (results.gi_resolved) {
-            this->frame_facts.gi_resolved = true;
-        }
-        if (results.gi_temporal_resolved && this->current_image_index < this->gi_history_valid.size()) {
-            this->gi_history_valid[this->current_image_index] = true;
-            // ... and that accumulation is one frame older, which is what fades the cold-start widening out
-            // (see frame_facts::gi_cold_start). Saturating: nothing reads past the ramp's end.
-            if (this->current_image_index < this->gi_frames_accumulated.size() &&
-                this->gi_frames_accumulated[this->current_image_index] < static_cast<uint32_t>(gi_cold_start_frames)) {
-                ++this->gi_frames_accumulated[this->current_image_index];
-            }
-        }
         if (results.taa_wrote_history && this->current_image_index < this->image_view_proj.size()) {
             this->image_view_proj[this->current_image_index] = this->current_ubo.view_proj_unjittered;
         }
@@ -3368,7 +3252,6 @@ namespace vulkan {
         switch (id) {
         case pass::resource_id::probe_grid:
             // The probe cache's grid: 32 cells on a side, not the frame's size.
-            return VkExtent2D{vulkan::gi_probe_grid_extent, vulkan::gi_probe_grid_extent};
         case pass::resource_id::bloom: {
             // A bloom level is HALF the previous one - max(1, swap >> (level + 1)) - which is the SAME formula
             // `core::create_render_targets` created the images with. The clamp is belt-and-braces rather than the
@@ -3390,20 +3273,6 @@ namespace vulkan {
         // four bloom levels record with the composite's R16F variant, and a copy per level would be five identical
         // pipelines. Asking every pass by NAME is what keeps this chain-agnostic - the renderer does not know, and
         // does not need to know, which pass owns what; a pass answers for the names it publishes and nothing else.
-        pass::pass_chain const* const handover = this->chain_; // CONST because the other two in the list are
-        for (pass::pass_chain const* const chain : {handover, &this->gi_trace_chain, &this->gi_denoise_chain}) {
-            if (chain == nullptr) {
-                continue; // no chain handed over yet (see set_pass_chain): the two GI sub-chains are all there is
-            }
-            for (pass::frame_pass* const candidate : chain->as_stage().passes) {
-                if (candidate == nullptr) {
-                    continue;
-                }
-                if (pass::owned_pipeline const found = candidate->named_pipeline(name); found.pipeline != VK_NULL_HANDLE) {
-                    return found;
-                }
-            }
-        }
         return {};
     }
 
@@ -3590,12 +3459,9 @@ namespace vulkan {
     // rule, and the push block it used to be handed is now composed by the PASS from `io.constants` (the projection
     // terms and the two depth/normal criteria the composite's upsample shares), `io.extent`/`io.frame.extent`, its
     // own filter width and two frame answers - which oracle ran, and whether the reflection's accumulation was
-    // resolved before this dispatch (`frame_constants::gi_spec_resolved`, the field the reflection writes). The one
-    // predicate the frame still owns is `ssgi_traced_active()`, and it arrives in the pass's frame.
 
     // THE GLOSSY LOBE HAS NO FRAME AT ALL, and the builder that used to be here was DEAD before it was removed: the
     // one number it produced (the generation's image count, for the lobe's per-image first-use state) was never
-    // read - the state it describes is sized in `ssgi_spec_pass::record` from `io.frame.image_count`, the frame
     // identity's own answer, which cannot disagree with it. Its frame struct is gone with the builder.
     //
     // ... AND ITS RESOLVER IS GONE (S3.10) with the tracer's, and the two went together because they push the
@@ -3887,14 +3753,12 @@ namespace vulkan {
         // tracer samples at a hit is direct radiance and never its own previous result. Sampling an
         // image that already contained GI would make the loop gain > 1 and accumulate energy.
         //
-        // gi_resolved says whether the composite may actually use this frame's GI, and it is the LAST
         // pass of the chain - the spatial filter - that sets it: the composite samples that filter's
         // output, so a frame whose filter did not run (no descriptor set, no images) has nothing to add
         // and must weigh 0 rather than show whatever that image happens to hold. The filter in turn
         // only runs when the temporal resolve ran, because filtering a stale accumulation would just
         // make the staleness smoother.
         //
-        // `gi_spec_resolved` is cleared in the same place and for the same reason: the reflection writes it
         // through the temporal pass's callback, and a frame whose reflection did not run must not leave the
         // previous frame's answer for the filter's `spec_weight` lane to read.
         //
@@ -3903,8 +3767,6 @@ namespace vulkan {
         // read in `update_frame_constants` - which runs before that phase - could be a buffer this same frame is
         // about to replace. The address is the table this frame HAS and nothing more: the hit-shading gate belongs
         // to the stages that push it, and they do not agree about it (see frame_constants::gi_instance_table).
-        this->frame_facts.gi_resolved = false;
-        this->frame_facts.gi_spec_resolved = false;
         uint64_t instance_table = 0;
         if (this->structures.ready()) {
             VkBuffer const table = this->structures.instance_table(static_cast<uint32_t>(vk.current_frame));
@@ -3914,57 +3776,6 @@ namespace vulkan {
             }
         }
         this->frame_facts.gi_instance_table = instance_table;
-        this->frame_facts.gi_frame_index = this->ssgi_frame;
-        if (this->ssgi_active()) {
-            // THE GI CHAIN, recorded as TWO calls with the FRAME's rule between them. Why two: the temporal
-            // resolve is the first sampler of two shared per-image images (the G-buffer's depth, which its depth
-            // guard reads, and the motion-vector target its reprojection reads), and whether each of them still
-            // needs its "the G-buffer pass wrote me" publication is the FRAME's per-image bookkeeping - so the
-            // owner publishes them from its `prepare` for the denoise half, exactly where the old `ensure_inputs`
-            // callback did (after the lobe recorded, before the resolve's dispatch), and the command stream is
-            // unchanged.
-            //
-            // The frames the passes need are given by the owner too, and the two halves are prepared SEPARATELY
-            // because two of their values must be read BEFORE the half runs: the tracer's `specular_next` (which
-            // decides who owes the denoiser the hand-off barrier) and the temporal's `history_valid`, which the
-            // reflection's callback is handed as well so the two signals agree about the frame that created the
-            // history.
-            //
-            // The REFLECTION's descriptor family and its recording are the CHAIN OWNER's now (it builds the family
-            // on this pass's layout from the frame's table, and the temporal frame's `record_reflection` is what
-            // calls it) - so the only thing left here is the prepare that gives the half its frames and runs the
-            // frame's rule between the halves.
-            // ---- the trace half: the tracer, then the lobe (the two writers of the raw trace) ----
-            this->prepare_stage(this->gi_trace_chain.as_stage(), command_buffer);
-            pass::run_report const gi_trace_report = this->gi_trace_chain.record(this->make_pass_host());
-            static_cast<void>(gi_trace_report);
-            // ---- the denoise half: the temporal resolve, then the spatial filter. Its `prepare` is also where the
-            //      FRAME's rule between the halves runs (both calls are idempotent and consult per-image flags the
-            //      frame owns, so on the frames where another stage already published them - the deferred stage's
-            //      preamble publishes the depth, the TAA resolve the velocity target - they record nothing at all).
-            this->prepare_stage(this->gi_denoise_chain.as_stage(), command_buffer);
-            pass::run_report const gi_denoise_report = this->gi_denoise_chain.record(this->make_pass_host());
-            static_cast<void>(gi_denoise_report);
-            // ... and the chain's answers, which the owner reports: whether the spatial filter wrote the image the
-            // composite samples (that is `gi_resolved`, a frame constant the composite reads while recording) and
-            // whether the denoiser produced an accumulation (which the NEXT frame's history flag is set from).
-            this->collect_stage("gi_denoise");
-            ++this->ssgi_frame; // the next frame's ray sequence must differ (see ssgi_frame)
-        }
-        if (!this->frame_facts.gi_resolved && index < vk.gi_spatial_images.size() && vk.gi_spatial_images[index] != VK_NULL_HANDLE) {
-            // Nothing wrote the GI image this frame, but the composite's descriptor set still declares
-            // it as a shader input - its shader uses that binding and multiplies it by the 0 pushed
-            // above, and Vulkan requires a statically-used binding's descriptor to be in the layout the
-            // write declared, whether or not the value ends up mattering. Nothing else touches the
-            // image in this case, so it would sit in UNDEFINED and every frame would be a layout error.
-            // This is the same situation the shadow map's spare layers are in, and the same answer: an
-            // UNDEFINED old layout asserts nothing (it discards the contents rather than claiming a
-            // layout), so the transition is valid whether the image is untouched or already readable.
-            VkImageMemoryBarrier2 to_sampling = vulkan::undefined_to_sampling_transition;
-            to_sampling.image = vk.gi_spatial_images[index];
-            VkDependencyInfo const sampling_dependency = make_image_dependency_info(1, &to_sampling);
-            vkCmdPipelineBarrier2(command_buffer, &sampling_dependency);
-        }
 
         // GPU timing: the GI chain ends here (trace, temporal resolve, spatial filter; the composite's
         // bilateral upsample is part of the composite). Written unconditionally like every mark, so a
@@ -3975,13 +3786,11 @@ namespace vulkan {
         // the cells the frame can see, so it has to run after the spatial filter (the image it reads is
         // this frame's) and before the composite (nothing about it is needed for this frame's image -
         // what it produces is read by the NEXT frame's tracer, which is what a cache costs). The RUNNER
-        // decides whether it runs at all: the pass declares the feature `ssgi_probes`, and an inactive
         // feature is skipped WITHOUT being resolved - which is what keeps a cache that is off bit for bit
         // what the frame was before it existed. Its stage writes no mark pair (the interval is measured
         // from the GI chain's end), so `marks = false` and the end mark below is the runtime's.
         {
         }
-        this->gpu_mark(command_buffer, gpu_mark_id::gi_probe_end, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
 
         // ---- THE BLOOM CHAIN, as a stage of FOUR passes (vulkan.pass.post) ----
         // The chain is four instances of one class; the level IS the pass boundary (each binds a different one of
@@ -4265,10 +4074,7 @@ namespace vulkan {
         return feature_facts{
             .gbuffer_pass = this->gbuffer_pass_active(),
             .deferred_lit = this->deferred_lit_active(),
-            .ssgi = this->ssgi_active(),
             .megalights = this->megalights_active(),
-            .ssgi_traced = this->ssgi_traced_active(),
-            .ssgi_probes = this->gi_probe_active(),
             .rt_shadow = this->rt_shadows_active(),
             .fxaa = this->post_fxaa_active(),
             .gbuffer_debug = this->gbuffer_debug,
@@ -4276,8 +4082,6 @@ namespace vulkan {
             .clustered = this->clustered_lights,
             .taa = this->taa_on,
             .bloom = this->bloom_intensity > 0.0f,
-            .ssgi_specular = this->ssgi_specular,
-            .ssgi_hit_shading = this->ssgi_hit_shading,
             .transparent_pending = !this->frame_transparent.empty(),
             .gbuffer_pipeline = this->gbuffer_pipeline.has_value(),
             .structures_ready = this->structures.ready() && this->structures.handle(static_cast<uint32_t>(vk.current_frame)) != VK_NULL_HANDLE,
@@ -4298,8 +4102,6 @@ namespace vulkan {
         auto const ask = [this, &facts](std::string_view const name) { return this->wiring_.feature_active(this->wiring_.owner, facts, name); };
         f.unlit = ask("unlit");
         f.gbuffer_debug = ask("gbuffer-debug");
-        f.ssgi = ask("ssgi");
-        f.ssgi_probes = ask("ssgi_probes");
         f.shadow = ask("shadow");
         f.rt_shadow = ask("rt_shadow");
         f.clustered = ask("clustered");
@@ -4360,9 +4162,8 @@ namespace vulkan {
         // One line naming every optional feature, so "why does this switch do nothing?" is answerable
         // from the log alone. `on` means the pipeline exists and the feature CAN run; whether it is
         // currently switched on is the overlay's and the config's business.
-        utility::log("features: gbuffer-debug={} ssgi={} megalights={} taa={} fxaa={} shadow={} clustered-lights={}",
+        utility::log("features: gbuffer-debug={} megalights={} taa={} fxaa={} shadow={} clustered-lights={}",
                      this->feature_available("gbuffer-debug") ? "on" : "UNAVAILABLE",
-                     this->feature_available("ssgi") ? "on" : "UNAVAILABLE",
                      this->feature_available("megalights") ? "on" : "UNAVAILABLE",
                      this->feature_available("taa") ? "on" : "UNAVAILABLE",
                      this->feature_available("fxaa") ? "on" : "UNAVAILABLE",
@@ -4637,13 +4438,9 @@ namespace vulkan {
     }
 
     bool runtime::rt_structures_wanted() const noexcept {
-        // `ssgi_on` rather than `ssgi_on && ssgi_ray_tracing`: the GI tracer is ONE shader that declares
-        // the top level structure as a binding whether or not its traced branch runs, and a shader that
-        // statically uses a binding needs it written - so a GI frame has to have structures even when it
-        // marches. The cost of that is one build (Sponza: 17.8 MiB, ~2 ms) plus a per-frame rebuild
-        // (~0.1 ms) for a GI scene that never traces; the alternative is a second shader variant or the
-        // nullDescriptor feature (VK_EXT_robustness2), and both are larger changes than this one.
-        return this->vulkan_core.ray_query_available && (this->rt_shadows || this->ssgi_on);
+        // Only the ray-traced SUN now: the traced GI chain was the other reason a frame needed a top level
+        // structure and had to have the binding written whether or not its traced branch ran, and it is gone.
+        return this->vulkan_core.ray_query_available && this->rt_shadows;
     }
 
     bool runtime::rt_shadows_active() const noexcept {
