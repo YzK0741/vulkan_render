@@ -3235,8 +3235,6 @@ namespace vulkan {
     VkExtent2D runtime::resolve_resource_extent(render_resource::resource_id const id, uint32_t const element) const noexcept {
         core const& vk = this->vulkan_core;
         switch (id) {
-        case pass::resource_id::probe_grid:
-            // The probe cache's grid: 32 cells on a side, not the frame's size.
         case pass::resource_id::bloom: {
             // A bloom level is HALF the previous one - max(1, swap >> (level + 1)) - which is the SAME formula
             // `core::create_render_targets` created the images with. The clamp is belt-and-braces rather than the

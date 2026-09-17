@@ -528,16 +528,16 @@ int main() {
         CHECK(samplers.of(rr::sampler_hint::gbuffer) == reinterpret_cast<VkSampler>(0x11));
         CHECK(samplers.of(rr::sampler_hint::none) == VK_NULL_HANDLE); // "no sampler", which the validator enforces
         // a declaration's own set is exactly the bindings its shader declares, in order - checked against the
-        // temporal resolve's declaration, which is the shape the pipeline builder this test covers still builds
-        // from (the probe cache's own declaration went with the traced GI chain)
+        // stochastic punctual lighting chain's temporal resolve, which is the shape the pipeline builder this
+        // test covers still builds from (the GI denoiser's own declaration went with the traced chain)
         uint32_t own = 0;
-        for (rr::pass_binding const& b : rr::ssgi_temporal_io.bindings) {
-            if (b.set == rr::ssgi_temporal_io.own_set) {
+        for (rr::pass_binding const& b : rr::megalights_temporal_io.bindings) {
+            if (b.set == rr::megalights_temporal_io.own_set) {
                 CHECK(b.binding == own); // contiguous from zero: the index IS the binding number
                 ++own;
             }
         }
-        CHECK(own == 7);
+        CHECK(own == 5);
     }
 
     // ---- THE CHAIN: a value that holds a run of passes and its ORDER, and nothing else - it must behave

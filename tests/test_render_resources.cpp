@@ -39,7 +39,7 @@ namespace {
         .binding = 0,
         .owner = rr::set_owner::own,
         .kind = rr::binding_kind::sampled_image,
-        .resource = rr::resource_id::gi_history,
+        .resource = rr::resource_id::ml_history,
         .element = 0,
         .descriptor_count = 1,
         .access = rr::binding_access::read,
@@ -52,11 +52,11 @@ int main() {
     // ---- the schema describes itself, completely ----
     auto const schema = rr::validate_schema();
     CHECK_MSG(schema.has_value(), schema.has_value() ? "" : schema.error().c_str());
-    CHECK(rr::resource_schema.size() == 40);
-    CHECK(static_cast<uint32_t>(rr::resource_id::count_) == 41); // 40 families plus `none`
+    CHECK(rr::resource_schema.size() == 30);
+    CHECK(static_cast<uint32_t>(rr::resource_id::count_) == 31); // 30 families plus `none`
     CHECK(rr::find(rr::resource_id::none) == nullptr);
-    CHECK(rr::find(rr::resource_id::probe_grid) != nullptr);
-    CHECK(rr::find(rr::resource_id::probe_grid)->count == 8);      // side*4+coefficient, as core indexes it
+    CHECK(rr::find(rr::resource_id::furnace_cube) != nullptr);
+    CHECK(rr::find(rr::resource_id::shadow_map)->count == 4);      // one layer per cascade, as core indexes it
     CHECK(rr::find(rr::resource_id::gbuffer_targets)->count == 3); // albedo, normal+roughness, material+AO
     // the bloom chain's FOUR levels are elements of one family (core::bloom_images is an array of four vectors),
     // and the count is what makes `element = 3` legal and `element = 4` refused - the contract the post chain's
@@ -74,8 +74,8 @@ int main() {
     CHECK(rr::find(rr::resource_id::swapchain_image)->lifetime == rr::resource_lifetime::imported);
     // the two scopes this project has been bitten by, asserted where they live
     CHECK(rr::find(rr::resource_id::shadow_map)->scope == rr::resource_scope::per_frame_slot);
-    CHECK(rr::find(rr::resource_id::gi_history)->scope == rr::resource_scope::per_swapchain_image);
-    CHECK(rr::find(rr::resource_id::probe_grid)->scope == rr::resource_scope::device_wide);
+    CHECK(rr::find(rr::resource_id::ml_history)->scope == rr::resource_scope::per_swapchain_image);
+    CHECK(rr::find(rr::resource_id::furnace_cube)->scope == rr::resource_scope::device_wide);
 
     // The probe cache's declaration used to be asserted here, read off shaders/gi_probe.comp. That pass - and
     // the whole traced GI subsystem - is gone, so the shared-set rule it taught the validator is checked below
@@ -140,8 +140,8 @@ int main() {
     }
     {
         rr::pass_binding b = good_binding;
-        b.resource = rr::resource_id::probe_grid;
-        b.element = 8; // the family holds 0..7
+        b.resource = rr::resource_id::shadow_map;
+        b.element = 4; // the family holds 0..3
         CHECK(!validate_one(b).has_value());
     }
     {
@@ -152,14 +152,14 @@ int main() {
     {
         rr::pass_binding b = good_binding;
         b.kind = rr::binding_kind::storage_image;
-        b.resource = rr::resource_id::gi_history;
+        b.resource = rr::resource_id::ml_history;
         b.access = rr::binding_access::write;
         CHECK(!validate_one(b).has_value()); // ... and a storage image must not
     }
     {
         rr::pass_binding b = good_binding;
         b.kind = rr::binding_kind::storage_image;
-        b.resource = rr::resource_id::gi_history;
+        b.resource = rr::resource_id::ml_history;
         b.access = rr::binding_access::write;
         b.sampler = rr::sampler_hint::none;
         // ... and the LAYOUT is not free either: a storage image's descriptor must declare GENERAL, and a
@@ -336,37 +336,10 @@ int main() {
 
     // The glossy lobe's declaration was asserted here. It went with the rest of the traced chain.
 
-    // ---- the SIXTH declaration: the GI denoiser, the first GI stage with a set of its OWN - and the reason it
-    //      has one is that it groups four things no other pass puts together ----
-    {
-        CHECK(rr::validate(rr::ssgi_temporal_io).has_value());
-        CHECK(rr::ssgi_temporal_io.own_set == 0);
-        CHECK(rr::ssgi_temporal_io.bindings.size() == 7);
-        CHECK(rr::ssgi_temporal_io.shared_sets.empty()); // everything it reads is in its own set
-        CHECK(rr::ssgi_temporal_io.targets.empty());     // it is a compute pass
-        // the own bindings are contiguous from zero, which is what the pass indexes its sets by
-        for (std::size_t b = 0; b < rr::ssgi_temporal_io.bindings.size(); ++b) {
-            CHECK(rr::ssgi_temporal_io.bindings[b].binding == b);
-            CHECK(rr::ssgi_temporal_io.bindings[b].owner == rr::set_owner::own);
-            CHECK(rr::ssgi_temporal_io.bindings[b].set == 0);
-        }
-        rr::descriptor_counts const counts = rr::descriptor_counts_for(rr::ssgi_temporal_io, 0);
-        CHECK(counts.sampled_image == 6); // trace, history, velocity, depth, the normal target, the reprojection
-        CHECK(counts.storage_image == 1); // the accumulation it WRITES
-        CHECK(counts.total() == 7);       // ... and this is the pool count the family is sized from now
-        CHECK(rr::ssgi_temporal_io.bindings[4].kind == rr::binding_kind::storage_image);
-        CHECK(rr::ssgi_temporal_io.bindings[4].layout == rr::image_layout::general); // a storage image must say so
-        CHECK(rr::ssgi_temporal_io.bindings[5].resource == rr::resource_id::gbuffer_targets);
-        CHECK(rr::ssgi_temporal_io.bindings[5].element == 1); // the normal/roughness target, for roughness
-        // the two images it transitions: the DIFFUSE signal's pair (the reflection's resolve is the renderer's
-        // for now, from the same layout - see the declaration's note)
-        CHECK(rr::ssgi_temporal_io.barrier_images.size() == 2);
-        CHECK(rr::ssgi_temporal_io.barrier_images[0].resource == rr::resource_id::gi_resolve);
-        CHECK(rr::ssgi_temporal_io.barrier_images[1].resource == rr::resource_id::gi_history);
-        CHECK(rr::ssgi_temporal_io.push.has_value());
-        CHECK(rr::ssgi_temporal_io.push->size == 48); // eight floats and the two extents
-        CHECK(rr::ssgi_temporal_io.push->stages == rr::stage_flag::compute);
-    }
+    // ---- the SIXTH declaration was the GI denoiser's, the first GI stage with a set of its OWN ----
+    // It went with the chain. The declaration that replaced its role in the engine - the stochastic punctual
+    // lighting chain's resolve - is a declaration of its own (megalights_temporal_io) with the same shape, and
+    // it is covered by the lighting chain's own tests rather than by a GI scenario.
 
     // The spatial filter's declaration was asserted here - the third pass on the shared-sets shape. It went with
     // the chain; the shape itself is still covered by the ray-traced shadow's declaration below.
@@ -412,7 +385,7 @@ int main() {
     {
         // the barrier-BUFFER rule, the same three checks one resource class over: it must be a buffer the
         // schema declares, and a pass indexes these by position so the same one twice cannot be read
-        std::array<rr::barrier_buffer, 1> const not_a_buffer = {rr::barrier_buffer{.resource = rr::resource_id::gi_trace, .element = 0}};
+        std::array<rr::barrier_buffer, 1> const not_a_buffer = {rr::barrier_buffer{.resource = rr::resource_id::ml_trace, .element = 0}};
         rr::pass_io const io = {.name = "cluster", .own_set = 1, .bindings = {}, .shared_sets = {}, .targets = {}, .barrier_buffers = not_a_buffer, .push = std::nullopt};
         CHECK(!rr::validate(io).has_value());
         std::array<rr::barrier_buffer, 2> const twice = {rr::barrier_buffer{.resource = rr::resource_id::cluster_counts, .element = 0},

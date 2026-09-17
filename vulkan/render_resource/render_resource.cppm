@@ -86,15 +86,6 @@ export namespace vulkan::render_resource {
         velocity,
         scene_color,
         taa_history,
-        // ---- the GI chain (one per swapchain image) ----
-        gi_trace,
-        gi_resolve,
-        gi_history,
-        gi_spatial,
-        gi_spec_trace,
-        gi_spec_reproject,
-        gi_spec_resolve,
-        gi_spec_history,
         // ---- the stochastic punctual lighting chain (one per swapchain image) ----
         ml_trace,
         ml_resolve,
@@ -112,8 +103,6 @@ export namespace vulkan::render_resource {
         cluster_counts,
         cluster_indices,
         // ---- device wide ----
-        probe_grid, // 8: four SH-2 coefficients per channel, two ping-pong sides, side*4+coefficient
-        probe_surface,
         furnace_cube,
         scene_textures,
         white_texture,
@@ -188,7 +177,7 @@ export namespace vulkan::render_resource {
      * `core.cpp` would be a second copy of a fact - the thing this file's header warns about.
      * @ingroup vulkan_render_resource
      */
-    inline constexpr std::array<resource_info, 40> resource_schema = {{
+    inline constexpr std::array<resource_info, 30> resource_schema = {{
         {.id = resource_id::swapchain_image, .name = "swapchain_image", .kind = resource_kind::image2d, .scope = resource_scope::per_swapchain_image, .lifetime = resource_lifetime::imported},
         {.id = resource_id::hdr, .name = "hdr", .kind = resource_kind::image2d, .scope = resource_scope::per_swapchain_image, .lifetime = resource_lifetime::per_frame},
         // FOUR LEVELS, not one: `core::bloom_images` is `std::array<std::vector<VkImage>, bloom_level_count>`
@@ -203,14 +192,8 @@ export namespace vulkan::render_resource {
         {.id = resource_id::velocity, .name = "velocity", .kind = resource_kind::image2d, .scope = resource_scope::per_swapchain_image, .lifetime = resource_lifetime::per_frame},
         {.id = resource_id::scene_color, .name = "scene_color", .kind = resource_kind::image2d, .scope = resource_scope::per_swapchain_image, .lifetime = resource_lifetime::per_frame},
         {.id = resource_id::taa_history, .name = "taa_history", .kind = resource_kind::image2d, .scope = resource_scope::per_swapchain_image, .lifetime = resource_lifetime::persistent},
-        {.id = resource_id::gi_trace, .name = "gi_trace", .kind = resource_kind::image2d, .scope = resource_scope::per_swapchain_image, .lifetime = resource_lifetime::per_frame},
-        {.id = resource_id::gi_resolve, .name = "gi_resolve", .kind = resource_kind::image2d, .scope = resource_scope::per_swapchain_image, .lifetime = resource_lifetime::per_frame},
-        {.id = resource_id::gi_history, .name = "gi_history", .kind = resource_kind::image2d, .scope = resource_scope::per_swapchain_image, .lifetime = resource_lifetime::persistent},
-        {.id = resource_id::gi_spatial, .name = "gi_spatial", .kind = resource_kind::image2d, .scope = resource_scope::per_swapchain_image, .lifetime = resource_lifetime::per_frame},
-        {.id = resource_id::gi_spec_trace, .name = "gi_spec_trace", .kind = resource_kind::image2d, .scope = resource_scope::per_swapchain_image, .lifetime = resource_lifetime::per_frame},
-        {.id = resource_id::gi_spec_reproject, .name = "gi_spec_reproject", .kind = resource_kind::image2d, .scope = resource_scope::per_swapchain_image, .lifetime = resource_lifetime::per_frame},
-        {.id = resource_id::gi_spec_resolve, .name = "gi_spec_resolve", .kind = resource_kind::image2d, .scope = resource_scope::per_swapchain_image, .lifetime = resource_lifetime::per_frame},
-        {.id = resource_id::gi_spec_history, .name = "gi_spec_history", .kind = resource_kind::image2d, .scope = resource_scope::per_swapchain_image, .lifetime = resource_lifetime::persistent},
+        // The traced GI chain's eight images (its raw trace, accumulation, history, spatial filter's output and
+        // the glossy lobe's four) stood here, and the probe cache's two 3D images below. They went with the chain.
         // The stochastic punctual lighting chain's raw estimate: written as a storage image by the trace,
         // read as a sampled image by the lighting stage that adds it (and, from the next stage, by the
         // temporal resolve). HALF resolution, like the GI chain's images, because the signal is a
@@ -234,8 +217,6 @@ export namespace vulkan::render_resource {
         {.id = resource_id::morph_targets, .name = "morph_targets", .kind = resource_kind::buffer, .scope = resource_scope::per_frame_slot, .lifetime = resource_lifetime::persistent},
         {.id = resource_id::cluster_counts, .name = "cluster_counts", .kind = resource_kind::buffer, .scope = resource_scope::per_frame_slot, .lifetime = resource_lifetime::per_frame},
         {.id = resource_id::cluster_indices, .name = "cluster_indices", .kind = resource_kind::buffer, .scope = resource_scope::per_frame_slot, .lifetime = resource_lifetime::per_frame},
-        {.id = resource_id::probe_grid, .name = "probe_grid", .kind = resource_kind::image3d, .scope = resource_scope::device_wide, .lifetime = resource_lifetime::persistent, .count = 8},
-        {.id = resource_id::probe_surface, .name = "probe_surface", .kind = resource_kind::image3d, .scope = resource_scope::device_wide, .lifetime = resource_lifetime::persistent},
         {.id = resource_id::furnace_cube, .name = "furnace_cube", .kind = resource_kind::image_cube, .scope = resource_scope::device_wide, .lifetime = resource_lifetime::persistent},
         {.id = resource_id::scene_textures, .name = "scene_textures", .kind = resource_kind::image2d, .scope = resource_scope::device_wide, .lifetime = resource_lifetime::persistent},
         {.id = resource_id::white_texture, .name = "white_texture", .kind = resource_kind::image2d, .scope = resource_scope::device_wide, .lifetime = resource_lifetime::persistent},
@@ -1034,81 +1015,11 @@ export namespace vulkan::render_resource {
     /// @brief the shared scene set (0) and the shared G-buffer set (1), the pair a full-screen compute pass binds
     inline constexpr std::array<shared_set, 2> scene_and_gbuffer_shared_sets = {{{.family = 0}, {.family = 1}}};
 
-    /**
-     * @brief the images the glossy lobe transitions, in the order its record() indexes them
-     *
-     * The lobe binds the tracer's own two shared sets and writes the SAME raw trace the tracer just wrote (it
-     * adds its reflection to it, see shaders/ssgi_spec.comp), so `gi_trace` is here for the compute-to-compute
-     * ordering barrier that makes the read-after-write legal - and again at the end, where the completed trace
-     * is handed to the denoiser. Its own two outputs are the other entries: they are storage images whose
-     * descriptors in the G-buffer set declare GENERAL, so the lobe is their only writer and their first-use
-     * transition is per image (see the pass's state).
-     *
-     *   0: `gi_trace`         the raw trace, read AND written (both writers of it are here and in the tracer)
-     *   1: `gi_spec_trace`    this frame's reflection correction
-     *   2: `gi_spec_reproject` where the reflected surface was, which the resolve reprojects by
-     */
-    // The glossy lobe's declaration (ssgi_spec_barriers, ssgi_spec_io) stood here - the second pass to reach its
-    // resources through `barrier_images`. It went with the chain.
-
-    /**
-     * @brief the temporal resolve's own bindings: the first GI stage whose inputs are its OWN set
-     *
-     * The first GI declaration with `own` bindings at all - the tracer and the lobe reach everything through
-     * the two shared sets, while the denoiser needs a set nobody else has, because it groups four things no
-     * other pass puts together (the raw trace, the accumulated history, the motion vectors and the depth) plus
-     * the image it writes and two more it samples. The layout is GENERATED from this list
-     * (`bindings::make_set_layout`), which is why the seven bindings and the family's pool count cannot drift:
-     * they were out of step once, by hand, and the validation layer is what caught it.
-     *
-     * BINDING 6 IS ONE SLOT FOR TWO IMAGES, and that is the one place this declaration describes a KIND rather
-     * than an exact resource: mode 1 (the reflection) samples the lobe's reprojection there, while mode 0 (the
-     * diffuse bounce, which ignores the value) is given the depth target instead - always readable on a frame
-     * that resolves anything, where the lobe's image is not (it fails on exactly the frames the lobe is off).
-     * The layout is identical either way, and which image goes in is the pass's own write.
-     */
-    inline constexpr std::array<pass_binding, 7> ssgi_temporal_bindings = {{
-        {.set = 0, .binding = 0, .owner = set_owner::own, .kind = binding_kind::sampled_image, .resource = resource_id::gi_trace, .access = binding_access::read, .sampler = sampler_hint::gbuffer, .layout = image_layout::sampled},
-        {.set = 0, .binding = 1, .owner = set_owner::own, .kind = binding_kind::sampled_image, .resource = resource_id::gi_history, .access = binding_access::read, .sampler = sampler_hint::gbuffer, .layout = image_layout::sampled},
-        {.set = 0, .binding = 2, .owner = set_owner::own, .kind = binding_kind::sampled_image, .resource = resource_id::velocity, .access = binding_access::read, .sampler = sampler_hint::gbuffer, .layout = image_layout::sampled},
-        {.set = 0, .binding = 3, .owner = set_owner::own, .kind = binding_kind::sampled_image, .resource = resource_id::gbuffer_depth, .access = binding_access::read, .sampler = sampler_hint::gbuffer, .layout = image_layout::sampled},
-        {.set = 0, .binding = 4, .owner = set_owner::own, .kind = binding_kind::storage_image, .resource = resource_id::gi_resolve, .access = binding_access::write, .layout = image_layout::general},
-        {.set = 0, .binding = 5, .owner = set_owner::own, .kind = binding_kind::sampled_image, .resource = resource_id::gbuffer_targets, .element = 1, .access = binding_access::read, .sampler = sampler_hint::gbuffer, .layout = image_layout::sampled},
-        {.set = 0, .binding = 6, .owner = set_owner::own, .kind = binding_kind::sampled_image, .resource = resource_id::gi_spec_reproject, .access = binding_access::read, .sampler = sampler_hint::gbuffer, .layout = image_layout::sampled},
-    }};
-
-    /**
-     * @brief the images the temporal resolve transitions
-     *
-     * The DIFFUSE signal's pair, and only those: this declaration belongs to the pass that resolves the diffuse
-     * bounce. The reflection's accumulation and history are the second family's, resolved by the renderer today
-     * because the two signals share ONE layout and one pipeline - which is exactly why a single declaration can
-     * only ever describe one of them (the reasoning is in docs/pass_chain_plan.md).
-     *
-     *   0: `gi_resolve`   the diffuse accumulation this dispatch WRITES (also binding 4)
-     *   1: `gi_history`   the diffuse history it reads and then copies into (also binding 1)
-     */
-    inline constexpr std::array<barrier_image, 2> ssgi_temporal_barriers = {{
-        {.resource = resource_id::gi_resolve, .element = 0},
-        {.resource = resource_id::gi_history, .element = 0},
-    }};
-
-    /**
-     * @brief the temporal resolve's declaration: the denoiser that turns the raw trace into an accumulation
-     *
-     * The FIRST GI declaration with a set of its own AND the first whose `barrier_images` and `own` bindings
-     * name the same two resources - deliberately, because the pass both binds them and moves them, and the two
-     * lists answer different questions (what the descriptor says, and what the barriers take).
-     */
-    inline constexpr pass_io ssgi_temporal_io = {
-        .name = "ssgi_temporal",
-        .own_set = 0,
-        .bindings = ssgi_temporal_bindings,
-        .shared_sets = {},
-        .targets = {},
-        .barrier_images = ssgi_temporal_barriers,
-        .push = push_block{.offset = 0, .size = 48, .stages = stage_flag::compute},
-    };
+    // The glossy lobe's barrier documentation and the temporal resolve's declaration
+    // (ssgi_temporal_bindings, ssgi_temporal_barriers, ssgi_temporal_io) stood here. The lobe went with the
+    // chain; the declaration went with it too - the stochastic punctual lighting chain's resolve has a
+    // declaration of its own (megalights_temporal_io) and only reuses the PIPELINE BUILDER that was written for
+    // this pass, never this shape. That is what made the last references to the gi_* resources disappear.
 
     /**
      * @brief the image the spatial filter transitions
