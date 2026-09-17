@@ -27,7 +27,6 @@ export module vulkan.runtime;
 import vulkan.profiling;
 import vulkan.bindings;               // the per-image descriptor-set families (the G-buffer debug view's for now)
 import vulkan.pass;                   // the pass framework: the host the runner talks to, and the stage runner
-import vulkan.pass.gi_probe;          // the first real pass (its member is declared below, so the class must be complete)
 import vulkan.pass.taa;               // the second, and the first GRAPHICS one
 import vulkan.pass.scene;             // the third: the scene itself, whose work is DATA rather than a declaration
 import vulkan.pass.transparent;       // the fourth: the blended geometry, over the shaded frame
