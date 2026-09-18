@@ -825,6 +825,19 @@ namespace vulkan {
             writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
             writes[1].pBufferInfo = &table_info;
             write_count = 2;
+
+            // THE INSTANCE TABLE GOES ONTO THE GRID TOO (binding 17), and this is the case where the two paths
+            // genuinely differ: the set above says VK_WHOLE_SIZE, which a heap range may NOT say - it needs a real
+            // size (VUID-VkDeviceAddressRangeKHR-address-11365, learned on the material table). The capacity is the
+            // structures module's to know, so it publishes it (instance_table_size), and the descriptor is an
+            // address range at heap_slots::mask_instances + frame slot - the slot named for what the shader reads.
+            if (this->vulkan_core.descriptor_heaps.ready() && this->vulkan_core.heap_grid_offset != VK_WHOLE_SIZE) {
+                VkBufferDeviceAddressInfo const table_address_info = {.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .pNext = nullptr, .buffer = instance_table};
+                VkDeviceAddress const table_address = vkGetBufferDeviceAddress(this->vulkan_core.device, &table_address_info);
+                if (!this->vulkan_core.descriptor_heaps.write_buffer(heap_slot_offset(core::heap_slots::mask_instances + frame_slot), table_address, this->structures.instance_table_size(frame_slot), VK_DESCRIPTOR_TYPE_STORAGE_BUFFER)) {
+                    utility::log("descriptor heap: the instance table did not reach grid slot {}", core::heap_slots::mask_instances + frame_slot);
+                }
+            }
         }
         vkUpdateDescriptorSets(this->vulkan_core.device, write_count, writes, 0, nullptr);
     }

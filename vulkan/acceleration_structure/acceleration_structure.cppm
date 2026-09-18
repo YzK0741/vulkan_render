@@ -379,6 +379,17 @@ namespace vulkan::acceleration_structure {
             return frame_slot < this->slots.size() ? this->slots[frame_slot].structure_size : 0;
         }
 
+        /**
+         * @brief the size of the slot's instance table (binding 17): its capacity times the record's own size
+         * @return that size, or 0 when the slot does not exist
+         * @note PUBLISHED for the same reason structure_size is: the descriptor-set path writes this buffer with
+         *       VK_WHOLE_SIZE (legal there), while a HEAP range must carry a real size
+         *       (VUID-VkDeviceAddressRangeKHR-address-11365), and the capacity is this module's to know.
+         */
+        [[nodiscard]] VkDeviceSize instance_table_size(uint32_t frame_slot) const noexcept {
+            return frame_slot < this->slots.size() ? static_cast<VkDeviceSize>(this->slots[frame_slot].capacity) * sizeof(instance_record) : 0;
+        }
+
         /** @brief the slot's instance table (instance_record[count]); the shading-at-a-hit step binds it */
         [[nodiscard]] VkBuffer instance_table(uint32_t frame_slot) const noexcept {
             return frame_slot < this->slots.size() ? this->slots[frame_slot].records_buffer : VK_NULL_HANDLE;

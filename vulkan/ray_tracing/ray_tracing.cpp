@@ -41,6 +41,12 @@ namespace vulkan::ray_tracing {
         return this->top_.has_value() ? this->top_->structure_size(frame_slot) : 0;
     }
 
+    VkDeviceSize structure_set::instance_table_size(uint32_t const frame_slot) const noexcept {
+        // ... and the same for the instance table at binding 17, which the set path may write with VK_WHOLE_SIZE
+        // and a heap range may not.
+        return this->top_.has_value() ? this->top_->instance_table_size(frame_slot) : 0;
+    }
+
     VkAccelerationStructureKHR structure_set::handle(uint32_t const frame_slot) const noexcept {
         return this->top_.has_value() ? this->top_->handle(frame_slot) : VK_NULL_HANDLE;
     }

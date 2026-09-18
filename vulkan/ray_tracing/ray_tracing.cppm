@@ -171,6 +171,8 @@ export namespace vulkan::ray_tracing {
          *       an address RANGE whose size has to be real (docs/descriptor_heap_migration.md).
          */
         [[nodiscard]] VkDeviceSize structure_size(uint32_t frame_slot) const noexcept;
+        /// @brief the size of this slot's instance table, for the heap's address-range descriptor (binding 17)
+        [[nodiscard]] VkDeviceSize instance_table_size(uint32_t frame_slot) const noexcept;
         /// @brief this slot's instance table buffer, whose device ADDRESS the GI frame constants carry
         [[nodiscard]] VkBuffer instance_table(uint32_t frame_slot) const noexcept;
         /// @brief the casters that were built, in the order they were added (see caster_level)
