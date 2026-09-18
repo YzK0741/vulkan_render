@@ -225,6 +225,23 @@ frame binds the heaps once and nothing binds a set; (5) delete the layouts, fami
 shim. Nothing in that list is a question any more, only work - and it is one frame-wide commit, because a frame
 whose stages do not all read the heap renders nothing at all.
 
+### ... and there is NO cheaper path, measured
+
+The obvious hope was that the flag is only about MAPPINGS, so a heap-native shader might keep its pipeline
+layout and its ordinary push constants, leaving every builder and every push site untouched. The probe answered
+it in one run, by being built that way (layout with a push range, no flag): `vkCreateComputePipelines` refused
+the pipeline, and validation said exactly why -
+
+```
+... is trying to use descriptor heaps ([Resource Heap, variable "resource_heap"]) but is also trying to use a
+VkPipelineLayout, either set the layout to NULL or remove the heaps from the shader
+   (VUID-VkComputePipelineCreateInfo-layout-07988)
+```
+
+- so a `descriptor_heap` declaration and a non-null layout are mutually exclusive. The full list above is the
+only route, and the probe (flag + null layout + `vkCmdPushDataEXT`, reading the default material's white base
+colour as `0xffff`) is the proof that the route works.
+
 ## The POC that died - and the method lesson it left (the questions above are now answered)
 
 The plan was to prove the heap-native shader path on the MASK BAKE, which looks ideal: it reads exactly two
