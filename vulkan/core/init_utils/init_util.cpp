@@ -406,7 +406,7 @@ void print_device_capabilities(device_capabilities const& capabilities) {
                      capabilities.descriptor_heap_properties.maxDescriptorHeapEmbeddedSamplers,
                      capabilities.descriptor_heap_properties.maxPushDataSize);
     } else {
-        utility::log(" descriptor heap: not available (descriptor sets stay the binding model)");
+        utility::log(" descriptor heap: not available (the heap is the only binding model this renderer has)");
     }
 
     utility::log("{}", box_line);

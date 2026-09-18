@@ -47,10 +47,10 @@ layout(descriptor_heap, descriptor_stride = heap_slot_stride) uniform CameraUBO 
     mat4 prev_view_proj;
 } camera[];
 
-// Split-sum IBL (bindings 2-4): the prefiltered GGX environment (roughness mip chain), the
+// Split-sum IBL: the prefiltered GGX environment (roughness mip chain), the
 // irradiance map for the diffuse ambient, and the BRDF integration LUT.
 // IMAGES AND SAMPLERS ARE SEPARATE IN A HEAP, so these are textures now and the sampler is the shared one (the
-// host picks which at the fetch sites below, exactly as the descriptor set bound `env_sampler` for all three).
+// host picks which at the fetch sites below).
 layout(descriptor_heap, descriptor_stride = heap_slot_stride) uniform textureCube env_texture[];
 layout(descriptor_heap, descriptor_stride = heap_slot_stride) uniform textureCube irradiance_texture[];
 layout(descriptor_heap, descriptor_stride = heap_slot_stride) uniform texture2D brdf_lut_texture[];

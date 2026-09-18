@@ -12,7 +12,7 @@
  * also removes the sub-pixel shimmer that no post-process edge filter (FXAA) can touch, because that
  * shimmer IS the missing samples.
  *
- * Inputs (its own descriptor set):
+ * Inputs (each a heap image array, one entry per swapchain image):
  * - binding 0: the current frame's scene color (HDR, jittered - the image to accumulate)
  * - binding 1: the history image (the previous RESOLVED frame, one per swapchain image)
  * - binding 2: the motion vectors (G-buffer RG16F: current_uv - previous_uv)
@@ -44,8 +44,8 @@ layout(location = 0) out vec4 out_color;
 
 // HEAP-NATIVE (see docs/descriptor_heap_migration.md): four resource heap images, all per SWAPCHAIN IMAGE, read
 // through the TAA sampler - and WHICH SAMPLER MATTERS HERE, unlike the exact-texel fetches elsewhere: TAA reads at
-// reprojected positions, i.e. between texels, and the descriptor set's taa_sampler was linear magnification with
-// nearest minification.
+// reprojected positions, i.e. between texels, and the sampler it is combined with from the sampler heap is linear
+// magnification with nearest minification.
 #extension GL_EXT_descriptor_heap : require
 #extension GL_EXT_nonuniform_qualifier : enable
 #include "heap_slots.glsl"

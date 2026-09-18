@@ -64,7 +64,7 @@ namespace vulkan {
         if (this->write_descriptors_ == nullptr || this->write_samplers_ == nullptr || this->bind_resource_heap == nullptr || this->bind_sampler_heap == nullptr) {
             // The extension entry points come from the device rather than from the link line, the same rule the
             // acceleration-structure module follows: vulkan-1's import library exports no extension command.
-            utility::log("descriptor heap: the device did not publish the heap entry points, so descriptor sets stay the binding model");
+            utility::log("descriptor heap: the device did not publish the heap entry points; the heap is the only binding model this renderer has, so it cannot render without it");
             return false;
         }
         this->limits_ = limits;
@@ -87,7 +87,7 @@ namespace vulkan {
         this->resource_heap_ = allocator.create_buffer(zeroed_resource.data(), zeroed_resource.size(), buffer_type::storage_coherent, heap_usage);
         this->sampler_heap_ = allocator.create_buffer(zeroed_sampler.data(), zeroed_sampler.size(), buffer_type::storage_coherent, heap_usage);
         if (!this->resource_heap_.valid() || !this->sampler_heap_.valid()) {
-            utility::log("descriptor heap: the heap allocations failed, so descriptor sets stay the binding model");
+            utility::log("descriptor heap: the heap allocations failed; the heap is the only binding model this renderer has, so it cannot render without it");
             this->destroy();
             return false;
         }
@@ -103,13 +103,13 @@ namespace vulkan {
         auto const* const sampler_detail = this->sampler_heap_.valid() ? allocator.get_buffer_detail(this->sampler_heap_.handle()) : nullptr;
         this->sampler_mapped_ = sampler_detail != nullptr ? sampler_detail->allocation_info.pMappedData : nullptr;
         if (this->resource_mapped_ == nullptr) {
-            utility::log("descriptor heap: the resource heap is not mapped, so descriptor sets stay the binding model");
+            utility::log("descriptor heap: the resource heap is not mapped; the heap is the only binding model this renderer has, so it cannot render without it");
             this->destroy();
             return false;
         }
         this->sampler_address_ = address_of(allocator, device, this->sampler_heap_);
         if (this->resource_address_ == 0 || this->sampler_address_ == 0) {
-            utility::log("descriptor heap: the heap buffers have no device address, so descriptor sets stay the binding model");
+            utility::log("descriptor heap: the heap buffers have no device address; the heap is the only binding model this renderer has, so it cannot render without it");
             this->destroy();
             return false;
         }

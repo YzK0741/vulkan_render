@@ -1,5 +1,13 @@
 # Descriptor heap: the whole-frame conversion
 
+**STATUS: REACHED.** The target below is the state of the renderer now. The conversion landed as the
+heap-native frame, and the deletions it called for are done: `vkCreateDescriptorSetLayout`,
+`vkAllocateDescriptorSets`, `vkCreateDescriptorPool`, `vkCreatePipelineLayout`,
+`vkCmdBindDescriptorSets`, `vkCmdPushConstants` and every `VkDescriptorSetAndBindingMapping*` type
+appear ZERO times in the tree. The sections below that are written in the future tense are kept as the
+plan they were - they are what the work followed - and the deletions section is annotated with what
+each item became.
+
 The target is a renderer with **no descriptor sets, no set layouts, no pools and no
 `VkDescriptorSetAndBindingMappingEXT` shim**: every descriptor lives in the resource/sampler heap,
 every shader names the heap natively, and every pipeline is created heap-native.
@@ -304,10 +312,17 @@ per-frame or per-generation array needs the index for it - which, with no layout
 therefore has to be ADDED to that stage's push block (the one piece of the conversion that changes a shader's
 interface rather than its declarations).
 
-**Deletions, once the frame is heap-only.** Every `vkCmdBindDescriptorSets`, the set layouts and their pools,
-`scene_sets`/`gbuffer_family`/`post_family`, `write_rt_structure_binding`'s set write, the mapping shim
-(`scene_heap_layout`, `scene_heap_stage_mapping`, `set_scene_heap_layout`, `build_cluster`'s `map_from_heap`
-flag, `push_heap_frame_slot`) - and `descriptor_heap::make_mapping`, which nothing else uses.
+**Deletions, once the frame is heap-only - ALL DONE.** Every `vkCmdBindDescriptorSets`, the set layouts
+and their pools, `scene_sets`/`gbuffer_family`/`post_family`, `write_rt_structure_binding`'s set write,
+the mapping shim (`scene_heap_layout`, `scene_heap_stage_mapping`, `set_scene_heap_layout`,
+`build_cluster`'s `map_from_heap` flag, `push_heap_frame_slot`) - and `descriptor_heap::make_mapping`,
+which nothing else used. They came out in three commits, each proven byte-neutral by the nine gate
+scenarios against a frozen reference set: the mapping shim, then the classic descriptor world (41 files,
+-3005 lines: the set layouts, pools, pipeline layouts, every pass's `set_layout_`/`pipeline_layout_`/
+family and their per-frame writes), then the last of the mapping machinery that the first commit's
+deletion had exposed. The declaration layer lost its set vocabulary with them: a `pass_binding` names a
+resource and whether it is the pass's own per-image target, not a set it lives in, and `set_owner` is
+`binding_owner` with two values.
 
 **What is already proven, and therefore not in doubt.** The grid is reserved and covered (every slot the header
 names is written by host code, checked by a test); the heaps are bound by `record_bind`; the native path works

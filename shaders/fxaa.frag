@@ -24,7 +24,7 @@
  * it softens fine detail; the debug overlay is therefore drawn AFTER this pass, not before.
  *
  * Requires the pipeline built by runtime::make_fxaa_pipeline() (post.vert + this file, the
- * swapchain color format, the post set layout).
+ * swapchain color format).
  */
 
 layout(location = 0) in vec2 v_uv;
@@ -32,7 +32,7 @@ layout(location = 0) out vec4 out_color;
 
 // binding 5 = the gamma-encoded LDR image, HEAP-NATIVE now: a resource heap image plus a sampler from the sampler
 // heap. The sampler matters less here than it looks - FXAA's taps are exact texel centres, and at a centre a LINEAR
-// and a NEAREST filter return the same texel - so this uses the post chain's sampler, as the descriptor set did.
+// and a NEAREST filter return the same texel - so this uses the post chain's sampler, exactly as before.
 #extension GL_EXT_descriptor_heap : require
 #extension GL_EXT_nonuniform_qualifier : enable
 #include "heap_slots.glsl"

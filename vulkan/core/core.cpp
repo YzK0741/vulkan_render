@@ -176,7 +176,7 @@ namespace vulkan {
                     utility::log("descriptor heap: {} shared samplers written to the sampler grid at {}", written, sampler_grid);
                 }
             } else {
-                utility::log("descriptor heap: not created, so descriptor sets stay the binding model");
+                utility::log("descriptor heap: not created; the heap is the only binding model this renderer has, so it cannot render without it");
             }
         }
     };

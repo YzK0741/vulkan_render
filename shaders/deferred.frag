@@ -17,7 +17,7 @@
  * and normals this stage already reads, folded into the shade_input's ao, and therefore scales the
  * IBL ambient exactly like a material's baked AO map does - no extra render target, no extra pass.
  *
- * Inputs (its own descriptor set, which the runtime binds as set 1 - the scene set stays set 0):
+ * Inputs (the G-buffer images, each a heap image array indexed by the frame's slot):
  * - binding 0: albedo.rgb + metallic (RGBA8)
  * - binding 1: world normal.xyz + roughness (RGBA16F)
  * - binding 2: material id low/high byte + ambient occlusion + material flags (RGBA8)
@@ -82,7 +82,7 @@ vec4 gbuffer_texel(uint slot, vec2 uv) {
 layout(descriptor_heap, descriptor_stride = heap_slot_stride) uniform texture2D rt_visibility_texture[];
 // The STOCHASTIC PUNCTUAL LIGHTING image (docs/megalights.md): half resolution, per swapchain image, added by this
 // stage instead of by its own composite pass. Read at exact texels too (the 2x2 gather below), so the same NEAREST
-// sampler - which is what the descriptor set bound for it.
+// sampler serves it.
 layout(descriptor_heap, descriptor_stride = heap_slot_stride) uniform texture2D ml_lighting_texture[];
 
 layout(push_constant) uniform DeferredPush {

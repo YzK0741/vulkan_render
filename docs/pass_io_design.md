@@ -3,6 +3,18 @@
 The layer every pass in this renderer describes its inputs and outputs with, and the design the code
 implements: the types below live in `vulkan/render_resource`, and the per-pass declarations are its consumers.
 
+**STATUS NOTE, because this document's premise is now half history.** It is built around descriptor
+sets - "a pass's inputs and outputs are ALREADY descriptor sets", below - and those are gone: the
+renderer is heap-native, and `vkCreateDescriptorSetLayout` / `vkCreateDescriptorPool` /
+`vkAllocateDescriptorSets` / `vkCreatePipelineLayout` / `vkCmdBindDescriptorSets` appear zero times in
+the tree. What this document argues FOR is what survived: ONE declaration per pass, from which the
+renderer derives what it needs, instead of the same interface written twice by hand. What it argues
+AGAINST - the parallel array of views, the parallel array of `VkDescriptorImageInfo`, the ternaries
+deciding storage-vs-sampler, the hand-written set layouts in `pipelines.cppm` and the `ensure_*` writes
+in `runtime.cpp` - is exactly what the deletion removed. So read the sections below as the reasoning
+that produced the declaration layer, not as a description of how a pass's resources reach the GPU
+today: they reach it through the frame's bound heap, addressed by the slot the stage pushes.
+
 ## 1. Why this shape, and what it is not
 
 A pass's inputs and outputs in this renderer are ALREADY descriptor sets - the G-buffer set is the interface

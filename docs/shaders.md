@@ -145,10 +145,14 @@
  * hemisphere SSAO rather than horizon-based GTAO, and being screen-space it cannot see occluders off
  * screen - the usual set of approximations.
  *
- * @section shader_bindings The shared scene descriptor set (set 0)
+ * @section shader_bindings The shared scene block in the resource heap
  *
- * Every shader in the main pass uses the SAME descriptor set layout (created once by
- * `vulkan::core`, described in `vulkan_primitive`), so a pass binds it once and any leaf can draw:
+ * THERE IS NO DESCRIPTOR SET HERE ANY MORE. Every shader in the main pass reads the same part of the
+ * frame's bound resource heap: the grid slot each row below names, addressed either by a fixed offset
+ * (the frame-invariant entries) or by the slot the stage pushes (the per-frame and per-generation
+ * ones). The numbers in the first column are the historical set-0 binding numbers and are kept because
+ * they are the order the heap grid was laid out in and the names the logs use; the types are what the
+ * heap descriptor carries:
  *
  * | binding | contents | type | written by |
  * |---------|----------|------|------------|
