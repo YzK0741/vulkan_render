@@ -512,9 +512,21 @@ namespace vulkan {
         static constexpr uint32_t heap_sampler_base = 2048; // 64 KiB / 32 B
         static constexpr VkDeviceSize heap_sampler_stride = 32;
         struct heap_slots {
-            static constexpr uint32_t textures = heap_slot_base + 0u;              // binding 1, the bindless array
-            static constexpr uint32_t materials = heap_slot_base + 512u;           // binding 5
-            static constexpr uint32_t tlas = heap_slot_base + 513u;                // binding 16
+            static constexpr uint32_t textures = heap_slot_base + 0u;    // binding 1, the bindless array
+            static constexpr uint32_t materials = heap_slot_base + 512u; // binding 5
+            /**
+             * @brief the top level structure, binding 16, as a TWO-SLOT array - and the reason it is not beside the
+             *        per-frame buffers above
+             *
+             * @note THE TLAS IS REBUILT EVERY FRAME (see runtime::write_rt_structure_binding, which is called per
+             *       frame slot), so a single slot would hold one frame's structure while the other frame is still
+             *       in flight - the same hazard the camera and light UBOs have, and they are two slots each for it.
+             *       This was first laid out as ONE slot beside the per-frame buffers, which is the kind of mistake
+             *       a picture cannot show until the shaders read the heap: the fix is cheap now and would have been
+             *       a silent wrong image later. It lives at the END of the used region because growing it in place
+             *       would renumber every array after it.
+             */
+            static constexpr uint32_t tlas = heap_slot_base + 703u;
             static constexpr uint32_t scene_camera = heap_slot_base + 514u;        // binding 0, per frame slot
             static constexpr uint32_t scene_light = heap_slot_base + 516u;         // binding 7, per frame slot
             static constexpr uint32_t cluster_counts = heap_slot_base + 518u;      // binding 11, per frame slot

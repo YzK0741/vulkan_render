@@ -28,9 +28,11 @@ const uint heap_image_capacity = 8u;
 
 // the bindless texture array: binding 1, one slot per scene texture
 const uint heap_slots_textures = heap_slot_base + 0u;
-// the material table (binding 5) and the top level structure (binding 16)
+// the material table (binding 5), and the top level structure (binding 16) as a TWO-SLOT array: the TLAS is
+// rebuilt every frame, so one slot would hold one frame's structure while the other is still in flight (slot 513,
+// where it first was, is left unused rather than half-filled; see core.cppm's heap_slots).
 const uint heap_slots_materials = heap_slot_base + 512u;
-const uint heap_slots_tlas = heap_slot_base + 513u;
+const uint heap_slots_tlas = heap_slot_base + 703u;
 // per frame slot (2 of them), the scene set's frame-varying half
 const uint heap_slots_scene_camera = heap_slot_base + 514u;
 const uint heap_slots_scene_light = heap_slot_base + 516u;
