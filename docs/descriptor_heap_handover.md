@@ -194,21 +194,21 @@ captured hash to `90BC07F22EE6BBD2`), and that red reached the capture *through*
 `display_texture[heap_slots_display_color + heap_image_index]`, so the per-image index and the capture
 path are correct.
 
-**The surviving hypothesis, and the probe that settles it.** Writes to per-image target slots work (the
-post chain), and *one* kind of read demonstrably works (the graphics probe reads the material table at
-slot 512 and gets white). What has never been verified is a **read of a per-image target slot**: the
-deferred pass reads `gbuffer_albedo + image_index`, the background branch reads the environment, and the
-G-buffer debug view reads the same slots - and all of them come out black. That is consistent with those
-reads returning zero rather than with the targets being empty, and the experiment is the probe pattern
-that has never misled here: have `heap_probe` **sample a G-buffer target slot** after a frame has
-rendered and print the texel. Zero means the target slot read is the fault; non-zero means the scene
-never wrote the image and the search returns to the draw, with the depth attachment as the first suspect.
+**The last question, and it needs an instrument outside the code.** Writes to per-image target slots work
+(the post chain), a material-table read works (the graphics probe, slot 512), and a per-image target
+*read* works too - `fxaa.frag`'s read of `display_texture[display_slot + image_index]` returned the red the
+composite had just written. And the scene renders into exactly the image the heap descriptor names
+(`image 0x25 view 0x27` on both sides). So the fault is in none of those places, and what remains is the
+one thing no log inside the renderer can answer: **does a fragment from the scene's indexed draws reach
+the image at all?** The draw is issued (46356 indices, valid geometry), and the instance is open in the
+submitted command buffer with the right attachments, render area, viewport, scissor, depth state, blend
+state and pipeline. Read the G-buffer albedo image back with a copy right after the frame's submit, or
+take a GPU capture (RenderDoc) of the scene pass. Everything else in this document can wait for that
+answer.
 
 **The measurement worth carrying forward:** the black frame's hash is `dc5f6d66428c26d8…` - byte for byte
 the hash this migration recorded earlier as "a half-migrated frame renders nothing". It is a *uniform*
 image, which is why it survived every fix that changed what the frame does.
-
-## How to finish and verify
 
 ## How to finish and verify
 
