@@ -666,7 +666,7 @@ namespace vulkan::ray_tracing {
 
         // The skinned casters are deformed and their structures REFITTED here, before the instance list is walked
         // (the addresses do not change, so the order does not matter to correctness - but the refit has to be
-        // recorded before this frame writes the scene set's binding 16, the ordering the mask bake's own-set
+        // recorded before this frame writes the scene block's binding 16, the ordering the mask bake's own-set
         // comment explains).
         if (inputs.skin_bake && !this->skin_levels_.empty() && inputs.hooks.skin_ready != nullptr && inputs.hooks.skin_ready(inputs.hooks.owner)) {
             if (inputs.hooks.record_skin(inputs.hooks.owner, command_buffer, this->casters_)) {

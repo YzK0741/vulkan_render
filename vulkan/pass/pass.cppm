@@ -609,7 +609,7 @@ export namespace vulkan::pass {
      *
      * Modelled on `vulkan.primitive`, which has carried the renderer's dynamic dispatch since the primitive
      * work: a small pure-virtual interface, `final` derived classes, and the CONTRACT written down - there,
-     * "the runtime binds the pipeline and the scene set before calling draw()"; here, "the runner validates
+     * "the runtime binds the pipeline and the scene block before calling draw()"; here, "the runner validates
      * `io()`, resolves it, applies `behaviour()`, then calls `record()`".
      *
      * `feature()` returns a NAME rather than an enumerator: which features exist and who enables them is the

@@ -1,7 +1,7 @@
 // The deferred lighting stage's implementation: the scene-colour dependency barrier, the frame's two per-image
 // input transitions, the LOAD instance over the frame's scene target and the fullscreen draw. Moved out of
 // `runtime::record_lighting_pass` UNCHANGED in behaviour - the same barrier, the same two ensures, the same LOAD
-// attachment, the same bind order (scene set then G-buffer set), the same 88-byte push and the same 3-vertex draw -
+// attachment, the same bind order (the scene block, then the G-buffer images), the same 88-byte push and the same 3-vertex draw -
 // so the capture gate decides the move on all twelve scenarios, every one of which runs this stage.
 
 module;

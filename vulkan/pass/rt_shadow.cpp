@@ -1,7 +1,7 @@
-// The ray-traced shadow pass's implementation: the two barriers around the visibility image, the two shared sets
+// The ray-traced shadow pass's implementation: the two barriers around the visibility image, the two shared blocks
 // and the full-resolution dispatch, plus the pipeline it owns. The recording was moved out of
 // `runtime::record_rt_shadow_pass` UNCHANGED in behaviour - the same UNDEFINED -> GENERAL transition before the
-// dispatch, the same bind order (scene set, then G-buffer set), the same 80-byte push, the same workgroup size
+// dispatch, the same bind order (the scene block, then the G-buffer images), the same 80-byte push, the same workgroup size
 // and the same GENERAL -> SHADER_READ hand-back.
 //
 // HOW IT WAS VERIFIED, and this is the interesting part: **the capture gate cannot decide this pass.** No

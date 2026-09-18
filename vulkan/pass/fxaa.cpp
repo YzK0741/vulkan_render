@@ -17,7 +17,7 @@ module;
 module vulkan.pass.fxaa;
 
 import vulkan.constant_init;
-import vulkan.pipelines; // build_fxaa_owned: the pass's own pipeline layout (around the post set layout) + the pipeline
+import vulkan.pipelines; // build_fxaa_owned: the pass's own pipeline, built from its two shaders and the surface's format
 import utility;
 
 namespace vulkan::pass {

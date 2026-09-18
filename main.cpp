@@ -278,7 +278,7 @@ int main(int argc, char** argv) {
     std::vector<unsigned char> const irr_bytes = vulkan::to_half_rgba(irradiance);
     std::vector<unsigned char> const lut_bytes = vulkan::to_half_rg(brdf_lut);
 
-    // 10. Upload the scene-wide IBL once: shared by every primitive (bindings 2-4 of the scene set)
+    // 10. Upload the scene-wide IBL once: shared by every primitive (bindings 2-4 of the scene block)
     runtime.set_ibl(vulkan::ibl_input{.prefiltered_env = env_bytes, .irradiance = irr_bytes, .brdf_lut = lut_bytes, .env_size = static_cast<uint32_t>(env_size), .env_mip_count = static_cast<uint32_t>(env_mip_count), .irr_size = static_cast<uint32_t>(irr_size), .lut_size = static_cast<uint32_t>(lut_size)});
 
     // 11. Batch-import: the runtime drives the traversal itself through two aligned loader

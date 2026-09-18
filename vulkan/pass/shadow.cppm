@@ -51,7 +51,7 @@ export namespace vulkan::pass {
      * THE CONTENT IS ONE CALLBACK AND NOT AN ENVIRONMENT FACTORY, which is a correction this module's first draft
      * measured: recording a SECONDARY is not "build a draw state and draw". It is `vkBeginCommandBuffer` with an
      * INHERITANCE struct (whose rendering info names the depth format and no colour attachment), the cascade's push,
-     * the content, and `vkEndCommandBuffer` - and the begin info, the inheritance struct, the scene set, the live
+     * the content, and `vkEndCommandBuffer` - and the begin info, the inheritance struct, the scene block, the live
      * depth-bias dynamic state, the two-sided policy and the casters are ALL the renderer's facts. Splitting those
      * across a factory would leave this pass holding a draw state it cannot begin a command buffer with.
      */

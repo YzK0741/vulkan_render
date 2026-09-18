@@ -34,7 +34,7 @@ namespace vulkan::pass {
     }
 
     void transparent_pass::create(pass_context const&) {
-        // Nothing to build: no own set (everything is in the shared scene set) and no pipeline (the leaves name
+        // Nothing to build: no own set (everything is in the shared scene block) and no pipeline (the leaves name
         // theirs). See the scene pass.
     }
 
@@ -69,7 +69,7 @@ namespace vulkan::pass {
 
         // The leaves go into the frame slot's transparent secondary, with inheritance matching the instance
         // below: ONE colour attachment at 1x. A secondary does not inherit state from its primary, so it binds
-        // the shared scene set for itself - the same bind the scene pass's segments make.
+        // the shared scene block for itself - the same bind the scene pass's segments make.
         std::array<VkFormat, 1> const color_formats = {this->frame_.color_format};
         VkCommandBufferInheritanceRenderingInfo const inheritance =
             make_inheritance_rendering_info(color_formats.data(), 1, this->frame_.depth_format, VK_SAMPLE_COUNT_1_BIT);

@@ -16,7 +16,7 @@ module;
 module vulkan.pass.gbuffer_debug;
 
 import vulkan.constant_init;
-import vulkan.pipelines; // build_gbuffer_debug: the G-buffer set layout, the pipeline layout and the view pipeline
+import vulkan.pipelines; // build_gbuffer_debug: the view pipeline, and that is all the pass takes from the builder
 import utility;
 
 namespace vulkan::pass {

@@ -1,4 +1,4 @@
-// The clustered-light sort's implementation: the shared scene set, the 1D dispatch over the cluster grid and
+// The clustered-light sort's implementation: the shared scene block, the 1D dispatch over the cluster grid and
 // the two buffer barriers that publish its writes. Moved out of `runtime::record_cluster_pass` and
 // `core::make_cluster_pipeline` UNCHANGED in behaviour - the same single set bound at index 0, the same 64-wide
 // workgroup, the same `(count + 63) / 64` group count and the same two COMPUTE_SHADER -> FRAGMENT_SHADER buffer

@@ -7,7 +7,7 @@
  *
  * WHY THIS MODULE EXISTS. In this renderer a pass's inputs and outputs used to BE descriptor sets - the
  * G-buffer set was the interface between the G-buffer pass, the lighting stage, the stochastic lighting chain
- * and the ray-traced shadow pass; the scene set was the substrate; each pass's private family was its own I/O.
+ * and the ray-traced shadow pass; the scene block was the substrate; each pass's private family was its own I/O.
  * That interface used to be written TWICE BY HAND and kept in agreement by discipline: the layout
  * in `vulkan/pipelines`, the descriptor writes in `vulkan/runtime`'s `ensure_*_descriptors()`. Both drifts
  * that pair can have are already in this project's history, and both were found by the validation layer

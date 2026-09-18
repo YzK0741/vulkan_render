@@ -179,8 +179,8 @@ namespace vulkan::pass {
 
         // ---- the resolved frame becomes the next frame's history ----
         // A copy rather than a ping-pong: the resolve necessarily writes the image the post chain reads, so
-        // the history has to be a separate image, and copying into it keeps every descriptor set in the frame
-        // stable (no per-frame rewrites). The barriers move the HDR target out to TRANSFER_SRC and back - the
+        // the history has to be a separate image, and copying into it keeps every heap slot in the frame
+        // stable (no per-frame descriptor rewrites). The barriers move the HDR target out to TRANSFER_SRC and back - the
         // post chain still finds it in COLOR_ATTACHMENT_OPTIMAL, exactly where it expects it.
         std::array<VkImageMemoryBarrier2, 2> copy_barriers = {};
         copy_barriers[0] = vulkan::color_attachment_to_transfer_transition; // HDR -> TRANSFER_SRC

@@ -152,7 +152,7 @@ namespace vulkan::pass {
 
         // ---- the accumulation becomes the next frame's history ----
         // A copy rather than a ping-pong, exactly like the GI resolve: the accumulation is what the lighting
-        // stage samples, so the history has to be a second image and copying into it keeps every descriptor set
+        // stage samples, so the history has to be a second image and copying into it keeps every heap slot
         // in the frame stable.
         std::array<VkImageMemoryBarrier2, 2> copy_barriers = {};
         copy_barriers[0] = vulkan::general_to_transfer_src_transition; // resolve: GENERAL -> TRANSFER_SRC

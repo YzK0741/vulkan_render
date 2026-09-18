@@ -17,9 +17,10 @@
  * that wants a different chain writes a module like this one; nothing in `vulkan.pass` or `vulkan.runtime` changes.
  *
  * WHERE IT IS HEADED: the knobs and their setters move here next (today they are
- * still the runtime's public API and forward into the passes), then the three descriptor families the runtime
- * still builds from a pass's set layout, and finally the CONSTRUCTION - at which point the runtime is handed the
- * chain through `set_pass_chain` instead of owning it, and the transitional `runtime::passes()` accessor goes away.
+ * still the runtime's public API and forward into the passes); the descriptor families that used to be built from a
+ * pass's set layout are gone with the heap (the runtime writes it and a pass owns only a pipeline); and finally the
+ * CONSTRUCTION - at which point the runtime is handed the chain through `set_pass_chain` instead of owning it, and
+ * the transitional `runtime::passes()` accessor goes away.
  */
 
 module;
@@ -133,8 +134,8 @@ export namespace vulkan {
          *
          * THE APP'S ONE DELIBERATE EXCEPTION, and it lives here rather than in the pass for a reason a declaration
          * cannot express: this application resolves TWO SIGNALS - the diffuse bounce and the glossy reflection -
-         * through the temporal pass's ONE pipeline and ONE set layout, and each needs its own list of images in the
-         * same seven slots. The pass does the first and calls back for the second (its frame's `record_reflection`),
+         * through the temporal pass's ONE pipeline, and each needs its own list of images in the same seven slots.
+         * The pass does the first and calls back for the second (its frame's `record_reflection`),
          * which is what keeps the chain contiguous.
          */
         /// @brief the reflection's per-image sets, on the temporal pass's layout (see record_reflection)

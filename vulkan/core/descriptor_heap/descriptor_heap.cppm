@@ -10,7 +10,7 @@ module; // the macro-using Vulkan header must not be imported into a module purv
  *
  * WHY IT IS A SUBMODULE OF core AND NOT A PASS OR A TOP-LEVEL MODULE: a heap is DEVICE-WIDE state. The
  * extension's own guidance is to bind one heap for the application's lifetime, because binding a new one costs
- * a pipeline flush; the descriptors in it are the same contract the shared scene set already describes; and
+ * a pipeline flush; the descriptors in it are the same contract the shared scene block already describes; and
  * every pass reads them. So it lives beside the vma allocator as something `core` owns and hands down, and it
  * deliberately knows NOTHING about what a binding means - set 0 binding 7 being the light UBO is core's
  * business, not this file's.
@@ -92,7 +92,7 @@ namespace vulkan {
          * @return whether both heaps exist and every entry point was published; a false leaves nothing behind,
          *         so a caller can keep running with descriptor sets exactly as before
          * @note the sizes asked for are the WORKING sizes this renderer needs rather than the device's maxima:
-         *       the scene set's descriptors are counted in hundreds of bytes, and the sampler heap's working
+         *       the scene block's descriptors are counted in hundreds of bytes, and the sampler heap's working
          *       size is the reserved range the embedded-sampler path requires.
          */
         [[nodiscard]] bool init(vma_allocator& allocator, VkDevice device, heap_limits const& limits) noexcept;

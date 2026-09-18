@@ -5,16 +5,17 @@
  * @brief The stochastic punctual lighting pass: a few sampled lights per pixel, one visibility ray each.
  * @defgroup vulkan_pass_megalights_trace Megalights Trace Pass
  *
- * WHAT IT OWNS: the frame's recording - the two transitions around its output image, the two shared sets it
- * binds (the scene set, which carries the camera, the light UBO and the cluster lists, and the G-buffer set,
- * which carries the surface it evaluates those lights for), the push block and the half-resolution dispatch -
- * plus its OWN pipeline layout and compute pipeline, built at create time from its declaration's push-block
- * size and the two shared set layouts its owner hands over: one compute dispatch over the same two sets every
- * traced pass binds, with the estimator's parameters in the push block.
+ * WHAT IT OWNS: the frame's recording - the two transitions around its output image, the two shared parts of the
+ * frame's heap it reads (the scene block, which carries the camera, the light UBO and the cluster lists, and the
+ * G-buffer images, which carry the surface it evaluates those lights for), the push block and the half-resolution
+ * dispatch - plus its OWN compute pipeline, the one shape every traced pass has, built at create time from its
+ * declaration's push-block size and its shader: one compute dispatch over the same heap slots every traced pass
+ * reads, with the estimator's parameters in the push block.
  *
- * WHAT IT DOES NOT OWN: any descriptor. Its output image is reached through the shared G-buffer set (binding
- * 16, the storage image; the lighting stage samples the same image at binding 17), so the only handles it
- * needs are the IMAGE it moves - which is what `pass_io::barrier_images` is for - and the two shared sets.
+ * WHAT IT DOES NOT OWN: any descriptor. Its output image is reached through the frame's heap (the storage slot the
+ * runtime publishes for it, and the lighting stage samples the same image through its own slot), so the only
+ * handles it needs are the IMAGE it moves - which is what `pass_io::barrier_images` is for - and the two shared
+ * parts of the heap above.
  *
  * THE ESTIMATOR ITSELF IS THE SHADER'S (shaders/megalights_trace.comp has the derivation and the UE
  * references); what lives here is the four values the renderer can decide per frame: how many samples, the

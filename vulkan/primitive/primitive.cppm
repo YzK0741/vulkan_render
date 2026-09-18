@@ -1,7 +1,7 @@
 // ============================================================================
 // module: vulkan.primitive  (peer of vulkan.scene_tree / vulkan.runtime - the
 //         GPU primitives that live in the scene-tree leaves, plus the GPU
-//         material / camera / light UBO records of the scene set; versioned in
+//         material / camera / light UBO records of the scene block; versioned in
 //         lock-step with vulkan.runtime, see that module's banner)
 // module version: 0.8.0  (independent of the app version in CMakeLists project(VERSION))
 //
@@ -127,7 +127,7 @@ namespace vulkan {
     /**
      * @ingroup vulkan_primitive
      * @brief light UBO content, layout matches the LightUBO block in shaders/shading.glsl and
-     *        shadow.vert (scene set binding 7): the per-cascade light-space view-projections, the
+     *        shadow.vert (scene block slot 7): the per-cascade light-space view-projections, the
      *        light direction, the cascade ranges/texel sizes, then the punctual light array
      * @note the directional sun is built from the scene bounds (enable_shadows) and the shadow
      *       map samples agree on its direction; punctual lights never cast shadows and ride the
@@ -443,7 +443,7 @@ namespace vulkan {
      */
     /**
      * @ingroup vulkan_primitive
-     * @brief index of one material in the runtime's material table (scene set binding 5).
+     * @brief index of one material in the runtime's material table (scene block slot 5).
      *        Strongly typed on the CPU side so it cannot be confused with the other GPU-table
      *        indices (instance/skin/morph bases); it is a single uint32_t, so push-constant /
      *        material-record byte layout is unchanged (memcpy/push use the raw bytes).
@@ -470,7 +470,7 @@ namespace vulkan {
         // (set 0 binding 6): the vertex shader reads instances.transforms[instance_base +
         // gl_InstanceIndex]. Only meaningful when flag bit0 is set; other draw strategies keep 0.
         uint32_t instance_base = 0;
-        // Start of THIS draw's previous-frame world matrices in the scene set's motion buffer
+        // Start of THIS draw's previous-frame world matrices in the scene block's motion buffer
         // (binding 13), where the vertex shader reads the matrix that turns into TAA's motion
         // vector. Every draw owns at least one slot (an instanced draw owns one per instance), and
         // the runtime advances them once per frame from the scene tree's world matrices - see
@@ -492,8 +492,9 @@ namespace vulkan {
      *        a subclass. Implements the scene tree's leaf concept (scene_tree::primitive).
      * @note
      *      - owns only its geometry (vma buffers); textures live in the runtime's shared texture
-     *        array and descriptor sets are owned by the runtime (single scene set, bound once)
-     *      - the runtime binds the pipeline and the scene set before calling draw()
+     *        array, and the descriptors that reach them are the runtime's (the frame's one heap,
+     *        bound once, holding this frame slot's scene block)
+     *      - the runtime binds the pipeline and the scene block before calling draw()
      *      - destroy() frees whatever the instance owns (vma buffers); call it before teardown
      *      - a scene tree node holds one of these as its primitive_leaf and update_world() feeds
      *        the accumulated world matrix straight into push.model (the push block layout is
@@ -528,7 +529,7 @@ namespace vulkan {
         std::string_view pipeline_name = {};
         // the material push constants (material_index + model)
         material_push_constants push = {};
-        // This leaf's slot in the runtime's previous-transform buffer (scene set binding 13), which
+        // This leaf's slot in the runtime's previous-transform buffer (scene block slot 13), which
         // is where the matrix it had one frame ago lives - the vertex shader reads it through
         // push.motion_base and the fragment stage turns the difference into TAA's motion vector.
         // no_motion_slot = not tracked frame to frame (an instanced draw, whose slots are filled
@@ -585,9 +586,9 @@ namespace vulkan {
         void set_world(glm::mat4 const& world) override;
 
         /**
-         * @brief record the primitive's draw commands (the shared scene descriptor set is bound
-         *        by the caller; the pipeline the primitive draws with and the command buffer to
-         *        record into both come from @p env)
+         * @brief record the primitive's draw commands (the frame's heap is bound by the caller, so
+         *        this frame slot's scene block is already reachable; the pipeline the primitive draws with and
+         *        the command buffer to record into both come from @p env)
          * @param env the recording session's render environment: the session command buffer,
          *        default / named pipeline binding (deduplicated) + the shared push-constant
          *        layout. One instance per recording thread, never shared across workers.
@@ -619,7 +620,7 @@ namespace vulkan {
      * @ingroup vulkan_primitive
      * @brief instanced primitive: draws the geometry of another primitive (source)
      *        instance_count times in ONE draw call; per-instance world transforms come from the
-     *        runtime's instance transform buffer (scene set binding 6, push flag bit0). Owns
+     *        runtime's instance transform buffer (scene block slot 6, push flag bit0). Owns
      *        nothing: geometry belongs to source, destroy() is a no-op, source must outlive it.
      */
     export class instanced_draw_primitive final : public primitive {

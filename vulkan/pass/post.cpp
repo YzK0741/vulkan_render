@@ -18,7 +18,7 @@ module;
 module vulkan.pass.post;
 
 import vulkan.constant_init;
-import vulkan.pipelines; // build_post: the set layout, the pipeline layout and the chain's two pipelines
+import vulkan.pipelines; // build_post: the chain's two pipelines, one per colour format the chain renders into
 import utility;
 
 namespace vulkan::pass {
@@ -266,8 +266,8 @@ namespace vulkan::pass {
 
     void post_bloom_pass::create(pass_context const&) {
         // NOTHING TO BUILD, and that is this pass's whole shape: it records with the chain's R16F pipeline, which
-        // the COMPOSITE owns - one set layout and one pipeline layout serve all five stages, so a copy per level
-        // would be five identical sets of objects and five chances to disagree about the push block. Its target
+        // the COMPOSITE owns - one push block serves all five stages (one shader, one `mode` lane), so a copy per
+        // level would be five identical objects and five chances to disagree about the push block. Its target
         // is an element of its declaration and its extent comes from the declaration's rule, which is why it has
         // no error path here either.
     }

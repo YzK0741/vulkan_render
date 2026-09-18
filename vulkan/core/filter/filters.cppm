@@ -24,11 +24,11 @@
  *
  *  * `pass_filter` - what a PASS's create step is given. It answers exactly the questions a pass cannot answer
  *    from its own declaration, and it is deliberately SMALLER than the runtime's own view: it hands out
- *    session-stable handles of resources the owner has registered (see `register_resource`), it allocates a
- *    descriptor set from the core's pool, and it exposes the allocator a pass that must create its own buffers
- *    or images needs. It does NOT hand out per-generation views: those change with every swapchain, and a pass
- *    receives them per frame through `resolved_io` - the framework's own per-image channel (see
- *    `resolved_io::own_per_image`).
+ *    session-stable handles of resources the owner has registered (see `register_resource`) and the allocator a
+ *    pass that must create its own buffers or images needs (the descriptor set it used to allocate from the
+ *    core's pool is gone with the heap). It does NOT hand out per-generation views: those change with every
+ *    swapchain, and a pass receives them per frame through `resolved_io` - the framework's own per-image channel
+ *    (see `resolved_io::own_per_image`).
  *
  * WHAT NEITHER FILTER FORWARDS: frame management (acquire/present/submit) and the core's own initialization
  * internals. Those are the runtime's, and a consumer that needs one of them needs the runtime, not a filter.
@@ -120,9 +120,9 @@ export namespace vulkan {
      * @ingroup vulkan_core_filters
      * @brief filtered view over a core, for a PASS's create step: the resources it declared, and nothing else
      *
-     * WHAT IT IS FOR, in one sentence: a pass must be able to build what it owns (its pipeline layout, its
-     * pipeline, its descriptor sets) and to NAME the resources its own declaration lists, without being handed
-     * the device root - which is what the runtime did on its behalf before this filter existed (see
+     * WHAT IT IS FOR, in one sentence: a pass must be able to build what it owns (its pipeline) and to NAME the
+     * resources its own declaration lists, without being handed the device root - which is what the runtime did
+     * on its behalf before this filter existed (see
      * `runtime::create_mask_bake` and `runtime::create_compute_skin`, whose bespoke input structs this replaces).
      *
      * THE LIFETIME CONTRACT, and it is the reason this class is small: what `resource()` answers at CREATE time

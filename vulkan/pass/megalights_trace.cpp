@@ -1,7 +1,7 @@
 // The stochastic punctual lighting pass's implementation: the first-use transition around its output image, the
 // half-resolution dispatch, the hand-off that makes the image readable by the lighting stage that adds it, and the
-// two things it owns outside a frame - its pipeline layout and its compute pipeline, built from
-// `megalights_trace.comp` and the two shared set layouts its owner hands over at create time.
+// one thing it owns outside a frame - its compute pipeline, built from `megalights_trace.comp`: every resource it
+// reads is a heap slot the frame binds once (see `megalights_trace.cppm`).
 //
 // THE ESTIMATOR'S PARAMETERS ARE THE PUSH BLOCK: a sample count, a minimum sample weight, a tmin and the two
 // bias terms the shader's `lerp` takes. The barrier reasoning is the two transitions around its output image
@@ -114,11 +114,12 @@ namespace vulkan::pass {
         VkImage const output = io.barrier_images[barrier_output].image;
 
         // The image is this pass's to place, and it needs TWO transitions per frame:
-        //  * UNDEFINED -> GENERAL here, because the pass writes it as a STORAGE image and its descriptor in the
-        //    shared G-buffer set declares GENERAL (the same statement the tracer makes about `gi_trace`);
+        //  * UNDEFINED -> GENERAL here, because the pass writes it as a STORAGE image and its heap descriptor
+        //    (the storage slot `publish_frame_resources` writes for this image) declares GENERAL - the same
+        //    statement the tracer makes about `gi_trace`;
         //  * GENERAL -> SHADER_READ at the end, because the deferred lighting stage samples the SAME image
-        //    through its binding 17 and that descriptor declares SHADER_READ - one image, two descriptors in one
-        //    set, and each is only accessed while the image is in the layout it names.
+        //    through its own heap slot and that descriptor declares SHADER_READ - one image, two heap descriptors,
+        //    and each is only accessed while the image is in the layout it names.
         VkImageMemoryBarrier2 to_general = vulkan::undefined_to_general_transition;
         to_general.image = output;
         VkDependencyInfo const first_use = make_image_dependency_info(1, &to_general);

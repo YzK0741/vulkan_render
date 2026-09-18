@@ -18,7 +18,7 @@
  * to near, which is the order alpha blending needs.
  *
  * WHAT IT USES, exactly like the scene pass and for the same reasons: the pipeline registry (through the draw
- * state the renderer builds), the shared scene set, the per-slot secondary command buffer, and the leaves
+ * state the renderer builds), the shared scene block, the per-slot secondary command buffer, and the leaves
  * themselves. Its input is the same `scene_frame` shape with three fields different (one segment, the forward
  * default, one colour format).
  */

@@ -28,9 +28,9 @@ namespace vulkan {
         this->runtime_ = &self;
         // ---- THE CHAIN, CONSTRUCTED HERE ----
         // The same passes the renderer used to construct for itself, in the order their create step must run in (the
-        // chain's order IS that order). THE G-BUFFER DEBUG VIEW COMES FIRST because it is a CREATE-ORDER constraint:
-        // the passes that bind the G-buffer set ask the owner for that set's LAYOUT while they are being created,
-        // and the first one to ask is what makes the runtime create it.
+        // chain's order IS that order). THE G-BUFFER DEBUG VIEW COMES FIRST, which used to be a CREATE-ORDER
+        // constraint - the passes that read the G-buffer asked the owner for the G-buffer set's layout while they
+        // were being created. That is gone with the layouts: a pass builds only its own pipeline now.
         this->chain_.emplace<pass::gbuffer_debug_pass>();
         this->chain_.emplace<pass::shadow_pass>();
         this->chain_.emplace<pass::scene_pass>();

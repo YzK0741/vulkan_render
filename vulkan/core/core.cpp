@@ -56,7 +56,8 @@ namespace vulkan {
         //      the allocator exists: the heap is two buffers, the extension asks for ONE heap for the
         //      application's lifetime (binding a new one costs a pipeline flush), and every pass reads the
         //      descriptors in it. A failure - no entry points, an allocation, an address that misses the required
-        //      alignment - logs and leaves the renderer on descriptor sets, which is what the false return means.
+        //      alignment - logs and leaves the renderer without a binding model, which is what the false return
+        //      means: the heap is the only one it has, so it cannot render without it.
         if (this->descriptor_heap_limits.max_resource_size != 0) {
             if (this->descriptor_heaps.init(this->vma, this->device, this->descriptor_heap_limits)) {
                 // ---- THE SLOT GRID, RESERVED FIRST BECAUSE ITS BASE IS FIXED (see core.cppm's heap_slots), and
@@ -118,10 +119,10 @@ namespace vulkan {
                 this->heap_material_table_offset = this->descriptor_heaps.reserve(1u, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
                 utility::log("descriptor heap: layout reserved (texture array at {}, material table at {})", this->heap_texture_array_offset, this->heap_material_table_offset);
 
-                // ---- THE SCENE SET'S PER-SLOT BLOCK (see core.cppm): one descriptor per set-0 binding, per slot.
+                // ---- THE SCENE BLOCK'S PER-SLOT BLOCK (see core.cppm): one descriptor per set-0 binding, per slot.
                 //      The strides differ by KIND (a buffer descriptor is smaller than an image one), so the offsets
                 //      are computed once here rather than derived from a binding number later, and the block is
-                //      reserved in BYTES. The scene set is per frame slot, and the mapping will select the slot with
+                //      reserved in BYTES. The scene block is per frame slot, and the mapping will select the slot with
                 //      VK_DESCRIPTOR_MAPPING_SOURCE_HEAP_WITH_PUSH_INDEX_EXT - one pushed block offset per frame
                 //      instead of one pipeline per slot.
                 VkDeviceSize const descriptor_alignment = this->descriptor_heaps.limits().resource_alignment != 0 ? this->descriptor_heaps.limits().resource_alignment : 8u;
@@ -148,14 +149,14 @@ namespace vulkan {
                     cursor += stride_of(binding);
                 }
                 this->heap_scene_slot_stride = ((cursor + descriptor_alignment - 1u) / descriptor_alignment) * descriptor_alignment;
-                this->heap_scene_set_base = this->descriptor_heaps.reserve_bytes(this->heap_scene_slot_stride * MAX_FRAMES_IN_FLIGHT, descriptor_alignment);
+                this->heap_scene_block_base = this->descriptor_heaps.reserve_bytes(this->heap_scene_slot_stride * MAX_FRAMES_IN_FLIGHT, descriptor_alignment);
                 utility::log("descriptor heap: scene set block reserved ({} slots x {} B at {}, {} bindings placed, base+{} = {})",
                              MAX_FRAMES_IN_FLIGHT,
                              this->heap_scene_slot_stride,
-                             this->heap_scene_set_base,
+                             this->heap_scene_block_base,
                              this->heap_scene_binding_offset.size(),
                              this->heap_scene_slot_stride,
-                             this->heap_scene_set_base + this->heap_scene_slot_stride * MAX_FRAMES_IN_FLIGHT);
+                             this->heap_scene_block_base + this->heap_scene_slot_stride * MAX_FRAMES_IN_FLIGHT);
                 // THE SAMPLERS COME LAST BECAUSE THE HEAP DID NOT EXIST WHEN THEY WERE MADE: create_samplers()
                 // ran earlier in this constructor and kept the create infos (core.cppm's shared_sampler_infos),
                 // and a heap sampler descriptor IS such a create info - the driver creates the sampler inside the

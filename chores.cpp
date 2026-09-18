@@ -167,10 +167,10 @@ namespace chores {
         load_and_create_pipeline(runtime, shaders_dir, "unlit", "pbr.vert.spv", "unlit.frag.spv");
 
         {
-            // The post chain is a PASS PAIR now (vulkan.pass.post): the composite owns the post set layout, the
-            // pipeline layout and the chain's two pipelines, and the four bloom levels record with them. So the
-            // app REGISTERS the two shaders the pass builds from (post.vert's synthetic triangle and post.frag,
-            // whose `mode` lane selects the stage) and the pass does the rest in create_passes() below.
+            // The post chain is a PASS PAIR now (vulkan.pass.post): the composite owns the chain's two pipelines,
+            // and the four bloom levels record with them. So the app REGISTERS the two shaders the pass builds
+            // from (post.vert's synthetic triangle and post.frag, whose `mode` lane selects the stage) and the pass
+            // does the rest in create_passes() below.
             //
             // THE SAMPLERS ARE THE DEVICE ROOT'S (`core::create_samplers`), so there is nothing to create here any
             // more - the app registers the two shaders the post chain's passes build from.
@@ -180,19 +180,18 @@ namespace chores {
             load_shader(shaders_dir, "post.frag.spv", fragment_code);
             runtime.register_shader("post.vert.spv", vertex_code);
             runtime.register_shader("post.frag.spv", fragment_code);
-            // ... and FXAA's, whose pass builds its own pipeline layout around the post set layout the composite
-            // owns - which is why this registration sits HERE, before create_passes(), and not after it: the pass
-            // is created with every other pass now, and the ordering constraint the old make_fxaa_pipeline() call
-            // needed is gone with the call.
+            // ... and FXAA's, whose pass builds its own pipeline from its fragment shader and post.vert - which is
+            // why this registration sits HERE, before create_passes(), and not after it: the pass is created with
+            // every other pass now, and the ordering constraint the old make_fxaa_pipeline() call needed is gone
+            // with the call.
             load_shader(shaders_dir, "fxaa.frag.spv", fragment_code);
             runtime.register_shader("fxaa.frag.spv", fragment_code);
         }
 
         {
             // The shadow pass is a PASS (vulkan.pass.shadow): the app REGISTERS its two shaders and the pass builds
-            // the depth-only pipeline itself, against the scene pipeline layout the context hands it and the
-            // context's depth format - which is why there is no make_* here any more. Optional: without the
-            // pipeline the scene simply renders without shadows.
+            // the depth-only pipeline itself, from them and the context's depth format - which is why there is no
+            // make_* here any more. Optional: without the pipeline the scene simply renders without shadows.
             std::vector<unsigned char> vertex_code;
             std::vector<unsigned char> fragment_code;
             load_shader(shaders_dir, "shadow.vert.spv", vertex_code);
@@ -206,8 +205,8 @@ namespace chores {
             // lights into the screen-tile x depth-slice grid the shading stage then reads. Optional -
             // without it (or with [render] clustered_lights = false) shade_surface() loops every
             // active light, which is the brute-force reference the clustered path is verified on.
-            // IT IS A PASS: the app registers the shader and the pass builds its own pipeline layout and
-            // compute pipeline from it (see vulkan.pass.cluster) - create_passes() below runs that step, and
+            // IT IS A PASS: the app registers the shader and the pass builds its own compute pipeline from it (see
+            // vulkan.pass.cluster) - create_passes() below runs that step, and
             // the pass logs its own outcome. It has to be registered HERE, before that call, because a pass
             // created before its shader exists builds nothing and says so.
             std::vector<unsigned char> compute_code;
@@ -229,23 +228,23 @@ namespace chores {
                 utility::log("gbuffer pipeline disabled: {}", gbuffer_result.error());
             } else {
                 // The debug view is a PASS (vulkan.pass.gbuffer_debug): the app registers its two shaders and the
-                // pass builds the G-buffer set LAYOUT, its pipeline layout and its pipeline. The samplers those
-                // declarations choose between are the device root's now (`core::create_samplers`).
+                // pass builds its pipeline, which is all it owns. The samplers those declarations
+                // choose between are the device root's now (`core::create_samplers`).
                 load_shader(shaders_dir, "post.vert.spv", vertex_code);
                 load_shader(shaders_dir, "gbuffer_debug.frag.spv", fragment_code);
                 runtime.register_shader("post.vert.spv", vertex_code);
                 runtime.register_shader("gbuffer_debug.frag.spv", fragment_code);
                 // The deferred lighting stage is a PASS (vulkan.pass.deferred): the app REGISTERS the two
-                    // shaders it builds from and the pass builds its own pipeline layout and pipeline - from the
-                    // two shared set LAYOUTS the context hands it, which is why one register call for each
-                    // replaces the old `make_deferred_pipeline(vertex_code, fragment_code)` call here.
+                    // shaders it builds from and the pass builds its own pipeline from them, which is why one
+                    // register call for each replaces the old `make_deferred_pipeline(vertex_code, fragment_code)`
+                    // call here.
                     load_shader(shaders_dir, "post.vert.spv", vertex_code);
                     load_shader(shaders_dir, "deferred.frag.spv", fragment_code);
                     runtime.register_shader("post.vert.spv", vertex_code);
                     runtime.register_shader("deferred.frag.spv", fragment_code);
                     // TAA resolve (deferred-only). IT IS A PASS TOO: the app registers the two shaders and the
-                    // pass builds its own set layout, pipeline layout and pipeline (see vulkan.pass.taa) - the
-                    // create_passes() call below is what runs that step, for every pass at once. The vertex
+                    // pass builds its own pipeline from them (see vulkan.pass.taa) - the create_passes() call
+                    // below is what runs that step, for every pass at once. The vertex
                     // stage is post.vert's synthetic triangle, the same one the debug view and the post chain use.
                     //
                     // NOTE WHERE THESE TWO REGISTRATIONS SIT: they used to be in the ELSE branch of the deferred
@@ -265,8 +264,8 @@ namespace chores {
             // and `runtime::megalights_active()` then keeps the frame from recording the pass (so the knob-off
             // frame is byte-identical by construction: the gate's scenarios were verified to that).
             //
-            // IT IS A PASS: the app registers the shader and the pass builds its own pipeline layout and compute
-            // pipeline from it (see vulkan.pass.megalights_trace) - `create_passes()` below runs that step.
+            // IT IS A PASS: the app registers the shader and the pass builds its own compute pipeline
+            // from it (see vulkan.pass.megalights_trace) - `create_passes()` below runs that step.
             std::vector<unsigned char> megalights_code;
             load_shader(shaders_dir, "megalights_trace.comp.spv", megalights_code);
             runtime.register_shader("megalights_trace.comp.spv", megalights_code);
@@ -279,7 +278,7 @@ namespace chores {
 
             // Ray-traced sun shadows: one ray per pixel against the scene's acceleration structures. IT IS A
             // PASS, so its shaders have to be registered BEFORE create_passes() below - the pass builds its own
-            // pipeline layout and ray-tracing pipeline from them (see vulkan.pass.rt_shadow), and a pass created
+            // ray-tracing pipeline from them (see vulkan.pass.rt_shadow), and a pass created
             // before its shaders exist builds nothing and says so. Optional, and the builder refuses on a device
             // without a ray-tracing pipeline: without it the cascaded shadow maps keep running.
             std::vector<unsigned char> rt_shadow_raygen_code;
@@ -330,12 +329,10 @@ namespace chores {
             load_shader(shaders_dir, "heap_probe.frag.spv", heap_probe_fragment_code);
             runtime.register_shader("heap_probe.frag.spv", heap_probe_fragment_code);
 
-            // ... and now that every pass's and every job's shaders are registered, run the create steps.
-            // This is the ONE call that builds what the passes and the jobs own (their set layouts, pipeline
-            // layouts, pipelines and their own descriptor sets), and it happens here rather than inside each
-            // block above because one of them must be created AFTER its shaders exist and the shared set
-            // layouts do. Each object logs its own outcome.
-            // THE PASSES ARE CREATED BY THE APPLICATION NOW: main() hands the chain over (render_start_demo) and then calls
+            // ... and now that every pass's and every job's shaders are registered, the pipelines can be built.
+            // This block is where the SHADERS come from and nothing else: the ONE create step that builds what the
+            // passes and the jobs own (a pipeline each) runs in main(), after the application has handed its chain
+            // over (`render_start_demo`) - see `runtime::create_passes`, which logs each object's own outcome.
         }
     }
 

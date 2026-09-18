@@ -147,7 +147,7 @@ namespace vulkan {
         this->reset_image_generation_state();
         // (The furnace cube is a new image too - its level is part of the generation reset above.)
         // NOTE: the shadow resources (map layers + light UBO buffers) are created LAZILY, by
-        // ensure_shadow_resources() from ensure_scene_set(). The shadow map is a layered 2D array
+        // ensure_shadow_resources() from ensure_scene_heap_slots(). The shadow map is a layered 2D array
         // whose layer count is [render] shadow_cascades, and the app config that carries it is applied
         // after this constructor returns - creating them here would freeze the count at its default.
         // Everything between here and the first scene set works with them empty (the light-buffer
@@ -192,7 +192,7 @@ namespace vulkan {
 
     void runtime::init_scene_resources() {
         // Camera UBO: one buffer per frame slot, mapped for direct writes; all models reference
-        // these buffers through the shared scene set, so one memcpy per frame replaces the old
+        // these buffers through the shared scene block, so one memcpy per frame replaces the old
         // per-primitive per-frame UBO updates
         camera_ubo initial = {};
         init_utils::create_host_buffers(this->vulkan_core,
@@ -454,7 +454,7 @@ namespace vulkan {
         }
         this->shadow_allocated_layers = this->shadow_cascades;
 
-        // Light UBO (scene set binding 7): one buffer PER FRAME SLOT (host-visible, mapped), so
+        // Light UBO (scene block slot 7): one buffer PER FRAME SLOT (host-visible, mapped), so
         // a frame being rendered never shares the buffer the next frame rewrites. CPU-side
         // content lives in light_state; the frame loop memcpys it into the paced slot's buffer
         // (pace_and_acquire) - see the member docs for the concurrency rationale.
@@ -500,11 +500,11 @@ namespace vulkan {
         }
 
         /**
-         * @brief write ONE per-slot binding of the scene set into every slot's heap block
+         * @brief write ONE per-slot binding of the scene block into every slot's heap block
          *
          * THE MIGRATION'S BUFFER PATTERN, in one place: a heap descriptor for a buffer IS its address range, and a
          * per-slot binding's entry must name THAT slot's buffer - so this walks the per-slot vector, takes each
-         * buffer's device address and writes it at `heap_scene_set_base + slot * slot_stride + offset[binding]` (all
+         * buffer's device address and writes it at `heap_scene_block_base + slot * slot_stride + offset[binding]` (all
          * three numbers reserved by core, see core.cppm). The heap is the only path now, so "the heap is not in use"
          * is a startup failure rather than a quiet fall back to a descriptor set.
          */
@@ -580,8 +580,8 @@ namespace vulkan {
         write_heap_scene_buffer(this->vulkan_core, this->cluster_count_buffers, core::heap_slots::cluster_counts, static_cast<VkDeviceSize>(vulkan::max_cluster_count) * sizeof(uint32_t), VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
         write_heap_scene_buffer(this->vulkan_core, this->cluster_index_buffers, core::heap_slots::cluster_indices, static_cast<VkDeviceSize>(vulkan::max_cluster_count) * vulkan::cluster_light_capacity * sizeof(uint32_t), VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
         write_heap_scene_buffer(this->vulkan_core, this->camera_buffers, core::heap_slots::scene_camera, sizeof(camera_ubo), VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
-        // ... and the rest of the per-frame arrays, from the same place and with the SAME sizes the scene set
-        // writes them with (see ensure_scene_set's write_buffer_binding calls): motion (binding 13), skin (9) and
+        // ... and the rest of the per-frame arrays, from the same place and with the SAME sizes the scene block
+        // writes them with (see ensure_scene_heap_slots's write_buffer_binding calls): motion (binding 13), skin (9) and
         // morph (10), each a two-slot array whose slot is the frame's. Bound here rather than in the per-slot loop
         // because a heap descriptor is an ADDRESS: the buffers are allocated once, so their addresses do not
         // change per frame, and only the CONTENTS are rewritten (see the per-frame slot rule in runtime.cppm).
@@ -590,7 +590,7 @@ namespace vulkan {
         write_heap_scene_buffer(this->vulkan_core, this->morph_buffers, core::heap_slots::morph_data, static_cast<VkDeviceSize>(vulkan::scene_morph_capacity) * sizeof(float), VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
         // THE INSTANCE TRANSFORM TABLE (set 0 binding 6) is the odd one: a SINGLE buffer rather than one per frame
         // slot (see runtime.cppm's member), so it takes ONE grid slot instead of a two-slot array - which is what
-        // heap_slots::instance_transforms reserved. Written from the same size the scene set gives it.
+        // heap_slots::instance_transforms reserved. Written from the same size the scene block gives it.
         if (this->vulkan_core.descriptor_heaps.ready() && this->vulkan_core.heap_grid_offset != VK_WHOLE_SIZE) {
             auto const* const instance_table_detail = this->vulkan_core.vma.get_buffer_detail(this->instance_buffer.handle());
             if (instance_table_detail != nullptr) {
@@ -603,7 +603,7 @@ namespace vulkan {
         }
     }
 
-    void runtime::ensure_scene_set() {
+    void runtime::ensure_scene_heap_slots() {
         if (!this->cluster_count_buffers.empty()) {
             return; // the scene's heap slots are already written (the first primitive asked for them)
         }
@@ -1217,8 +1217,8 @@ namespace vulkan {
             // the G-buffer depth clears to the far plane (1.0) - but unlike the old forward path's
             // main depth, its contents must SURVIVE the instance: the lighting stage, the transparent
             // pass, the TAA resolve and the debug view all read this image later in the same
-            // submission (binding 3 of the G-buffer set). STORE_OP_DONT_CARE would leave the contents
-            // undefined, which is exactly what those four read.
+            // submission (the G-buffer depth heap slot, which all four of them read). STORE_OP_DONT_CARE would
+            // leave the contents undefined, which is exactly what those four read.
             VkRenderingAttachmentInfo const depth_attachment = make_depth_attachment_info(vk.gbuffer_depth_image_views[image_index], VK_ATTACHMENT_STORE_OP_STORE);
             VkRenderingInfo const rendering_info = make_rendering_info(flags, {{0, 0}, vk.swap_chain_extent}, gbuffer_attachments.data(), static_cast<uint32_t>(gbuffer_attachments.size()), &depth_attachment);
             vkCmdBeginRendering(command_buffer, &rendering_info);
@@ -2082,7 +2082,7 @@ namespace vulkan {
     // replaced it is a RUN of elements (`render_target::count`) - the declaration now claims every cascade layer
     // the map can hold and the resource table answers how many it HAS this frame, which is the cascade knob's
     // (`ensure_shadow_resources`). What is left here is what the pass genuinely cannot know: which secondaries to
-    // record into, and what a caster's draw state is (the scene set, the live depth-bias state, the two-sided
+    // record into, and what a caster's draw state is (the scene block, the live depth-bias state, the two-sided
     // policy, the secondary's own begin info) - so that arrives as a callback, and the map's edge with it.
     bool runtime::record_shadow_cascade(void* const owner, VkCommandBuffer const secondary, uint32_t const cascade_index, VkPipeline const pipeline) {
         runtime* const self = static_cast<runtime*>(owner);
@@ -2264,7 +2264,7 @@ namespace vulkan {
         // fullscreen pass setting a zero-width viewport because it was left out - is gone by construction.
     }
 
-    // Depth-only shadow-pass content: bind the shared scene set (the light UBO binding 7) +
+    // Depth-only shadow-pass content: bind the shared scene block (the light UBO binding 7) +
     // the shadow pipeline, apply the live depth bias and draw every scene-tree leaf (the whole
     // scene casts shadows). Pure bind/push/draw commands - the caller owns the barriers and
     // the depth-only rendering instance around it. Recorded inline today; stage 2 records the
@@ -2917,7 +2917,7 @@ namespace vulkan {
         }
         // NOT published: `top_level_structure`. It is an acceleration structure, and `resolved_binding` carries
         // the three handles a set write and a barrier take - a device address is neither. Whoever needs it asks
-        // the runtime for it today (see the scene set's binding 16), and a table entry that could not carry the
+        // the runtime for it today (see the scene block's binding 16), and a table entry that could not carry the
         // handle would be a claim this type cannot make.
     }
 
@@ -3084,7 +3084,7 @@ namespace vulkan {
     }
 
     // THE TRANSPARENT PASS'S RESOLVER IS GONE TOO (S3), for the same reason as the scene pass's: two declared
-    // targets, the shared scene set and a full-frame extent, all of them resolved from the declaration. Its gate
+    // targets, the shared scene block and a full-frame extent, all of them resolved from the declaration. Its gate
     // - "nothing blended this frame" - is the pass's FEATURE ("transparent", answered by `frame_transparent`
     // being empty in `feature_active`), which is the frame's content rather than the declaration's shape.
 
@@ -4046,7 +4046,7 @@ namespace vulkan {
     void runtime::set_shadow_map_size(uint32_t const size) noexcept {
         // Startup-only: everything that consumes the size (the layered image + its views + the
         // descriptor, the depth pass rendering instance, the pipeline viewport, the light UBO texel
-        // size and the fit) is built from it when the scene set is first created, so a change after
+        // size and the fit) is built from it when the scene block is first created, so a change after
         // that cannot take effect - say so instead of pretending otherwise.
         if (this->pass_ready("shadow") || !this->shadow_images.empty()) {
             utility::log("runtime: set_shadow_map_size({}) ignored - the shadow resources already exist (set it before the scene import)", size);
@@ -4122,7 +4122,7 @@ namespace vulkan {
         // Only meaningful once the startup is complete: the app applies the config to the runtime
         // BEFORE the pipelines exist (main sets the toggles, chores then creates the pipelines), so
         // warning there would claim "TAA has no effect" one line above "TAA pipeline
-        // created". The scene's resources exist once `ensure_scene_set` has run, i.e. once the first primitive
+        // created". The scene's resources exist once `ensure_scene_heap_slots` has run, i.e. once the first primitive
         // (or the first recorded frame) has asked for them - which is the moment every optional pipeline exists.
         if (this->cluster_count_buffers.empty()) {
             return;
@@ -4208,11 +4208,11 @@ namespace vulkan {
     }
 
     // THE CLUSTERED-LIGHT SORT'S RESOLVER IS GONE (S3), and it needed nothing but the mechanism: its two barrier
-    // BUFFERS come from the frame's resource table (per-frame-slot instance), its shared scene set from the owner,
+    // BUFFERS come from the frame's resource table (per-frame-slot instance), its shared scene block from the owner,
     // its pipeline from the PASS (which owns it), its extent from the declaration's `none` rule and its push block
     // from nowhere - it has none. Its old gates are answered by the two mechanisms that own those questions: "the
     // pipeline exists" is `pass.pipeline()` (a null pipeline is what the generic resolution fails on), "the
-    // buffers are there" is the resource table, "the scene set is there" is the shared-set rule, and "the grid was
+    // buffers are there" is the resource table, "the scene block is there" is the shared-set rule, and "the grid was
     // computed this frame" is the pass's own `frame_.cluster_count == 0` guard, which its `record` already had.
 
     // Tighten the directional shadow frustum to the camera's own view frustum every frame. One
@@ -4361,8 +4361,8 @@ namespace vulkan {
         }
         this->shadow_cascades = clamped;
         ++this->shadow_content_version; // a different cascade count refits the splits
-        // Growing past the layers we own has to rebuild the images; the descriptor set is rewritten
-        // afterwards because binding 8 holds their array view. Shrinking keeps the layers (no second
+        // Growing past the layers we own has to rebuild the images; the heap slot is rewritten
+        // afterwards because it holds their array view. Shrinking keeps the layers (no second
         // rebuild when the user cycles the combo, and the spare ones simply go unused).
         if (!this->shadow_images.empty() && clamped > this->shadow_allocated_layers) {
             vkDeviceWaitIdle(this->vulkan_core.device);
@@ -4783,7 +4783,7 @@ namespace vulkan {
                 return nullptr;
             }
         }
-        this->ensure_scene_set();
+        this->ensure_scene_heap_slots();
 
         auto result = std::make_unique<normal_draw_primitive>();
 
@@ -4876,7 +4876,7 @@ namespace vulkan {
         if (count == 0 || this->instance_mapped == nullptr || !source.is_valid()) {
             return nullptr;
         }
-        this->ensure_scene_set();
+        this->ensure_scene_heap_slots();
 
         // The instance buffer is one shared region; THIS primitive gets the slice starting at
         // instance_cursor (mat4 units). Writing only its own slice keeps several instanced

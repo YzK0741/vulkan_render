@@ -25,7 +25,7 @@
  * chain's is LINEAR over 2D). The shared IMAGE and BUFFER handles
  * (the IBL cubes and the BRDF LUT, the bindless texture array, the top level structure) are NOT here yet, and
  * deliberately: this layer has learned that its shape is discovered by a consumer, and the consumer that will
- * need them is whichever writes the scene set through a declaration. Inventing the table before that would
+ * need them is whichever writes the scene block through a declaration. Inventing the table before that would
  * guess at its keys.
  */
 

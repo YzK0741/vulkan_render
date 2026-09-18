@@ -79,7 +79,7 @@ namespace vulkan::pipelines {
     /// array), which collapses the triangles a material's alphaMode MASK cuts out and writes the expanded
     /// vertices a bottom level structure is then built from - see shaders/mask_bake.comp
     export std::expected<compute_pipeline_owned, std::string> build_mask_bake(VkDevice device, std::span<unsigned char const> compute_shader_code);
-    /// the compute skinning pass: the scene set's per-joint matrices - see
+    /// the compute skinning pass: the scene block's per-joint matrices - see
     /// shaders/compute_skin.comp
     export std::expected<compute_pipeline_owned, std::string> build_compute_skin(VkDevice device, std::span<unsigned char const> compute_shader_code);
     /// the clustered-light sort (shaders/light_cluster.comp): heap-native, and NO push constants
@@ -374,9 +374,10 @@ namespace vulkan::pipelines {
         return out;
     }
 
-    // The SHARED two-set compute builder: the shape several traced passes have in common - the camera block and
-    // the light UBO in the scene set (plus the top level structure at binding 16 when the device has ray
-    // tracing), the stored surface in the G-buffer set - so the caller's only variable is the push block size.
+    // The SHARED builder every traced pass uses (its name still says `two_set`, from the two sets it used to
+    // declare): the shape several traced passes have in common - the camera block and the light UBO in the scene
+    // block (plus the top level structure at binding 16 when the device has ray tracing), the stored surface in
+    // the G-buffer images - so the caller's only variable is the push block size.
     // (Its old name, build_rt_shadow, is gone with the ray-query shadow pass: the shadow traces through a real
     // ray-tracing PIPELINE now, which is a different builder below.)
     std::expected<vk_pipeline, std::string> build_heap_probe_graphics(VkDevice const device, VkFormat const colour_format, std::span<unsigned char const> const vertex_code, std::span<unsigned char const> const fragment_code) {

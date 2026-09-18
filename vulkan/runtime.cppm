@@ -210,7 +210,7 @@ namespace vulkan {
         // same degradation policy for the texture array: when scene_texture_capacity distinct
         // images are in use, later slots fall back to the white element (0) with a one-time log
         bool texture_overflow_logged = false;
-        // per-instance transforms for instanced primitives (scene set binding 6): one mat4 per
+        // per-instance transforms for instanced primitives (scene block slot 6): one mat4 per
         // instance, host-visible. The buffer is ONE shared region split into per-instanced-
         // primitive slices: make_instanced_primitive() appends its transforms at instance_cursor
         // (mat4 units), hands the slice start to the new primitive via push.instance_base, and
@@ -224,7 +224,7 @@ namespace vulkan {
         std::vector<vk_buffer> pass_upload_buffers = {};
         void* instance_mapped = nullptr;
         uint32_t instance_cursor = 0;
-        // previous-frame world matrices (scene set binding 13): ONE buffer per frame slot, host
+        // previous-frame world matrices (scene block slot 13): ONE buffer per frame slot, host
         // visible, scene_motion_capacity mat4s each - the same per-slot rule as the skin and morph
         // buffers, so the frame being rendered never shares the buffer the next frame rewrites.
         // Every leaf owns a slice of it (an instanced draw owns one slot per instance and fills them
@@ -234,7 +234,7 @@ namespace vulkan {
         std::vector<void*> motion_mapped = {};
         std::vector<glm::mat4> motion_previous = {};
         uint32_t motion_cursor = 0;
-        // per-joint skin matrices (scene set binding 9): ONE buffer per frame slot, like the
+        // per-joint skin matrices (scene block slot 9): ONE buffer per frame slot, like the
         // camera UBO — each slot's scene set always points at its own buffer, so a frame being
         // rendered never shares the buffer the next frame rewrites. scene_skin_capacity mat4s
         // each, host-visible; indices 0-3 are the identity block (unskinned fallback),
@@ -242,7 +242,7 @@ namespace vulkan {
         // reference their block via material_push_constants::skin_base
         std::vector<vk_buffer> skin_buffers = {};
         std::vector<void*> skin_mapped = {};
-        // morph data (scene set binding 10): ONE buffer per frame slot, like the skin matrices.
+        // morph data (scene block slot 10): ONE buffer per frame slot, like the skin matrices.
         // scene_morph_capacity floats each, host-visible. The caller writes per-primitive blocks
         // (morph deltas + weights) through morph_scratch() and points primitives at them via
         // material_push_constants::morph_* fields
@@ -451,7 +451,7 @@ namespace vulkan {
         /// @brief the frame's answer when the debug view did NOT record: clear the HDR target, so the frame the post
         ///        chain samples is defined (a black frame) instead of half-written
         void clear_hdr_for_missing_gbuffer_set(VkCommandBuffer command_buffer);
-        /// @brief resolve the deferred lighting pass's frame: the two shared sets, the frame's scene target,
+        /// @brief resolve the deferred lighting pass's frame: the two shared blocks, the frame's scene target,
         ///        the pass's own 88-byte push block and the extent its declaration's rule produces
         /// @return false when this frame cannot run it (no target generation, no pipeline)
         /// @brief the two per-image input transitions the lighting stage's push block names (the three
@@ -746,7 +746,7 @@ namespace vulkan {
         // shadow"). Defaults on.
         bool shadow_enabled = true;
 
-        // ---- directional shadow mapping (scene set binding 7 light UBO + binding 8 shadow map) ----
+        // ---- directional shadow mapping (scene block slot 7 light UBO + binding 8 shadow map) ----
         // Shadow map edge length in texels ([render] shadow_map_size). A MEMBER, not a constant,
         // because M7 surfaced it as a config knob - every user of it (the layered image, the depth
         // pass's rendering instance + pipeline viewport, the light UBO's texel size and the fit)
@@ -780,7 +780,7 @@ namespace vulkan {
         // full_scene_shadow_leaf_limit draw a culled subset instead of every leaf - say so once
         // instead of silently changing behavior
         bool shadow_heuristic_logged = false;
-        // Light UBO (scene set binding 7): ONE host-visible buffer per frame slot, like the
+        // Light UBO (scene block slot 7): ONE host-visible buffer per frame slot, like the
         // camera UBO - each slot's scene set points at its own buffer, so the per-frame host
         // write into the paced slot's copy can never race a frame still in flight on the other
         // slot. CPU-side light_state mirrors the content: enable_shadows() fills it once,
@@ -1227,7 +1227,7 @@ namespace vulkan {
         /**
          * @ingroup vulkan_runtime
          * @brief write every tracked leaf's PREVIOUS world matrix into this frame slot's
-         *        previous-transform buffer (scene set binding 13), then refresh the stored copies to
+         *        previous-transform buffer (scene block slot 13), then refresh the stored copies to
          *        the matrices the frame about to be recorded will draw with
          *
          * Runs once per frame from begin_recording(), straight after the scene tree's world matrices
@@ -1295,7 +1295,7 @@ namespace vulkan {
         // nothing changes, and the log has no trace to explain it. Each message is emitted at most
         // once per session, keyed by the feature name.
         std::vector<std::string> warned_features = {};
-        void ensure_scene_set();                                          // (lazily) create the shadow map and the clustered-light buffers, and write their heap slots
+        void ensure_scene_heap_slots();                                   // (lazily) create the shadow map and the clustered-light buffers, and write their heap slots
         void write_light_and_shadow_bindings();                           // write the light UBO and the shadow map into each frame slot's heap block
         material_id register_material(primitive_create_info const& info); // upload textures into the array, append a material_record, return its index
 
@@ -1671,7 +1671,7 @@ namespace vulkan {
         /**
          * @ingroup vulkan_runtime
          * @brief record the depth-only shadow-pass drawing content into @p command_buffer:
-         *        bind the shared scene set + shadow pipeline, set the live depth bias, draw
+         *        bind the shared scene block + shadow pipeline, set the live depth bias, draw
          *        every scene leaf. The caller frames it (already inside the shadow rendering
          *        instance, depth-only).
          * @note extracted from record_main_drawcalls() so the same content can be recorded
@@ -1693,7 +1693,7 @@ namespace vulkan {
          */
         [[nodiscard]] bool instanced_world_aabb(primitive const& leaf, glm::vec3& wmin, glm::vec3& wmax) const;
         /// @brief record ONE cascade's content into its secondary: the begin (with the depth-only inheritance), the
-        ///        cascade index's push, the scene set, the live bias state and every caster - the frame's callback
+        ///        cascade index's push, the scene block, the live bias state and every caster - the frame's callback
         /// @return whether the secondary was recorded (a failed begin must not be executed)
         static bool record_shadow_cascade(void* owner, VkCommandBuffer secondary, uint32_t cascade_index, VkPipeline pipeline);
         /// @brief the frame loop's scheduler, handed to the pass so one task per cascade records a secondary
@@ -1799,7 +1799,7 @@ namespace vulkan {
         /**
          * @ingroup vulkan_runtime
          * @brief record one contiguous slice of the main-pass leaves into @p command_buffer:
-         *        bind the shared scene set, then draw the leaves of @p leaves (a sub-range of
+         *        bind the shared scene block, then draw the leaves of @p leaves (a sub-range of
          *        frame_visible). When @p draw_skybox the skybox background is drawn first so
          *        the background stays ordered before the scene (segment 0 only); later
          *        segments are pure scene.
@@ -1887,8 +1887,8 @@ namespace vulkan {
             VkCommandBuffer command_buffer = VK_NULL_HANDLE;
             std::span<primitive const* const> leaves = {};
             // Color attachment formats of the instance this secondary is recorded into, in
-            // attachment order: one entry (the HDR target) for the forward pass, the G-buffer set
-            // when the opaque pass writes the G-buffer. Held by value because the task outlives the
+            // attachment order: one entry (the HDR target) for the forward pass, the four G-buffer
+            // attachments when the opaque pass writes the G-buffer. Held by value because the task outlives the
             // call that builds it (it is moved into the task pool).
             std::array<VkFormat, vulkan::gbuffer_pass_attachment_count> color_formats = {};
             uint32_t color_count = 0;                    // formats in use (1 forward, 4 G-buffer: surface targets + HDR)
@@ -2684,7 +2684,7 @@ namespace vulkan {
 
         /**
          * @ingroup vulkan_runtime
-         * @brief upload the scene-wide skin matrices (scene set binding 9) into the frame slot
+         * @brief upload the scene-wide skin matrices (scene block slot 9) into the frame slot
          *        paced by the last pace_and_acquire(): the caller fills the buffer layout
          *        [identity block (4 mat4s) | per-skin joint blocks] and calls this once per frame
          *        AFTER pace_and_acquire(); primitives reference their block start via
@@ -2752,7 +2752,7 @@ namespace vulkan {
         /**
          * @ingroup vulkan_runtime
          * @brief append an instanced_draw_primitive: draws @p source's geometry once per transform
-         *        in ONE draw call per frame (per-instance matrices in scene set binding 6)
+         *        in ONE draw call per frame (per-instance matrices in scene block slot 6)
          * @param source any primitive of this runtime (its geometry is drawn transforms.size() times;
          *        it must stay in the runtime's primitive list while the instanced primitive is drawn)
          * @param transforms one world matrix per instance (fully places the source geometry)

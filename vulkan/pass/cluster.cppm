@@ -6,7 +6,7 @@
  *        slice grid the shading stages then read.
  * @defgroup vulkan_pass_cluster Clustered-Light Sort Pass
  *
- * WHAT IT OWNS: its pipeline layout and its compute pipeline (built at create time from the shared scene set
+ * WHAT IT OWNS: its pipeline layout and its compute pipeline (built at create time from the shared scene block
  * layout and its own shader - the first compute pipeline in this tree that came out of `vulkan.core`, where
  * `core::make_cluster_pipeline` built it against the core's own scene pipeline layout); the bind of the shared
  * scene set; the one-dimensional dispatch over the cluster grid; and the TWO BUFFER BARRIERS that make its
@@ -20,7 +20,7 @@
  * reads the count from its own frame - the same split as the scene pass's leaves.
  *
  * WHAT IT DOES NOT OWN: the two cluster buffers themselves (the renderer allocates them per frame slot, and
- * they live in the shared scene set as bindings 11 and 12) and the grid's dimensions, which the renderer derives
+ * they live in the shared scene block as bindings 11 and 12) and the grid's dimensions, which the renderer derives
  * from the swapchain extent once per frame.
  */
 
@@ -47,7 +47,7 @@ export namespace vulkan::pass {
      *
      * One number, and it is the frame's: the grid comes from the extent, the slice count is the shader's own,
      * and the two buffers arrive through `resolved_io::barrier_buffers` because the pass orders them without
-     * binding them (they are the shared scene set's bindings 11 and 12).
+     * binding them (they are the shared scene block's bindings 11 and 12).
      */
     struct cluster_frame {
         /// `tiles_x * tiles_y * cluster_slice_count`, i.e. the number of work items (one cluster each)

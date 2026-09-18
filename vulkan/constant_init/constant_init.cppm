@@ -711,9 +711,9 @@ export namespace vulkan {
     /** @brief depth attachment -> SHADER_READ_ONLY_OPTIMAL, sampled read (the shadow map back to the
      *         main pass, and the G-buffer depth to everything that reconstructs from it).
      * @note BOTH consumer stages are named: the G-buffer images have had a COMPUTE consumer since the
-     *       screen-space GI passes started reading the stored surface directly (see
-     *       build_gbuffer_debug, whose set layout declares FRAGMENT|COMPUTE for the same reason), and
-     *       a layout transition has to name every stage that reads the image afterwards. */
+     *       screen-space GI passes started reading the stored surface directly (shaders/megalights_trace.comp
+     *       and megalights_temporal.comp name the gbuffer slots from a compute stage), and a layout transition
+     *       has to name every stage that reads the image afterwards. */
     inline constexpr VkImageMemoryBarrier2 shadow_map_sampling_transition = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
         .pNext = nullptr,

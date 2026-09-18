@@ -8,10 +8,10 @@
  * WHY THEY ARE ONE MODULE AND FIVE PASSES. They are one module because they are one shader: `post.frag` declares
  * ONE push constant block and selects its stage with a `mode` lane (0 bright-pass prefilter, 1 downsample,
  * 2 composite, 3 FXAA), so the block's SHAPE is shared and belongs next to the passes that push it - not in the
- * renderer, where it lived while the renderer owned the recordings. They are five passes because the framework
- * hands a pass ONE descriptor set per shared owner, and each of the five stages binds a DIFFERENT set of the post
- * family (the prefilter reads the HDR target, downsample L reads level L-1, the composite reads all four levels
- * plus the GI image and the G-buffer depth and normal).
+ * renderer, where it lived while the renderer owned the recordings. They are five passes because each of the five
+ * stages reads a DIFFERENT set of the post images (the prefilter reads the HDR target, downsample L reads level L-1,
+ * the composite reads all four levels plus the GI image and the G-buffer depth and normal), and each reaches its own
+ * through the frame's heap: a shader names the image slot the stage pushes.
  *
  * WHAT THE COMPOSITE OWNS, and it is the whole post chain's GPU material: the TWO pipelines the
  * chain records with - one per colour format the chain renders into, because a pipeline's declared colour format

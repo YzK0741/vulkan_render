@@ -163,7 +163,7 @@ export namespace vulkan::ray_tracing {
         [[nodiscard]] bool attempted() const noexcept;
         /// @brief whether both structures exist, i.e. whether anything can be traversed
         [[nodiscard]] bool ready() const noexcept;
-        /// @brief this slot's top level structure, or `VK_NULL_HANDLE` (the scene set's binding 16)
+        /// @brief this slot's top level structure, or `VK_NULL_HANDLE` (the scene block's binding 16)
         [[nodiscard]] VkAccelerationStructureKHR handle(uint32_t frame_slot) const noexcept;
         /**
          * @brief the size this slot's top level structure was created with (see top_level_structure::structure_size)

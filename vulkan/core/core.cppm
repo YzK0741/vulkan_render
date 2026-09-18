@@ -44,8 +44,8 @@ namespace vulkan {
 
     /**
      * @ingroup vulkan_core
-     * @brief agreed flat scene descriptor set layout, shared by all pipelines (see shaders/pbr.frag):
-     *        set 0 binding 0 = CameraUBO (uniform buffer; one per frame slot, each slot's set
+     * @brief agreed flat layout of the scene block, shared by every pipeline (see shaders/pbr.frag):
+     *        set 0 binding 0 = CameraUBO (uniform buffer; one per frame slot, each slot's block
      *              points at its own - static, no per-frame descriptor writes),
      *              binding 1 = sampler2D textures[] (runtime array, partially bound + non-uniform index),
      *              binding 2/3/4 = prefiltered env / irradiance / BRDF LUT (combined image samplers),
@@ -63,8 +63,9 @@ namespace vulkan {
      *              binding 13 = mat4 previous world matrices[] (one per motion slot; the vertex stage
      *              reads its own entry so the fragment stage can build TAA's motion vector for a
      *              MOVING object, not only for camera motion)
-     * @note hardcoded instead of parsed from SPIR-V: the indexed layout is flat, so pipelines
-     *       skip descriptor / push constant parsing and share one layout object
+     * @note hardcoded instead of parsed from SPIR-V: the indexed layout is flat, so pipelines skip
+     *       descriptor / push constant parsing and every stage shares this one binding contract, which the
+     *       frame's heap carries
      */
     export constexpr uint32_t scene_texture_capacity = 128;
     // material_push_constants: 6 uints + aligned mat4 = 96 bytes, see vulkan/scene_tree/scene_tree.cppm
@@ -454,23 +455,23 @@ namespace vulkan {
         VkDeviceSize heap_texture_array_offset = VK_WHOLE_SIZE;
         VkDeviceSize heap_material_table_offset = VK_WHOLE_SIZE;
         /**
-         * @brief THE SCENE SET'S PER-SLOT BLOCK, and the point of it is that the whole set migrates at once
+         * @brief THE SCENE BLOCK'S PER-SLOT BLOCK, and the point of it is that the whole block migrates at once
          *
          * @note MEASURED, and it is why there is no half-way state: mapping ONE binding (the material table, the
          *       simplest kind there is) leaves the stage reading the heap for EVERY binding it declares, so the
          *       unmapped ones come back garbage and the frame is black with validation silent. A stage is either
          *       fully on the heap or not on it at all - so the block below holds one descriptor per set-0 binding,
-         *       per frame slot, and the mapping covers the whole set.
+         *       per frame slot, and the mapping covers the whole block.
          *
          * @note ONE DESCRIPTOR PER SET-0 BINDING, at `heap_scene_binding_offset[binding]` inside the slot's block:
          *       the strides differ by KIND (a buffer descriptor is smaller than an image one), so the offsets are
          *       computed once here rather than derived from the binding number later. The per-SLOT part matters
-         *       because the scene set is per frame slot (the camera and light UBOs, the visibility images, the
+         *       because the scene block is per frame slot (the camera and light UBOs, the visibility images, the
          *       TLAS and the instance table are all rewritten per slot), and the mapping selects the slot with
          *       VK_DESCRIPTOR_MAPPING_SOURCE_HEAP_WITH_PUSH_INDEX_EXT - one pushed block offset per frame, instead
          *       of one pipeline per slot.
          */
-        VkDeviceSize heap_scene_set_base = VK_WHOLE_SIZE;
+        VkDeviceSize heap_scene_block_base = VK_WHOLE_SIZE;
         VkDeviceSize heap_scene_slot_stride = 0;
         /// @brief the offset of set-0 binding b inside a slot's block, or VK_WHOLE_SIZE when the heap has no slot for it
         std::array<VkDeviceSize, 18> heap_scene_binding_offset = {};
@@ -762,7 +763,7 @@ namespace vulkan {
             float depth_bias_clamp = 0.0f) const;
 
         // The clustered-light-culling compute pipeline is NOT here any more: the CLUSTER PASS owns it
-        // (vulkan.pass.cluster builds it through vulkan.pipelines::build_cluster from the shared scene set
+        // (vulkan.pass.cluster builds it through vulkan.pipelines::build_cluster from the shared scene block
         // layout). `core::make_cluster_pipeline` built it against the core's own scene pipeline layout, which a
         // pass cannot own - and a pipeline only that pass names is that pass's to build and to release.
 
