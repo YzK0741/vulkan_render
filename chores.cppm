@@ -191,6 +191,11 @@ namespace chores {
             float outer_cone_deg = 30.0f; // spot: hard cutoff half-angle (degrees)
         };
         light_slot point_lights[4] = {};
+        // Which slot the panel's punctual-light group is editing (0-based, clamped by the panel). The group
+        // draws ONE slot at a time - four slots of nine controls each was thirty-six rows of panel for a
+        // feature most frames leave off - so this index is what the "punctual light" combo writes and every
+        // widget of the group tests.
+        int active_light = 0;
         // clustered light culling (M5): checkbox mirrored into the runtime every frame
         // (runtime::set_clustered_lights); false = the brute-force loop over every light
         bool clustered_lights = true;

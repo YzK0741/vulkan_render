@@ -399,11 +399,11 @@ namespace chores {
         // The sliders edit the radius (world units), the applied intensity and the sample count.
         {
             auto ssao = std::make_unique<vulkan::gui::checkbox_widget>("ssao", &bindings.ssao_enabled);
-            ssao->visible_when = [&runtime] { return runtime.feature_available("deferred") && runtime.feature_active("ssao"); }; // deferred-only, via the feature registry
+            ssao->visible_when = [&runtime] { return runtime.feature_available("deferred"); }; // deferred-only, via the feature registry
             panel.push_back(std::move(ssao));
             auto make_ssao_slider = [&](std::string label, float* value, float lo, float hi) {
                 auto slider = std::make_unique<vulkan::gui::slider_widget>(std::move(label), value, lo, hi);
-                slider->visible_when = [&runtime] { return runtime.feature_active("ssao"); };
+                slider->visible_when = [&bindings] { return bindings.ssao_enabled; };
                 panel.push_back(std::move(slider));
             };
             make_ssao_slider("ssao radius", &bindings.ssao_radius, 0.05f, 3.0f);
@@ -416,25 +416,25 @@ namespace chores {
         // with it, which is why it sits next to the switch rather than in the config alone.
         {
             auto megalights = std::make_unique<vulkan::gui::checkbox_widget>("megalights", &bindings.megalights_enabled);
-            megalights->visible_when = [&runtime] { return runtime.feature_available("megalights"); };
+            megalights->visible_when = [&bindings] { return bindings.megalights_enabled; };
             panel.push_back(std::move(megalights));
             auto samples = std::make_unique<vulkan::gui::slider_widget>("ml samples", &bindings.megalights_samples, 1.0f, 4.0f);
             auto ml_frames = std::make_unique<vulkan::gui::slider_widget>("ml history", &bindings.megalights_frames, 1.0f, 12.0f);
             auto ml_tol = std::make_unique<vulkan::gui::slider_widget>("ml tol", &bindings.megalights_history_tolerance, 0.0f, 0.5f);
             auto ml_bias = std::make_unique<vulkan::gui::slider_widget>("ml bias", &bindings.megalights_bias, 0.0f, 16.0f);
             auto ml_emitter = std::make_unique<vulkan::gui::slider_widget>("ml emitter", &bindings.megalights_light_angle, 0.0f, 0.1f);
-            ml_emitter->visible_when = [&runtime] { return runtime.feature_available("megalights"); };
+            ml_emitter->visible_when = [&bindings] { return bindings.megalights_enabled; };
             panel.push_back(std::move(ml_emitter));
-            ml_bias->visible_when = [&runtime] { return runtime.feature_available("megalights"); };
+            ml_bias->visible_when = [&bindings] { return bindings.megalights_enabled; };
             panel.push_back(std::move(ml_bias));
-            ml_tol->visible_when = [&runtime] { return runtime.feature_available("megalights"); };
+            ml_tol->visible_when = [&bindings] { return bindings.megalights_enabled; };
             panel.push_back(std::move(ml_tol));
-            ml_frames->visible_when = [&runtime] { return runtime.feature_available("megalights"); };
+            ml_frames->visible_when = [&bindings] { return bindings.megalights_enabled; };
             panel.push_back(std::move(ml_frames));
             auto ml_sigma = std::make_unique<vulkan::gui::slider_widget>("ml sigma", &bindings.megalights_spatial_sigma, 0.0f, 4.0f);
-            ml_sigma->visible_when = [&runtime] { return runtime.feature_available("megalights"); };
+            ml_sigma->visible_when = [&bindings] { return bindings.megalights_enabled; };
             panel.push_back(std::move(ml_sigma));
-            samples->visible_when = [&runtime] { return runtime.feature_available("megalights"); };
+            samples->visible_when = [&bindings] { return bindings.megalights_enabled; };
             panel.push_back(std::move(samples));
         }
         // render mode: pbr (lit) vs unlit (flat base color, no shading). Default-semantics leaves
@@ -485,7 +485,7 @@ namespace chores {
             // the knobs only matter while FXAA is on (and while the fxaa pipeline exists at all)
             auto make_fxaa_slider = [&](std::string label, float* value, float lo, float hi) {
                 auto slider = std::make_unique<vulkan::gui::slider_widget>(std::move(label), value, lo, hi);
-                slider->visible_when = [&runtime] { return runtime.feature_active("fxaa"); };
+                slider->visible_when = [&bindings] { return bindings.fxaa_enabled; };
                 panel.push_back(std::move(slider));
             };
             make_fxaa_slider("fxaa subpixel", &bindings.fxaa_subpixel, 0.0f, 1.0f);
@@ -502,7 +502,7 @@ namespace chores {
                 "gbuffer channel",
                 std::vector<std::string>{"albedo", "normal", "roughness", "metallic", "ao", "material id", "depth", "flags", "motion"},
                 &bindings.gbuffer_channel);
-            channel->visible_when = [&runtime] { return runtime.feature_active("gbuffer-debug"); };
+            channel->visible_when = [&bindings] { return bindings.gbuffer_debug; };
             panel.push_back(std::move(channel));
         }
         // TAA: the engine's anti-aliasing (there is no MSAA on a G-buffer), with the two
@@ -512,11 +512,11 @@ namespace chores {
         // ghosting).
         {
             auto taa = std::make_unique<vulkan::gui::checkbox_widget>("taa", &bindings.taa_enabled);
-            taa->visible_when = [&runtime] { return runtime.feature_available("taa") && runtime.feature_active("taa"); }; // deferred-only, via the feature registry
+            taa->visible_when = [&runtime] { return runtime.feature_available("taa"); }; // deferred-only, via the feature registry
             panel.push_back(std::move(taa));
             auto make_taa_slider = [&](std::string label, float* value, float lo, float hi) {
                 auto slider = std::make_unique<vulkan::gui::slider_widget>(std::move(label), value, lo, hi);
-                slider->visible_when = [&runtime] { return runtime.feature_active("taa"); };
+                slider->visible_when = [&bindings] { return bindings.taa_enabled; };
                 panel.push_back(std::move(slider));
             };
             make_taa_slider("taa history (static)", &bindings.taa_blend_static, 0.0f, 0.98f);
@@ -535,27 +535,71 @@ namespace chores {
         // ---- punctual lights (demo lights; see apply_point_lights): the widgets edit
         //      bindings.point_lights live and main() pushes the enabled set once per frame.
         //      Each slot is a point light or - with `spot` checked - a cone light -------
+        // WHICH SLOT THE GROUP BELOW EDITS: the combo doubles as the group's header, so "which light am I
+        // looking at" and "how tall is this group" are both answered here instead of by scrolling past
+        // thirty-six rows to find the one light that is on.
+        {
+            std::vector<std::string> light_items;
+            light_items.reserve(std::size(bindings.point_lights));
+            for (std::size_t i = 0; i < std::size(bindings.point_lights); ++i) {
+                light_items.push_back(std::format("punctual light {}", i + 1));
+            }
+            panel.push_back(std::make_unique<vulkan::gui::combo_widget>("punctual light", std::move(light_items), &bindings.active_light));
+        }
         for (std::size_t i = 0; i < std::size(bindings.point_lights); ++i) {
             gui_bindings::light_slot& slot = bindings.point_lights[i];
-            panel.push_back(std::make_unique<vulkan::gui::checkbox_widget>(
-                std::format("point light {}", i + 1), &slot.enabled));
-            panel.push_back(std::make_unique<vulkan::gui::vec3_widget>(
-                std::format("  position {}", i + 1), slot.position, 0.1f));
-            panel.push_back(std::make_unique<vulkan::gui::vec3_widget>(
-                std::format("  color {}", i + 1), slot.color, 0.02f));
-            panel.push_back(std::make_unique<vulkan::gui::slider_widget>(
-                std::format("  intensity {}", i + 1), &slot.intensity, 0.0f, 50.0f));
-            panel.push_back(std::make_unique<vulkan::gui::slider_widget>(
-                std::format("  range {}", i + 1), &slot.range, 0.1f, 100.0f));
-            // spot cone editing (ignored while the slot stays a point light)
-            panel.push_back(std::make_unique<vulkan::gui::checkbox_widget>(
-                std::format("  spot {}", i + 1), &slot.spot));
-            panel.push_back(std::make_unique<vulkan::gui::vec3_widget>(
-                std::format("  direction {}", i + 1), slot.direction, 0.1f));
-            panel.push_back(std::make_unique<vulkan::gui::slider_widget>(
-                std::format("  inner cone deg {}", i + 1), &slot.inner_cone_deg, 0.0f, 89.0f));
-            panel.push_back(std::make_unique<vulkan::gui::slider_widget>(
-                std::format("  outer cone deg {}", i + 1), &slot.outer_cone_deg, 1.0f, 89.0f));
+            // ONE SLOT AT A TIME, chosen by the combo above: every widget of every slot is built once (the
+            // panel is a fixed list), but a slot only draws while it is the selected one - four slots of nine
+            // controls each was thirty-six rows of panel for a feature most frames leave off, which buried
+            // everything below it. The cone knobs go one step further and appear only for a slot that is
+            // actually a spot, so an omni slot is seven rows and a cone slot ten.
+            auto const selected = [&bindings, i] { return bindings.active_light == static_cast<int>(i); };
+            auto const selected_spot = [&bindings, &slot, i] { return bindings.active_light == static_cast<int>(i) && slot.spot; };
+            {
+                auto w = std::make_unique<vulkan::gui::checkbox_widget>("  enabled", &slot.enabled);
+                w->visible_when = selected;
+                panel.push_back(std::move(w));
+            }
+            {
+                auto w = std::make_unique<vulkan::gui::vec3_widget>("  position", slot.position, 0.1f);
+                w->visible_when = selected;
+                panel.push_back(std::move(w));
+            }
+            {
+                auto w = std::make_unique<vulkan::gui::vec3_widget>("  color", slot.color, 0.02f);
+                w->visible_when = selected;
+                panel.push_back(std::move(w));
+            }
+            {
+                auto w = std::make_unique<vulkan::gui::slider_widget>("  intensity", &slot.intensity, 0.0f, 50.0f);
+                w->visible_when = selected;
+                panel.push_back(std::move(w));
+            }
+            {
+                auto w = std::make_unique<vulkan::gui::slider_widget>("  range", &slot.range, 0.1f, 100.0f);
+                w->visible_when = selected;
+                panel.push_back(std::move(w));
+            }
+            {
+                auto w = std::make_unique<vulkan::gui::checkbox_widget>("  spot", &slot.spot);
+                w->visible_when = selected;
+                panel.push_back(std::move(w));
+            }
+            {
+                auto w = std::make_unique<vulkan::gui::vec3_widget>("  direction", slot.direction, 0.1f);
+                w->visible_when = selected_spot;
+                panel.push_back(std::move(w));
+            }
+            {
+                auto w = std::make_unique<vulkan::gui::slider_widget>("  inner cone deg", &slot.inner_cone_deg, 0.0f, 89.0f);
+                w->visible_when = selected_spot;
+                panel.push_back(std::move(w));
+            }
+            {
+                auto w = std::make_unique<vulkan::gui::slider_widget>("  outer cone deg", &slot.outer_cone_deg, 1.0f, 89.0f);
+                w->visible_when = selected_spot;
+                panel.push_back(std::move(w));
+            }
         }
         // camera orbit target: dragging it moves what the camera looks at / orbits around
         // (camera.target is a glm::vec3, i.e. three contiguous floats; the runtime rebuilds the
