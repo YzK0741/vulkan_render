@@ -150,24 +150,28 @@ probes prove that a heap read and a heap draw both work, and no push is refused.
 
 Two candidates, with the experiment that separates them:
 
-* **The image index the shader is given may not be the image being captured.** Every per-swapchain-image
-  slot is computed from the pushed `heap_image_index` (`self->current_image_index` at recording time),
-  while the attachments come from `resolved_io`'s targets. If those two disagree, the passes render into
-  the real image and every sampling stage reads a *different* one - which is black for a one-frame
-  capture and would look exactly like this. **Experiment:** log `current_image_index` next to the
-  acquired image index once per frame, and dump the G-buffer albedo slot for both indices.
-* **The third lane may be one word longer than the stage declares - REFUTED, by measurement.** Appending
-  two lanes instead of three produced **six validation errors** and the same black hash. The three-lane
-  append is what validation accepts, so the push range is not the problem and the blocks do arrive.
+* **REFUTED: the pushed frame slot.** Forcing `heap_frame_slot` to a literal `0u` in `pbr.vert` - a slot the
+  runtime has certainly written for the captured frame - changed nothing. The lane arrives and the slot it
+  names is a valid one.
+* **REFUTED: the slot arithmetic.** The two sides agree, checked rather than assumed: a per-image array's
+  offset is the RAW image index (`gbuffer_albedo + image_index`, `core.cpp` writes image `i` at
+  `heap_slot_base + i`), while different arrays are `heap_image_capacity` (8) apart
+  (`bloom_l0 + level * heap_image_capacity`). `heap_image_slot(base)` and every shader site match that,
+  including the post chain's host-resolved lane.
 
-The second is a two-line change to try first, and neither needs the gate: a single
-`--capture-frames 1` run whose screenshot stops being black answers it.
+**What the measurements say instead.** The G-buffer debug view - which displays the stored surface and
+bypasses the lighting chain, TAA, FXAA and the post chain entirely - is black as well, with validation
+silent. So nothing downstream is at fault: **the scene pass writes nothing into the G-buffer.** That is
+where to look next, and the probes bound the search usefully: a heap-native draw with a heap-native
+fragment read demonstrably works, so the mechanism is proven and the fault is in the scene path's own
+inputs - the primitive's push block (model matrix), its geometry bindings, or the material/instance reads
+in `pbr.vert`/`gbuffer.frag`. The cheapest next probe is to read `pc.model` (or `gl_Position`) back the way
+`heap_probe.frag` reads its material, rather than to keep reasoning about the post chain.
 
 **The measurement worth carrying forward:** the black frame's hash is `dc5f6d66428c26d8…` - byte for byte
 the hash this migration recorded earlier as "a half-migrated frame renders nothing". It is a *uniform*
 image, which is why it survived every fix that changed what the frame does: it says the captured image
-received nothing, not that the frame is subtly wrong. So do not read it as "the frame is close"; read it
-as "find out which image the capture is looking at, and whether the draws put anything in it".
+received nothing, not that the frame is subtly wrong.
 
 ## How to finish and verify
 
