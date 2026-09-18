@@ -137,6 +137,13 @@ or the size the build sizes query reports - whichever the structures module alre
 same `rt_binding_written[frame_slot] != tlas` guard, at grid slot `heap_slots::tlas + frame_slot` - the two slots
 the TLAS has BECAUSE it is rebuilt every frame.
 
+THE SIZE IS ALREADY COMPUTED, in the module that builds the structures:
+`vulkan/acceleration_structure/acceleration_structure.cpp` sets `create.size = sizes.accelerationStructureSize`
+from `vkGetAccelerationStructureBuildSizesKHR` (two places, the single structure and the growable one). So the
+next step is a one-grep question - does that module publish the number it created the structure with? - and then
+the write above is three lines: the address query, the size, and `write_buffer` with
+`VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR`.
+
 ## What populating the IMAGE half needs (found by trying)
 
 A heap image descriptor carries a **`VkImageViewCreateInfo`, not a view** - the driver creates the view inside
