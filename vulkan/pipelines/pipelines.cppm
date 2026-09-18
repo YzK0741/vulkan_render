@@ -120,7 +120,7 @@ namespace vulkan::pipelines {
     /// at all - the shader reads the light UBO and writes the two cluster buffers through that set's bindings
     /// 11 and 12, which is why this builder takes no push size. It is the first compute pipeline in this module
     /// that came out of `vulkan.core` (where it was built against the core's own scene pipeline layout).
-    export std::expected<compute_pipeline_owned, std::string> build_cluster(VkDevice device, VkDescriptorSetLayout scene_layout, std::span<unsigned char const> compute_shader_code);
+    export std::expected<compute_pipeline_owned, std::string> build_cluster(VkDevice device, std::span<unsigned char const> compute_shader_code);
 
     /**
      * @brief the HEAP-NATIVE probe's pipeline: the first one in this renderer created the heap way
@@ -526,161 +526,13 @@ namespace vulkan::pipelines {
         return out;
     }
 
-    // The clustered-light sort: the shared scene set alone and NO push range, because the shader reads the
-    // light UBO and the cluster buffers through that set's own bindings (7, 11 and 12) and takes no constants.
-    // The pipeline layout is still this pass's OWN - built here from the set layout its owner hands over -
-    // rather than the core's scene pipeline layout, which is what the old `core::make_cluster_pipeline` used:
-    // the two are equivalent for this pipeline (same set layout, and the shader uses no push constants), and
-    // owning it is what lets the pass release it.
-    // THE SHARED SCENE SET, AS THE DESCRIPTOR HEAP SEES IT (see vulkan/core/descriptor_heap): the renderer's heap
-    // geometry, published once after the heap's scene block exists and read ONLY while a pipeline is created.
-    //
-    // WHY IT IS MODULE STATE RATHER THAN AN ARGUMENT: a mapping is per STAGE and is handed over inside
-    // vkCreate*Pipelines, which happens in a pass's create step - the one place that knows neither the heap's
-    // offsets nor the frame's slot. What a create step DOES know is which bindings its own SPIR-V declares, and
-    // that is all it passes (see scene_heap_stage_mapping).
-    export inline constexpr uint32_t scene_heap_binding_count = 18;
-
-    /// one binding of the shared scene set: WHERE its descriptor is in the heap, and whether the frame's pushed
-    /// index selects it
-    export struct scene_heap_binding {
-        /// true: the pushed slot index picks the entry (the per-frame part of the set); false: the offset IS it
-        bool per_slot = false;
-        /// per-slot: the base of the per-frame ARRAY; single: the descriptor's own offset
-        VkDeviceSize heap_offset = 0;
-        /// the SPIR-V kind the shader declares, which is what the mapping has to match
-        VkSpirvResourceTypeFlagsEXT resource_mask = 0;
-        /// a combined image sampler's sampler; null for image-only and for buffer kinds
-        VkSamplerCreateInfo const* embedded_sampler = nullptr;
-    };
-
-    /// every binding of the shared scene set, plus the stride between frame slots
-    export struct scene_heap_layout {
-        bool available = false;
-        /// the byte distance between one frame's block and the next frame's (see core::heap_scene_slot_stride)
-        VkDeviceSize slot_stride = 0;
-        std::array<scene_heap_binding, scene_heap_binding_count> bindings = {};
-    };
-
-    /// CALLER-OWNED storage for one stage's mapping: a builder declares this as a local and chains the info
-    /// block into its VkPipelineShaderStageCreateInfo. It is the caller's because `info.pMappings` points at
-    /// `entries`, which has to outlive the vkCreate*Pipelines call - a returned temporary would not.
-    /// @note the SOURCES are COPIES inside each entry's `sourceData` union (VkDescriptorMappingSourceDataEXT
-    ///       holds the source structs BY VALUE, not as pointers), so nothing here outlives the create call.
-    export struct scene_heap_stage_mapping_storage {
-        std::array<VkDescriptorSetAndBindingMappingEXT, scene_heap_binding_count> entries = {};
-        VkShaderDescriptorSetAndBindingMappingInfoEXT info = {};
-    };
-
-    namespace {
-        /// the published geometry: written once at startup, read only while a pipeline is being created
-        scene_heap_layout& scene_heap_layout_state() {
-            static scene_heap_layout state;
-            return state;
-        }
-    } // namespace
-
-    /// @brief publish the scene block's heap geometry (the runtime's, once, before anything is created)
-    export void set_scene_heap_layout(scene_heap_layout const& layout) noexcept {
-        scene_heap_layout_state() = layout;
-    }
-
-    /// @brief the mapping block for ONE stage of the shared scene set
-    /// @param declared_bindings the set-0 bindings THAT STAGE's SPIR-V declares (its own interface decides -
-    ///        measured per shader, see the binding maps in docs/), in any order
-    /// @param storage the caller's storage, which must outlive the vkCreate*Pipelines call
-    /// @return the info block to chain into the stage, or null when no scene block was published - in which case
-    ///         the descriptor-set path (the layout the pipeline was built from) stays authoritative
-    /// @note A STAGE MAPS ALL OF ITS DECLARATIONS OR NONE OF THEM. Mapping a subset leaves the unmapped
-    ///       declarations reading whatever the heap holds at offset 0: measured, a frame that mapped only the
-    ///       material table - valid address, zero validation messages - went black, mean 0.00 against 83.41. So
-    ///       the entries come from the shader's own list and never from "what this pass happens to use".
-    /// @note WHICH SLOT a stage reads is deliberately not in here. That is the pushed index
-    ///       (VK_DESCRIPTOR_MAPPING_SOURCE_HEAP_WITH_PUSH_INDEX_EXT, whose address is
-    ///       heapOffset + pushedValue * heapIndexStride), which is what lets ONE pipeline serve both frames in
-    ///       flight: a constant offset would need a pipeline per slot.
-    export VkShaderDescriptorSetAndBindingMappingInfoEXT const* scene_heap_stage_mapping(std::span<uint32_t const> const declared_bindings, scene_heap_stage_mapping_storage& storage) noexcept {
-        scene_heap_layout const& layout = scene_heap_layout_state();
-        if (!layout.available) {
-            return nullptr;
-        }
-        uint32_t count = 0;
-        for (uint32_t const binding : declared_bindings) {
-            if (binding >= scene_heap_binding_count) {
-                continue;
-            }
-            scene_heap_binding const& source = layout.bindings[binding];
-            if (source.resource_mask == 0) {
-                continue; // this binding has no heap copy yet (the image half is not wired: it needs embedded samplers)
-            }
-            VkDescriptorSetAndBindingMappingEXT& entry = storage.entries[count];
-            entry = VkDescriptorSetAndBindingMappingEXT{};
-            entry.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_AND_BINDING_MAPPING_EXT;
-            entry.descriptorSet = 0u;
-            entry.firstBinding = binding;
-            entry.bindingCount = 1u;
-            entry.resourceMask = source.resource_mask;
-            if (source.per_slot) {
-                VkDescriptorMappingSourcePushIndexEXT source_data = {};
-                source_data.heapOffset = static_cast<uint32_t>(source.heap_offset);
-                source_data.pushOffset = 0u; // the frame pushes one uint32 at offset 0 of the window (its slot index)
-                source_data.heapIndexStride = static_cast<uint32_t>(layout.slot_stride);
-                source_data.heapArrayStride = 0u;
-                source_data.pEmbeddedSampler = source.embedded_sampler;
-                entry.source = VK_DESCRIPTOR_MAPPING_SOURCE_HEAP_WITH_PUSH_INDEX_EXT;
-                entry.sourceData.pushIndex = source_data;
-            } else {
-                VkDescriptorMappingSourceConstantOffsetEXT source_data = {};
-                source_data.heapOffset = static_cast<uint32_t>(source.heap_offset);
-                source_data.heapArrayStride = 0u;
-                source_data.pEmbeddedSampler = source.embedded_sampler;
-                entry.source = VK_DESCRIPTOR_MAPPING_SOURCE_HEAP_WITH_CONSTANT_OFFSET_EXT;
-                entry.sourceData.constantOffset = source_data;
-            }
-            ++count;
-        }
-        if (count == 0u) {
-            return nullptr;
-        }
-        storage.info = VkShaderDescriptorSetAndBindingMappingInfoEXT{};
-        storage.info.sType = VK_STRUCTURE_TYPE_SHADER_DESCRIPTOR_SET_AND_BINDING_MAPPING_INFO_EXT;
-        storage.info.mappingCount = count;
-        storage.info.pMappings = storage.entries.data();
-        return &storage.info;
-    }
-
-    std::expected<compute_pipeline_owned, std::string> build_cluster(VkDevice const device, VkDescriptorSetLayout const scene_layout, std::span<unsigned char const> const compute_shader_code) {
+    // The clustered-light sort: NO set, NO layout and NO push range. Every stage of the frame is heap-native
+    // (see docs/descriptor_heap_handover.md), so this pipeline is created with VK_NULL_HANDLE and the heap flag;
+    // the shader reads the light UBO and the cluster buffers out of the scene block by slot, and the slot itself
+    // travels in the stage push block (shaders/heap_slots.glsl). Owning the pipeline is all that is left to own.
+    std::expected<compute_pipeline_owned, std::string> build_cluster(VkDevice const device, std::span<unsigned char const> const compute_shader_code) {
         using fail = std::unexpected<std::string>;
         compute_pipeline_owned out;
-
-        // THE MAPPING IS DECIDED FIRST, because it decides whether there is a pipeline layout AT ALL: a heap
-        // pipeline is created with VK_NULL_HANDLE (validation: "flags ... includes
-        // VK_PIPELINE_CREATE_2_DESCRIPTOR_HEAP_BIT_EXT while layout is not VK_NULL_HANDLE"), since the point of
-        // that flag is that the layout is NOT READ - the mappings are the interface. So the layout below is the
-        // fallback path, for a renderer that published no scene block, and it is what every pass not yet migrated
-        // still uses.
-        // THIS STAGE'S DESCRIPTORS COME FROM THE HEAP (see scene_heap_stage_mapping): the four buffers
-        // shaders/light_cluster.comp declares, which are exactly the ones the runtime keeps in the scene block.
-        static constexpr std::array<uint32_t, 4> declared_bindings = {0u, 7u, 11u, 12u};
-        scene_heap_stage_mapping_storage stage_mapping;
-        // NOT SWITCHED ON YET, and the reason is measured rather than assumed: this stage's mapping is complete
-        // and validation-clean, but the heap BIND it needs takes the whole command buffer with it (see
-        // runtime::begin_recording). One flag, because the migration's unit is the frame and not the pass: it
-        // goes true when every stage of the frame maps from the heap.
-        static constexpr bool map_from_heap = false;
-        VkShaderDescriptorSetAndBindingMappingInfoEXT const* const stage_mapping_info = map_from_heap ? scene_heap_stage_mapping(declared_bindings, stage_mapping) : nullptr;
-
-        if (stage_mapping_info == nullptr) {
-            VkPipelineLayoutCreateInfo pipeline_layout_info = {};
-            pipeline_layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-            pipeline_layout_info.setLayoutCount = 1;
-            pipeline_layout_info.pSetLayouts = &scene_layout;
-            pipeline_layout_info.pushConstantRangeCount = 0;
-            pipeline_layout_info.pPushConstantRanges = nullptr;
-            if (vkCreatePipelineLayout(device, &pipeline_layout_info, nullptr, &out.pipeline_layout) != VK_SUCCESS) {
-                return fail("cluster: pipeline layout creation failed");
-            }
-        }
 
         std::optional<vk_shader_module> const module = make_shader_module(compute_shader_code, device);
         if (!module.has_value()) {
@@ -691,24 +543,18 @@ namespace vulkan::pipelines {
         stage_info.stage = VK_SHADER_STAGE_COMPUTE_BIT;
         stage_info.module = **module;
         stage_info.pName = "main";
-        stage_info.pNext = stage_mapping_info;
 
-        // THE MAPPING IS ONLY READ IF THE PIPELINE ASKS FOR THE HEAP, and the flag that asks is a flags2 bit
-        // (0x1000000000, i.e. past the 32-bit `flags` field), so it reaches a classic create call through
-        // VkPipelineCreateFlags2CreateInfo. Validation names the failure exactly - "mappings ... but
-        // VK_PIPELINE_CREATE_2_DESCRIPTOR_HEAP_BIT_EXT is not set and the VkDescriptorSetLayout will be read
-        // instead" - and it cost one gate run to learn: without the flag the mapping is silently ignored, which
-        // is a frame that looks right and proves nothing. A stage with NO mapping is given no flag, so for it the
-        // set stays what its descriptors come from.
+        // THE HEAP FLAG IS WHAT MAKES A NULL LAYOUT LEGAL, and it is set unconditionally: this stage is
+        // heap-native, so its layout is VK_NULL_HANDLE and the flag is what validation demands for that.
         VkPipelineCreateFlags2CreateInfo pipeline_flags = {};
         pipeline_flags.sType = VK_STRUCTURE_TYPE_PIPELINE_CREATE_FLAGS_2_CREATE_INFO;
         pipeline_flags.flags = VK_PIPELINE_CREATE_2_DESCRIPTOR_HEAP_BIT_EXT;
 
         VkComputePipelineCreateInfo pipeline_info = {};
         pipeline_info.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-        pipeline_info.pNext = &pipeline_flags; // the flag is required by the null layout, mapping or not (VUID ...-11367)
+        pipeline_info.pNext = &pipeline_flags; // the heap flag rides in flags2 (its bit is past the 32-bit `flags` field)
         pipeline_info.stage = stage_info;
-        pipeline_info.layout = VK_NULL_HANDLE; // heap-native stages: a layout would contradict them (see docs) // null on the heap path, which is what the flag requires
+        pipeline_info.layout = VK_NULL_HANDLE; // heap-native: a layout would contradict the flag (VUID ...-11367)
 
         VkPipeline pipeline = VK_NULL_HANDLE;
         if (vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &pipeline) != VK_SUCCESS) {

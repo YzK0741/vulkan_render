@@ -210,8 +210,11 @@ namespace vulkan::gui {
         /**
          * @ingroup vulkan_gui
          * @brief set the panel's default window size, applied on first use (ImGuiCond_FirstUseEver)
-         *        so a later user resize or the persisted imgui_layout.ini overrides it
+         *        so a later resize within this session overrides it
          * @param width,height desired default size; pass 0 for either to keep ImGui's auto-size
+         * @note nothing outlives the run: the overlay disables ImGui's .ini persistence
+         *       (io.IniFilename = nullptr in gui.cpp), so these values are the size at the start of
+         *       every run and there is no file for a user resize to come back from
          */
         void set_default_size(float width, float height) noexcept;
 

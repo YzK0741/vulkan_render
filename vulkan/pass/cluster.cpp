@@ -88,12 +88,9 @@ namespace vulkan::pass {
             utility::log("clustered lights disabled: the owner has no {}", shader_name);
             return;
         }
-        VkDescriptorSetLayout const scene_layout = context.shared_set_layout != nullptr ? context.shared_set_layout(context.owner, 0) : VK_NULL_HANDLE;
-        if (scene_layout == VK_NULL_HANDLE) {
-            utility::log("clustered lights disabled: the owner has no scene set layout");
-            return;
-        }
-        auto built = pipelines::build_cluster(context.device, scene_layout, spirv);
+        // NO SET LAYOUT IS ASKED FOR: the pipeline is heap-native (a null layout plus the heap flag), so the
+        // pass's descriptors come from the frame's bound heap and not from a set handed over by the owner.
+        auto built = pipelines::build_cluster(context.device, spirv);
         if (!built) {
             utility::log("clustered lights disabled: {}", built.error());
             this->release_owned();

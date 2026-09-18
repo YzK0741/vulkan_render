@@ -216,6 +216,10 @@ extern "C" int utility_platform_ask_open_file(char const* title, char const* fil
         out[trimmed] = '\0';
         return 1;
     }
+    // every backend was missing (127 / ENOENT), or produced nothing usable: "nobody could ask", which the
+    // caller treats like a cancel. -Werror's -Wreturn-type wants this spelled out, and the loop above only
+    // covers the two working cases.
+    return -1;
 #else
     return -1; // no dialog backend on this platform: the caller falls back to its default model
 #endif

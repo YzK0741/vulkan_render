@@ -282,12 +282,13 @@ validation_layers = true
 # ---- [gui] debug overlay ----
 [gui]
 show = true   # show the Dear ImGui debug overlay by default (F1 toggles it at runtime)
-# Default debug-panel window size (0 = ImGui auto-size). It only applies on FIRST use:
-# a later drag - persisted in imgui_layout.ini next to the working directory - overrides it
-# (delete that file to get these values back). 560 is tall enough that the render-path
-# controls are visible without scrolling; the panel only offers the controls that can actually do
-# something this session (TAA/SSAO appear once the G-buffer pipelines exist, the FXAA knobs
-# once FXAA is on, ...) and says why in the log when something cannot run.
+# Default debug-panel window size (0 = ImGui auto-size). Nothing persists it any more - the overlay
+# sets io.IniFilename = nullptr, so no imgui_layout.ini is read or written - which means these values
+# apply at the start of EVERY run, and a drag only lasts the session. 560 is tall enough that the
+# render-path controls are visible without scrolling; the panel offers a control when the SESSION can
+# use it (TAA/SSAO/megalights as soon as their pipelines exist, even while their switch is off) and
+# puts the fine-tuning knobs behind the switch they tune, so a group collapses to one row when it is
+# off. It says why in the log when something cannot run at all.
 panel_width  = 420
 panel_height = 560
 

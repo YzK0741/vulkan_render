@@ -408,9 +408,13 @@ namespace chores {
             clustered->visible_when = [&runtime] { return runtime.feature_available("clustered"); }; // offered whenever the compute pass exists (it works in either path)
             panel.push_back(std::move(clustered));
         }
-        // screen-space ambient occlusion (M6): the deferred lighting stage traces the G-buffer, so
-        // the whole group (switch + its three knobs) is offered only while the deferred path is on.
-        // The sliders edit the radius (world units), the applied intensity and the sample count.
+        // screen-space ambient occlusion (M6): the deferred lighting stage traces the G-buffer, so the
+        // whole group (switch + its three knobs) is offered only in a session whose G-buffer pipelines
+        // exist - an AVAILABILITY question, which is what visible_when asks (a widget never gates on
+        // feature_active: that is the runner's per-frame "this stage ran", so gating on it made the group
+        // vanish the moment the user switched to unlit). The knobs then follow the switch's OWN state,
+        // which is what they are attached to. The sliders edit the radius (world units), the applied
+        // intensity and the sample count.
         {
             auto ssao = std::make_unique<vulkan::gui::checkbox_widget>("ssao", &bindings.ssao_enabled);
             ssao->visible_when = [&runtime] { return runtime.feature_available("deferred"); }; // deferred-only, via the feature registry
@@ -425,12 +429,18 @@ namespace chores {
             make_ssao_slider("ssao samples", &bindings.ssao_samples, 1.0f, 16.0f);
         }
         // stochastic punctual lighting: the shadows the point and spot lights never had (docs/megalights.md).
-        // Offered only when the chain exists, and mirrored into the runtime every frame by main like the rest.
+        // The SWITCH is offered whenever the chain exists this session (an availability fact, and NOT the
+        // switch's own value - see the note below); the knobs follow the switch. Mirrored into the runtime
+        // every frame by main like the rest.
         // The SAMPLE COUNT is the estimator's ray budget per half-resolution pixel: cost and noise both scale
         // with it, which is why it sits next to the switch rather than in the config alone.
         {
             auto megalights = std::make_unique<vulkan::gui::checkbox_widget>("megalights", &bindings.megalights_enabled);
-            megalights->visible_when = [&bindings] { return bindings.megalights_enabled; };
+            // the SWITCH is gated on AVAILABILITY, never on its own value: the checkbox writes the field its
+            // predicate reads, so gating it on bindings.megalights_enabled hides the only way back - the
+            // feature defaults off (app_config's render_settings::megalights, and the panel is the only UI
+            // that sets it), so the panel would offer megalights exactly never.
+            megalights->visible_when = [&runtime] { return runtime.feature_available("megalights"); };
             panel.push_back(std::move(megalights));
             auto samples = std::make_unique<vulkan::gui::slider_widget>("ml samples", &bindings.megalights_samples, 1.0f, 4.0f);
             auto ml_frames = std::make_unique<vulkan::gui::slider_widget>("ml history", &bindings.megalights_frames, 1.0f, 12.0f);
