@@ -1372,6 +1372,6 @@ export namespace vulkan::render_resource {
         .targets = shadow_targets,
         .barrier_images = {},
         .barrier_buffers = {},
-        .push = push_block{.offset = 96, .size = 4, .stages = stage_flag::vertex | stage_flag::fragment},
+        .push = push_block{.offset = 108, .size = 4, .stages = stage_flag::vertex | stage_flag::fragment},
     };
 } // namespace vulkan::render_resource

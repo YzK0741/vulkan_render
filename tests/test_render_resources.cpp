@@ -532,8 +532,13 @@ int main() {
         CHECK(rr::find(rr::resource_id::shadow_map)->count == 4);
         CHECK(rr::shadow_io.barrier_images.empty()); // each layer is moved through its own target
         CHECK(rr::shadow_io.push.has_value());
-        CHECK(rr::shadow_io.push->size == 4);    // the cascade index
-        CHECK(rr::shadow_io.push->offset == 96); // where the scene's own push block ends (scene_push_constant_size)
+        CHECK(rr::shadow_io.push->size == 4); // the cascade index
+        // AT 108, NOT 96: the scene's own push block ends at 96 (scene_push_constant_size), and the host appends
+        // THE HEAP INDEX LANES - three of them - at exactly that offset for every stage. The cascade used to be
+        // declared at 96, which put it UNDER the first lane: the shader read frame_slot as its cascade, the pass
+        // rendered every caster into the wrong cascade layer, and the lanes themselves were shifted. It rides
+        // after the third lane now, which is why this offset moved with it (see shaders/shadow.vert's block).
+        CHECK(rr::shadow_io.push->offset == 108); // scene_push_constant_size + three 4-byte heap index lanes
         CHECK(rr::shadow_io.push->stages == (rr::stage_flag::vertex | rr::stage_flag::fragment));
 
         // THE RUN'S OWN CHECKS: a run that reaches past its family is a declaration error ...

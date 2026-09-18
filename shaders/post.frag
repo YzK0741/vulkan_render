@@ -60,6 +60,13 @@ layout(push_constant) uniform PostPush {
     // THE HEAP INDICES (see heap_slots.glsl), at the END so every field above keeps its offset. The third one is
     // this chain's own: the five post passes each read a DIFFERENT image at what the set called `source_color`, so
     // the host names its ABSOLUTE grid slot per pass (base + image index) - one lane instead of a spec constant.
+    // FXAA'S TWO LANES, declared here even though this stage does not read them: the CPU pushes the WHOLE
+    // post_push_constants struct (28 bytes) and the host appends the three heap indices after it, so a block that
+    // stopped at `encode_gamma` (20 bytes) would read its lanes out of these two floats instead - which is what
+    // made the composite sample slot 0 instead of the HDR and left the frame black. A stage may ignore a member,
+    // but the layout up to the indices has to match the CPU struct.
+    float fxaa_subpixel;
+    float fxaa_edge_threshold;
     uint frame_slot;
     uint image_index;
     uint post_source_slot;

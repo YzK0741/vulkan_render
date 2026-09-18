@@ -3932,8 +3932,7 @@ namespace vulkan {
         // left of the renderer's knowledge is the table's CONTENTS (`publish_frame_resources`) and the frame's
         // constants, which is exactly the split this migration was for: a pass cannot reach a resource its
         // declaration does not name, and the renderer no longer knows which pass wants which image.
-        out.constants = this->frame_facts;
-        // THE PER-IMAGE TARGET DESCRIPTORS ARE (RE)WRITTEN EVERY FRAME, and that is a MEASURED requirement
+        out.constants = this->frame_facts; // THE PER-IMAGE TARGET DESCRIPTORS ARE (RE)WRITTEN EVERY FRAME, and that is a MEASURED requirement
         // rather than belt-and-braces: a heap IMAGE descriptor written while its image is still in
         // VK_IMAGE_LAYOUT_UNDEFINED - which is exactly what the creation loops do, in the same breath as
         // vkCreateImage - NEVER RESOLVES. Re-writing the SAME descriptor once the image has been transitioned
@@ -3991,6 +3990,7 @@ namespace vulkan {
         }
 
         bool const resolved = pass.resolve(this->make_resolve_context(), out);
+
         if (resolved) {
             this->verify_resource_table(pass, out);
         }
@@ -5268,8 +5268,8 @@ namespace vulkan {
             this->screenshot_requested = false;
             return;
         }
-        // The staging buffer and its mapping are vulkan.readback's; only the IMAGE side is this
-        // function's business (the layout transitions, the region, the format the caller will unpack).
+        // The staging buffer and its mapping are vulkan.readback's; only the IMAGE side is this function's
+        // business (the layout transitions, the region, the format the caller will unpack).
         auto const staged = this->readback_staging.stage_for_copy(static_cast<VkDeviceSize>(extent.width) * static_cast<VkDeviceSize>(extent.height) * 4u);
         if (!staged) {
             utility::log("screenshot: read-back staging buffer unavailable");
@@ -5278,9 +5278,9 @@ namespace vulkan {
         this->screenshot_staging_mapped = staged->mapped;
         this->screenshot_readback_extent = extent;
 
-        // The swapchain image is in COLOR_ATTACHMENT_OPTIMAL here (the composite pass just wrote
-        // it, and the overlay with it): COLOR_ATTACHMENT -> TRANSFER_SRC -> copy -> back to
-        // COLOR_ATTACHMENT, so end_recording's present_transition still sees the layout it expects.
+        // The swapchain image is in COLOR_ATTACHMENT_OPTIMAL here (the composite pass just wrote it, and the
+        // overlay with it): COLOR_ATTACHMENT -> TRANSFER_SRC -> copy -> back to COLOR_ATTACHMENT, so
+        // end_recording's present_transition still sees the layout it expects.
         std::array<VkImageMemoryBarrier2, 1> barriers = {vulkan::color_attachment_to_transfer_transition};
         barriers[0].image = vk.swap_chain_images[this->current_image_index];
         VkDependencyInfo dependency_info = make_image_dependency_info(1, barriers.data());
