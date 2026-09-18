@@ -148,30 +148,38 @@ scenarios and across every one of the fixes (`DC5F6D66428C26D8`). That is the st
 is a *data* problem now, not a binding one: the draws are legal, the heaps are bound and inherited, the
 probes prove that a heap read and a heap draw both work, and no push is refused.
 
-Two candidates, with the experiment that separates them:
+**What is measured away, all of it by experiment.** Take these as settled - do not re-derive them:
 
-* **REFUTED: the pushed frame slot.** Forcing `heap_frame_slot` to a literal `0u` in `pbr.vert` - a slot the
-  runtime has certainly written for the captured frame - changed nothing. The lane arrives and the slot it
-  names is a valid one.
-* **REFUTED: the slot arithmetic.** The two sides agree, checked rather than assumed: a per-image array's
-  offset is the RAW image index (`gbuffer_albedo + image_index`, `core.cpp` writes image `i` at
-  `heap_slot_base + i`), while different arrays are `heap_image_capacity` (8) apart
-  (`bloom_l0 + level * heap_image_capacity`). `heap_image_slot(base)` and every shader site match that,
-  including the post chain's host-resolved lane.
+* **The scene pass draws.** A one-shot diagnostic in `record_segment` printed `1 leaf/leaves, heap push
+  endpoint SET`: the pass iterates its leaves and the environment carries the endpoint.
+* **The pushed frame slot.** Forcing `heap_frame_slot` to a literal `0u` in `pbr.vert` changed nothing.
+* **The slot arithmetic.** Both sides agree: a per-image array steps by the RAW image index
+  (`gbuffer_albedo + image_index`; `core.cpp` writes image `i` at `heap_slot_base + i`), while different
+  arrays are `heap_image_capacity` (8) apart (`bloom_l0 + level * heap_image_capacity`).
+* **The push-lane length.** Two lanes instead of three produced six validation errors *and* the same hash.
+* **The push block layout.** 8 uints + `alignas(16) glm::mat4` = 96 = `scene_push_constant_size`, and the
+  shader's block is the same 8 uints then `mat4`, so the lanes land at 96/100 exactly as declared.
+* **The vertex stage, entirely.** With `gl_Position` computed by hand - no camera UBO at all - and the model
+  matrix replaced by the identity, the frame is *still* black. Geometry that cannot be mis-projected and
+  cannot be mis-placed still produces nothing.
+* **The image index, and the capture path.** Painting the post chain flat red changed the captured hash
+  (`90BC07F22EE6BBD2` against the black `DC5F6D66428C26D8`), and that red reached the capture *through*
+  `fxaa.frag`'s read of `display_texture[heap_slots_display_color + heap_image_index]`. So the index the
+  shaders are given is the image being captured, the capture reads the image the passes write, and the post
+  chain runs.
 
-**What the measurements say instead.** The G-buffer debug view - which displays the stored surface and
-bypasses the lighting chain, TAA, FXAA and the post chain entirely - is black as well, with validation
-silent. So nothing downstream is at fault: **the scene pass writes nothing into the G-buffer.** That is
-where to look next, and the probes bound the search usefully: a heap-native draw with a heap-native
-fragment read demonstrably works, so the mechanism is proven and the fault is in the scene path's own
-inputs - the primitive's push block (model matrix), its geometry bindings, or the material/instance reads
-in `pbr.vert`/`gbuffer.frag`. The cheapest next probe is to read `pc.model` (or `gl_Position`) back the way
-`heap_probe.frag` reads its material, rather than to keep reasoning about the post chain.
+**What that leaves.** The G-buffer debug view - which bypasses lighting, TAA, FXAA and the post chain -
+is black, so the G-buffer itself is black, and it stays black with a hand-projected identity model. The
+scene pass therefore rasterises nothing *visible* into it, and the surviving suspects are the fragment
+stage's own reads (the material record `push.material_index` names - note the graphics probe reads record
+0 of that same table as white) or the draws not reaching the target at all (they are recorded into
+secondaries). The next probe is to read back the material record the primitive names, and the G-buffer
+albedo target itself, exactly as `heap_probe.frag` reads its material: the probes are the one instrument
+in this migration that has never misled.
 
 **The measurement worth carrying forward:** the black frame's hash is `dc5f6d66428c26d8…` - byte for byte
 the hash this migration recorded earlier as "a half-migrated frame renders nothing". It is a *uniform*
-image, which is why it survived every fix that changed what the frame does: it says the captured image
-received nothing, not that the frame is subtly wrong.
+image, which is why it survived every fix that changed what the frame does.
 
 ## How to finish and verify
 
