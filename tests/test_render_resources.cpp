@@ -13,9 +13,14 @@
 #include "vk_test.h"
 
 #include <array>
+#include <cstdlib>
 #include <expected>
+#include <fstream>
+#include <map>
+#include <optional>
 #include <span>
 #include <string>
+#include <vector>
 
 import vulkan.render_resource;
 
@@ -550,6 +555,113 @@ int main() {
                                                            rr::render_target{.resource = rr::resource_id::bloom, .element = 2, .count = 2}};
         rr::pass_io const touching = {.name = "post_hdr", .own_set = 0, .bindings = {}, .shared_sets = {}, .targets = adjacent, .push = std::nullopt};
         CHECK(rr::validate(touching).has_value());
+    }
+    // ---- the SLOT GRID's two sources of truth, compared: the host reserves it in core::heap_slots and the
+    //      shaders BAKE the same numbers out of shaders/heap_slots.glsl. Both are text, neither is generated from
+    //      the other, and a drift between them is invisible to validation - it shows up only as a wrong picture,
+    //      because a heap-native shader indexes the heap by the number it was compiled with. The capture gate
+    //      cannot run in CI at all (its references are tied to one machine's driver) and this can, so the two
+    //      files are parsed and compared here: the scalars a shader bakes (base, stride, counts), the NAME SET of
+    //      the arrays (a rename on either side is a drift), and the value of every array.
+    {
+        auto const read_lines = [](std::string const& path) {
+            std::vector<std::string> lines;
+            std::ifstream file(path);
+            CHECK_MSG(file.is_open(), path.c_str());
+            std::string line;
+            while (std::getline(file, line)) {
+                lines.push_back(line);
+            }
+            return lines;
+        };
+        /// `name = <base> + <N>u` or `name = <N>u` or `name = <N>` -> the value, resolving `base` from `known`
+        auto const value_of = [](std::string const& rhs, std::map<std::string, uint64_t> const& known) -> std::optional<uint64_t> {
+            std::size_t const plus = rhs.find(" + ");
+            if (plus == std::string::npos) {
+                return std::strtoull(rhs.c_str(), nullptr, 10);
+            }
+            auto const base = known.find(rhs.substr(0, plus));
+            if (base == known.end()) {
+                return std::nullopt;
+            }
+            return base->second + std::strtoull(rhs.c_str() + plus + 3, nullptr, 10);
+        };
+
+        std::map<std::string, uint64_t> shader_scalars;
+        std::map<std::string, uint64_t> shader_slots; // the `heap_slots_<name>` arrays
+        for (std::string const& line : read_lines(std::string(VR_TEST_SOURCE_DIR) + "/shaders/heap_slots.glsl")) {
+            if (line.rfind("const uint ", 0) != 0) {
+                continue;
+            }
+            std::size_t const eq = line.find('=');
+            if (eq == std::string::npos) {
+                continue;
+            }
+            std::string const name = line.substr(11, line.find(' ', 11) - 11);
+            std::optional<uint64_t> const value = value_of(line.substr(eq + 2u, line.find(';', eq) - eq - 2u), shader_scalars);
+            CHECK_MSG(value.has_value(), name.c_str());
+            if (name.rfind("heap_slots_", 0) == 0) {
+                shader_slots[name.substr(11)] = *value;
+            } else {
+                shader_scalars[name] = *value;
+            }
+        }
+
+        std::map<std::string, uint64_t> host_scalars;
+        std::map<std::string, uint64_t> host_slots; // the members of core::heap_slots
+        bool in_slots = false;
+        for (std::string const& line : read_lines(std::string(VR_TEST_SOURCE_DIR) + "/vulkan/core/core.cppm")) {
+            if (line.find("struct heap_slots {") != std::string::npos) {
+                in_slots = true;
+                continue;
+            }
+            if (in_slots && line.find("};") != std::string::npos) {
+                in_slots = false;
+                continue;
+            }
+            if (line.find("static constexpr") == std::string::npos) {
+                continue;
+            }
+            std::size_t const eq = line.find('=');
+            if (eq == std::string::npos) {
+                continue;
+            }
+            std::string lhs = line.substr(0, eq);
+            while (!lhs.empty() && lhs.back() == ' ') {
+                lhs.pop_back();
+            }
+            std::size_t const name_begin = lhs.rfind(' ');
+            std::string const name = lhs.substr(name_begin == std::string::npos ? 0u : name_begin + 1u);
+            std::optional<uint64_t> const value = value_of(line.substr(eq + 2u, line.find(';', eq) - eq - 2u), host_scalars);
+            if (in_slots && value.has_value()) {
+                host_slots[name] = *value;
+            } else if (!in_slots && value.has_value() && name.rfind("heap_", 0) == 0) {
+                host_scalars[name] = *value;
+            }
+        }
+
+        // The six SAMPLER slots are named individually in the header, while the host keeps them as an ordered list
+        // (core::shared_sampler_infos, written from core::create_samplers). So they are checked against the sampler
+        // base rather than against a host constant - which is exactly the order contract both files state, and the
+        // one thing a rename there could silently break.
+        std::array<std::string_view, 6> const sampler_slots = {"heap_sampler_texture", "heap_sampler_post", "heap_sampler_gbuffer", "heap_sampler_post_nearest", "heap_sampler_taa", "heap_sampler_shadow"};
+        for (std::size_t i = 0; i < sampler_slots.size(); ++i) {
+            auto const found = shader_scalars.find(std::string(sampler_slots[i]));
+            CHECK_MSG(found != shader_scalars.end(), sampler_slots[i].data());
+            CHECK_MSG(found->second == shader_scalars.at("heap_sampler_base") + i, "a sampler slot is out of order in shaders/heap_slots.glsl");
+            shader_scalars.erase(found);
+        }
+
+        // the scalars a shader bakes: the grid's base, its stride, how many slots it holds, and the sampler grid's
+        CHECK(!shader_scalars.empty());
+        CHECK(!host_scalars.empty());
+        CHECK_MSG(shader_scalars == host_scalars, "the grid's scalar constants differ between shaders/heap_slots.glsl and core.cppm");
+        CHECK_MSG(shader_slots.size() == host_slots.size(), "the grid has a different number of arrays on the two sides");
+        CHECK_MSG(shader_slots == host_slots, "a grid array's slot differs between shaders/heap_slots.glsl and core.cppm");
+        // ... and a floor under the parse itself: a file that stopped looking like this would otherwise pass by
+        // coming out EMPTY on both sides, which is the way a contract test lies.
+        CHECK(shader_slots.size() > 20u);
+        CHECK(host_scalars.at("heap_slot_base") == 16384u);
     }
     return vk_test::finish("test_render_resources");
 }

@@ -457,6 +457,9 @@ if(VR_BUILD_TESTS)
     # source root for fixture/model paths (tests no longer assume the repo root is the cwd)
     target_compile_definitions(test_app_config PRIVATE VR_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
     target_compile_definitions(test_gltf_loader PRIVATE VR_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+    # test_render_resources reads shaders/heap_slots.glsl and vulkan/core/core.cppm to compare the slot grid's two
+    # sources of truth (see the last block of that test): both are text, neither is generated from the other.
+    target_compile_definitions(test_render_resources PRIVATE VR_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 
     target_link_libraries(test_app_config
             app_config
