@@ -59,6 +59,10 @@ const uint heap_slots_gbuffer_material = heap_slot_base + 567u;
 const uint heap_slots_gbuffer_depth = heap_slot_base + 575u;
 const uint heap_slots_gbuffer_velocity = heap_slot_base + 583u;
 const uint heap_slots_ml_trace = heap_slot_base + 591u;
+// the trace and the resolve as STORAGE descriptors (their compute passes write them; no single heap descriptor is
+// both a sampled and a storage image): see core.cppm's heap_slots
+const uint heap_slots_ml_trace_storage = heap_slot_base + 719u;
+const uint heap_slots_ml_resolved_storage = heap_slot_base + 735u;
 const uint heap_slots_ml_history = heap_slot_base + 599u;
 const uint heap_slots_ml_resolved = heap_slot_base + 607u;
 const uint heap_slots_ml_lighting = heap_slot_base + 615u;

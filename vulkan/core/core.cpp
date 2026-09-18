@@ -842,6 +842,13 @@ namespace vulkan {
                 taa_history_image_memories[i]);
 
             taa_history_image_views[i] = create_image_view(taa_history_images[i], hdr_format, VK_IMAGE_ASPECT_COLOR_BIT, device);
+            // the heap's copy, at the array TAA's history input is named for (see the sampled-target lambda above)
+            if (this->descriptor_heaps.ready() && this->heap_grid_offset != VK_WHOLE_SIZE) {
+                VkImageViewCreateInfo const heap_view = make_image_view_info(taa_history_images[i], hdr_format, VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_ASPECT_COLOR_BIT, VK_REMAINING_MIP_LEVELS, VK_REMAINING_ARRAY_LAYERS);
+                if (!this->descriptor_heaps.write_image(static_cast<VkDeviceSize>(heap_slots::taa_history + static_cast<uint32_t>(i)) * heap_slot_stride, heap_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE)) {
+                    utility::log("descriptor heap: the TAA history for image {} did not reach grid slot {}", i, heap_slots::taa_history + static_cast<uint32_t>(i));
+                }
+            }
         }
 
         // The stochastic punctual lighting chain's images are HALF resolution, one per swapchain image: the
@@ -868,6 +875,17 @@ namespace vulkan {
                 ml_image_memories[i]);
 
             ml_image_views[i] = create_image_view(ml_images[i], hdr_format, VK_IMAGE_ASPECT_COLOR_BIT, device);
+            // TWO descriptors for this image, because its compute pass WRITES it and the lighting stage SAMPLES it
+            // (no single heap descriptor is both): sampled at the array the readers name, storage at its own slot.
+            if (this->descriptor_heaps.ready() && this->heap_grid_offset != VK_WHOLE_SIZE) {
+                VkImageViewCreateInfo const heap_view = make_image_view_info(ml_images[i], hdr_format, VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_ASPECT_COLOR_BIT, VK_REMAINING_MIP_LEVELS, VK_REMAINING_ARRAY_LAYERS);
+                if (!this->descriptor_heaps.write_image(static_cast<VkDeviceSize>(heap_slots::ml_trace + static_cast<uint32_t>(i)) * heap_slot_stride, heap_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE)) {
+                    utility::log("descriptor heap: the megalights trace for image {} did not reach grid slot {}", i, heap_slots::ml_trace + static_cast<uint32_t>(i));
+                }
+                if (!this->descriptor_heaps.write_image(static_cast<VkDeviceSize>(heap_slots::ml_trace_storage + static_cast<uint32_t>(i)) * heap_slot_stride, heap_view, VK_IMAGE_LAYOUT_GENERAL, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)) {
+                    utility::log("descriptor heap: the megalights trace STORAGE descriptor for image {} did not reach grid slot {}", i, heap_slots::ml_trace_storage + static_cast<uint32_t>(i));
+                }
+            }
         }
 
         // The stochastic chain's temporal resolve (docs/megalights.md): the accumulation - STORAGE for the
@@ -891,6 +909,17 @@ namespace vulkan {
                 ml_resolve_images[i],
                 ml_resolve_image_memories[i]);
             ml_resolve_image_views[i] = create_image_view(ml_resolve_images[i], hdr_format, VK_IMAGE_ASPECT_COLOR_BIT, device);
+            // ... and the resolve's pair, the same way the trace's is written above: sampled for the lighting stage
+            // that adds it, storage for the compute pass that accumulates into it.
+            if (this->descriptor_heaps.ready() && this->heap_grid_offset != VK_WHOLE_SIZE) {
+                VkImageViewCreateInfo const heap_view = make_image_view_info(ml_resolve_images[i], hdr_format, VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_ASPECT_COLOR_BIT, VK_REMAINING_MIP_LEVELS, VK_REMAINING_ARRAY_LAYERS);
+                if (!this->descriptor_heaps.write_image(static_cast<VkDeviceSize>(heap_slots::ml_resolved + static_cast<uint32_t>(i)) * heap_slot_stride, heap_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE)) {
+                    utility::log("descriptor heap: the megalights resolve for image {} did not reach grid slot {}", i, heap_slots::ml_resolved + static_cast<uint32_t>(i));
+                }
+                if (!this->descriptor_heaps.write_image(static_cast<VkDeviceSize>(heap_slots::ml_resolved_storage + static_cast<uint32_t>(i)) * heap_slot_stride, heap_view, VK_IMAGE_LAYOUT_GENERAL, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)) {
+                    utility::log("descriptor heap: the megalights resolve STORAGE descriptor for image {} did not reach grid slot {}", i, heap_slots::ml_resolved_storage + static_cast<uint32_t>(i));
+                }
+            }
 
             create_target_image(
                 half_width,

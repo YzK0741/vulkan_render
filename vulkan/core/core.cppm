@@ -557,6 +557,12 @@ namespace vulkan {
             static constexpr uint32_t gbuffer_depth = heap_slot_base + 575u;
             static constexpr uint32_t gbuffer_velocity = heap_slot_base + 583u;
             static constexpr uint32_t ml_trace = heap_slot_base + 591u; // per image: megalights' chain
+            /// @brief the same two images written as STORAGE descriptors (see @ref rt_visibility_storage)
+            /// @note their compute passes WRITE them and the lighting stage SAMPLES them, and no single heap
+            ///       descriptor is both kinds - so the trace and the resolve each need a second slot, at the end of
+            ///       the used region for the same reason the others are there.
+            static constexpr uint32_t ml_trace_storage = heap_slot_base + 719u;
+            static constexpr uint32_t ml_resolved_storage = heap_slot_base + 735u;
             static constexpr uint32_t ml_history = heap_slot_base + 599u;
             static constexpr uint32_t ml_resolved = heap_slot_base + 607u;
             static constexpr uint32_t ml_lighting = heap_slot_base + 615u;
