@@ -541,7 +541,17 @@ namespace vulkan {
             static constexpr uint32_t brdf_lut = heap_slot_base + 534u;            // binding 4
             static constexpr uint32_t shadow_map = heap_slot_base + 535u;          // binding 8, per image
             static constexpr uint32_t rt_visibility = heap_slot_base + 543u;       // binding 15, per image
-            static constexpr uint32_t gbuffer_albedo = heap_slot_base + 551u;      // per image, then five in a row
+            /**
+             * @brief the SAME image as @ref rt_visibility, as a STORAGE descriptor instead of a sampled one
+             *
+             * @note TWO DESCRIPTORS FOR ONE IMAGE, and not redundancy: SAMPLED_IMAGE and STORAGE_IMAGE are different
+             *       descriptor kinds and no single heap descriptor is both, while this image is WRITTEN by the
+             *       ray-traced visibility pass and SAMPLED by the lighting stage. It lives at the end of the used
+             *       region for the same reason the TLAS does - growing an array in place would renumber every array
+             *       after it.
+             */
+            static constexpr uint32_t rt_visibility_storage = heap_slot_base + 711u;
+            static constexpr uint32_t gbuffer_albedo = heap_slot_base + 551u; // per image, then five in a row
             static constexpr uint32_t gbuffer_normal = heap_slot_base + 559u;
             static constexpr uint32_t gbuffer_material = heap_slot_base + 567u;
             static constexpr uint32_t gbuffer_depth = heap_slot_base + 575u;

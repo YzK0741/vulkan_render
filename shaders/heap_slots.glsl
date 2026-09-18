@@ -50,6 +50,9 @@ const uint heap_slots_brdf_lut = heap_slot_base + 534u;
 // per swapchain image: the shadow map, the ray-traced visibility, and every G-buffer/post image
 const uint heap_slots_shadow_map = heap_slot_base + 535u;
 const uint heap_slots_rt_visibility = heap_slot_base + 543u;
+// the SAME image as a STORAGE descriptor (the visibility pass writes it, the lighting stage samples it, and no
+// single heap descriptor is both): see core.cppm's heap_slots
+const uint heap_slots_rt_visibility_storage = heap_slot_base + 711u;
 const uint heap_slots_gbuffer_albedo = heap_slot_base + 551u;
 const uint heap_slots_gbuffer_normal = heap_slot_base + 559u;
 const uint heap_slots_gbuffer_material = heap_slot_base + 567u;

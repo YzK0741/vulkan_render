@@ -917,6 +917,21 @@ namespace vulkan {
                 rt_shadow_images[slot],
                 rt_shadow_image_memories[slot]);
             rt_shadow_image_views[slot] = create_image_view(rt_shadow_images[slot], VK_FORMAT_R16_SFLOAT, VK_IMAGE_ASPECT_COLOR_BIT, device);
+
+            // THE HEAP'S COPIES OF THAT IMAGE - TWO of them, which is not redundancy: SAMPLED_IMAGE and
+            // STORAGE_IMAGE are different descriptor kinds and one heap descriptor is never both, while this image
+            // is WRITTEN by the visibility compute pass and SAMPLED by the lighting stage. A heap image descriptor
+            // carries a view CREATE INFO rather than a view, so both are built from the same arguments
+            // create_image_view used on the line above. The layouts differ for the same reason the types do.
+            if (this->descriptor_heaps.ready() && this->heap_grid_offset != VK_WHOLE_SIZE) {
+                VkImageViewCreateInfo const visibility_view = make_image_view_info(rt_shadow_images[slot], VK_FORMAT_R16_SFLOAT, VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_ASPECT_COLOR_BIT, VK_REMAINING_MIP_LEVELS, VK_REMAINING_ARRAY_LAYERS);
+                if (!this->descriptor_heaps.write_image(static_cast<VkDeviceSize>(heap_slots::rt_visibility + slot) * heap_slot_stride, visibility_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE)) {
+                    utility::log("descriptor heap: the rt visibility SAMPLED descriptor did not reach grid slot {}", heap_slots::rt_visibility + slot);
+                }
+                if (!this->descriptor_heaps.write_image(static_cast<VkDeviceSize>(heap_slots::rt_visibility_storage + slot) * heap_slot_stride, visibility_view, VK_IMAGE_LAYOUT_GENERAL, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)) {
+                    utility::log("descriptor heap: the rt visibility STORAGE descriptor did not reach grid slot {}", heap_slots::rt_visibility_storage + slot);
+                }
+            }
         }
 
         gbuffer_depth_images.resize(swap_chain_image_views.size());
