@@ -31,10 +31,14 @@
  *    still look like a shadow. The ray flag is therefore gone from `rt_shadow.rgen`, and
  *    `vulkan/acceleration_structure/acceleration_structure.cpp` no longer sets the geometry flag.
  *
- * NO `hitAttributeEXT` IS DECLARED HERE YET, and that is deliberate: the geometry publishes no attributes today
- * (`VkAccelerationStructureGeometryTrianglesDataKHR` carries the position at vertex offset 0 and nothing else),
- * so a stage that declared a UV attribute would be reading undefined data. The alpha test arrives together with
- * `pVertexAttributeDescriptions` on the geometry, and the two have to be added as one step.
+ * WHERE THE ALPHA WILL COME FROM, because it is NOT an attribute: `hitAttributeEXT` is written by an INTERSECTION
+ * shader, and this pipeline has none - triangle geometry is intersected by the fixed-function unit, so there is
+ * no attribute to read and `VkAccelerationStructureGeometryTrianglesDataKHR` has no field to declare one in. The
+ * alpha test therefore fetches what it needs ITSELF, the way the stochastic-lighting tracer already does:
+ * `gl_InstanceCustomIndexEXT` names the instance (and so the mesh, and so the material), `gl_PrimitiveID` names
+ * the triangle, and the primitive's UV is read from the mesh's own vertex and index buffers through addresses
+ * the scene set provides. That is why the step that adds the alpha test also adds those bindings to this
+ * stage's reach (see the scene set's declarations in vulkan/core/core.cpp).
  *
  * THE PAYLOAD IS NOT TOUCHED HERE. The hit group's closest-hit stage answers the ray (see `rt_shadow.rchit`),
  * and an any-hit shader that neither ignores an intersection nor writes the payload leaves the traversal exactly

@@ -24,6 +24,12 @@
 # captures live; -Camera "" leaves the pose to the scene's own `camera_fit`, which is deterministic for
 # a static scene and is what a scene with no pinned pose resolves to (the run's log prints it).
 #
+# TWO CAPTURES ARE ONLY COMPARABLE AT THE SAME POSE, which is worth stating because getting it wrong does
+# not look like a mistake: comparing a capture that passed -Camera against one that did not reads as a
+# whole-frame mean|d| of tens and a difference everywhere, i.e. exactly like a rendering bug. A rendering
+# change's signature is small numbers concentrated where the change is. The log's `capture camera:` line is
+# the record of which pose a capture was taken at, and two captures are comparable when those lines match.
+#
 # The captures land beside the build (`<BuildDir>/gi-probe/`), NOT in the repository: they are 4 MB of
 # scratch per frame and belong with the binaries they came from. That is also why the instruments they
 # are read with now live in the repository (scripts/measure/) while the images do not.
