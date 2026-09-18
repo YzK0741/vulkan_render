@@ -23,7 +23,12 @@ layout(location = 0) out vec4 out_color;
 
 // Single flat scene set (same as pbr.frag): this pass only needs the runtime texture array
 // (binding 1) and the GPU material table (binding 5); the other bindings are unused.
-layout(set = 0, binding = 1) uniform sampler2D textures[];
+// HEAP-NATIVE (see docs/descriptor_heap_migration.md): the bindless array is the shared `heap_textures` (declared
+// by the grid header) and the table is an array of blocks whose ARRAY name carries the heap slot, while the block
+// MEMBER carries the record index. The extensions are required in every stage that declares such a resource.
+#extension GL_EXT_descriptor_heap : require
+#extension GL_EXT_nonuniform_qualifier : enable
+#include "heap_slots.glsl"
 
 // One entry of the material table; layout matches material_record (std430, 80 bytes) - must
 // stay identical to pbr.frag's Material so both stages read the same record.
@@ -40,7 +45,7 @@ struct Material {
     float normal_scale;
     uint flags; // bit0: normal map, bit1: occlusion map, bit2: emissive map, bit3: double-sided, bit4: alphaMode MASK, bit5: alphaMode BLEND
 };
-layout(set = 0, binding = 5) readonly buffer Materials { Material materials[]; };
+layout(descriptor_heap, descriptor_stride = heap_slot_stride) readonly buffer Materials { Material materials[]; } heap_material_tables[];
 
 // Push constant block: identical layout to pbr.vert / pbr.frag (only material_index is read).
 layout(push_constant) uniform PushConstants {
@@ -67,8 +72,8 @@ layout(push_constant) uniform PushConstants {
  * stages read the same GPU records; only material_index is used here.
  */
 void main() {
-    Material mat = materials[push.material_index];
-    vec4 base_color = mat.base_color_factor * texture(textures[mat.tex_indices.x], v_uv);
+    Material mat = heap_material_tables[heap_slots_materials].materials[push.material_index];
+    vec4 base_color = mat.base_color_factor * heap_texel(heap_textures[heap_slots_textures + mat.tex_indices.x], heap_sampler_texture, v_uv);
     if ((mat.flags & 16u) != 0u && base_color.a < mat.alpha_cutoff) {
         discard;
     }

@@ -234,7 +234,7 @@ namespace vulkan::pass {
         push.depth_scale = io.constants.proj[2][2];
         push.depth_offset = io.constants.proj[3][2];
         push.history_valid = history_valid ? 1.0f : 0.0f;
-        vkCmdPushConstants(io.cmd, io.pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), &push);
+        [[maybe_unused]] bool const pushed = io.push_block(io.cmd, pass::push_bytes(push));
         vkCmdDraw(io.cmd, 3, 1, 0, 0);
         vkCmdEndRendering(io.cmd);
 

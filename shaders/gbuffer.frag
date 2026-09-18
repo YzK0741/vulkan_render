@@ -45,6 +45,10 @@
  *       geometry" (those pixels are lit as sky).
  */
 
+// surface.glsl's declarations are heap-native (see pbr.frag for why this stage has to ask for the extensions).
+#extension GL_EXT_descriptor_heap : require
+#extension GL_EXT_nonuniform_qualifier : enable
+
 #include "surface.glsl"
 // ... and the scene state for the motion vector's two matrices. Only the camera UBO is used here;
 // the lighting declarations this include also carries (light UBO, shadow map, the BRDF functions)
@@ -84,8 +88,8 @@ layout(location = 4) out vec4 out_scene_color;      // the EMISSIVE term, ADDED 
  *       TAA's neighborhood clamp rejects the worst of it.
  */
 vec2 motion_vector(vec3 world_pos, vec3 prev_world_pos) {
-    const vec4 current_clip = camera.view_proj_unjittered * vec4(world_pos, 1.0);
-    const vec4 previous_clip = camera.prev_view_proj * vec4(prev_world_pos, 1.0);
+    const vec4 current_clip = camera[heap_camera_slot].view_proj_unjittered * vec4(world_pos, 1.0);
+    const vec4 previous_clip = camera[heap_camera_slot].prev_view_proj * vec4(prev_world_pos, 1.0);
     const vec2 current_uv = (current_clip.xy / current_clip.w) * 0.5 + 0.5;
     const vec2 previous_uv = (previous_clip.xy / previous_clip.w) * 0.5 + 0.5;
     return current_uv - previous_uv;

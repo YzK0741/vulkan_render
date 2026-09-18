@@ -447,7 +447,7 @@ namespace vulkan::pipelines {
         VkComputePipelineCreateInfo pipeline_info = {};
         pipeline_info.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
         pipeline_info.stage = stage_info;
-        pipeline_info.layout = out.pipeline_layout;
+        pipeline_info.layout = VK_NULL_HANDLE; // heap-native stages: a layout would contradict them (see docs)
 
         VkPipeline pipeline = VK_NULL_HANDLE;
         if (vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &pipeline) != VK_SUCCESS) {
@@ -492,7 +492,7 @@ namespace vulkan::pipelines {
         VkComputePipelineCreateInfo pipeline_info = {};
         pipeline_info.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
         pipeline_info.stage = stage_info;
-        pipeline_info.layout = out.pipeline_layout;
+        pipeline_info.layout = VK_NULL_HANDLE; // heap-native stages: a layout would contradict them (see docs)
 
         VkPipeline pipeline = VK_NULL_HANDLE;
         if (vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &pipeline) != VK_SUCCESS) {
@@ -684,7 +684,7 @@ namespace vulkan::pipelines {
         pipeline_info.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
         pipeline_info.pNext = stage_mapping_info != nullptr ? &pipeline_flags : nullptr;
         pipeline_info.stage = stage_info;
-        pipeline_info.layout = out.pipeline_layout; // null on the heap path, which is what the flag requires
+        pipeline_info.layout = VK_NULL_HANDLE; // heap-native stages: a layout would contradict them (see docs) // null on the heap path, which is what the flag requires
 
         VkPipeline pipeline = VK_NULL_HANDLE;
         if (vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &pipeline) != VK_SUCCESS) {
@@ -876,7 +876,7 @@ namespace vulkan::pipelines {
         VkComputePipelineCreateInfo pipeline_info = {};
         pipeline_info.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
         pipeline_info.stage = stage_info;
-        pipeline_info.layout = out.pipeline_layout;
+        pipeline_info.layout = VK_NULL_HANDLE; // heap-native stages: a layout would contradict them (see docs)
 
         VkPipeline pipeline = VK_NULL_HANDLE;
         if (vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &pipeline) != VK_SUCCESS) {
@@ -1018,7 +1018,7 @@ namespace vulkan::pipelines {
                                                                  .pLibraryInfo = nullptr,
                                                                  .pLibraryInterface = nullptr,
                                                                  .pDynamicState = nullptr,
-                                                                 .layout = out.pipeline_layout,
+                                                                 .layout = VK_NULL_HANDLE, // heap-native stages: a layout would contradict them
                                                                  .basePipelineHandle = VK_NULL_HANDLE,
                                                                  .basePipelineIndex = -1};
         // THE EXTENSION ENTRY POINT COMES FROM THE DEVICE, not from the link line: `vulkan-1`'s import library
@@ -1099,7 +1099,7 @@ namespace vulkan::pipelines {
         VkComputePipelineCreateInfo pipeline_info = {};
         pipeline_info.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
         pipeline_info.stage = stage_info;
-        pipeline_info.layout = out.pipeline_layout;
+        pipeline_info.layout = VK_NULL_HANDLE; // heap-native stages: a layout would contradict them (see docs)
 
         VkPipeline pipeline = VK_NULL_HANDLE;
         if (vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &pipeline) != VK_SUCCESS) {

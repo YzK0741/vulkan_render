@@ -1159,6 +1159,15 @@ namespace vulkan {
         /// @brief the four hooks above, as the function pointers the phase takes (each one casts `owner` back)
         static bool structure_mask_ready(void* owner) noexcept;
         static void structure_record_mask_bake(void* owner, VkCommandBuffer command_buffer, pass::mask_bake_request const& request);
+
+        /**
+         * @brief the host's push endpoint for a converted stage (see pass::resolved_io::push_block)
+         * @return whether the block was sent
+         * @note it is a static member rather than a free helper for the ordinary reason: it needs the device, and
+         *       the heap, and the runtime owns both. The bytes are the stage's own push block, whose last fields
+         *       are the two heap indices the renderer fills in before calling this.
+         */
+        static bool push_stage_block(void* owner, VkCommandBuffer command_buffer, std::span<std::byte const> bytes, uint32_t extra_lane);
         static bool structure_skin_ready(void* owner) noexcept;
         static bool structure_record_skin(void* owner, VkCommandBuffer command_buffer, std::span<ray_tracing::caster_level const> casters);
         /** @brief point a scene set's binding 16 (the structure) and binding 17 (its instance table) at @p tlas's slot */

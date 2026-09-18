@@ -42,10 +42,17 @@
 layout(location = 0) in vec2 v_uv;
 layout(location = 0) out vec4 out_color;
 
-layout(set = 0, binding = 0) uniform sampler2D current_color; // this frame's scene color (HDR, jittered)
-layout(set = 0, binding = 1) uniform sampler2D history_color; // the previous resolved frame
-layout(set = 0, binding = 2) uniform sampler2D velocity;      // motion vectors in UV space
-layout(set = 0, binding = 3) uniform sampler2D depth;         // G-buffer depth (linearized for the guard)
+// HEAP-NATIVE (see docs/descriptor_heap_migration.md): four resource heap images, all per SWAPCHAIN IMAGE, read
+// through the TAA sampler - and WHICH SAMPLER MATTERS HERE, unlike the exact-texel fetches elsewhere: TAA reads at
+// reprojected positions, i.e. between texels, and the descriptor set's taa_sampler was linear magnification with
+// nearest minification.
+#extension GL_EXT_descriptor_heap : require
+#extension GL_EXT_nonuniform_qualifier : enable
+#include "heap_slots.glsl"
+layout(descriptor_heap, descriptor_stride = heap_slot_stride) uniform texture2D current_color_texture[]; // this frame's scene color (HDR, jittered)
+layout(descriptor_heap, descriptor_stride = heap_slot_stride) uniform texture2D history_texture[];       // the previous resolved frame
+layout(descriptor_heap, descriptor_stride = heap_slot_stride) uniform texture2D velocity_texture[];      // motion vectors in UV space
+layout(descriptor_heap, descriptor_stride = heap_slot_stride) uniform texture2D depth_texture[];         // G-buffer depth (linearized for the guard)
 
 layout(push_constant) uniform TaaPush {
     // 1 = trust the history (the normal case), 0 = use the current frame only (the first frame for
@@ -63,7 +70,12 @@ layout(push_constant) uniform TaaPush {
     float depth_scale;  // the projection's depth-linearization terms, for the disocclusion guard
     float depth_offset;
     float _pad;
+    // THE HEAP INDICES (see heap_slots.glsl), at the END so every field above keeps its offset.
+    uint frame_slot;
+    uint image_index;
 } pc;
+#define heap_frame_slot (pc.frame_slot)
+#define heap_image_index (pc.image_index)
 
 /// @brief the target's texel size as a vector
 vec2 texel_size() {
@@ -94,8 +106,8 @@ float view_depth(float raw_depth) {
  * @return the resolved linear HDR color
  */
 vec3 resolve(vec2 uv) {
-    const vec3 center = texture(current_color, uv).rgb;
-    const vec2 motion = texture(velocity, uv).rg;
+    const vec3 center = heap_texel(current_color_texture[heap_slots_taa_current + heap_image_index], heap_sampler_taa, uv).rgb;
+    const vec2 motion = heap_texel(velocity_texture[heap_slots_gbuffer_velocity + heap_image_index], heap_sampler_taa, uv).rg;
 
     // ---- the current frame's local range, computed in YCoCg (variant B) ----
     // A per-channel RGB min/max box lets ONE channel's outlier widen the other two: on a surface whose
@@ -106,7 +118,7 @@ vec3 resolve(vec2 uv) {
     vec3 neighborhood_max = neighborhood_min;
     for (int y = -1; y <= 1; ++y) {
         for (int x = -1; x <= 1; ++x) {
-            const vec3 sample_color = rgb_to_ycocg(texture(current_color, uv + vec2(float(x), float(y)) * texel_size()).rgb);
+            const vec3 sample_color = rgb_to_ycocg(heap_texel(current_color_texture[heap_slots_taa_current + heap_image_index], heap_sampler_taa, uv + vec2(float(x), float(y)) * texel_size()).rgb);
             neighborhood_min = min(neighborhood_min, sample_color);
             neighborhood_max = max(neighborhood_max, sample_color);
         }
@@ -119,14 +131,14 @@ vec3 resolve(vec2 uv) {
     if (history_uv.x < 0.0 || history_uv.x > 1.0 || history_uv.y < 0.0 || history_uv.y > 1.0) {
         return center;
     }
-    vec3 history = texture(history_color, history_uv).rgb;
+    vec3 history = heap_texel(history_texture[heap_slots_taa_history + heap_image_index], heap_sampler_taa, history_uv).rgb;
 
     // ---- disocclusion guard: is the reprojected texel the same surface? ----
     // The motion vector alone cannot tell: at a silhouette the previous frame's pixel at that
     // location showed the background, and blending it in is the classic TAA ghost trail. Comparing
     // the two view depths (with a relative tolerance that scales with distance) rejects those.
-    const float current_depth = view_depth(texture(depth, uv).r);
-    const float history_depth = view_depth(texture(depth, history_uv).r);
+    const float current_depth = view_depth(heap_texel(depth_texture[heap_slots_gbuffer_depth + heap_image_index], heap_sampler_taa, uv).r);
+    const float history_depth = view_depth(heap_texel(depth_texture[heap_slots_gbuffer_depth + heap_image_index], heap_sampler_taa, history_uv).r);
     const float depth_tolerance = max(0.02 * current_depth, 0.1); // metres-ish, scale-free enough
     if (abs(current_depth - history_depth) > depth_tolerance) {
         return center;

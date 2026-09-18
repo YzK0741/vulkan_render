@@ -56,10 +56,22 @@
  * hardware answer to the same question and is why `VK_EXT_opacity_micromap` is enabled.
  */
 
-// The material table and the bindless texture array, declared here rather than included from
-// shaders/surface.glsl, which also declares the shared push-constant block and a shader may declare only one.
-// The layout must stay byte-identical to material_record in vulkan/primitive.cppm: it is a CPU/GPU contract.
-layout(set = 0, binding = 1) uniform sampler2D textures[];
+// The material table and the bindless texture array, HEAP-NATIVE now (see docs/descriptor_heap_migration.md): the
+// bindless array is the shared `heap_textures` from the grid header, and the table is an array of blocks whose ARRAY
+// name carries the heap slot while the block member carries the record index. The extensions are per stage.
+#extension GL_EXT_descriptor_heap : require
+#extension GL_EXT_nonuniform_qualifier : enable
+#include "heap_slots.glsl"
+
+// This stage declares no other constants, but it reads the per-FRAME mask instance table, so it needs the two HEAP
+// INDICES - and a heap pipeline has no layout to put a push constant in, so they arrive through vkCmdPushDataEXT
+// (see heap_slots.glsl). The block is its own because a stage has exactly one.
+layout(push_constant) uniform AnyHitPush {
+    uint frame_slot;
+    uint image_index;
+} pc;
+#define heap_frame_slot (pc.frame_slot)
+#define heap_image_index (pc.image_index)
 struct MaskMaterial {
     uvec4 tex_indices; // albedo, metallic-roughness, normal, occlusion (indices into textures[])
     uint emissive_index;
@@ -73,7 +85,7 @@ struct MaskMaterial {
     float normal_scale;
     uint flags; // bit4: alphaMode MASK - the bit that makes this stage do anything at all
 };
-layout(set = 0, binding = 5) readonly buffer MaskMaterials { MaskMaterial materials[]; };
+layout(descriptor_heap, descriptor_stride = heap_slot_stride) readonly buffer MaskMaterials { MaskMaterial materials[]; } heap_material_tables[];
 
 // The instance table: one record per instance of the top level structure, filled by EVERY structure build and
 // read, until now, by nothing (see acceleration_structure::instance_record, whose 96-byte std430 layout this
@@ -87,7 +99,8 @@ struct MaskInstance {
     uint material_index;  // into the material table above
     uint primitive_index;
 };
-layout(set = 0, binding = 17) readonly buffer MaskInstances { MaskInstance instances[]; };
+// The instance table is rebuilt with the structures every frame, so its slot carries the FRAME (heap_mask_instance_slot).
+layout(descriptor_heap, descriptor_stride = heap_slot_stride) readonly buffer MaskInstances { MaskInstance instances[]; } mask_instances[];
 
 // The geometry's vertices and indices are read as untyped 4-byte words through their device addresses: the
 // engine's vertex is an implementation-defined interleaved record, so addressing it as floats is what makes the
@@ -110,8 +123,8 @@ uint64_t mask_lane_address(uvec2 halves) {
 }
 
 void main() {
-    const MaskInstance instance = instances[gl_InstanceCustomIndexEXT];
-    const MaskMaterial material = materials[instance.material_index];
+    const MaskInstance instance = mask_instances[heap_mask_instance_slot].instances[gl_InstanceCustomIndexEXT];
+    const MaskMaterial material = heap_material_tables[heap_slots_materials].materials[instance.material_index];
     if ((material.flags & MASK_ALPHA_FLAG) == 0u) {
         // OPAQUE or BLEND: the raster shadow pass does not cut those either, so the hit stands as it is.
         return;
@@ -166,7 +179,7 @@ void main() {
     const vec2 uv = uvs[0] * (1.0 - u - v) + uvs[1] * u + uvs[2] * v;
 
     // THE CUT: the mirror of shaders/shadow.frag's discard and of shaders/surface.glsl's MASK test.
-    const float alpha = material.base_color_factor.a * textureLod(textures[nonuniformEXT(material.tex_indices.x)], uv, 0.0).a;
+    const float alpha = material.base_color_factor.a * textureLod(sampler2D(heap_textures[heap_slots_textures + material.tex_indices.x], heap_samplers[heap_sampler_texture]), uv, 0.0).a;
     if (alpha < material.alpha_cutoff) {
         ignoreIntersectionEXT;
     }

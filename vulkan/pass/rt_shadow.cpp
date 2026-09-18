@@ -201,7 +201,7 @@ namespace vulkan::pass {
         // therefore the struct's defaults rather than values anybody has to pass in.
         push_constants push = {};
         push.inv_view_proj = io.constants.inv_view_proj;
-        vkCmdPushConstants(io.cmd, io.pipeline_layout, VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR | VK_SHADER_STAGE_MISS_BIT_KHR | VK_SHADER_STAGE_ANY_HIT_BIT_KHR, 0, sizeof(push), &push);
+        [[maybe_unused]] bool const pushed = io.push_block(io.cmd, pass::push_bytes(push));
         // THE LAUNCH DIMS ARE THE EXTENT: one invocation per pixel of the visibility image, which is what the
         // compute form got from its dispatch and its bounds check.
         this->trace_rays_(io.cmd, &this->raygen_region_, &this->miss_region_, &this->hit_region_, &this->callable_region_, io.extent.width, io.extent.height, 1);

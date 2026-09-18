@@ -28,17 +28,24 @@
 layout(location = 0) in vec2 v_uv;
 layout(location = 0) out vec4 out_color;
 
-layout(set = 0, binding = 0) uniform sampler2D source_color; // pass input (HDR, or a bloom level)
-layout(set = 0, binding = 1) uniform sampler2D bloom_l0;     // composite only
-layout(set = 0, binding = 2) uniform sampler2D bloom_l1;
-layout(set = 0, binding = 3) uniform sampler2D bloom_l2;
-layout(set = 0, binding = 4) uniform sampler2D bloom_l3;
-// composite only: the screen-space GI at HALF resolution, plus the two G-buffer images its upsample
-// needs to decide which half-res texel belongs to this pixel's surface. All three are read with a
-// NEAREST sampler (see runtime::post_nearest_sampler): interpolating depth would invent a surface
-// between two real ones, which is precisely what the edge test below must not see.
-layout(set = 0, binding = 7) uniform sampler2D gbuffer_depth;
-layout(set = 0, binding = 8) uniform sampler2D gbuffer_normal;
+// HEAP-NATIVE (see docs/descriptor_heap_migration.md): resource heap images, per SWAPCHAIN IMAGE (the bloom chain
+// and the composite all work on this frame's targets), read through the post chain's sampler - and the SOURCE is
+// `heap_post_source_slot`, a SPECIALIZATION CONSTANT the host fixes per pass, because the five post passes each
+// read a different image at what the set called `source_color`. THE HOST SETS THE ABSOLUTE SLOT (base + image
+// index), which is why this one carries no heap_image_index of its own.
+#extension GL_EXT_descriptor_heap : require
+#extension GL_EXT_nonuniform_qualifier : enable
+#include "heap_slots.glsl"
+layout(descriptor_heap, descriptor_stride = heap_slot_stride) uniform texture2D post_source_texture[]; // pass input (HDR, or a bloom level)
+layout(descriptor_heap, descriptor_stride = heap_slot_stride) uniform texture2D bloom_l0_texture[];     // composite only
+layout(descriptor_heap, descriptor_stride = heap_slot_stride) uniform texture2D bloom_l1_texture[];
+layout(descriptor_heap, descriptor_stride = heap_slot_stride) uniform texture2D bloom_l2_texture[];
+layout(descriptor_heap, descriptor_stride = heap_slot_stride) uniform texture2D bloom_l3_texture[];
+// composite only: the two G-buffer images its upsample needs to decide which half-res texel belongs to this pixel's
+// surface. Both read with the NEAREST sampler (see runtime::post_nearest_sampler): interpolating depth would invent
+// a surface between two real ones, which is precisely what the edge test must not see.
+layout(descriptor_heap, descriptor_stride = heap_slot_stride) uniform texture2D gbuffer_depth_texture[];
+layout(descriptor_heap, descriptor_stride = heap_slot_stride) uniform texture2D gbuffer_normal_texture[];
 
 layout(push_constant) uniform PostPush {
     float exposure;        // linear exposure scale (runtime::set_exposure)
@@ -50,7 +57,16 @@ layout(push_constant) uniform PostPush {
     // NOTE: fxaa.frag's two lanes follow this slot in the shared block. A stage may declare FEWER
     // members than the CPU writes but not a different layout up to the ones it uses, so anything
     // inserted here has to be inserted in fxaa.frag's block too - at the same position.
+    // THE HEAP INDICES (see heap_slots.glsl), at the END so every field above keeps its offset. The third one is
+    // this chain's own: the five post passes each read a DIFFERENT image at what the set called `source_color`, so
+    // the host names its ABSOLUTE grid slot per pass (base + image index) - one lane instead of a spec constant.
+    uint frame_slot;
+    uint image_index;
+    uint post_source_slot;
 } pc;
+#define heap_frame_slot (pc.frame_slot)
+#define heap_image_index (pc.image_index)
+#define heap_post_source_slot (pc.post_source_slot)
 
 /**
  * @brief ACES filmic tonemapping (Narkowicz fit)
@@ -89,21 +105,21 @@ vec3 linear_to_srgb(vec3 color) {
  * magnifies into a visible block. The 13 taps spread it over its neighbourhood on the way down. This
  * is the point UE's higher-quality downsample path makes too (PostProcessDownsample.usf).
  */
-vec3 downsample_13(sampler2D s, vec2 uv) {
-    const vec2 t = 1.0 / vec2(textureSize(s, 0));
-    const vec3 a = texture(s, uv + t * vec2(-2.0, -2.0)).rgb;
-    const vec3 b = texture(s, uv + t * vec2(0.0, -2.0)).rgb;
-    const vec3 c = texture(s, uv + t * vec2(2.0, -2.0)).rgb;
-    const vec3 d = texture(s, uv + t * vec2(-2.0, 0.0)).rgb;
-    const vec3 e = texture(s, uv).rgb;
-    const vec3 f = texture(s, uv + t * vec2(2.0, 0.0)).rgb;
-    const vec3 g = texture(s, uv + t * vec2(-2.0, 2.0)).rgb;
-    const vec3 h = texture(s, uv + t * vec2(0.0, 2.0)).rgb;
-    const vec3 i = texture(s, uv + t * vec2(2.0, 2.0)).rgb;
-    const vec3 j = texture(s, uv + t * vec2(-1.0, -1.0)).rgb;
-    const vec3 k = texture(s, uv + t * vec2(1.0, -1.0)).rgb;
-    const vec3 l = texture(s, uv + t * vec2(-1.0, 1.0)).rgb;
-    const vec3 m = texture(s, uv + t * vec2(1.0, 1.0)).rgb;
+vec3 downsample_13(texture2D s, uint sampler_slot, vec2 uv) {
+    const vec2 t = 1.0 / vec2(textureSize(sampler2D(s, heap_samplers[sampler_slot]), 0));
+    const vec3 a = heap_texel(s, sampler_slot, uv + t * vec2(-2.0, -2.0)).rgb;
+    const vec3 b = heap_texel(s, sampler_slot, uv + t * vec2(0.0, -2.0)).rgb;
+    const vec3 c = heap_texel(s, sampler_slot, uv + t * vec2(2.0, -2.0)).rgb;
+    const vec3 d = heap_texel(s, sampler_slot, uv + t * vec2(-2.0, 0.0)).rgb;
+    const vec3 e = heap_texel(s, sampler_slot, uv).rgb;
+    const vec3 f = heap_texel(s, sampler_slot, uv + t * vec2(2.0, 0.0)).rgb;
+    const vec3 g = heap_texel(s, sampler_slot, uv + t * vec2(-2.0, 2.0)).rgb;
+    const vec3 h = heap_texel(s, sampler_slot, uv + t * vec2(0.0, 2.0)).rgb;
+    const vec3 i = heap_texel(s, sampler_slot, uv + t * vec2(2.0, 2.0)).rgb;
+    const vec3 j = heap_texel(s, sampler_slot, uv + t * vec2(-1.0, -1.0)).rgb;
+    const vec3 k = heap_texel(s, sampler_slot, uv + t * vec2(1.0, -1.0)).rgb;
+    const vec3 l = heap_texel(s, sampler_slot, uv + t * vec2(-1.0, 1.0)).rgb;
+    const vec3 m = heap_texel(s, sampler_slot, uv + t * vec2(1.0, 1.0)).rgb;
     vec3 sum = e * 0.125;
     sum += (a + c + g + i) * 0.03125;
     sum += (b + d + f + h) * 0.0625;
@@ -123,17 +139,17 @@ vec3 downsample_13(sampler2D s, vec2 uv) {
  * tent is what UE's bloom upsample uses (PostProcessBloom.usf), and it is the reason a coarse level
  * reads as a wide glow instead of a tile.
  */
-vec3 sample_tent(sampler2D s, vec2 uv) {
-    const vec2 t = 1.0 / vec2(textureSize(s, 0));
-    vec3 sum = texture(s, uv).rgb * 4.0;
-    sum += texture(s, uv + vec2(-t.x, 0.0)).rgb * 2.0;
-    sum += texture(s, uv + vec2(t.x, 0.0)).rgb * 2.0;
-    sum += texture(s, uv + vec2(0.0, -t.y)).rgb * 2.0;
-    sum += texture(s, uv + vec2(0.0, t.y)).rgb * 2.0;
-    sum += texture(s, uv + vec2(-t.x, -t.y)).rgb;
-    sum += texture(s, uv + vec2(t.x, -t.y)).rgb;
-    sum += texture(s, uv + vec2(-t.x, t.y)).rgb;
-    sum += texture(s, uv + vec2(t.x, t.y)).rgb;
+vec3 sample_tent(texture2D s, uint sampler_slot, vec2 uv) {
+    const vec2 t = 1.0 / vec2(textureSize(sampler2D(s, heap_samplers[sampler_slot]), 0));
+    vec3 sum = heap_texel(s, sampler_slot, uv).rgb * 4.0;
+    sum += heap_texel(s, sampler_slot, uv + vec2(-t.x, 0.0)).rgb * 2.0;
+    sum += heap_texel(s, sampler_slot, uv + vec2(t.x, 0.0)).rgb * 2.0;
+    sum += heap_texel(s, sampler_slot, uv + vec2(0.0, -t.y)).rgb * 2.0;
+    sum += heap_texel(s, sampler_slot, uv + vec2(0.0, t.y)).rgb * 2.0;
+    sum += heap_texel(s, sampler_slot, uv + vec2(-t.x, -t.y)).rgb;
+    sum += heap_texel(s, sampler_slot, uv + vec2(t.x, -t.y)).rgb;
+    sum += heap_texel(s, sampler_slot, uv + vec2(-t.x, t.y)).rgb;
+    sum += heap_texel(s, sampler_slot, uv + vec2(t.x, t.y)).rgb;
     return sum / 16.0;
 }
 
@@ -157,7 +173,7 @@ void main() {
         // this ramp (PostProcessBloom.usf, BloomSetupCommon):
         //     BloomAmount = saturate((Luminance - BloomThreshold) * 0.5);  out = BloomAmount * Color
         // which fades in over a 2.0-wide luminance window above the threshold and keeps the colour.
-        vec3 color = texture(source_color, v_uv).rgb;
+        vec3 color = heap_texel(post_source_texture[heap_post_source_slot], heap_sampler_post, v_uv).rgb;
         const float luminance = dot(color, vec3(0.2126, 0.7152, 0.0722));
 
         // Firefly ceiling. The ramp above bounds the FRACTION a pixel may contribute, not its
@@ -183,18 +199,18 @@ void main() {
 
     if (pc.mode < 1.5) {
         // downsample: 13-tap filter into the next level (see downsample_13)
-        out_color = vec4(downsample_13(source_color, v_uv), 1.0);
+        out_color = vec4(downsample_13(post_source_texture[heap_post_source_slot], heap_sampler_post, v_uv), 1.0);
         return;
     }
 
     // composite: weighted sum of the four levels, each read through the tent filter that the
     // upsample step of a bloom pyramid stands for (see sample_tent)
-    vec3 bloom = sample_tent(bloom_l0, v_uv) * 0.50;
-    bloom += sample_tent(bloom_l1, v_uv) * 0.30;
-    bloom += sample_tent(bloom_l2, v_uv) * 0.20;
-    bloom += sample_tent(bloom_l3, v_uv) * 0.12;
+    vec3 bloom = sample_tent(bloom_l0_texture[heap_slots_bloom_l0 + heap_image_index], heap_sampler_post, v_uv) * 0.50;
+    bloom += sample_tent(bloom_l1_texture[heap_slots_bloom_l1 + heap_image_index], heap_sampler_post, v_uv) * 0.30;
+    bloom += sample_tent(bloom_l2_texture[heap_slots_bloom_l2 + heap_image_index], heap_sampler_post, v_uv) * 0.20;
+    bloom += sample_tent(bloom_l3_texture[heap_slots_bloom_l3 + heap_image_index], heap_sampler_post, v_uv) * 0.12;
 
-    vec3 color = texture(source_color, v_uv).rgb;
+    vec3 color = heap_texel(post_source_texture[heap_post_source_slot], heap_sampler_post, v_uv).rgb;
     // The screen-space GI that used to be added here (a joint-bilateral upsample of the half-resolution
     // indirect) is not added here any more. What the scene target holds is the
     // direct radiance plus the ambient and the IBL.

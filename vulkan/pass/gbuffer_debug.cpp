@@ -155,7 +155,7 @@ namespace vulkan::pass {
             .proj_32 = io.constants.proj[3][2],
             .motion_gain = static_cast<float>(io.frame.extent.width) * 0.25f,
         };
-        vkCmdPushConstants(io.cmd, io.pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), &push);
+        [[maybe_unused]] bool const pushed = io.push_block(io.cmd, pass::push_bytes(push));
         vkCmdDraw(io.cmd, 3, 1, 0, 0);
         vkCmdEndRendering(io.cmd);
     }

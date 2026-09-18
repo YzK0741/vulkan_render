@@ -36,8 +36,12 @@ struct Material {
     float normal_scale;
     uint flags; // bit0: normal map, bit1: occlusion map, bit2: emissive map, bit3: double-sided, bit4: alphaMode MASK, bit5: alphaMode BLEND
 };
-layout(set = 0, binding = 1) uniform sampler2D textures[];
-layout(set = 0, binding = 5) readonly buffer Materials { Material materials[]; };
+// HEAP-NATIVE (see unlit.frag for the shape): the bindless array is the shared `heap_textures`, the table is an
+// array of blocks whose ARRAY name carries the heap slot, and the extensions are per stage.
+#extension GL_EXT_descriptor_heap : require
+#extension GL_EXT_nonuniform_qualifier : enable
+#include "heap_slots.glsl"
+layout(descriptor_heap, descriptor_stride = heap_slot_stride) readonly buffer Materials { Material materials[]; } heap_material_tables[];
 
 layout(push_constant) uniform PushConstants {
     uint material_index; // index into the material table (the mask test's only input)
@@ -60,12 +64,12 @@ layout(location = 0) in vec2 v_uv; // albedo UV from shadow.vert (only the mask 
  * albedo texture at all.
  */
 void main() {
-    Material mat = materials[push.material_index];
+    Material mat = heap_material_tables[heap_slots_materials].materials[push.material_index];
     if ((mat.flags & 16u) == 0u) {
         return; // OPAQUE / BLEND: nothing to test, so the albedo texture is never sampled
     }
     // same expression as pbr.frag: base_color.a is factor.a * albedo.a
-    if (mat.base_color_factor.a * texture(textures[mat.tex_indices.x], v_uv).a < mat.alpha_cutoff) {
+    if (mat.base_color_factor.a * heap_texel(heap_textures[heap_slots_textures + mat.tex_indices.x], heap_sampler_texture, v_uv).a < mat.alpha_cutoff) {
         discard;
     }
 }

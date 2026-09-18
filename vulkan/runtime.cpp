@@ -1979,10 +1979,14 @@ namespace vulkan {
         // turns on for a frame whose EVERY stage is heap-based, and not one stage earlier - a pass cannot be
         // migrated on its own. The two calls below are what that frame will make, and the push is the frame slot
         // (see push_heap_frame_slot and pipelines::scene_heap_stage_mapping, both written and validated).
-        // if (vk.descriptor_heaps.ready()) {
-        //     vk.descriptor_heaps.record_bind(*command_buffer);
-        //     push_heap_frame_slot(vk, *command_buffer, static_cast<uint32_t>(vk.current_frame));
-        // }
+        // THE HEAPS, BOUND ONCE FOR THE WHOLE FRAME (see descriptor_heap::record_bind): every stage is heap-native
+        // now, so this is command-buffer state taken at the earliest point the frame has commands. THERE IS NO
+        // PUSH HERE, and its absence is the design: the frame slot and the swapchain image travel INSIDE each
+        // stage's own push block (see shaders/heap_slots.glsl), which is what replaced the mapping shim's pushed
+        // index - the binding is per frame, the indices are per stage.
+        if (vk.descriptor_heaps.ready()) {
+            vk.descriptor_heaps.record_bind(*command_buffer);
+        }
         // GPU pass timing: open this frame's timestamp range and take the first mark. Marks are
         // written in gpu_mark_id order from here on (see gpu_mark); opening the range outside any
         // rendering instance is required, and this is the first point of the frame where the
@@ -3882,6 +3886,9 @@ namespace vulkan {
     // it is handed `resolved_io`, so it cannot reach a resource its declaration did not name.
     pass::pass_host runtime::make_pass_host() noexcept {
         return pass::pass_host{
+            // THE HEAP PUSH EVERY CONVERTED STAGE NEEDS (see resolved_io::push_block): a block sent through
+            // vkCmdPushDataEXT, because no heap pipeline has a layout to hold push constants.
+            .push_block = {.owner = this, .push = &runtime::push_stage_block},
             .context = this,
             .frame = [](void* context) { return static_cast<runtime*>(context)->pass_frame(); },
             .feature_active = [](void* context, std::string_view const feature) { return static_cast<runtime*>(context)->feature_active(feature); },
@@ -4990,6 +4997,25 @@ namespace vulkan {
 
     bool runtime::structure_mask_ready(void* const owner) noexcept {
         return static_cast<runtime*>(owner)->mask_bake.ready();
+    }
+
+    bool runtime::push_stage_block(void* const owner, VkCommandBuffer const command_buffer, std::span<std::byte const> const bytes, uint32_t const extra_lane) {
+        // THE INDICES ARE APPENDED HERE, and that placement is the whole trick: the renderer knows the frame slot and
+        // the swapchain image, a pass knows neither, and a converted stage's shader declares them as its block's
+        // LAST two fields (see shaders/heap_slots.glsl). Doing it here is what keeps every pass's push struct - and
+        // its static_assert on the size - untouched. The optional third lane is the post chain's own source slot,
+        // which only that chain's passes can name; a stage that does not declare it simply ignores the extra bytes.
+        runtime* const self = static_cast<runtime*>(owner);
+        constexpr std::size_t lane_bytes = 3u * sizeof(uint32_t);
+        std::array<std::byte, 256> staging = {}; // maxPushDataSize on this device (see heap_limits)
+        if (bytes.size() + lane_bytes > staging.size()) {
+            utility::log("heap push: a block of {} B plus the three index lanes does not fit the push-data window", bytes.size());
+            return false;
+        }
+        std::memcpy(staging.data(), bytes.data(), bytes.size());
+        std::array<uint32_t, 3> const indices = {static_cast<uint32_t>(self->vulkan_core.current_frame), self->current_image_index, extra_lane};
+        std::memcpy(staging.data() + bytes.size(), indices.data(), lane_bytes);
+        return self->vulkan_core.descriptor_heaps.push_data(command_buffer, 0u, std::span<std::byte const>(staging.data(), bytes.size() + lane_bytes));
     }
 
     void runtime::structure_record_mask_bake(void* const owner, VkCommandBuffer const command_buffer, pass::mask_bake_request const& request) {

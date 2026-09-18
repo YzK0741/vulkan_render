@@ -172,7 +172,7 @@ namespace vulkan::pass {
         vkCmdSetCullMode(io.cmd, VK_CULL_MODE_NONE); // the synthetic triangle has no facing to cull
         VkDescriptorSet const set = io.shared.post;  // the post family's set 4, which the host writes
         vkCmdBindDescriptorSets(io.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, io.pipeline_layout, 0, 1, &set, 0, nullptr);
-        vkCmdPushConstants(io.cmd, io.pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), &push);
+        [[maybe_unused]] bool const pushed = io.push_block(io.cmd, pass::push_bytes(push));
         vkCmdDraw(io.cmd, 3, 1, 0, 0);
         // INSIDE the instance, between the draw and its end: this pass is the frame's LAST writer whenever it runs,
         // so the overlay belongs here - drawing it in the composite's instance instead would let the edge filter

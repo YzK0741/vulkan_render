@@ -47,12 +47,13 @@
 
 layout(local_size_x = 64) in;
 
-// The two things the bake reads from the shared scene set: the material table (the alpha texture's index,
-// the base colour factor's alpha and the cutoff) and the bindless texture array. Declared here rather than
-// included from shaders/surface.glsl, which owns them for the raster path, because that file also declares
-// the shared push-constant block and a shader may declare only one. The layout must stay byte-identical to material_record in
-// vulkan/primitive.cppm: it is a CPU/GPU contract, not a convenience.
-layout(set = 0, binding = 1) uniform sampler2D textures[];
+// HEAP-NATIVE (see docs/descriptor_heap_migration.md): the material table and the bindless texture array are heap
+// descriptors now, declared here rather than included from surface.glsl because that file also declares the shared
+// push-constant block and a shader may declare only one. The extensions are required in every stage that declares a
+// `descriptor_heap` resource, and the grid header brings the slots and the shared arrays.
+#extension GL_EXT_descriptor_heap : require
+#extension GL_EXT_nonuniform_qualifier : enable
+#include "heap_slots.glsl"
 struct MaskMaterial {
     uvec4 tex_indices; // albedo, metallic-roughness, normal, occlusion (indices into textures[])
     uint emissive_index;
@@ -66,7 +67,8 @@ struct MaskMaterial {
     float normal_scale;
     uint flags; // bit4: alphaMode MASK - the bit that makes this pass meaningful for a material
 };
-layout(set = 0, binding = 5) readonly buffer MaskMaterials { MaskMaterial materials[]; };
+// The ARRAY name carries the HEAP slot, the block member carries the record index: two index spaces.
+layout(descriptor_heap, descriptor_stride = heap_slot_stride) readonly buffer MaskMaterials { MaskMaterial materials[]; } heap_material_tables[];
 
 layout(push_constant) uniform MaskBakePush {
     // Device addresses as two 32-bit halves, the shape every pass in this project pushes them in (a push
@@ -146,13 +148,13 @@ void main() {
     // grid over the area cut 1.0% of a vase's triangles where a texel walk over the same area cut 0.1%, and
     // the vase's frame came out 1.42 of mean brightness BRIGHTER than the raster shadow it should match -
     // i.e. nine of every ten of the cheap rule's decisions removed a shadow that belongs there.
-    const MaskMaterial material = materials[pc.material_index];
+    const MaskMaterial material = heap_material_tables[heap_slots_materials].materials[pc.material_index];
     const float cutoff = material.alpha_cutoff;
     const float factor_alpha = material.base_color_factor.a;
     const vec2 uv_min = min(min(uvs[0], uvs[1]), uvs[2]);
     const vec2 uv_max = max(max(uvs[0], uvs[1]), uvs[2]);
     const vec2 uv_span = uv_max - uv_min;
-    const ivec2 footprint = ivec2(abs(uv_span) * vec2(textureSize(textures[material.tex_indices.x], 0)));
+    const ivec2 footprint = ivec2(abs(uv_span) * vec2(textureSize(sampler2D(heap_textures[heap_slots_textures + material.tex_indices.x], heap_samplers[heap_sampler_texture]), 0)));
     // The cap is spent on the SAFE side: a footprint too large to walk (a triangle spanning a whole sheet or
     // crossing a UV wrap) is KEPT, so the bake never removes geometry it has not looked at.
     const int steps_u = max(1, min(footprint.x, MASK_BAKE_MAX_STEPS));
@@ -182,7 +184,7 @@ void main() {
             // kept when it reaches the cutoff (shaders/shadow.frag and surface.glsl's `alpha < cutoff ->
             // discard`). The sampler is indexed inline: GLSL lets a sampler live only in a uniform or a
             // parameter, not in a local.
-            const float coverage = factor_alpha * texture(textures[material.tex_indices.x], uv).a;
+            const float coverage = factor_alpha * heap_texel(heap_textures[heap_slots_textures + material.tex_indices.x], heap_sampler_texture, uv).a;
             any_opaque = coverage >= cutoff;
         }
     }

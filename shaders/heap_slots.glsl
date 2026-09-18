@@ -19,6 +19,19 @@
 #ifndef HEAP_SLOTS_GLSL
 #define HEAP_SLOTS_GLSL
 
+// THE TWO INDICES A HEAP-NATIVE STAGE NEEDS ARE PUSH CONSTANTS, and they live INSIDE each stage's own block: a
+// heap pipeline has no pipeline layout, so vkCmdPushConstants has nothing to push to, but vkCmdPushDataEXT supplies
+// exactly the same bytes and the shader reads them exactly as it always read push constants (the extension proposal
+// says so in those words, and the heap-native probe proves it). A push_constant BLOCK may not carry an `offset`
+// qualifier - measured, glslang says "only applies to block members" - so there is no shared block to put them in:
+// each stage appends `uint frame_slot; uint image_index;` to ITS OWN block (at the end, so every existing field
+// keeps its offset) and then aliases them to the two names the slot macros below use:
+//
+//     #define heap_frame_slot (push.frame_slot)
+//     #define heap_image_index (push.image_index)
+//
+// (with `push` the stage's own block instance name). A stage that uses neither pays 8 bytes of push block.
+
 // the grid's base, in slots: 1 MiB / 64 B
 const uint heap_slot_base = 16384u;
 // what a declaration must pass as its layout qualifier (see the note above)
@@ -92,5 +105,53 @@ const uint heap_sampler_gbuffer = heap_sampler_base + 2u;        // nearest, cla
 const uint heap_sampler_post_nearest = heap_sampler_base + 3u;   // nearest, clamp (the same sampler twice)
 const uint heap_sampler_taa = heap_sampler_base + 4u;            // linear mag / nearest min, clamp
 const uint heap_sampler_shadow = heap_sampler_base + 5u;         // depth compare, clamp
+// The runtime's OWN sampler for the IBL images (env, irradiance, LUT): it is not one of the six core creates, so
+// it is the seventh slot - the host writes it there once the heap exists (runtime::set_ibl's samplers).
+const uint heap_sampler_env = heap_sampler_base + 6u;
+
+// THE SLOTS A CONVERTED STAGE ACTUALLY INDEXES. They are MACROS rather than constants because the index they add
+// is a push-constant lane, i.e. not a compile-time value - this keeps the ~forty use sites unchanged (they read
+// `heap_camera_slot` as an expression) instead of turning each one into a function call. THE INDEX RULE, stated
+// once: per-frame arrays add heap_indices.frame_slot, per-swapchain-image arrays add heap_indices.image_index.
+// Getting that backwards is silent - the read lands on another frame's or another image's descriptor.
+#define heap_camera_slot (heap_slots_scene_camera + heap_frame_slot)
+#define heap_light_slot (heap_slots_scene_light + heap_frame_slot)
+#define heap_cluster_count_slot (heap_slots_cluster_counts + heap_frame_slot)
+#define heap_cluster_index_slot (heap_slots_cluster_indices + heap_frame_slot)
+#define heap_instance_slot (heap_slots_instance_transforms) // ONE descriptor, not a per-frame array
+#define heap_previous_slot (heap_slots_previous_transforms + heap_frame_slot)
+#define heap_skin_slot (heap_slots_skin_matrices + heap_frame_slot)
+#define heap_morph_slot (heap_slots_morph_data + heap_frame_slot)
+#define heap_shadow_slot (heap_slots_shadow_map + heap_frame_slot)
+#define heap_rt_visibility_slot (heap_slots_rt_visibility + heap_frame_slot)
+#define heap_rt_visibility_storage_slot (heap_slots_rt_visibility_storage + heap_frame_slot)
+#define heap_tlas_slot (heap_slots_tlas + heap_frame_slot)
+#define heap_mask_instance_slot (heap_slots_mask_instances + heap_frame_slot)
+#define heap_env_slot (heap_slots_env_cube)
+#define heap_irradiance_slot (heap_slots_irradiance_cube)
+#define heap_lut_slot (heap_slots_brdf_lut)
+#define heap_material_slot (heap_slots_materials)
+#define heap_texture_base (heap_slots_textures) // the bindless array's first slot: + the texture's own index
+#define heap_image_slot(base) ((base) + heap_image_index) // for the per-swapchain-image arrays
+
+// THE SHARED HEAP ARRAYS, declared once here rather than per header: more than one converted file needs them
+// (surface.glsl the textures, shading.glsl the samplers) and GLSL has no way to declare the same array twice in
+// one stage. A stage that uses neither pays nothing for them - an unused declaration compiles away - and a stage
+// that uses both gets ONE declaration, which is the whole reason they live in the shared file. They come LAST
+// because `descriptor_stride` has to be a constant expression, and heap_slot_stride is declared above.
+layout(descriptor_heap, descriptor_stride = heap_slot_stride) uniform texture2D heap_textures[];
+layout(descriptor_heap) uniform sampler heap_samplers[];
+
+/**
+ * @brief one texel from a heap image, through the sampler at @p sampler_slot
+ * @param tex the image, already indexed by its slot (heap_slots_x + heap_frame_slot or + heap_image_index)
+ * @param sampler_slot which sampler heap entry to use (heap_sampler_gbuffer for exact fetches, and so on)
+ * @note THE TWO HALVES OF A FETCH ARE SEPARATE IN A HEAP - the image is a resource heap descriptor and the sampler
+ *       a sampler heap one - and a combined image sampler cannot be declared at all, so every fetch has to name
+ *       both. This exists so that naming both happens in one place instead of at forty sites.
+ */
+vec4 heap_texel(texture2D tex, uint sampler_slot, vec2 uv) {
+    return texture(sampler2D(tex, heap_samplers[sampler_slot]), uv);
+}
 
 #endif // HEAP_SLOTS_GLSL

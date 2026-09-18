@@ -149,7 +149,7 @@ namespace vulkan::pass {
         push.params = glm::vec4(static_cast<float>(this->samples_), this->min_weight_, this->tmin_, static_cast<float>(this->frame_index_));
         push.bias = glm::vec4(this->bias_floor_, this->bias_grazing_, this->light_angle_, 0.0f);
         static_assert(sizeof(push) <= pass::max_push_bytes, "the estimator's push block must fit the guaranteed minimum");
-        vkCmdPushConstants(io.cmd, io.pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
+        [[maybe_unused]] bool const pushed = io.push_block(io.cmd, pass::push_bytes(push));
         vkCmdDispatch(io.cmd, (io.extent.width + group_size - 1u) / group_size, (io.extent.height + group_size - 1u) / group_size, 1);
 
         // ... and the hand-off: a compute SHADER_WRITE is not visible to the lighting stage's texture fetch

@@ -170,7 +170,7 @@ namespace vulkan::pass {
         push.ssao = glm::vec4(this->ssao_radius_, this->ssao_enabled_ ? this->ssao_intensity_ : 0.0f, static_cast<float>(this->ssao_samples_), this->ssao_bias_);
         push.unlit = this->unlit_ ? 1.0f : 0.0f;
         push.punctual_replaced = this->frame_.punctual_replaced ? 1.0f : 0.0f;
-        vkCmdPushConstants(io.cmd, io.pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), &push);
+        [[maybe_unused]] bool const pushed = io.push_block(io.cmd, pass::push_bytes(push));
         vkCmdDraw(io.cmd, 3, 1, 0, 0);
         vkCmdEndRendering(io.cmd);
     }

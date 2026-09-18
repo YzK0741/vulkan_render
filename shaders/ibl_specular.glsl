@@ -11,8 +11,9 @@
  * was written twice, once in shaders/shading.glsl (the lighting stage's ambient) and once inline in a
  * shaded hit's ambient; both now call these functions, so the definition went from two to one.
  *
- * WHAT THE INCLUDER MUST PROVIDE: `env_sampler` (scene set binding 2, the prefiltered GGX environment)
- * and `brdf_lut_sampler` (binding 4). shaders/shading.glsl declares both. A binding declared twice in one
+ * WHAT THE INCLUDER MUST PROVIDE: the environment (heap_slots::env_cube, declared as `env_texture[]` by
+ * shaders/shading.glsl) and the BRDF LUT (`brdf_lut_texture[]`), plus the slot constants that name them. A
+ * binding declared twice in one
  * translation unit does not compile, which is why nothing
  * is declared here - and why this file is included AFTER those declarations.
  */
@@ -23,12 +24,12 @@
 /// @brief the prefiltered chain's mip level for a roughness: the level count is QUERIED from the
 ///        sampler rather than hardcoded, so it always matches whatever `env_mip_count` the CPU baked
 float ibl_specular_lod(float roughness) {
-    return roughness * float(max(textureQueryLevels(env_sampler) - 1, 0));
+    return roughness * float(max(textureQueryLevels(samplerCube(env_texture[heap_env_slot], heap_samplers[heap_sampler_env])) - 1, 0));
 }
 
 /// @brief one sample of the prefiltered environment: the radiance arriving from @p reflection
 vec3 ibl_specular_sample(vec3 reflection, float lod) {
-    return textureLod(env_sampler, reflection, lod).rgb;
+    return textureLod(samplerCube(env_texture[heap_env_slot], heap_samplers[heap_sampler_env]), reflection, lod).rgb;
 }
 
 /// @brief Prefiltered GGX environment radiance for a reflection ray, at the mip that matches
@@ -45,7 +46,7 @@ vec3 ibl_specular_radiance(vec3 n, vec3 v, float roughness) {
 vec3 ibl_specular_fresnel(vec3 n, vec3 v, float roughness, vec3 f0, float specular_weight) {
     const float ndotv = clamp(dot(n, v), 0.0, 1.0);
     const vec2 brdf_sample_point = clamp(vec2(ndotv, roughness), vec2(0.0), vec2(1.0));
-    const vec2 f_ab = texture(brdf_lut_sampler, brdf_sample_point).rg;
+    const vec2 f_ab = texture(sampler2D(brdf_lut_texture[heap_lut_slot], heap_samplers[heap_sampler_texture]), brdf_sample_point).rg;
     const vec3 fr = max(vec3(1.0 - roughness), f0) - f0;
     const vec3 k_s = f0 + fr * pow(1.0 - ndotv, 5.0);
     const vec3 fssess = specular_weight * (k_s * f_ab.x + f_ab.y);

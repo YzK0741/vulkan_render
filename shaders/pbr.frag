@@ -20,6 +20,11 @@
  * set and the material push block - see docs/shaders.md.
  */
 
+// surface.glsl's declarations are heap-native: a `descriptor_heap` declaration compiles to an untyped pointer, so
+// this stage has to ask for that extension, and for the nonuniform qualifier a variable index into one needs.
+#extension GL_EXT_descriptor_heap : require
+#extension GL_EXT_nonuniform_qualifier : enable
+
 #include "surface.glsl"
 #include "shading.glsl"
 

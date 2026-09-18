@@ -22,18 +22,29 @@
 layout(location = 0) in vec2 v_uv;
 layout(location = 0) out vec4 out_color;
 
-layout(set = 0, binding = 0) uniform sampler2D gbuffer_albedo;  // RGBA8: albedo.rgb + metallic
-layout(set = 0, binding = 1) uniform sampler2D gbuffer_normal;  // RGBA16F: normal.xyz + roughness
-layout(set = 0, binding = 2) uniform sampler2D gbuffer_material; // RGBA8: id lo/hi + ao + flags
-layout(set = 0, binding = 3) uniform sampler2D gbuffer_depth;   // the pass's single-sampled depth
-layout(set = 0, binding = 4) uniform sampler2D gbuffer_velocity; // RG16F: motion vector, UV space
+// HEAP-NATIVE (see docs/descriptor_heap_migration.md): five resource heap images, all per SWAPCHAIN IMAGE, read at
+// exact texel centres through the G-buffer's NEAREST sampler - this pass VIEWS the stored surface, so filtering it
+// would show a surface that was never stored.
+#extension GL_EXT_descriptor_heap : require
+#extension GL_EXT_nonuniform_qualifier : enable
+#include "heap_slots.glsl"
+layout(descriptor_heap, descriptor_stride = heap_slot_stride) uniform texture2D gbuffer_albedo_texture[];   // RGBA8: albedo.rgb + metallic
+layout(descriptor_heap, descriptor_stride = heap_slot_stride) uniform texture2D gbuffer_normal_texture[];   // RGBA16F: normal.xyz + roughness
+layout(descriptor_heap, descriptor_stride = heap_slot_stride) uniform texture2D gbuffer_material_texture[]; // RGBA8: id lo/hi + ao + flags
+layout(descriptor_heap, descriptor_stride = heap_slot_stride) uniform texture2D gbuffer_depth_texture[];    // the pass's single-sampled depth
+layout(descriptor_heap, descriptor_stride = heap_slot_stride) uniform texture2D gbuffer_velocity_texture[]; // RG16F: motion vector, UV space
 
 layout(push_constant) uniform GbufferDebugPush {
     float channel;     // 0 albedo, 1 normal, 2 roughness, 3 metallic, 4 ao, 5 id, 6 depth, 7 flags, 8 motion
     float proj_22;     // projection[2][2]: the depth-linearization terms (see view_depth)
     float proj_32;     // projection[3][2]
     float motion_gain; // channel 8's amplification (the CPU passes width/4: four pixels saturate)
+    // THE HEAP INDICES (see heap_slots.glsl), at the END so every field above keeps its offset.
+    uint frame_slot;
+    uint image_index;
 } pc;
+#define heap_frame_slot (pc.frame_slot)
+#define heap_image_index (pc.image_index)
 
 /**
  * @brief view-space distance of a depth-buffer sample
@@ -66,19 +77,19 @@ vec3 material_id_color(uint id) {
  */
 void main() {
     const uint channel = uint(pc.channel + 0.5);
-    const vec4 albedo_metallic = texture(gbuffer_albedo, v_uv);
-    const vec4 normal_roughness = texture(gbuffer_normal, v_uv);
-    const vec4 material = texture(gbuffer_material, v_uv);
+    const vec4 albedo_metallic = heap_texel(gbuffer_albedo_texture[heap_slots_gbuffer_albedo + heap_image_index], heap_sampler_gbuffer, v_uv);
+    const vec4 normal_roughness = heap_texel(gbuffer_normal_texture[heap_slots_gbuffer_normal + heap_image_index], heap_sampler_gbuffer, v_uv);
+    const vec4 material = heap_texel(gbuffer_material_texture[heap_slots_gbuffer_material + heap_image_index], heap_sampler_gbuffer, v_uv);
     // The cleared depth is the far plane: those pixels hold no geometry, so every channel shows
     // them black. Without this the normal channel would paint them mid-grey (the remap of a zero
     // normal), which reads like a surface that is lit strangely rather than like empty space.
-    const bool background = texture(gbuffer_depth, v_uv).r >= 1.0;
+    const bool background = heap_texel(gbuffer_depth_texture[heap_slots_gbuffer_depth + heap_image_index], heap_sampler_gbuffer, v_uv).r >= 1.0;
 
     vec3 color;
     if (channel == 6u) {
         // near = white, far = black; the cleared background is the far plane
         const float far_plane = pc.proj_32 / (1.0 + pc.proj_22);
-        color = vec3(1.0 - clamp(view_depth(texture(gbuffer_depth, v_uv).r) / far_plane, 0.0, 1.0));
+        color = vec3(1.0 - clamp(view_depth(heap_texel(gbuffer_depth_texture[heap_slots_gbuffer_depth + heap_image_index], heap_sampler_gbuffer, v_uv).r) / far_plane, 0.0, 1.0));
     } else if (background) {
         color = vec3(0.0);
     } else if (channel == 0u) {
@@ -100,7 +111,7 @@ void main() {
         // four pixels saturate, and the +0.5 bias means "did not move" reads as flat olive while
         // any movement shifts toward red or green by direction. That is the question this channel
         // answers: WHERE is temporal reprojection being asked to move a sample, and which way.
-        const vec2 motion = texture(gbuffer_velocity, v_uv).rg;
+        const vec2 motion = heap_texel(gbuffer_velocity_texture[heap_slots_gbuffer_velocity + heap_image_index], heap_sampler_gbuffer, v_uv).rg;
         color = vec3(clamp(motion * pc.motion_gain + 0.5, 0.0, 1.0), 0.0);
     } else {
         color = vec3(material.a); // raw material flag byte

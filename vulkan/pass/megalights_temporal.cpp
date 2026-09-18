@@ -214,7 +214,7 @@ namespace vulkan::pass {
         push.params = glm::vec4(io.constants.proj[2][2], io.constants.proj[3][2], this->max_frames_, this->depth_tolerance_);
         push.extents = glm::vec4(static_cast<float>(io.extent.width), static_cast<float>(io.extent.height), this->spatial_sigma_, 0.0f);
         static_assert(sizeof(push) <= pass::max_push_bytes, "the resolve's push block must fit the guaranteed minimum");
-        vkCmdPushConstants(io.cmd, io.pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
+        [[maybe_unused]] bool const pushed = io.push_block(io.cmd, pass::push_bytes(push));
         vkCmdDispatch(io.cmd, (io.extent.width + group_size - 1u) / group_size, (io.extent.height + group_size - 1u) / group_size, 1);
 
         // ---- the accumulation becomes the next frame's history ----

@@ -209,6 +209,16 @@ export namespace vulkan::pass {
      * struct owns everything the pass reads and there is no second place for a handle to live (and no
      * lifetime for a host to get wrong).
      */
+    /**
+     * @brief the BYTES of a stage's push block, for resolved_io::push_block
+     * @note ONE place decides how a block becomes bytes, so fifteen call sites do not each invent it - and the
+     *       caller no longer names a pipeline layout, because no heap pipeline has one.
+     */
+    template <typename Block>
+    [[nodiscard]] std::span<std::byte const> push_bytes(Block const& block) noexcept {
+        return std::span<std::byte const>(reinterpret_cast<std::byte const*>(&block), sizeof(Block));
+    }
+
     struct resolved_io {
         frame_identity frame = {};
         /// THE command buffer is handed out per frame, at recording time, and never stored: a pass records
@@ -235,6 +245,32 @@ export namespace vulkan::pass {
         std::array<std::span<VkImageView const>, max_own_bindings> own_per_image = {};
         VkDescriptorSet own_set = VK_NULL_HANDLE;
         shared_sets shared = {};
+        /**
+         * @brief HOW A PASS SENDS ITS PUSH BLOCK NOW THAT NO PIPELINE HAS A LAYOUT
+         *
+         * Every stage is heap-native, and a heap pipeline is created with `layout = VK_NULL_HANDLE` because
+         * validation refuses the alternative ("either set the layout to NULL or remove the heaps from the shader").
+         * That leaves `vkCmdPushConstants` with nothing to push to - so a pass sends its block through
+         * `vkCmdPushDataEXT`, which the shader reads exactly as it always read push constants (the extension says
+         * so, and the heap-native probe does it). The framework holds an OWNER AND A CALLBACK rather than the heap
+         * itself: the heap is the core's, a pass talks to the HOST, and `shared_set_layout` is the same shape for
+         * the same reason.
+         *
+         * A stage's block now also carries the two heap indices (frame slot, swapchain image - and, for the post
+         * chain, its source slot), which the host fills in before sending it. See vulkan/pass/pass.cppm's siblings
+         * and shaders/heap_slots.glsl.
+         */
+        struct push_endpoint {
+            void* owner = nullptr;
+            bool (*push)(void* owner, VkCommandBuffer command_buffer, std::span<std::byte const> bytes, uint32_t extra_lane) = nullptr;
+
+            /// @param extra_lane the POST chain's own source slot, which only that chain's passes can name; every
+            ///        other stage leaves it 0 and its shader does not declare the third field at all.
+            [[nodiscard]] bool operator()(VkCommandBuffer command_buffer, std::span<std::byte const> bytes, uint32_t extra_lane = 0u) const {
+                return this->push != nullptr && this->push(this->owner, command_buffer, bytes, extra_lane);
+            }
+        };
+        push_endpoint push_block = {};
         /**
          * The storage `targets` views: the images this pass RENDERS INTO, in the order its declaration names
          * them, each with the view a rendering instance takes and the image a barrier takes.
@@ -544,6 +580,11 @@ export namespace vulkan::pass {
      * from growing into a context object that hands out whatever the newest pass wants.
      */
     struct pass_host {
+        /// HOW A PASS SENDS ITS PUSH BLOCK (see resolved_io::push_block): every pipeline is heap-native and
+        /// therefore layout-less, so the block travels through vkCmdPushDataEXT. The runner copies this into the
+        /// resolved io of every stage, exactly as it copies the other host callbacks.
+        resolved_io::push_endpoint push_block = {};
+
         void* context = nullptr;
         /// the frame being recorded
         frame_identity (*frame)(void* context) = nullptr;
@@ -887,6 +928,7 @@ export namespace vulkan::pass {
                 continue;
             }
             resolved_io io = {};
+            io.push_block = host.push_block; // the heap push every converted stage needs (see resolved_io)
             if (host.resolve == nullptr || !host.resolve(host.context, *p, io)) {
                 ++report.skipped_unresolved;
                 continue;
