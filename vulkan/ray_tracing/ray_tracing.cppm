@@ -165,6 +165,12 @@ export namespace vulkan::ray_tracing {
         [[nodiscard]] bool ready() const noexcept;
         /// @brief this slot's top level structure, or `VK_NULL_HANDLE` (the scene set's binding 16)
         [[nodiscard]] VkAccelerationStructureKHR handle(uint32_t frame_slot) const noexcept;
+        /**
+         * @brief the size this slot's top level structure was created with (see top_level_structure::structure_size)
+         * @note forwarded rather than re-derived: the structure is `top_`'s, and the descriptor heap writes it as
+         *       an address RANGE whose size has to be real (docs/descriptor_heap_migration.md).
+         */
+        [[nodiscard]] VkDeviceSize structure_size(uint32_t frame_slot) const noexcept;
         /// @brief this slot's instance table buffer, whose device ADDRESS the GI frame constants carry
         [[nodiscard]] VkBuffer instance_table(uint32_t frame_slot) const noexcept;
         /// @brief the casters that were built, in the order they were added (see caster_level)

@@ -1987,6 +1987,30 @@ namespace vulkan {
                 if (frame_slot < this->rt_binding_written.size() && this->rt_binding_written[frame_slot] != tlas) {
                     this->write_rt_structure_binding(this->scene_sets.set(frame_slot), tlas, frame_slot);
                     this->rt_binding_written[frame_slot] = tlas;
+                    // THE HEAP'S COPY, at the same moment and for the same reason: a heap descriptor for an
+                    // acceleration structure is an ADDRESS RANGE carrying the structure's device address (the
+                    // heap's payload union has no AS member - see docs/descriptor_heap_migration.md), and it is
+                    // per FRAME SLOT because the structure is rebuilt every frame - which is why heap_slots::tlas
+                    // is a two-slot array. The size is the one the structure was created with (published through
+                    // ray_tracing::structure_set): a heap range must carry a real size, a lesson this renderer
+                    // already paid for on the material table.
+                    if (this->vulkan_core.descriptor_heaps.ready() && this->vulkan_core.heap_grid_offset != VK_WHOLE_SIZE && tlas != VK_NULL_HANDLE) {
+                        // RESOLVED PER DEVICE, not linked: the loader exports the core entry points and not this
+                        // extension one (the link failed with `undefined symbol:
+                        // vkGetAccelerationStructureDeviceAddressKHR`, which is the same reason the acceleration
+                        // structure module loads its own entry points through vkGetDeviceProcAddr).
+                        static PFN_vkGetAccelerationStructureDeviceAddressKHR const get_structure_address =
+                            reinterpret_cast<PFN_vkGetAccelerationStructureDeviceAddressKHR>(vkGetDeviceProcAddr(this->vulkan_core.device, "vkGetAccelerationStructureDeviceAddressKHR"));
+                        VkAccelerationStructureDeviceAddressInfoKHR const tlas_address_info = {
+                            .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR,
+                            .pNext = nullptr,
+                            .accelerationStructure = tlas,
+                        };
+                        VkDeviceAddress const tlas_address = get_structure_address != nullptr ? get_structure_address(this->vulkan_core.device, &tlas_address_info) : 0;
+                        if (!this->vulkan_core.descriptor_heaps.write_buffer(heap_slot_offset(core::heap_slots::tlas + frame_slot), tlas_address, this->structures.structure_size(frame_slot), VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR)) {
+                            utility::log("descriptor heap: the top level structure did not reach grid slot {}", core::heap_slots::tlas + frame_slot);
+                        }
+                    }
                 }
             }
         }

@@ -461,6 +461,9 @@ namespace vulkan::acceleration_structure {
             if (this->functions->create(vk.device, &create, nullptr, &target.handle) != VK_SUCCESS) {
                 return std::unexpected(std::string("acceleration structures: the top level structure could not be created"));
             }
+            // KEPT because a heap descriptor for it is an address RANGE that must carry a real size (see
+            // top_level_structure::structure_size): the size query above is the only place that number exists.
+            target.structure_size = create.size;
             target.capacity = wanted;
             target.scratch_size = sizes.buildScratchSize;
             this->stats.structure_bytes += sizes.accelerationStructureSize;

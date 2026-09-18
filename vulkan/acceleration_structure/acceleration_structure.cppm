@@ -314,8 +314,9 @@ namespace vulkan::acceleration_structure {
             uint32_t count = 0;     // instances added this frame
             vk_buffer storage = {}; // the structure's own memory, sized for `capacity`
             VkAccelerationStructureKHR handle = VK_NULL_HANDLE;
-            VkDeviceSize scratch_size = 0; // what the build of `count` instances needs
-            vk_buffer scratch = {};        // the build's scratch memory, kept once sized
+            VkDeviceSize structure_size = 0; // the size it was CREATED with: what a heap address-range descriptor carries
+            VkDeviceSize scratch_size = 0;   // what the build of `count` instances needs
+            vk_buffer scratch = {};          // the build's scratch memory, kept once sized
         };
 
         core* vk = nullptr; // non-const: VMA's detail lookups and buffer creation are not const
@@ -363,6 +364,19 @@ namespace vulkan::acceleration_structure {
         /** @brief the structure the slot's frame must bind, or VK_NULL_HANDLE when it is empty */
         [[nodiscard]] VkAccelerationStructureKHR handle(uint32_t frame_slot) const noexcept {
             return frame_slot < this->slots.size() ? this->slots[frame_slot].handle : VK_NULL_HANDLE;
+        }
+
+        /**
+         * @brief the size the slot's structure was created with
+         * @return that size, or 0 when the slot does not exist
+         * @note PUBLISHED FOR THE DESCRIPTOR HEAP: a heap acceleration-structure descriptor is an ADDRESS RANGE
+         *       (VkResourceDescriptorDataEXT has no AS member - see docs/descriptor_heap_migration.md), and
+         *       VkDeviceAddressRangeEXT must carry a REAL size - a lesson this renderer already paid for on the
+         *       material table (VUID-VkDeviceAddressRangeKHR-address-11365). The size query at creation is the only
+         *       place that number exists, so it is kept rather than re-derived by a caller that cannot know it.
+         */
+        [[nodiscard]] VkDeviceSize structure_size(uint32_t frame_slot) const noexcept {
+            return frame_slot < this->slots.size() ? this->slots[frame_slot].structure_size : 0;
         }
 
         /** @brief the slot's instance table (instance_record[count]); the shading-at-a-hit step binds it */

@@ -34,6 +34,13 @@ namespace vulkan::ray_tracing {
         return this->bottom_.has_value() && this->top_.has_value();
     }
 
+    VkDeviceSize structure_set::structure_size(uint32_t const frame_slot) const noexcept {
+        // The top level is `top_`'s object (see the member block in the header): this is the forwarding half, for
+        // the descriptor heap, whose acceleration-structure descriptor is an address range that must carry a REAL
+        // size (see docs/descriptor_heap_migration.md - the heap's payload union has no AS member).
+        return this->top_.has_value() ? this->top_->structure_size(frame_slot) : 0;
+    }
+
     VkAccelerationStructureKHR structure_set::handle(uint32_t const frame_slot) const noexcept {
         return this->top_.has_value() ? this->top_->handle(frame_slot) : VK_NULL_HANDLE;
     }
