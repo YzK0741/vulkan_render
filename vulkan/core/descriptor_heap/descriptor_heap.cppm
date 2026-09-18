@@ -196,34 +196,12 @@ namespace vulkan {
          *        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, which the resource heap does not accept at all
          *        (VUID-VkResourceDescriptorInfoEXT-type-11210 lists the kinds a heap descriptor may be, and a
          *        combined image sampler is not among them): the heap holds the IMAGE, and the sampler comes from
-         *        the mapping - an embedded sampler, or a sampler-heap offset - which is what
-         *        minSamplerHeapReservedRangeWithEmbedded exists for.
+         *        the SAMPLER HEAP - the shaders combine the two at the point of use (`sampler2D(tex, samp)` in
+         *        shaders/heap_slots.glsl), which is what removed the mapping step this comment used to describe.
          */
         [[nodiscard]] bool write_image(VkDeviceSize offset_bytes, VkImageViewCreateInfo const& view, VkImageLayout layout, VkDescriptorType type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE) noexcept;
         /// @brief write ONE buffer descriptor (its device address range) into the resource heap
         [[nodiscard]] bool write_buffer(VkDeviceSize offset_bytes, VkDeviceAddress address, VkDeviceSize size, VkDescriptorType type) noexcept;
-
-        /**
-         * @brief build a mapping that makes EXISTING shaders read @p first_binding .. of @p set from the heap
-         * @param mapping the output entry
-         * @param set the descriptor set number the shaders already declare
-         * @param first_binding the first binding of the range
-         * @param binding_count how many consecutive bindings the range covers
-         * @param heap_offset the byte offset in the resource heap the range starts at
-         * @param array_stride the stride between elements of a descriptor ARRAY, or 0 for a single descriptor
-         * @param embedded_sampler the sampler a combined image sampler uses (may be null for image-only kinds)
-         * @return whether the entry was written
-         * @note this is what keeps the GLSL untouched: the mapping is chained into each
-         *       VkPipelineShaderStageCreateInfo and resolves `layout(set = set, binding = ...)` to heap memory.
-         */
-        [[nodiscard]] bool make_mapping(VkDescriptorSetAndBindingMappingEXT& mapping,
-                                        uint32_t set,
-                                        uint32_t first_binding,
-                                        uint32_t binding_count,
-                                        uint32_t heap_offset,
-                                        uint32_t array_stride,
-                                        VkSpirvResourceTypeFlagsEXT resource_mask,
-                                        VkSamplerCreateInfo const* embedded_sampler) const noexcept;
 
         /**
          * @brief reserve @p count descriptors of @p type in the resource heap and return their byte offset

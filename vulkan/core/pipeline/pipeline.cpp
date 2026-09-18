@@ -74,8 +74,7 @@ namespace vulkan {
         float const depth_bias_constant_factor,
         float const depth_bias_slope_factor,
         float const depth_bias_clamp,
-        std::span<VkPipelineColorBlendAttachmentState const> const blend_attachments,
-        VkShaderDescriptorSetAndBindingMappingInfoEXT const* const fragment_mapping) {
+        std::span<VkPipelineColorBlendAttachmentState const> const blend_attachments) {
         using fail = std::unexpected<std::string_view>;
         if (!blend_attachments.empty() && blend_attachments.size() != color_formats.size()) {
             return fail("make_pipeline: a blend attachment per color format is required");
@@ -132,11 +131,6 @@ namespace vulkan {
             make_shader_stage(**vertex_shader_module, VK_SHADER_STAGE_VERTEX_BIT),
             make_shader_stage(**fragment_shader_module, VK_SHADER_STAGE_FRAGMENT_BIT),
         };
-        // the mapping goes on the FRAGMENT stage: the heap resolves that stage's declarations, and its other
-        // bindings keep coming from whatever descriptor set the pass binds.
-        if (fragment_mapping != nullptr) {
-            shader_stage_create_infos[1].pNext = fragment_mapping;
-        }
 
         // double-sided materials need per-draw cull control (core dynamic state since Vulkan 1.3);
         // transparent (alphaMode BLEND) leaves disable depth writes per draw, also a 1.3 core

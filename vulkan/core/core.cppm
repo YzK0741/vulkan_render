@@ -338,8 +338,8 @@ namespace vulkan {
 
         // ---- ray-traced sun visibility (see shaders/rt_shadow.comp) ----
         // FULL resolution, one per FRAME SLOT rather than per swapchain image: it is written and read
-        // within one frame, and BOTH ends are bound in the scene set, which is the per-slot set. A
-        // per-image image would have to be paired in that set with a per-slot top level structure, and
+        // within one frame, and BOTH ends live in the frame's scene block, which is per slot. A
+        // per-image image would have to be paired there with a per-slot top level structure, and
         // the same image can be recorded on either slot - so the two are different lifetimes and mixing
         // them would be wrong on exactly the frames where they disagree.
         std::vector<VkImage> rt_shadow_images = {};

@@ -242,40 +242,6 @@ namespace vulkan {
         return this->write_descriptors(offset_bytes, std::span<VkResourceDescriptorInfoEXT const>(&info, 1));
     }
 
-    bool descriptor_heap::make_mapping(VkDescriptorSetAndBindingMappingEXT& mapping,
-                                       uint32_t const set,
-                                       uint32_t const first_binding,
-                                       uint32_t const binding_count,
-                                       uint32_t const heap_offset,
-                                       uint32_t const array_stride,
-                                       VkSpirvResourceTypeFlagsEXT const resource_mask,
-                                       VkSamplerCreateInfo const* const embedded_sampler) const noexcept {
-        if (!this->ready()) {
-            return false;
-        }
-        mapping = VkDescriptorSetAndBindingMappingEXT{};
-        mapping.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_AND_BINDING_MAPPING_EXT;
-        mapping.pNext = nullptr;
-        mapping.descriptorSet = set;
-        mapping.firstBinding = first_binding;
-        mapping.bindingCount = binding_count;
-        // The resource mask names the SHADER RESOURCE KINDS the range covers. It is the caller's because only the
-        // caller knows what its shader declares there: a `sampler2D` binding is a combined sampled image, while a
-        // `readonly buffer` is a read-only storage buffer - and the valid usage only forbids two mappings from
-        // overlapping in BOTH range and mask, so the precise mask is what lets a later step map another kind over
-        // the same range without a conflict.
-        mapping.resourceMask = resource_mask;
-        mapping.source = VK_DESCRIPTOR_MAPPING_SOURCE_HEAP_WITH_CONSTANT_OFFSET_EXT;
-        mapping.sourceData.constantOffset.heapOffset = heap_offset;
-        mapping.sourceData.constantOffset.heapArrayStride = array_stride;
-        // A combined image sampler takes its sampler from here (an EMBEDDED sampler) or from the sampler heap at
-        // samplerHeapOffset; the sampler heap's reserved-with-embedded window is what makes the first form legal.
-        mapping.sourceData.constantOffset.pEmbeddedSampler = embedded_sampler;
-        mapping.sourceData.constantOffset.samplerHeapOffset = 0;
-        mapping.sourceData.constantOffset.samplerHeapArrayStride = 0;
-        return true;
-    }
-
     bool descriptor_heap::write_samplers(VkDeviceSize const descriptors_offset, std::span<VkSamplerCreateInfo const> const samplers) noexcept {
         if (!this->ready() || this->write_samplers_ == nullptr || this->sampler_mapped_ == nullptr || samplers.empty()) {
             return false;
