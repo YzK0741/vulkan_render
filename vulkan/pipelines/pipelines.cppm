@@ -591,12 +591,16 @@ namespace vulkan::pipelines {
      */
     export std::expected<ray_tracing_pipeline_owned, std::string> build_rt_shadow_ray_tracing(VkDevice device, VkDescriptorSetLayout scene_layout, VkDescriptorSetLayout gbuffer_layout,
                                                                                               uint32_t push_constant_size, std::span<unsigned char const> raygen_code,
-                                                                                              std::span<unsigned char const> closest_hit_code, std::span<unsigned char const> miss_code) {
+                                                                                              std::span<unsigned char const> closest_hit_code, std::span<unsigned char const> miss_code,
+                                                                                              std::span<unsigned char const> any_hit_code) {
         using fail = std::unexpected<std::string>;
         ray_tracing_pipeline_owned out;
 
         VkPushConstantRange push_range = {};
-        push_range.stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR | VK_SHADER_STAGE_MISS_BIT_KHR;
+        // The any-hit stage is in this mask even before it reads a push constant: the range is what the SHADER
+        // may read, and an alpha test that needs the material's index or the scene's alpha cutoff finds it there
+        // rather than needing this layout rebuilt (a pipeline layout is not something to churn per feature).
+        push_range.stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR | VK_SHADER_STAGE_MISS_BIT_KHR | VK_SHADER_STAGE_ANY_HIT_BIT_KHR;
         push_range.offset = 0;
         push_range.size = push_constant_size;
 
@@ -614,7 +618,8 @@ namespace vulkan::pipelines {
         std::optional<vk_shader_module> const raygen = make_shader_module(raygen_code, device);
         std::optional<vk_shader_module> const closest_hit = make_shader_module(closest_hit_code, device);
         std::optional<vk_shader_module> const miss = make_shader_module(miss_code, device);
-        if (!raygen.has_value() || !closest_hit.has_value() || !miss.has_value()) {
+        std::optional<vk_shader_module> const any_hit = make_shader_module(any_hit_code, device);
+        if (!raygen.has_value() || !closest_hit.has_value() || !miss.has_value() || !any_hit.has_value()) {
             return fail("rt shadow: shader module creation failed");
         }
 
@@ -639,10 +644,22 @@ namespace vulkan::pipelines {
                                                             .module = **miss,
                                                             .pName = "main",
                                                             .pSpecializationInfo = nullptr};
-        std::array<VkPipelineShaderStageCreateInfo, 3> const stages = {raygen_stage, miss_stage, closest_hit_stage};
+        VkPipelineShaderStageCreateInfo const any_hit_stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                                                               .pNext = nullptr,
+                                                               .flags = 0,
+                                                               .stage = VK_SHADER_STAGE_ANY_HIT_BIT_KHR,
+                                                               .module = **any_hit,
+                                                               .pName = "main",
+                                                               .pSpecializationInfo = nullptr};
+        // FOUR STAGES, THREE GROUPS: the any-hit shader sits at index 3 and is named by the hit group below rather
+        // than becoming a group of its own, which is what keeps the caller's shader binding table regions and
+        // their addressing unchanged by this step.
+        std::array<VkPipelineShaderStageCreateInfo, 4> const stages = {raygen_stage, miss_stage, closest_hit_stage, any_hit_stage};
 
         // THE GROUP ORDER IS THE SBT'S ORDER: group 0 is the raygen, group 1 the miss shader, group 2 the hit
         // group. The caller's regions follow exactly this order, which is why the count is returned with them.
+        // The hit group names BOTH of its stages: the closest-hit shader answers the ray and the any-hit shader
+        // is the one that may refuse the intersection first, which is the whole reason this pipeline exists.
         VkRayTracingShaderGroupCreateInfoKHR const raygen_group = {.sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR,
                                                                    .pNext = nullptr,
                                                                    .type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR,
@@ -664,7 +681,7 @@ namespace vulkan::pipelines {
                                                                 .type = VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR,
                                                                 .generalShader = VK_SHADER_UNUSED_KHR,
                                                                 .closestHitShader = 2,
-                                                                .anyHitShader = VK_SHADER_UNUSED_KHR,
+                                                                .anyHitShader = 3, // the ANY-HIT stage of this same group: see shaders/rt_shadow.rahit
                                                                 .intersectionShader = VK_SHADER_UNUSED_KHR,
                                                                 .pShaderGroupCaptureReplayHandle = nullptr};
         std::array<VkRayTracingShaderGroupCreateInfoKHR, 3> const groups = {raygen_group, miss_group, hit_group};

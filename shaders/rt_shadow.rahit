@@ -1,0 +1,48 @@
+#version 460
+#extension GL_EXT_ray_tracing : require
+
+/**
+ * @file shaders/rt_shadow.rahit
+ * @brief The ray-traced shadow's any-hit shader: the stage an inline ray query cannot have.
+ * @ingroup shaders
+ *
+ * THIS STAGE IS THE REASON THE SHADOW MOVED ONTO A RAY-TRACING PIPELINE. A ray query has no any-hit stage, so
+ * every triangle it meets is solid: an alphaMode MASK surface - a leaf card, a chain-link fence, a cut-out sign
+ * - casts the shadow of its BOUNDING TRIANGLES. That is the limitation `rt_mask_bake`'s triangle-collapse rule
+ * tried to paper over and measured as worse than doing nothing (+1.29 mean against not baking at all). A traced
+ * ray can run this stage, and this stage may call `ignoreIntersectionEXT` to say "this hit does not count".
+ *
+ * THE BODY IS EMPTY ON PURPOSE, so the acceptance for adding this stage is that the frame does NOT change: this
+ * step is the plumbing - a fourth shader stage, a hit group that names it, and a payload store that only this
+ * stage performs, which is what proves it is reached - rather than the alpha test that follows it.
+ *
+ * TWO FLAGS WERE LIFTED WITH IT, AND WHAT THEY ACTUALLY DO WAS MEASURED RATHER THAN ASSUMED, because the
+ * obvious reading of both is wrong here:
+ *  - `gl_RayFlagsOpaqueEXT` in the raygen and `VK_GEOMETRY_OPAQUE_BIT_KHR` on the BLAS geometry both DECLARE
+ *    "no any-hit shader may be invoked" - for the ray and for the geometry respectively;
+ *  - measured on an NVIDIA RTX 4060 (591.59.0.0), with the closest-hit stage silenced so that ONLY this stage
+ *    could answer the ray, the frame stayed CORRECT with the ray flag set, with the geometry flag set, and with
+ *    both - so on this driver neither flag suppressed this stage's invocation, and the payload was answered
+ *    here in all three arms. The three arms differ by 0.01 whole-frame mean, which is the geometry flag
+ *    changing the built structure and with it the traversal order, not a visibility change.
+ *  - they are lifted anyway, and that is the point: the alpha test must not rest on a driver over-invoking a
+ *    stage that two declarations say must not run. A conforming driver would skip this stage where those flags
+ *    are set and the alpha test would silently do nothing - the worst kind of failure, because the frame would
+ *    still look like a shadow. The ray flag is therefore gone from `rt_shadow.rgen`, and
+ *    `vulkan/acceleration_structure/acceleration_structure.cpp` no longer sets the geometry flag.
+ *
+ * NO `hitAttributeEXT` IS DECLARED HERE YET, and that is deliberate: the geometry publishes no attributes today
+ * (`VkAccelerationStructureGeometryTrianglesDataKHR` carries the position at vertex offset 0 and nothing else),
+ * so a stage that declared a UV attribute would be reading undefined data. The alpha test arrives together with
+ * `pVertexAttributeDescriptions` on the geometry, and the two have to be added as one step.
+ *
+ * THE PAYLOAD IS NOT TOUCHED HERE. The hit group's closest-hit stage answers the ray (see `rt_shadow.rchit`),
+ * and an any-hit shader that neither ignores an intersection nor writes the payload leaves the traversal exactly
+ * as it found it - which is what makes this step a refactor. When the alpha test lands, this is where the
+ * `ignoreIntersectionEXT` call goes, with the alpha it needs fetched through the instance's material index.
+ */
+
+void main() {
+    // Every hit is committed: there is no `ignoreIntersectionEXT` here yet, so the traversal's answer is exactly
+    // what it was before the stage existed. The next step is one alpha fetch and one call.
+}

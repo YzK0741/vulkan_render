@@ -264,10 +264,10 @@ namespace chores {
             runtime.register_shader("megalights_temporal.comp.spv", megalights_temporal_code);
 
             // Ray-traced sun shadows: one ray per pixel against the scene's acceleration structures. IT IS A
-            // PASS, so its shader has to be registered BEFORE create_passes() below - the pass builds its own
-            // pipeline layout and compute pipeline from it (see vulkan.pass.rt_shadow), and a pass created
-            // before its shader exists builds nothing and says so. Optional, and the builder refuses on a device
-            // without ray queries: without it the cascaded shadow maps keep running.
+            // PASS, so its shaders have to be registered BEFORE create_passes() below - the pass builds its own
+            // pipeline layout and ray-tracing pipeline from them (see vulkan.pass.rt_shadow), and a pass created
+            // before its shaders exist builds nothing and says so. Optional, and the builder refuses on a device
+            // without a ray-tracing pipeline: without it the cascaded shadow maps keep running.
             std::vector<unsigned char> rt_shadow_raygen_code;
             load_shader(shaders_dir, "rt_shadow.rgen.spv", rt_shadow_raygen_code);
             runtime.register_shader("rt_shadow.rgen.spv", rt_shadow_raygen_code);
@@ -277,6 +277,11 @@ namespace chores {
             std::vector<unsigned char> rt_shadow_miss_code;
             load_shader(shaders_dir, "rt_shadow.rmiss.spv", rt_shadow_miss_code);
             runtime.register_shader("rt_shadow.rmiss.spv", rt_shadow_miss_code);
+            // The any-hit stage: the second stage of the SAME hit group, and the only place an alphaMode MASK
+            // surface can be told apart from its bounding triangles (see shaders/rt_shadow.rahit).
+            std::vector<unsigned char> rt_shadow_any_hit_code;
+            load_shader(shaders_dir, "rt_shadow.rahit.spv", rt_shadow_any_hit_code);
+            runtime.register_shader("rt_shadow.rahit.spv", rt_shadow_any_hit_code);
 
 
             // The alphaMode MASK bake (shaders/mask_bake.comp) and the compute skinning job

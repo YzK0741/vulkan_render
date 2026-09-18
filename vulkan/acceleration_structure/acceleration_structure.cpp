@@ -110,9 +110,22 @@ namespace vulkan::acceleration_structure {
         VkAccelerationStructureGeometryKHR geometry = {};
         geometry.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
         geometry.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
-        // OPAQUE for every geometry, including alphaMode MASK ones: an inline ray query has no any-hit
-        // shader to run the material's discard in (see the module docs).
-        geometry.flags = VK_GEOMETRY_OPAQUE_BIT_KHR;
+        // NO OPAQUE FLAG, which is a deliberate reversal of what this module shipped with. OPAQUE on a geometry
+        // DECLARES that this geometry has no any-hit work to do - "any-hit shaders must not be invoked here" -
+        // so setting it on every geometry, which is what this line used to do, is a statement that an
+        // alpha-tested surface is as solid as its bounding triangles. Whether a geometry is opaque is a property
+        // of its MATERIAL and this module is handed vertex and index addresses rather than materials, so the
+        // per-material decision belongs to the step that adds the alpha test.
+        //
+        // MEASURED, because the flag's effect is not what the declaration suggests: on an NVIDIA RTX 4060
+        // (591.59.0.0) the ray-tracing shadow's any-hit stage is invoked even WITH this flag set (and even with
+        // the raygen's `gl_RayFlagsOpaqueEXT` set as well), so lifting it does not change the image - three
+        // capture arms with the closest-hit stage silenced all produced the correct frame, differing by 0.01
+        // whole-frame mean, which is this flag changing the BUILT structure and with it the traversal order.
+        // It is lifted anyway because the alpha test must not depend on a driver over-invoking a stage that two
+        // declarations say must not run: a conforming driver would skip it and the alpha test would silently do
+        // nothing. The cost is the opaque-traversal shortcut, and the per-material decision can restore it.
+        geometry.flags = 0;
         geometry.geometry.triangles = triangles;
         item.geometries.push_back(geometry);
 

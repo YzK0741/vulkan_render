@@ -114,8 +114,13 @@ void main() {
 
     // The payload is written by the hit group (1.0) and by the miss shader (0.0) - exactly one store per path -
     // and deliberately NOT initialised here: see the note above the payload declaration.
+    //
+    // NO `gl_RayFlagsOpaqueEXT`: it declares "no any-hit shader may be invoked for this ray", which is the
+    // opposite of what this ray is for. Measured, the flag does NOT actually suppress the hit group's any-hit
+    // stage on this device (see shaders/rt_shadow.rahit for the three-arm test); it is left off so that the
+    // alpha test does not rest on a driver over-invoking a stage a conforming one would skip.
     traceRayEXT(tlas,
-                gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT,
+                gl_RayFlagsTerminateOnFirstHitEXT,
                 0xFF, // every instance can occlude
                 0,    // sbtRecordOffset: one hit group, so every instance maps to it
                 0,    // sbtRecordStride

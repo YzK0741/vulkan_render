@@ -132,11 +132,13 @@ export namespace vulkan::pass {
         [[nodiscard]] VkPipelineLayout pipeline_layout() const noexcept override;
 
     private:
-        // THREE stages, and the sbt order the builder created them in: raygen, miss, hit. The regions below
-        // follow that order, which is why the builder returns the group count with the pipeline.
+        // THREE GROUPS but FOUR stages: the shader binding table's order is raygen, miss, hit - the any-hit
+        // shader is a SECOND STAGE of the hit group rather than a group of its own, so the regions below and the
+        // stride they are addressed by are unchanged by it.
         static constexpr std::string_view raygen_name = "rt_shadow.rgen.spv";
         static constexpr std::string_view closest_hit_name = "rt_shadow.rchit.spv";
         static constexpr std::string_view miss_name = "rt_shadow.rmiss.spv";
+        static constexpr std::string_view any_hit_name = "rt_shadow.rahit.spv";
         static constexpr uint32_t group_size = 8; // unused by a traceRays launch (the launch dims ARE the extent)
         /// the one declared barrier image, by the position the declaration gives it
         static constexpr uint32_t barrier_visibility = 0;

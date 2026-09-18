@@ -85,8 +85,9 @@ namespace vulkan::pass {
         std::span<unsigned char const> const raygen = fetch(raygen_name);
         std::span<unsigned char const> const closest_hit = fetch(closest_hit_name);
         std::span<unsigned char const> const miss = fetch(miss_name);
-        if (raygen.empty() || closest_hit.empty() || miss.empty()) {
-            utility::log("ray-traced shadows unavailable: the owner has not registered all of {}, {} and {}", raygen_name, closest_hit_name, miss_name);
+        std::span<unsigned char const> const any_hit = fetch(any_hit_name);
+        if (raygen.empty() || closest_hit.empty() || miss.empty() || any_hit.empty()) {
+            utility::log("ray-traced shadows unavailable: the owner has not registered all of {}, {}, {} and {}", raygen_name, closest_hit_name, miss_name, any_hit_name);
             return;
         }
         // The two set layouts come from the CONTEXT: this pass binds the shared scene set and the shared G-buffer
@@ -97,7 +98,7 @@ namespace vulkan::pass {
             utility::log("ray-traced shadows unavailable: the owner has no layout for the shared sets this pass binds");
             return;
         }
-        auto built = pipelines::build_rt_shadow_ray_tracing(context.device, scene_layout, gbuffer_layout, static_cast<uint32_t>(sizeof(push_constants)), raygen, closest_hit, miss);
+        auto built = pipelines::build_rt_shadow_ray_tracing(context.device, scene_layout, gbuffer_layout, static_cast<uint32_t>(sizeof(push_constants)), raygen, closest_hit, miss, any_hit);
         if (!built) {
             utility::log("ray-traced shadows unavailable: {}", built.error());
             this->release_owned();
@@ -152,7 +153,7 @@ namespace vulkan::pass {
         this->hit_region_ = region(address + 2u * region_size);
         // The line the runtime used to log when it built this pipeline: a pass that says what it built is what
         // makes a missing one visible in the startup log rather than in a frame that looks merely shadowless.
-        utility::log("SUCCESS: ray-traced sun shadow pipeline created (one ray per pixel, terminated on first hit)");
+        utility::log("SUCCESS: ray-traced sun shadow pipeline created (raygen + miss + closest hit + any hit, one ray per pixel, terminated on first hit)");
     }
 
     void rt_shadow_pass::on_swapchain_recreated(pass_host const&) {
@@ -200,7 +201,7 @@ namespace vulkan::pass {
         // therefore the struct's defaults rather than values anybody has to pass in.
         push_constants push = {};
         push.inv_view_proj = io.constants.inv_view_proj;
-        vkCmdPushConstants(io.cmd, io.pipeline_layout, VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR | VK_SHADER_STAGE_MISS_BIT_KHR, 0, sizeof(push), &push);
+        vkCmdPushConstants(io.cmd, io.pipeline_layout, VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR | VK_SHADER_STAGE_MISS_BIT_KHR | VK_SHADER_STAGE_ANY_HIT_BIT_KHR, 0, sizeof(push), &push);
         // THE LAUNCH DIMS ARE THE EXTENT: one invocation per pixel of the visibility image, which is what the
         // compute form got from its dispatch and its bounds check.
         this->trace_rays_(io.cmd, &this->raygen_region_, &this->miss_region_, &this->hit_region_, &this->callable_region_, io.extent.width, io.extent.height, 1);
