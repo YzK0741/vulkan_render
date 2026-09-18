@@ -508,6 +508,24 @@ namespace vulkan {
          * three numbers reserved by core, see core.cppm). It does nothing when the heap is not in use, which is what
          * keeps the descriptor-set path authoritative until the mapping lands.
          */
+        // The ONE heap entry point a frame needs that the heap class does not carry: the PUSHED INDEX, i.e. which
+        // frame slot's block a migrated stage reads (see pipelines::scene_heap_stage_mapping). It is resolved per
+        // device here rather than stored on the heap because it has exactly one caller, in the frame's first
+        // recorded commands, and because a device command is not heap state.
+        [[maybe_unused]] void push_heap_frame_slot(core& vk, VkCommandBuffer const command_buffer, uint32_t slot) {
+            static PFN_vkCmdPushDataEXT const push_data = reinterpret_cast<PFN_vkCmdPushDataEXT>(vkGetDeviceProcAddr(vk.device, "vkCmdPushDataEXT"));
+            if (push_data == nullptr) {
+                utility::panic("vkCmdPushDataEXT is unavailable: the frame slot cannot be pushed to the heap");
+            }
+            VkPushDataInfoEXT const info = {
+                .sType = VK_STRUCTURE_TYPE_PUSH_DATA_INFO_EXT,
+                .pNext = nullptr,
+                .offset = 0,
+                .data = {.address = &slot, .size = sizeof(slot)},
+            };
+            push_data(command_buffer, &info);
+        }
+
         void write_heap_scene_buffer(core& vk, std::vector<vk_buffer> const& buffers, uint32_t const binding, VkDeviceSize const size, VkDescriptorType const type) {
             if (!vk.descriptor_heaps.ready() || vk.heap_scene_set_base == VK_WHOLE_SIZE) {
                 return;
@@ -1615,6 +1633,18 @@ namespace vulkan {
         if (vkBeginCommandBuffer(*command_buffer, &begin_info) != VK_SUCCESS) {
             return frame_status::begin_recording_failed;
         }
+        // THE HEAP IS NOT BOUND HERE, AND THE MEASUREMENT IS WHY: binding it takes the WHOLE command buffer, not
+        // only the stages that map from it. With every heap mapping switched OFF - so nothing but these two calls
+        // was heap state - all nine gate scenarios came back as the SAME frame (hash DC5F6D66428C26D8, mean 0.00
+        // against the 88.1 of the unlit reference), validation SILENT: a set-based stage under a bound heap does
+        // not read the set it was handed, it reads the heap, where its bindings were never mapped. So the heap
+        // turns on for a frame whose EVERY stage is heap-based, and not one stage earlier - a pass cannot be
+        // migrated on its own. The two calls below are what that frame will make, and the push is the frame slot
+        // (see push_heap_frame_slot and pipelines::scene_heap_stage_mapping, both written and validated).
+        // if (vk.descriptor_heaps.ready()) {
+        //     vk.descriptor_heaps.record_bind(*command_buffer);
+        //     push_heap_frame_slot(vk, *command_buffer, static_cast<uint32_t>(vk.current_frame));
+        // }
         // GPU pass timing: open this frame's timestamp range and take the first mark. Marks are
         // written in gpu_mark_id order from here on (see gpu_mark); opening the range outside any
         // rendering instance is required, and this is the first point of the frame where the
@@ -2733,6 +2763,32 @@ namespace vulkan {
         // bind_frame_chain). The chain is the application's (see set_pass_chain) - this class owns no passes, so
         // there is no chain of its own for this to bind.
         this->bind_frame_chain(*this->chain_);
+        // WHAT THE PASSES' PIPELINES WILL READ, published BEFORE any of them is created: the scene block's heap
+        // geometry (see pipelines::set_scene_heap_layout). A mapping is handed over inside vkCreate*Pipelines, so
+        // the geometry a migrated stage needs has to be readable by then - and it is the runtime's to publish,
+        // because the heap's offsets are the core's. What is deliberately absent here is WHICH SLOT a stage
+        // reads: that is pushed per frame (see runtime::begin_recording).
+        {
+            pipelines::scene_heap_layout scene_heap;
+            scene_heap.available = this->vulkan_core.descriptor_heaps.ready() && this->vulkan_core.heap_scene_set_base != VK_WHOLE_SIZE;
+            scene_heap.slot_stride = this->vulkan_core.heap_scene_slot_stride;
+            auto const scene_slot_offset = [this](uint32_t const binding) {
+                return this->vulkan_core.heap_scene_set_base + this->vulkan_core.heap_scene_binding_offset[binding];
+            };
+            // The per-frame half: camera, light and the two cluster buffers, each selected by the pushed index.
+            // Their masks are the SPIR-V kinds the shaders declare - a UBO for 0 and 7, and a read-write storage
+            // buffer for the pair light_cluster.comp WRITES (11 and 12).
+            scene_heap.bindings[0] = {.per_slot = true, .heap_offset = scene_slot_offset(0u), .resource_mask = VK_SPIRV_RESOURCE_TYPE_UNIFORM_BUFFER_BIT_EXT};
+            scene_heap.bindings[7] = {.per_slot = true, .heap_offset = scene_slot_offset(7u), .resource_mask = VK_SPIRV_RESOURCE_TYPE_UNIFORM_BUFFER_BIT_EXT};
+            scene_heap.bindings[11] = {.per_slot = true, .heap_offset = scene_slot_offset(11u), .resource_mask = VK_SPIRV_RESOURCE_TYPE_READ_WRITE_STORAGE_BUFFER_BIT_EXT};
+            scene_heap.bindings[12] = {.per_slot = true, .heap_offset = scene_slot_offset(12u), .resource_mask = VK_SPIRV_RESOURCE_TYPE_READ_WRITE_STORAGE_BUFFER_BIT_EXT};
+            // The frame-INVARIANT half: the material table is written once, so its offset IS the descriptor's.
+            // The bindless texture array (binding 1) is in the heap too, but its mapping needs an EMBEDDED
+            // SAMPLER - the heap holds the image and the sampler comes from the mapping - so it stays unmapped
+            // (mask 0) until the image half of the set is wired, and a stage that declares it reads the set.
+            scene_heap.bindings[5] = {.per_slot = false, .heap_offset = this->vulkan_core.heap_material_table_offset, .resource_mask = VK_SPIRV_RESOURCE_TYPE_READ_ONLY_STORAGE_BUFFER_BIT_EXT};
+            pipelines::set_scene_heap_layout(scene_heap);
+        }
         pass::pass_context const build = this->make_pass_context();
         // ONE CREATE STEP OVER EVERY PASS, in the order the OWNING chain holds them (see the member block in the
         // header): the chain owns the passes and its `init` IS the whole create step, in the order the application
