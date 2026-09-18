@@ -444,8 +444,20 @@ namespace vulkan::pipelines {
         stage_info.module = **module;
         stage_info.pName = "main";
 
+        // THE HEAP FLAG IS NOT OPTIONAL WHEN THE LAYOUT IS NULL: validation's rule is "both or neither", and it
+        // says so exactly - "pCreateInfos[0].flags (VkPipelineCreateFlags2(0)) does not include
+        // VK_PIPELINE_CREATE_2_DESCRIPTOR_HEAP_BIT_EXT while layout is VK_NULL_HANDLE"
+        // (VUID-VkComputePipelineCreateInfo-None-11367), measured on the first run of the migrated renderer. The
+        // flag is a flags2 bit, past the 32-bit `flags` field, so it reaches a classic create call through
+        // VkPipelineCreateFlags2CreateInfo - the shape the graphics path and the two probes already use.
+        VkPipelineCreateFlags2CreateInfo const heap_flags = {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_CREATE_FLAGS_2_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = VK_PIPELINE_CREATE_2_DESCRIPTOR_HEAP_BIT_EXT,
+        };
         VkComputePipelineCreateInfo pipeline_info = {};
         pipeline_info.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+        pipeline_info.pNext = &heap_flags;
         pipeline_info.stage = stage_info;
         pipeline_info.layout = VK_NULL_HANDLE; // heap-native stages: a layout would contradict them (see docs)
 
@@ -489,8 +501,20 @@ namespace vulkan::pipelines {
         stage_info.module = **module;
         stage_info.pName = "main";
 
+        // THE HEAP FLAG IS NOT OPTIONAL WHEN THE LAYOUT IS NULL: validation's rule is "both or neither", and it
+        // says so exactly - "pCreateInfos[0].flags (VkPipelineCreateFlags2(0)) does not include
+        // VK_PIPELINE_CREATE_2_DESCRIPTOR_HEAP_BIT_EXT while layout is VK_NULL_HANDLE"
+        // (VUID-VkComputePipelineCreateInfo-None-11367), measured on the first run of the migrated renderer. The
+        // flag is a flags2 bit, past the 32-bit `flags` field, so it reaches a classic create call through
+        // VkPipelineCreateFlags2CreateInfo - the shape the graphics path and the two probes already use.
+        VkPipelineCreateFlags2CreateInfo const heap_flags = {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_CREATE_FLAGS_2_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = VK_PIPELINE_CREATE_2_DESCRIPTOR_HEAP_BIT_EXT,
+        };
         VkComputePipelineCreateInfo pipeline_info = {};
         pipeline_info.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+        pipeline_info.pNext = &heap_flags;
         pipeline_info.stage = stage_info;
         pipeline_info.layout = VK_NULL_HANDLE; // heap-native stages: a layout would contradict them (see docs)
 
@@ -682,7 +706,7 @@ namespace vulkan::pipelines {
 
         VkComputePipelineCreateInfo pipeline_info = {};
         pipeline_info.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-        pipeline_info.pNext = stage_mapping_info != nullptr ? &pipeline_flags : nullptr;
+        pipeline_info.pNext = &pipeline_flags; // the flag is required by the null layout, mapping or not (VUID ...-11367)
         pipeline_info.stage = stage_info;
         pipeline_info.layout = VK_NULL_HANDLE; // heap-native stages: a layout would contradict them (see docs) // null on the heap path, which is what the flag requires
 
@@ -873,8 +897,20 @@ namespace vulkan::pipelines {
         stage_info.module = **module;
         stage_info.pName = "main";
 
+        // THE HEAP FLAG IS NOT OPTIONAL WHEN THE LAYOUT IS NULL: validation's rule is "both or neither", and it
+        // says so exactly - "pCreateInfos[0].flags (VkPipelineCreateFlags2(0)) does not include
+        // VK_PIPELINE_CREATE_2_DESCRIPTOR_HEAP_BIT_EXT while layout is VK_NULL_HANDLE"
+        // (VUID-VkComputePipelineCreateInfo-None-11367), measured on the first run of the migrated renderer. The
+        // flag is a flags2 bit, past the 32-bit `flags` field, so it reaches a classic create call through
+        // VkPipelineCreateFlags2CreateInfo - the shape the graphics path and the two probes already use.
+        VkPipelineCreateFlags2CreateInfo const heap_flags = {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_CREATE_FLAGS_2_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = VK_PIPELINE_CREATE_2_DESCRIPTOR_HEAP_BIT_EXT,
+        };
         VkComputePipelineCreateInfo pipeline_info = {};
         pipeline_info.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+        pipeline_info.pNext = &heap_flags;
         pipeline_info.stage = stage_info;
         pipeline_info.layout = VK_NULL_HANDLE; // heap-native stages: a layout would contradict them (see docs)
 
@@ -1007,8 +1043,13 @@ namespace vulkan::pipelines {
                                                                 .pShaderGroupCaptureReplayHandle = nullptr};
         std::array<VkRayTracingShaderGroupCreateInfoKHR, 3> const groups = {raygen_group, miss_group, hit_group};
 
+        VkPipelineCreateFlags2CreateInfo const rt_heap_flags = {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_CREATE_FLAGS_2_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = VK_PIPELINE_CREATE_2_DESCRIPTOR_HEAP_BIT_EXT,
+        };
         VkRayTracingPipelineCreateInfoKHR const pipeline_info = {.sType = VK_STRUCTURE_TYPE_RAY_TRACING_PIPELINE_CREATE_INFO_KHR,
-                                                                 .pNext = nullptr,
+                                                                 .pNext = &rt_heap_flags,
                                                                  .flags = 0,
                                                                  .stageCount = static_cast<uint32_t>(stages.size()),
                                                                  .pStages = stages.data(),
@@ -1096,8 +1137,20 @@ namespace vulkan::pipelines {
         stage_info.module = **module;
         stage_info.pName = "main";
 
+        // THE HEAP FLAG IS NOT OPTIONAL WHEN THE LAYOUT IS NULL: validation's rule is "both or neither", and it
+        // says so exactly - "pCreateInfos[0].flags (VkPipelineCreateFlags2(0)) does not include
+        // VK_PIPELINE_CREATE_2_DESCRIPTOR_HEAP_BIT_EXT while layout is VK_NULL_HANDLE"
+        // (VUID-VkComputePipelineCreateInfo-None-11367), measured on the first run of the migrated renderer. The
+        // flag is a flags2 bit, past the 32-bit `flags` field, so it reaches a classic create call through
+        // VkPipelineCreateFlags2CreateInfo - the shape the graphics path and the two probes already use.
+        VkPipelineCreateFlags2CreateInfo const heap_flags = {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_CREATE_FLAGS_2_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = VK_PIPELINE_CREATE_2_DESCRIPTOR_HEAP_BIT_EXT,
+        };
         VkComputePipelineCreateInfo pipeline_info = {};
         pipeline_info.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+        pipeline_info.pNext = &heap_flags;
         pipeline_info.stage = stage_info;
         pipeline_info.layout = VK_NULL_HANDLE; // heap-native stages: a layout would contradict them (see docs)
 

@@ -148,10 +148,21 @@ layout(descriptor_heap) uniform sampler heap_samplers[];
  * @param sampler_slot which sampler heap entry to use (heap_sampler_gbuffer for exact fetches, and so on)
  * @note THE TWO HALVES OF A FETCH ARE SEPARATE IN A HEAP - the image is a resource heap descriptor and the sampler
  *       a sampler heap one - and a combined image sampler cannot be declared at all, so every fetch has to name
- *       both. This exists so that naming both happens in one place instead of at forty sites.
+ *       both. This exists so that naming both happens in one place instead of at sixty-one sites.
+ *
+ * A MACRO RATHER THAN A FUNCTION, and that is measured rather than a preference. As a function it produced a
+ * module that glslang accepted and spirv-val rejected - "OpFunctionCall Argument <id>'s type does not match
+ * Function <id>'s parameter type", every failing call a call to this helper, at vkCreateShaderModule
+ * (VUID-VkShaderModuleCreateInfo-pCode-08737): a `texture2D` parameter does not survive a function boundary.
+ * The extension's own rule points the same way - a sampler constructor must appear at the point of USE - and a
+ * macro expands there by definition, so the fetch below is built exactly where it is written.
+ *
+ * The three parameters are fixed, and that is enough: a comma inside a call's argument list does not separate
+ * arguments when it is inside parentheses, and every uv expression here keeps its commas there
+ * (`uv + t * vec2(2.0, 0.0)`). A VARIADIC macro would have been the obvious way to be safe and it is not
+ * available - glslang's preprocessor refuses `__VA_ARGS__` outright ("'#define' : bad argument"), which cost one
+ * build to learn.
  */
-vec4 heap_texel(texture2D tex, uint sampler_slot, vec2 uv) {
-    return texture(sampler2D(tex, heap_samplers[sampler_slot]), uv);
-}
+#define heap_texel(tex, sampler_slot, uv) texture(sampler2D((tex), heap_samplers[sampler_slot]), (uv))
 
 #endif // HEAP_SLOTS_GLSL

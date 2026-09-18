@@ -1,14 +1,15 @@
 # Descriptor heap migration: handover
 
-**The tree builds. The renderer does not run yet. This is not the finished state.**
+**The tree builds, and the renderer now runs end to end** - it initialises, creates every pipeline,
+records frames and saves a screenshot (exit 0). **The frame is black**, and the log says exactly why.
+This is still not the finished state, but it is no longer a migration that cannot execute at all.
 
 Branch `descriptor-heap-migration` holds the work. `pass-chain` (7fdeb86) is the last commit whose
-gate passes, and it is untouched, which is why this work is on a branch: the migration has **no green
-intermediate state**, because its unit of work is the whole frame. A half-migrated frame renders
-nothing - measured, not assumed: with every mapping off, all nine gate scenarios returned hash
-`DC5F6D66428C26D8` and mean `0.00` against the reference's `88.1`, with validation silent. So a
-mid-migration commit *cannot* pass the gate, and the choice was between saving the work off the
-gate-checked branch and losing twenty-five rounds of it.
+gate passes, and it is untouched, which is why this work is on a branch. The migration's unit is the
+whole frame and it has no green intermediate state - a half-migrated frame renders nothing, and that
+measurement (hash `DC5F6D66428C26D8`, mean `0.00` against the reference's `88.1`) is now *explained*
+rather than merely observed: see (e) below. So a mid-migration commit cannot pass the gate, and the
+choice was between saving the work off the gate-checked branch and losing twenty-five rounds of it.
 
 ## What is done, and what verifies it
 
@@ -53,10 +54,29 @@ Note that the guards which gate on these binds (`io.pipeline_layout == VK_NULL_H
 
 ### (b) The post chain's source slot
 
-`shaders/post.frag` takes a third push lane, `post_source_slot`, because which image a post stage reads
-is the stage's own business (the HDR target for the prefilter and the composite, the previous bloom
-level for the downsampler). `vulkan/pass/post.cpp` must pass that base as `extra_lane`; today it pushes
-the default `0`, so the shader would read slot 0 plus the image index rather than its source.
+`shaders/post.frag` reads `post_source_texture[pc.post_source_slot]` - and that index is an
+**absolute** heap slot, not a base plus `heap_image_index` (contrast the four bloom levels two lines
+below it, which are `bloom_lN_texture[heap_slots_bloom_lN + heap_image_index]`). So the *host* has to
+resolve the source, per frame, per swapchain image:
+
+| which stage | its source slot |
+| --- | --- |
+| prefilter (`post_pass`, `level_ == 0`, mode 0) | `post_color + io.frame.image_index` |
+| downsample (mode 1, `level_` > 0) | `bloom_l0 + (level_ - 1) * 8 + io.frame.image_index` |
+| composite (mode 2) | `post_color + io.frame.image_index` (it takes the bloom levels itself, by constant) |
+
+`post_color` is 639 and the bloom chain is 647/655/663/671 - stride 8, those are the
+`core::heap_slots` / `heap_slots.glsl` constants.
+
+**Why this is not a two-line fix.** A pass may not import `vulkan.core`: no pass does today (they import
+`vulkan.core.handles` and `vulkan.render_resource`, and the split is deliberate - the grid is the
+renderer's, and a pass that knows it could take over an image family). So the pass cannot name 639. The
+host must hand the slot over, exactly as it hands over `shared_set_layout`, `shared_pipeline_layout` and
+`push_block`: a callback on `pass_context`/`pass_host` that answers "what is the post chain's source
+slot for this image at this level", filled in `runtime::make_pass_host` and in the pass context the
+runtime builds - the same shape as the three callbacks already there. Until then `post.cpp` pushes the
+default lane of `0`, and the shader would read slot `0 + 0` - the bindless texture array's first
+entry - rather than its source.
 
 ### (c) The objects nothing points at any more
 
@@ -76,21 +96,59 @@ purely subtractive work that does not affect what the frame does.
 `descriptor_heap::make_mapping` are now unreachable - `map_from_heap` is `static constexpr bool = false`
 and the mapping pointer it guards is therefore never built. They can go.
 
-### (e) What to check first when it runs
+### (e) What was measured on the first runs
 
-These are the three things that have *not* been measured, in the order they will show up:
+Two runs of `--config build-release-clang64\render-check\default.toml --capture-frames 1` with
+validation on. **The first** found two blockers; both were fixed and the second run passed them:
 
-1. **Push block sizes.** `render_resource`'s `push_block::size` values were written when a block ended
-   where the shader's block ended. The shaders now declare the index lanes as their last fields, so each
-   converted stage's declared size grew by 8 bytes (12 for the post chain). If validation reports a push
-   whose range exceeds the declared block, or a shader reading a field that was never written, this is
-   the first place to look.
-2. **Lane count against declaration.** Each endpoint appends exactly what its shader declares (0, 2 or
-   3 lanes) *by construction*, but the assignment was made by reading each shader's push block, so a
-   stage whose block was extended without a matching endpoint will show up here.
-3. **The heap bind's timing.** The bind takes the whole command buffer, and `begin_recording` is where
-   it happens; if a frame comes back black, the ordering of that bind against the first dispatch is the
-   thing to instrument.
+1. **The heap flag is not optional when the layout is null.** Measured:
+   `vkCreateComputePipelines(): pCreateInfos[0].flags (VkPipelineCreateFlags2(0)) does not include
+   VK_PIPELINE_CREATE_2_DESCRIPTOR_HEAP_BIT_EXT while layout is VK_NULL_HANDLE`
+   (`VUID-VkComputePipelineCreateInfo-None-11367`). The rule is *both or neither*. Four compute
+   builders had no `flags2` struct at all, `build_cluster` had one but chained it only on the mapping
+   path, and the ray-tracing builder chained none - all now set the bit. **Fixed.**
+2. **`spirv-val` rejected the SPIR-V the shared `heap_texel` helper generated**:
+   `OpFunctionCall Argument <id>'s type does not match Function <id>'s parameter type`, every failing
+   call a call to that helper (`VUID-VkShaderModuleCreateInfo-pCode-08737`). A `texture2D` parameter
+   does not survive a function boundary. `heap_texel` is a **macro** now, which expands the fetch at the
+   point of use. **Fixed** - and note for the next reader: glslang's preprocessor rejects
+   `__VA_ARGS__` outright ("'#define' : bad argument"), so it is a fixed three-parameter macro, which is
+   enough because every uv argument keeps its commas inside parentheses.
+
+**The second run** then created every pipeline - pbr, unlit, gbuffer, gbuffer-debug, shadow, deferred,
+megalights trace and temporal, TAA, ray-traced shadow (raygen + miss + hit + any-hit), the post chain,
+fxaa, the mask bake and the compute skinning - ran the frame loop and saved
+`screenshot_20260918_133008.png`. The heap probes still pass (slot 16896 reads `255,255,255,255`,
+16897 reads `0,0,0,255`). Three things remain, all precisely identified:
+
+**1. Two shader modules are still rejected by spirv-val, with the same root cause in other helpers.**
+The failing functions are now `gbuffer_texel` (used where the stored surface is sampled) and
+`downsample_13` in `post.frag` - helpers that take a `texture2D` **parameter**, which is the same thing
+that broke `heap_texel`. They have to take the texture's heap **slot** (a `uint`) instead and index the
+array inside, so the sampler constructor is built where the fetch is written and no image crosses a
+function boundary.
+
+**2. A secondary command buffer must inherit the heap bind.** This is the frame being black:
+
+```
+[ERROR] vkCmdDrawIndexed(): The shader [VK_SHADER_STAGE_VERTEX_BIT] uses resource descriptors, but
+VkCommandBufferInheritanceDescriptorHeapInfoEXT::pResourceHeapBindInfo is NULL
+VUID-vkCmdDrawIndexed-None-11308
+```
+
+`runtime::begin_recording` binds the heaps on the primary, and a secondary is validated on its own, so
+the bind does not reach it. There are three places that build a secondary's inheritance info -
+`scene.cpp:64` (a segment), `transparent.cpp:76` and `runtime.cpp:2443` (a shadow cascade) - and all
+three call `constant_init::make_inheritance_info(p_next)`, which takes a single `pNext`. The fix is to
+chain a `VkCommandBufferInheritanceDescriptorHeapInfoEXT` (whose `pNext` is the rendering info already
+passed) carrying the same bind infos `descriptor_heap::record_bind` uses. The bind info structs live
+inside `descriptor_heap` today, so it needs a public accessor - and the passes need it handed over the
+same way `push_block` and `make_environment` already are, since a pass does not own the heap.
+
+**This is the one measurement worth carrying forward:** the black frame's hash is
+`dc5f6d66428c26d8…` - byte for byte the hash this migration recorded earlier as "a half-migrated frame
+renders nothing". It was never a vague observation. It is the scene pass drawing into secondaries that
+have no heap bound.
 
 ## How to finish and verify
 
