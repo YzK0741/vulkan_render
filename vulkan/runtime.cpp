@@ -526,8 +526,21 @@ namespace vulkan {
             push_data(command_buffer, &info);
         }
 
-        void write_heap_scene_buffer(core& vk, std::vector<vk_buffer> const& buffers, uint32_t const binding, VkDeviceSize const size, VkDescriptorType const type) {
-            if (!vk.descriptor_heaps.ready() || vk.heap_scene_set_base == VK_WHOLE_SIZE) {
+        /// THE GRID'S BYTE OFFSET FOR A SLOT (see core::heap_slots and docs/descriptor_heap_migration.md): every
+        /// descriptor is 64 B from the next, so a write HERE and a heap-native shader's `array[slot]` with
+        /// `descriptor_stride = 64` are the same address by construction. There is no second stride to disagree
+        /// with - which is exactly what the older per-slot block could not promise, because it mixed the device's
+        /// 16 B buffer stride with its 32 B image stride and put each binding at its own offset.
+        /// @note A SLOT NUMBER IS ALREADY ABSOLUTE: `core::heap_slots::x` includes `heap_slot_base`, so this is a
+        ///       multiply and nothing else. The first version added `heap_grid_offset` as well and doubled the
+        ///       1 MiB base - every write landed past the heap and was refused, which the heap's own bounds check
+        ///       reported (`... did not fit at offset 2130432`).
+        VkDeviceSize heap_slot_offset(uint32_t const slot) {
+            return static_cast<VkDeviceSize>(slot) * core::heap_slot_stride;
+        }
+
+        void write_heap_scene_buffer(core& vk, std::vector<vk_buffer> const& buffers, uint32_t const slot_base, VkDeviceSize const size, VkDescriptorType const type) {
+            if (!vk.descriptor_heaps.ready() || vk.heap_grid_offset == VK_WHOLE_SIZE) {
                 return;
             }
             for (uint32_t slot = 0; slot < buffers.size(); ++slot) {
@@ -537,9 +550,9 @@ namespace vulkan {
                 }
                 VkBufferDeviceAddressInfo const info = {.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .pNext = nullptr, .buffer = detail->buffer};
                 VkDeviceAddress const address = vkGetBufferDeviceAddress(vk.device, &info);
-                VkDeviceSize const offset = vk.heap_scene_set_base + static_cast<VkDeviceSize>(slot) * vk.heap_scene_slot_stride + vk.heap_scene_binding_offset[binding];
+                VkDeviceSize const offset = heap_slot_offset(slot_base + slot);
                 if (!vk.descriptor_heaps.write_buffer(offset, address, size, type)) {
-                    utility::log("descriptor heap: set 0 binding {} did not fit slot {}'s block at offset {}", binding, slot, offset);
+                    utility::log("descriptor heap: the per-frame buffer for grid slot {} (frame slot {}) did not fit at offset {}", slot_base, slot, offset);
                 }
             }
         }
@@ -587,9 +600,9 @@ namespace vulkan {
         // The sizes are the buffers' REAL sizes, not VK_WHOLE_SIZE: a heap buffer descriptor is an
         // address RANGE, and validation states the rule as VUID-VkDeviceAddressRangeKHR-address-11365 - address plus
         // size must stay inside the buffer, which VK_WHOLE_SIZE cannot satisfy.
-        write_heap_scene_buffer(this->vulkan_core, this->cluster_count_buffers, 11u, static_cast<VkDeviceSize>(vulkan::max_cluster_count) * sizeof(uint32_t), VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
-        write_heap_scene_buffer(this->vulkan_core, this->cluster_index_buffers, 12u, static_cast<VkDeviceSize>(vulkan::max_cluster_count) * vulkan::cluster_light_capacity * sizeof(uint32_t), VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
-        write_heap_scene_buffer(this->vulkan_core, this->camera_buffers, 0u, sizeof(camera_ubo), VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
+        write_heap_scene_buffer(this->vulkan_core, this->cluster_count_buffers, core::heap_slots::cluster_counts, static_cast<VkDeviceSize>(vulkan::max_cluster_count) * sizeof(uint32_t), VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+        write_heap_scene_buffer(this->vulkan_core, this->cluster_index_buffers, core::heap_slots::cluster_indices, static_cast<VkDeviceSize>(vulkan::max_cluster_count) * vulkan::cluster_light_capacity * sizeof(uint32_t), VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+        write_heap_scene_buffer(this->vulkan_core, this->camera_buffers, core::heap_slots::scene_camera, sizeof(camera_ubo), VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
     }
 
     void runtime::ensure_scene_set() {
