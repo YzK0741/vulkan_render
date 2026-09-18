@@ -66,14 +66,14 @@ namespace vulkan::pass {
         return vkBeginCommandBuffer(command_buffer, &begin) == VK_SUCCESS;
     }
 
-    void scene_pass::record_segment(VkCommandBuffer const command_buffer, VkDescriptorSet const scene_set, std::span<primitive const* const> const leaves) const {
+    void scene_pass::record_segment(VkCommandBuffer const command_buffer, std::span<primitive const* const> const leaves) const {
         render_environment env = this->frame_.make_environment(this->frame_.owner, command_buffer, this->frame_.gbuffer);
-        // The shared scene set is bound once per segment, not per draw: every scene pipeline shares the layout,
-        // so the set stays valid across pipeline binds and only the per-draw state varies. A SECONDARY does not
-        // inherit state from its primary, so each segment binds it for itself.
-        if (scene_set != VK_NULL_HANDLE && env.layout != VK_NULL_HANDLE) {
-            vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, env.layout, 0, 1, &scene_set, 0, nullptr);
-        }
+        // NO DESCRIPTOR SET IS BOUND, and there is nothing left to bind: the frame bound the resource and sampler
+        // heaps once for this command buffer, and every slot a scene shader reads - the camera, the lights, the
+        // clusters, the material table, the textures, the instance transforms - is a heap slot it names itself,
+        // with the two indices its push block carries picking the frame's generation. The per-segment bind this
+        // replaced existed because a secondary inherits no state from its primary; the heap bind has the same
+        // property, and the runtime makes it when it records the segment's command buffer.
         for (primitive const* const leaf : leaves) {
             leaf->draw(env); // polymorphic: normal / instanced / static / custom, each through its own pipeline
         }
@@ -114,7 +114,7 @@ namespace vulkan::pass {
         if (segment_count == 1 || leaf_count < min_leaves_for_parallel) {
             VkCommandBuffer const single = this->frame_.segments[0].buffer;
             if (this->begin_segment(single)) {
-                this->record_segment(single, io.shared.scene, this->frame_.leaves);
+                this->record_segment(single, this->frame_.leaves);
                 vkEndCommandBuffer(single);
                 vkCmdExecuteCommands(io.cmd, 1, &single);
             } else {
@@ -134,14 +134,13 @@ namespace vulkan::pass {
                 VkCommandBuffer const segment = this->frame_.segments[s].buffer;
                 std::span<primitive const* const> const segment_leaves(this->frame_.leaves.data() + seg_first, seg_last - seg_first);
                 std::atomic<bool>* const recorded = &segment_recorded[s];
-                VkDescriptorSet const scene_set = io.shared.scene;
-                tasks.emplace_back([this, segment, segment_leaves, recorded, scene_set] {
+                tasks.emplace_back([this, segment, segment_leaves, recorded] {
                     if (!this->begin_segment(segment)) {
                         utility::log("scene pass: main segment secondary begin failed - segment skipped this frame");
                         recorded->store(false, std::memory_order_relaxed);
                         return;
                     }
-                    this->record_segment(segment, scene_set, segment_leaves);
+                    this->record_segment(segment, segment_leaves);
                     vkEndCommandBuffer(segment);
                     recorded->store(true, std::memory_order_relaxed);
                 });

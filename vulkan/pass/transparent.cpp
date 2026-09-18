@@ -78,9 +78,8 @@ namespace vulkan::pass {
         bool recorded = false;
         if (vkBeginCommandBuffer(this->frame_.secondary, &secondary_begin) == VK_SUCCESS) {
             render_environment env = this->frame_.make_environment(this->frame_.owner, this->frame_.secondary, /*gbuffer=*/false);
-            if (io.shared.scene != VK_NULL_HANDLE && env.layout != VK_NULL_HANDLE) {
-                vkCmdBindDescriptorSets(this->frame_.secondary, VK_PIPELINE_BIND_POINT_GRAPHICS, env.layout, 0, 1, &io.shared.scene, 0, nullptr);
-            }
+            // No set to bind (see scene_pass::record_segment): every slot these leaves read comes from the heaps,
+            // which the runtime binds on this same secondary before executing it.
             for (primitive const* const leaf : this->frame_.leaves) {
                 leaf->draw(env);
             }

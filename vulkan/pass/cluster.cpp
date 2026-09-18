@@ -120,12 +120,10 @@ namespace vulkan::pass {
             return;
         }
 
-        // The dispatch reads the frame's OWN scene set (the paced slot's camera and light UBOs) and writes the
-        // same slot's cluster buffers: a compute stage is not part of a rendering instance, so this records
-        // before vkCmdBeginRendering. The HEAP path (see pipelines::build_cluster) would drop this bind and let
-        // the frame's pushed index pick the slot instead - and it cannot come before the rest of the frame does.
-        VkDescriptorSet const scene_set = io.shared.scene;
-        vkCmdBindDescriptorSets(io.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, io.pipeline_layout, 0, 1, &scene_set, 0, nullptr);
+        // The dispatch reads the frame's OWN camera and light slots and writes the same generation's cluster
+        // buffers - and it needs no bind to do it: the frame bound the heaps once, and the two indices its push
+        // block carries pick the slot. A compute stage is not part of a rendering instance, so this still records
+        // before vkCmdBeginRendering.
         vkCmdBindPipeline(io.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, io.pipelines[0]);
         vkCmdDispatch(io.cmd, (this->frame_.cluster_count + group_size - 1u) / group_size, 1, 1);
 

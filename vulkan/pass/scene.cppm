@@ -134,8 +134,8 @@ export namespace vulkan::pass {
 
         /// begin one secondary with the instance's attachment inheritance, or report that it could not
         [[nodiscard]] bool begin_segment(VkCommandBuffer command_buffer) const;
-        /// one segment's content: the shared scene set, then every leaf of that segment through its draw path
-        void record_segment(VkCommandBuffer command_buffer, VkDescriptorSet scene_set, std::span<primitive const* const> leaves) const;
+        /// one segment's content: every leaf of that segment through its draw path (the heaps are already bound)
+        void record_segment(VkCommandBuffer command_buffer, std::span<primitive const* const> leaves) const;
 
         scene_frame frame_ = {};
     };

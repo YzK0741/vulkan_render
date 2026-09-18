@@ -170,8 +170,8 @@ namespace vulkan::pass {
         VkRenderingInfo const rendering_info = make_rendering_info(0, {{0, 0}, io.extent}, true, &attachment, nullptr);
         vkCmdBeginRendering(io.cmd, &rendering_info);
         vkCmdSetCullMode(io.cmd, VK_CULL_MODE_NONE); // the synthetic triangle has no facing to cull
-        VkDescriptorSet const set = io.shared.post;  // the post family's set 4, which the host writes
-        vkCmdBindDescriptorSets(io.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, io.pipeline_layout, 0, 1, &set, 0, nullptr);
+        // The post chain's source is a heap slot now (see shaders/post.frag): the third push lane names it, and
+        // the frame bound the heaps for this command buffer, so there is no set to bind here.
         [[maybe_unused]] bool const pushed = io.push_block(io.cmd, pass::push_bytes(push));
         vkCmdDraw(io.cmd, 3, 1, 0, 0);
         // INSIDE the instance, between the draw and its end: this pass is the frame's LAST writer whenever it runs,

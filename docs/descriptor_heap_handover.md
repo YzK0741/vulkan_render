@@ -35,27 +35,26 @@ gate-checked branch and losing twenty-five rounds of it.
 
 ## What remains
 
-### (a) Thirteen descriptor binds, which are now invalid
+### (a) Eight descriptor binds, which are now invalid
 
 No pipeline has a layout, so a bound set has nothing to be compatible with. Each deletion also has to
 remove the variable the bind consumed, or `-Werror` turns the leftover into a build failure
-(`-Wunused-variable`), and in `scene.cpp` the set is a *parameter*, so removing it means updating the
-call sites of `record_segment`.
+(`-Wunused-variable`).
+
+**Already deleted** (this is the scene pass's own draw path, so it was the first batch): the scene
+set in `scene.cpp` and `transparent.cpp`, and the sets in `fxaa.cpp`, `gbuffer_debug.cpp` and
+`cluster.cpp`. `scene_pass::record_segment` lost its `scene_set` parameter with them, which is why its
+call sites and its declaration in `scene.cppm` changed too.
 
 | file:line | what it binds |
 | --- | --- |
-| `vulkan/pass/scene.cpp:75` | the scene set, once per segment (parameter - see above) |
-| `vulkan/pass/transparent.cpp:82` | the scene set, once per secondary |
-| `vulkan/pass/deferred.cpp:163` | scene + G-buffer sets |
-| `vulkan/pass/cluster.cpp:128` | the scene set |
-| `vulkan/pass/fxaa.cpp:174` | the post set |
-| `vulkan/pass/gbuffer_debug.cpp:148` | the G-buffer set |
+| `vulkan/pass/deferred.cpp:163` | scene + G-buffer sets (`sets`, a two-element array) |
 | `vulkan/pass/post.cpp:243` and `:355` | the post set (two record paths) |
-| `vulkan/pass/taa.cpp:224` | its own set |
+| `vulkan/pass/taa.cpp:224` | its own set (`draw_set`) |
 | `vulkan/pass/megalights_trace.cpp:145` | scene + G-buffer sets |
-| `vulkan/pass/megalights_temporal.cpp:211` | its own set |
+| `vulkan/pass/megalights_temporal.cpp:211` | its own set (`set`, from `family_.set(...)`) |
 | `vulkan/pass/rt_shadow.cpp:195` | scene + G-buffer sets |
-| `vulkan/runtime.cpp:2614` | the scene set in the shadow content (multiline) |
+| `vulkan/runtime.cpp:2614` | the scene set in the shadow content (multiline, `scene_set_handle`) |
 
 The guards that gate on them (`io.pipeline_layout == VK_NULL_HANDLE`, `env.layout != VK_NULL_HANDLE`)
 still *pass*, because the runtime still hands out `scene_pipeline_layout` - so nothing here is caught
