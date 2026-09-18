@@ -3933,6 +3933,63 @@ namespace vulkan {
         // constants, which is exactly the split this migration was for: a pass cannot reach a resource its
         // declaration does not name, and the renderer no longer knows which pass wants which image.
         out.constants = this->frame_facts;
+        // THE PER-IMAGE TARGET DESCRIPTORS ARE (RE)WRITTEN EVERY FRAME, and that is a MEASURED requirement
+        // rather than belt-and-braces: a heap IMAGE descriptor written while its image is still in
+        // VK_IMAGE_LAYOUT_UNDEFINED - which is exactly what the creation loops do, in the same breath as
+        // vkCreateImage - NEVER RESOLVES. Re-writing the SAME descriptor once the image has been transitioned
+        // into a sampled layout samples correctly (measured: the lighting pass read zero from every G-buffer
+        // slot until this rewrite existed, and read the real albedo the moment it was added). BUFFERS ARE
+        // UNAFFECTED, which is why the material table and the camera/light UBOs worked all along, and why the
+        // IBL images worked too - they are uploaded and transitioned before their descriptors are written.
+        auto const write_sampled_target = [this](uint32_t const slot, VkImage const image, VkFormat const format, VkImageAspectFlags const aspect) {
+            if (image == VK_NULL_HANDLE) {
+                return;
+            }
+            VkImageViewCreateInfo const view = make_image_view_info(image, format, VK_IMAGE_VIEW_TYPE_2D, aspect, VK_REMAINING_MIP_LEVELS, VK_REMAINING_ARRAY_LAYERS);
+            [[maybe_unused]] bool const written = this->vulkan_core.descriptor_heaps.write_image(heap_slot_offset(slot), view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE);
+        };
+        std::size_t const heap_image = static_cast<std::size_t>(this->current_image_index);
+        if (heap_image < this->vulkan_core.gbuffer_images[0].size()) {
+            uint32_t const image_slot = static_cast<uint32_t>(heap_image);
+            write_sampled_target(core::heap_slots::gbuffer_albedo + image_slot, this->vulkan_core.gbuffer_images[0][heap_image], vulkan::gbuffer_formats[0], VK_IMAGE_ASPECT_COLOR_BIT);
+            write_sampled_target(core::heap_slots::gbuffer_normal + image_slot, this->vulkan_core.gbuffer_images[1][heap_image], vulkan::gbuffer_formats[1], VK_IMAGE_ASPECT_COLOR_BIT);
+            write_sampled_target(core::heap_slots::gbuffer_material + image_slot, this->vulkan_core.gbuffer_images[2][heap_image], vulkan::gbuffer_formats[2], VK_IMAGE_ASPECT_COLOR_BIT);
+            write_sampled_target(core::heap_slots::gbuffer_depth + image_slot, this->vulkan_core.gbuffer_depth_images[heap_image], this->vulkan_core.depth_format, VK_IMAGE_ASPECT_DEPTH_BIT);
+            write_sampled_target(core::heap_slots::gbuffer_velocity + image_slot, this->vulkan_core.velocity_images[heap_image], vulkan::gbuffer_velocity_format, VK_IMAGE_ASPECT_COLOR_BIT);
+            write_sampled_target(core::heap_slots::taa_current + image_slot, this->vulkan_core.scene_color_images[heap_image], vulkan::hdr_format, VK_IMAGE_ASPECT_COLOR_BIT);
+            write_sampled_target(core::heap_slots::post_color + image_slot, this->vulkan_core.hdr_images[heap_image], vulkan::hdr_format, VK_IMAGE_ASPECT_COLOR_BIT);
+            write_sampled_target(core::heap_slots::display_color + image_slot, this->vulkan_core.ldr_images[heap_image], vulkan::hdr_format, VK_IMAGE_ASPECT_COLOR_BIT);
+            // ... and the same for every OTHER per-image target a shader samples or writes: the temporal
+            // history, the megalights chain (sampled AND its storage twin), and the four bloom levels, which
+            // the grid packs `heap_image_capacity` apart.
+            auto const write_storage_target = [this](uint32_t const slot, VkImage const image, VkFormat const format) {
+                if (image == VK_NULL_HANDLE) {
+                    return;
+                }
+                VkImageViewCreateInfo const view = make_image_view_info(image, format, VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_ASPECT_COLOR_BIT, VK_REMAINING_MIP_LEVELS, VK_REMAINING_ARRAY_LAYERS);
+                [[maybe_unused]] bool const written = this->vulkan_core.descriptor_heaps.write_image(heap_slot_offset(slot), view, VK_IMAGE_LAYOUT_GENERAL, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
+            };
+            if (heap_image < this->vulkan_core.taa_history_images.size()) {
+                write_sampled_target(core::heap_slots::taa_history + image_slot, this->vulkan_core.taa_history_images[heap_image], vulkan::hdr_format, VK_IMAGE_ASPECT_COLOR_BIT);
+            }
+            if (heap_image < this->vulkan_core.ml_images.size()) {
+                write_sampled_target(core::heap_slots::ml_trace + image_slot, this->vulkan_core.ml_images[heap_image], vulkan::hdr_format, VK_IMAGE_ASPECT_COLOR_BIT);
+                write_storage_target(core::heap_slots::ml_trace_storage + image_slot, this->vulkan_core.ml_images[heap_image], vulkan::hdr_format);
+            }
+            if (heap_image < this->vulkan_core.ml_resolve_images.size()) {
+                write_sampled_target(core::heap_slots::ml_resolved + image_slot, this->vulkan_core.ml_resolve_images[heap_image], vulkan::hdr_format, VK_IMAGE_ASPECT_COLOR_BIT);
+                write_storage_target(core::heap_slots::ml_resolved_storage + image_slot, this->vulkan_core.ml_resolve_images[heap_image], vulkan::hdr_format);
+            }
+            if (heap_image < this->vulkan_core.ml_history_images.size()) {
+                write_sampled_target(core::heap_slots::ml_history + image_slot, this->vulkan_core.ml_history_images[heap_image], vulkan::hdr_format, VK_IMAGE_ASPECT_COLOR_BIT);
+            }
+            for (uint32_t level = 0; level < this->vulkan_core.bloom_images.size(); ++level) {
+                if (heap_image < this->vulkan_core.bloom_images[level].size()) {
+                    write_sampled_target(core::heap_slots::bloom_l0 + level * core::heap_image_capacity + image_slot, this->vulkan_core.bloom_images[level][heap_image], vulkan::hdr_format, VK_IMAGE_ASPECT_COLOR_BIT);
+                }
+            }
+        }
+
         bool const resolved = pass.resolve(this->make_resolve_context(), out);
         if (resolved) {
             this->verify_resource_table(pass, out);

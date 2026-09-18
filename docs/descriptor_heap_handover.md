@@ -225,3 +225,43 @@ validation silent.
 The rules the extension actually enforces - the five VUIDs, the null-layout requirement, the glslang
 restrictions that shaped the shader side, and the counted work list this document is the tail of - are
 in `docs/descriptor_heap_migration.md`.
+
+
+## The root cause, found and fixed (measured, with RenderDoc unavailable)
+
+RenderDoc 1.46 cannot capture this renderer at all, and the reason is on RenderDoc's side: its capture layer
+HIDES `VK_EXT_descriptor_heap` from the application. Measured with `vulkaninfo` - without the layer
+`VK_EXT_descriptor_heap : extension revision 1` is listed (498 `VK_` lines); with
+`ENABLE_VULKAN_RENDERDOC_CAPTURE=1` it is gone (403 lines). Under the layer the app therefore takes its
+no-heap fallback (`descriptor heap: not available (descriptor sets stay the binding model)`) and dies when
+the heap-native shaders are compiled. GFXReconstruct fails the same way. So the diagnosis was done with
+instruments inside the renderer instead, and they found the bug.
+
+**A heap IMAGE descriptor written while its image is still in `VK_IMAGE_LAYOUT_UNDEFINED` NEVER RESOLVES.**
+That is the whole black frame. The creation loops write every target's descriptor in the same breath as
+`vkCreateImage` - i.e. while the image is UNDEFINED - and **every shader that sampled one of them read
+zero**, while the image itself was fine:
+
+* the scene's 46356-index draw reaches the G-buffer: copying `gbuffer_images[0][i]` to a buffer and reading
+  it back gives `1f 32 36 fe` at the centre, while the deferred's *sample* of the same slot gives 0;
+* the BRDF LUT - uploaded and transitioned BEFORE its descriptor was written - samples correctly
+  (`0xffffb3ff` through the heap sampler, `0xffff0000` through `texelFetch`), and the material table (a
+  BUFFER descriptor, which has no layout) always read `0xffff`. So image sampling, the sampler heap and the
+  slot arithmetic were all fine; only the *target* descriptors were dead;
+* rewriting the G-buffer descriptor again once the image was defined made the deferred's sample return the
+  real albedo immediately (`0x3BC7` = 0.1216 x 8 in the HDR), and forcing the deferred's output to a
+  constant reached the HDR too - so the draws, the targets and the descriptors were never the problem.
+
+**The fix** is in `runtime::resolve_pass`: every per-image target descriptor (G-buffer x3, depth, velocity,
+taa_current, taa_history, post_color, display_color, the megalights chain and its storage twins, and the four
+bloom levels) is rewritten while the frame is being resolved, i.e. once the images are certainly in a defined
+layout. `BUFFERS ARE UNAFFECTED`, which is why the material table, the camera/light UBOs and the clusters
+worked all along - that asymmetry is what made this so hard to see.
+
+**Still to do after this fix:** the frame does not come out yet - the lighting stage now reads its G-buffer
+correctly, but the content still does not survive to the swapchain, so at least one more link is broken
+(TAA resolve, the megalights chain, the composite's source lane, or FXAA). The next measurement is the
+multi-image read-back that located this one: copy the swapchain, `hdr`, `scene_color`, `ldr` and the
+G-buffer albedo into one staging buffer per capture and print each centre pixel - that shows exactly which
+stage drops it. The read-back code is in this branch's history (it was reverted; re-add it in
+`record_screenshot_copy`).
