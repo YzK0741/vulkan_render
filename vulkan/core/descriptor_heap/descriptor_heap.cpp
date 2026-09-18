@@ -56,6 +56,9 @@ namespace vulkan {
         }
         this->write_descriptors_ = reinterpret_cast<PFN_vkWriteResourceDescriptorsEXT>(vkGetDeviceProcAddr(device, "vkWriteResourceDescriptorsEXT"));
         this->write_samplers_ = reinterpret_cast<PFN_vkWriteSamplerDescriptorsEXT>(vkGetDeviceProcAddr(device, "vkWriteSamplerDescriptorsEXT"));
+        // Resolved but NOT required for init: a heap that cannot push data is still a usable heap for descriptors
+        // read from a fixed offset, so this does not decide whether the heap exists - push_data() refuses instead.
+        this->push_data_ = reinterpret_cast<PFN_vkCmdPushDataEXT>(vkGetDeviceProcAddr(device, "vkCmdPushDataEXT"));
         this->bind_resource_heap = reinterpret_cast<PFN_vkCmdBindResourceHeapEXT>(vkGetDeviceProcAddr(device, "vkCmdBindResourceHeapEXT"));
         this->bind_sampler_heap = reinterpret_cast<PFN_vkCmdBindSamplerHeapEXT>(vkGetDeviceProcAddr(device, "vkCmdBindSamplerHeapEXT"));
         if (this->write_descriptors_ == nullptr || this->write_samplers_ == nullptr || this->bind_resource_heap == nullptr || this->bind_sampler_heap == nullptr) {
@@ -284,6 +287,25 @@ namespace vulkan {
             .size = bytes,
         };
         return this->write_samplers_(this->device, static_cast<uint32_t>(samplers.size()), samplers.data(), &range) == VK_SUCCESS;
+    }
+
+    bool descriptor_heap::push_data(VkCommandBuffer const command_buffer, uint32_t const offset, std::span<std::byte const> const data) const noexcept {
+        if (!this->ready() || this->push_data_ == nullptr || command_buffer == VK_NULL_HANDLE || data.empty()) {
+            return false;
+        }
+        if (static_cast<VkDeviceSize>(offset) + data.size() > this->limits_.max_push_data) {
+            utility::log("descriptor heap: a push of {} B at offset {} exceeds the {} B push-data window", data.size(), offset, this->limits_.max_push_data);
+            return false;
+        }
+        VkPushDataInfoEXT const info = {
+            .sType = VK_STRUCTURE_TYPE_PUSH_DATA_INFO_EXT,
+            .pNext = nullptr,
+            .offset = offset,
+            // A HOST address range, like every other write in this extension (see write_descriptors).
+            .data = {.address = const_cast<std::byte*>(data.data()), .size = data.size()},
+        };
+        this->push_data_(command_buffer, &info);
+        return true;
     }
 
     VkDeviceSize descriptor_heap::reserve(uint32_t const count, VkDescriptorType const type) noexcept {

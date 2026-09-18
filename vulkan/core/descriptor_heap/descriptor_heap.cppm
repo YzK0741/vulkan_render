@@ -152,6 +152,20 @@ namespace vulkan {
          */
         void record_bind(VkCommandBuffer command_buffer) const noexcept;
 
+        /**
+         * @brief send PUSH CONSTANTS to a heap pipeline: the bytes a shader reads as `layout(push_constant)`
+         * @param offset the byte offset into the push-data window (0 for a pass that pushes one block)
+         * @param data the block itself, whose size must fit `maxPushDataSize - offset`
+         * @return whether the push happened (false when the heap is not ready or no entry point was published)
+         * @note THIS IS WHY A HEAP PIPELINE CAN STILL HAVE PARAMETERS. A pipeline created with
+         *       VK_PIPELINE_CREATE_2_DESCRIPTOR_HEAP_BIT_EXT must have a NULL layout - the proposal says so in
+         *       those words - so vkCmdPushConstants has nothing to push TO; the same document says the data is
+         *       "accessed in the same way as before via the PushConstant storage class, it is now simply
+         *       unnecessary to construct a pipeline layout to do that". The two commands invalidate each other, so
+         *       a converted frame uses this one and nothing else.
+         */
+        [[nodiscard]] bool push_data(VkCommandBuffer command_buffer, uint32_t offset, std::span<std::byte const> data) const noexcept;
+
         /// @brief the heap offset of the descriptor KIND @p type occupies, or 0 when the heap cannot hold it
         [[nodiscard]] uint32_t descriptor_stride(VkDescriptorType type) const noexcept;
 
@@ -253,6 +267,8 @@ namespace vulkan {
         heap_limits limits_ = {};
         PFN_vkWriteResourceDescriptorsEXT write_descriptors_ = nullptr;
         PFN_vkWriteSamplerDescriptorsEXT write_samplers_ = nullptr;
+        /// the push-data entry point (see push_data): the push-constant path of a layout-less heap pipeline
+        PFN_vkCmdPushDataEXT push_data_ = nullptr;
         PFN_vkCmdBindResourceHeapEXT bind_resource_heap = nullptr;
         PFN_vkCmdBindSamplerHeapEXT bind_sampler_heap = nullptr;
     };
