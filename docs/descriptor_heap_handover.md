@@ -173,33 +173,33 @@ probes prove that a heap read and a heap draw both work, and no push is refused.
 * **The viewport.** Dynamic viewport/scissor are set per pipeline bind (`vk_pipeline::begin_pipeline`), so
   a secondary gets them; the scene path is not missing them.
 
-**What that leaves, and it is now one sentence.** The PRIMARY's passes render (the red test proves it) and
-the scene's draws do not - on the primary *or* in a secondary. Every shader, descriptor, index, push,
-viewport, discard and depth question is measured away, so the fault is in what the scene pass's instance
-does to its own output. The one link not yet examined is the **per-attachment blend state of the G-buffer
-pipeline** (the runtime builds it, with `make_color_blend_attachment_additive` on the HDR target and
-overwrite on the surface targets): zero blend factors would write black no matter what the fragment stage
-outputs, which is exactly what the forced flat-green albedo showed. Check `runtime`'s G-buffer pipeline
-creation (around `gbuffer_pipeline->viewport = full_viewport`) against its blend attachment list before
-touching anything else.
+**What that leaves.** Every input to the scene's rasterisation has now been *printed and verified correct*,
+one at a time:
 
-Also measured away this round, so do not re-run them:
+| what | measured |
+| --- | --- |
+| the pass draws | `scene segment: 1 leaf/leaves, heap push endpoint SET` |
+| the instance | `scene instance: 6 resolved target(s), 6 declared target(s) -> 5 color attachment(s), depth YES; renderArea 1080x960` |
+| the viewport | `pipeline bind: stored viewport 1080x960 at (0, 0), scissor 1080x960` |
+| the blend state | `make_color_blend_attachment_opaque()` - `blendEnable = VK_FALSE`, so it writes what the shader outputs |
+| the depth clear | `1.0f` (`constant_init.cppm:327`), so a `LESS`/`LESS_OR_EQUAL` compare rejects nothing |
+| the discard | disabled (`surface.glsl`) - no change |
+| the vertex stage | synthetic `gl_VertexIndex` positions and a hand projection, no camera, no vertex fetch - no change |
+| the fragment stage | a forced flat green albedo - no change |
+| the recording level | the segment recorded straight onto the PRIMARY, flag removed - no change |
 
-* **Recording a segment on the PRIMARY.** Removing `VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT`
-  and recording the leaves straight onto `io.cmd` leaves the frame black: the secondary path is *not* the
-  fault, and the fault is how the scene's own content reaches the target.
-* **The stored viewport.** Instrumenting `vk_pipeline::begin_pipeline` printed
-  `stored viewport 1080x960 at (0, 0), scissor 1080x960` - correct, and this is the value the scene path
-  relies on (`resync_viewport = false`).
-* **The MASK discard.** Disabling `surface.glsl`'s `discard` changed nothing.
-* **The depth clear.** `make_depth_attachment_info` clears depth to `1.0f` (`constant_init.cppm:327`), so
-  a `LESS`/`LESS_OR_EQUAL` compare cannot be rejecting every fragment.
-* **The draw path bailing.** No `unknown pipeline`/"draw skipped" line appears, and both `pbr` and `unlit`
-  pipelines are created and cached.
+A draw with all of that in place writes nothing, while the post chain's draw in the *same command buffer*
+does. Nothing left in the shading, descriptor, index, push, viewport, blend, depth or instance path
+explains it, so the next instrument must look at the target rather than at the inputs: read the G-buffer
+albedo image back **immediately after the scene pass** (the pattern `heap_probe.frag` and
+`runtime::run_heap_graphics_probe` already use), or take a GPU capture. That is the one question left -
+whether the fragments reach the image at all - and it is not answerable by reasoning about the code.
 
 **The measurement worth carrying forward:** the black frame's hash is `dc5f6d66428c26d8…` - byte for byte
 the hash this migration recorded earlier as "a half-migrated frame renders nothing". It is a *uniform*
 image, which is why it survived every fix that changed what the frame does.
+
+## How to finish and verify
 
 ## How to finish and verify
 
