@@ -12,6 +12,7 @@
 // binding outside the pass's own set, a gap in the own bindings, and a push block that does not fit.
 #include "vk_test.h"
 
+#include <algorithm>
 #include <array>
 #include <cstdlib>
 #include <expected>
@@ -658,6 +659,34 @@ int main() {
         CHECK_MSG(shader_scalars == host_scalars, "the grid's scalar constants differ between shaders/heap_slots.glsl and core.cppm");
         CHECK_MSG(shader_slots.size() == host_slots.size(), "the grid has a different number of arrays on the two sides");
         CHECK_MSG(shader_slots == host_slots, "a grid array's slot differs between shaders/heap_slots.glsl and core.cppm");
+        // ---- ... and every slot the header names must be one the HOST actually WRITES ----
+        //
+        // The comparison above keeps the two tables equal; this keeps them MEANINGFUL. A slot no host code ever
+        // writes is a name for memory nothing put a descriptor in, and a heap-native shader indexing it reads
+        // whatever the heap happened to contain - silently, which is the failure mode this whole file exists to
+        // catch. The host side is text too (runtime.cpp and core.cpp are where every heap write lives), so the
+        // check is the same kind as the one above, with ONE documented exception: the bloom chain writes its
+        // levels with arithmetic (`bloom_l0 + level * heap_image_capacity`), so l1..l3 are named in the header and
+        // never spelled out in the host. Every other exception is a BUG, not a style choice.
+        std::string host_text;
+        for (std::string const& path : {std::string("/vulkan/runtime.cpp"), std::string("/vulkan/core/core.cpp")}) {
+            for (std::string const& line : read_lines(std::string(VR_TEST_SOURCE_DIR) + path)) {
+                host_text += line;
+                host_text += '\n';
+            }
+        }
+        std::array<std::string_view, 3> const written_by_arithmetic = {"bloom_l1", "bloom_l2", "bloom_l3"};
+        uint32_t covered = 0;
+        for (auto const& [name, value] : shader_slots) {
+            if (std::find(written_by_arithmetic.begin(), written_by_arithmetic.end(), name) != written_by_arithmetic.end()) {
+                continue;
+            }
+            std::string const needle = "heap_slots::" + name;
+            CHECK_MSG(host_text.find(needle) != std::string::npos, needle.c_str());
+            ++covered;
+        }
+        CHECK(covered > 20u); // the floor again: a host file that failed to load would pass the loop above
+
         // ... and a floor under the parse itself: a file that stopped looking like this would otherwise pass by
         // coming out EMPTY on both sides, which is the way a contract test lies.
         CHECK(shader_slots.size() > 20u);

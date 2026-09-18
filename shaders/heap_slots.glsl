@@ -65,7 +65,6 @@ const uint heap_slots_ml_trace_storage = heap_slot_base + 719u;
 const uint heap_slots_ml_resolved_storage = heap_slot_base + 735u;
 const uint heap_slots_ml_history = heap_slot_base + 599u;
 const uint heap_slots_ml_resolved = heap_slot_base + 607u;
-const uint heap_slots_ml_lighting = heap_slot_base + 615u;
 const uint heap_slots_taa_current = heap_slot_base + 623u;
 const uint heap_slots_taa_history = heap_slot_base + 631u;
 const uint heap_slots_post_color = heap_slot_base + 639u;
@@ -73,8 +72,6 @@ const uint heap_slots_bloom_l0 = heap_slot_base + 647u;
 const uint heap_slots_bloom_l1 = heap_slot_base + 655u;
 const uint heap_slots_bloom_l2 = heap_slot_base + 663u;
 const uint heap_slots_bloom_l3 = heap_slot_base + 671u;
-const uint heap_slots_post_depth = heap_slot_base + 679u;
-const uint heap_slots_post_normal = heap_slot_base + 687u;
 const uint heap_slots_display_color = heap_slot_base + 695u;
 // one past the last array: 703 slots are in use, the grid reserves 1024
 const uint heap_slot_count = 1024u;

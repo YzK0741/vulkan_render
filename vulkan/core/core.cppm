@@ -565,7 +565,6 @@ namespace vulkan {
             static constexpr uint32_t ml_resolved_storage = heap_slot_base + 735u;
             static constexpr uint32_t ml_history = heap_slot_base + 599u;
             static constexpr uint32_t ml_resolved = heap_slot_base + 607u;
-            static constexpr uint32_t ml_lighting = heap_slot_base + 615u;
             static constexpr uint32_t taa_current = heap_slot_base + 623u; // per image: TAA's pair
             static constexpr uint32_t taa_history = heap_slot_base + 631u;
             static constexpr uint32_t post_color = heap_slot_base + 639u; // per image: the post chain
@@ -573,8 +572,6 @@ namespace vulkan {
             static constexpr uint32_t bloom_l1 = heap_slot_base + 655u;
             static constexpr uint32_t bloom_l2 = heap_slot_base + 663u;
             static constexpr uint32_t bloom_l3 = heap_slot_base + 671u;
-            static constexpr uint32_t post_depth = heap_slot_base + 679u;
-            static constexpr uint32_t post_normal = heap_slot_base + 687u;
             static constexpr uint32_t display_color = heap_slot_base + 695u;
         };
         /// @brief the byte offset of slot 0 (see @ref heap_slots), or VK_WHOLE_SIZE when the heap is not in use
