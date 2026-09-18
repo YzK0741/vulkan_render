@@ -234,7 +234,8 @@ namespace vulkan {
                                         vulkan::buffer_type::uniform_coherent,
                                         "camera ubo buffer",
                                         this->camera_buffers,
-                                        &this->camera_mapped);
+                                        &this->camera_mapped,
+                                        VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT); // heap-bound: see the scene-set block
 
         // 1x1 white fallback texture, always the first entry of the scene texture array; missing
         // material textures point at it
@@ -497,6 +498,35 @@ namespace vulkan {
                                         VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT);
     }
 
+    namespace {
+        /**
+         * @brief write ONE per-slot binding of the scene set into every slot's heap block
+         *
+         * THE MIGRATION'S BUFFER PATTERN, in one place: a heap descriptor for a buffer IS its address range, and a
+         * per-slot binding's entry must name THAT slot's buffer - so this walks the per-slot vector, takes each
+         * buffer's device address and writes it at `heap_scene_set_base + slot * slot_stride + offset[binding]` (all
+         * three numbers reserved by core, see core.cppm). It does nothing when the heap is not in use, which is what
+         * keeps the descriptor-set path authoritative until the mapping lands.
+         */
+        void write_heap_scene_buffer(core& vk, std::vector<vk_buffer> const& buffers, uint32_t const binding, VkDeviceSize const size, VkDescriptorType const type) {
+            if (!vk.descriptor_heaps.ready() || vk.heap_scene_set_base == VK_WHOLE_SIZE) {
+                return;
+            }
+            for (uint32_t slot = 0; slot < buffers.size(); ++slot) {
+                auto const* const detail = vk.vma.get_buffer_detail(buffers[slot].handle());
+                if (detail == nullptr) {
+                    continue;
+                }
+                VkBufferDeviceAddressInfo const info = {.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .pNext = nullptr, .buffer = detail->buffer};
+                VkDeviceAddress const address = vkGetBufferDeviceAddress(vk.device, &info);
+                VkDeviceSize const offset = vk.heap_scene_set_base + static_cast<VkDeviceSize>(slot) * vk.heap_scene_slot_stride + vk.heap_scene_binding_offset[binding];
+                if (!vk.descriptor_heaps.write_buffer(offset, address, size, type)) {
+                    utility::log("descriptor heap: set 0 binding {} did not fit slot {}'s block at offset {}", binding, slot, offset);
+                }
+            }
+        }
+    } // namespace
+
     void runtime::ensure_cluster_buffers() {
         if (!this->cluster_count_buffers.empty()) {
             return;
@@ -519,7 +549,8 @@ namespace vulkan {
                                         vulkan::buffer_type::storage_coherent,
                                         "cluster count buffer",
                                         this->cluster_count_buffers,
-                                        &this->cluster_count_mapped);
+                                        &this->cluster_count_mapped,
+                                        VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT); // heap-bound
         // The index rows are host-visible for the same reason, but nothing on the CPU ever writes
         // through the mapping: the dispatch fills them, so the mapped list stays a nullptr.
         init_utils::create_host_buffers(this->vulkan_core,
@@ -527,7 +558,20 @@ namespace vulkan {
                                         std::as_bytes(std::span(zero_indices)),
                                         vulkan::buffer_type::storage_coherent,
                                         "cluster index buffer",
-                                        this->cluster_index_buffers);
+                                        this->cluster_index_buffers,
+                                        nullptr,
+                                        VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT); // heap-bound
+
+        // The clustered-light pass's TWO buffers, into the heap's per-slot blocks (bindings 11 and 12): this stage
+        // is the first whose WHOLE set-0 interface is buffers (camera 0, light 7, counts 11, indices 12), which is
+        // what makes it the one to migrate first - no image descriptors, no embedded samplers, nothing but address
+        // ranges - and therefore the one that can be verified byte for byte before the image side is attempted.
+        // The sizes are the buffers' REAL sizes, not VK_WHOLE_SIZE: a heap buffer descriptor is an
+        // address RANGE, and validation states the rule as VUID-VkDeviceAddressRangeKHR-address-11365 - address plus
+        // size must stay inside the buffer, which VK_WHOLE_SIZE cannot satisfy.
+        write_heap_scene_buffer(this->vulkan_core, this->cluster_count_buffers, 11u, static_cast<VkDeviceSize>(vulkan::max_cluster_count) * sizeof(uint32_t), VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+        write_heap_scene_buffer(this->vulkan_core, this->cluster_index_buffers, 12u, static_cast<VkDeviceSize>(vulkan::max_cluster_count) * vulkan::cluster_light_capacity * sizeof(uint32_t), VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+        write_heap_scene_buffer(this->vulkan_core, this->camera_buffers, 0u, sizeof(camera_ubo), VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
     }
 
     void runtime::ensure_scene_set() {
