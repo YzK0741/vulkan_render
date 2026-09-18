@@ -90,6 +90,24 @@ namespace vulkan::acceleration_structure {
         VkDeviceAddress index_address = 0; // first index, already offset into the buffer
         VkIndexType index_type = VK_INDEX_TYPE_UINT32;
         uint32_t index_count = 0; // triangles = index_count / 3
+        /**
+         * THE OPACITY MICROMAP this geometry consults, when it has one: the handle, the PER-TRIANGLE index buffer
+         * the traversal reads to find its micromap triangle, and the usage record the micromap was built with (the
+         * attachment repeats it, so it is carried here rather than looked up).
+         *
+         * A micromap makes a micro-triangle's opacity the traversal's business instead of a shader's: a triangle
+         * whose micro-triangles are opaque is committed without any-hit work, a transparent one is skipped, and an
+         * UNKNOWN one invokes the any-hit shader - which is what makes an all-unknown micromap a no-op and a
+         * decisive test at the same time.
+         *
+         * @note a null handle means no micromap, which is also the state of every geometry on a device without
+         *       VK_EXT_opacity_micromap: nothing changes for it.
+         */
+        VkMicromapEXT opacity_micromap = VK_NULL_HANDLE;
+        VkDeviceAddress opacity_index_address = 0;
+        VkDeviceSize opacity_index_stride = 0;
+        VkIndexType opacity_index_type = VK_INDEX_TYPE_UINT32;
+        VkMicromapUsageEXT opacity_usage = {};
     };
 
     /**
@@ -189,6 +207,19 @@ namespace vulkan::acceleration_structure {
         /// what the build recorded (it keeps its infos for exactly this reason - an update reuses them)
         std::vector<VkAccelerationStructureBuildGeometryInfoKHR> update_infos = {};
         std::vector<VkAccelerationStructureBuildRangeInfoKHR const*> update_range_ptrs = {};
+        /**
+         * THE OPACITY MICROMAP ATTACHMENTS, one per geometry that has one.
+         *
+         * @note A DEQUE, and that is the whole point of the type: `VkAccelerationStructureGeometryKHR::pNext`
+         *       points at these structs from add() until the build is recorded, so their addresses must survive
+         *       every later insertion - which a vector does not promise and a deque does. The usage record sits
+         *       beside its attachment in the same element because the attachment points at it.
+         */
+        struct micromap_attachment {
+            VkAccelerationStructureTrianglesOpacityMicromapEXT attachment = {};
+            VkMicromapUsageEXT usage = {};
+        };
+        std::deque<micromap_attachment> micromap_geometries = {};
 
     public:
         explicit bottom_level_structures(core& device);

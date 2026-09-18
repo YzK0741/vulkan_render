@@ -4,6 +4,7 @@ module;
 #include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <deque>
 #include <expected>
 #include <glm/glm.hpp>
 #include <memory>
@@ -127,6 +128,30 @@ namespace vulkan::acceleration_structure {
         // nothing. The cost is the opaque-traversal shortcut, and the per-material decision can restore it.
         geometry.flags = 0;
         geometry.geometry.triangles = triangles;
+        if (source.opacity_micromap != VK_NULL_HANDLE && source.opacity_index_address != 0) {
+            // THE OPACITY MICROMAP CHAINED INTO THIS GEOMETRY. Both structs live in a container whose elements
+            // never move, because geometry.pNext points at them and the build reads them later, at RECORD time -
+            // a container that reallocates (or an entry that gets copied) would leave that pointer dangling, and
+            // the failure mode is a traversal that consults freed memory rather than a compile error.
+            this->micromap_geometries.push_back(micromap_attachment{});
+            micromap_attachment& slot = this->micromap_geometries.back();
+            slot.usage = source.opacity_usage;
+            slot.attachment.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_TRIANGLES_OPACITY_MICROMAP_EXT;
+            slot.attachment.pNext = nullptr;
+            slot.attachment.indexType = source.opacity_index_type;
+            slot.attachment.indexBuffer.deviceAddress = source.opacity_index_address;
+            slot.attachment.indexStride = source.opacity_index_stride;
+            slot.attachment.baseTriangle = 0;
+            slot.attachment.usageCountsCount = 1;
+            slot.attachment.pUsageCounts = &slot.usage;
+            slot.attachment.micromap = source.opacity_micromap;
+            // IT CHAINS INTO THE TRIANGLES DATA, not into the geometry: VkAccelerationStructureGeometryKHR's own
+            // pNext accepts only the micromap-DATA struct (the KHR way of BUILDING a micromap, which this does not
+            // use - it builds through vkCmdBuildMicromapsEXT), and validation named exactly that when this was
+            // first attached in the wrong place. The union member was copied from `triangles` above, so this edits
+            // the copy the build will read.
+            geometry.geometry.triangles.pNext = &slot.attachment;
+        }
         item.geometries.push_back(geometry);
 
         VkAccelerationStructureBuildGeometryInfoKHR size_info = {};

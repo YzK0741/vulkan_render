@@ -238,32 +238,46 @@ namespace vulkan::ray_tracing {
                                                                            VkDeviceAddress const mask_address,
                                                                            uint32_t const mask_stride,
                                                                            VkDeviceAddress const skin_address,
-                                                                           uint32_t const skin_stride) const noexcept {
+                                                                           uint32_t const skin_stride,
+                                                                           micromap_resource const* const micromap) const noexcept {
         // The three cases, in the order they take precedence: a MASK bake replaces the geometry entirely (an
         // expanded, NON-INDEXED triangle list), a skinned caster keeps the primitive's index buffer because its
         // vertex ORDER is unchanged, and everything else is the primitive's own memory.
+        acceleration_structure::geometry_source source = {};
         if (mask_address != 0) {
-            return acceleration_structure::geometry_source{.vertex_address = mask_address,
-                                                           .vertex_stride = mask_stride,
-                                                           .vertex_count = caster.index_count,
-                                                           .index_address = 0,
-                                                           .index_type = caster.index_type,
-                                                           .index_count = caster.index_count};
+            source = acceleration_structure::geometry_source{.vertex_address = mask_address,
+                                                             .vertex_stride = mask_stride,
+                                                             .vertex_count = caster.index_count,
+                                                             .index_address = 0,
+                                                             .index_type = caster.index_type,
+                                                             .index_count = caster.index_count};
+        } else if (skin_address != 0) {
+            source = acceleration_structure::geometry_source{.vertex_address = skin_address,
+                                                             .vertex_stride = skin_stride,
+                                                             .vertex_count = caster.vertex_count,
+                                                             .index_address = source_index_address,
+                                                             .index_type = caster.index_type,
+                                                             .index_count = caster.index_count};
+        } else {
+            source = acceleration_structure::geometry_source{.vertex_address = source_vertex_address,
+                                                             .vertex_stride = caster.vertex_stride,
+                                                             .vertex_count = caster.vertex_count,
+                                                             .index_address = source_index_address,
+                                                             .index_type = caster.index_type,
+                                                             .index_count = caster.index_count};
         }
-        if (skin_address != 0) {
-            return acceleration_structure::geometry_source{.vertex_address = skin_address,
-                                                           .vertex_stride = skin_stride,
-                                                           .vertex_count = caster.vertex_count,
-                                                           .index_address = source_index_address,
-                                                           .index_type = caster.index_type,
-                                                           .index_count = caster.index_count};
+        // THE MICROMAP RIDES ALONG WHATEVER GEOMETRY WAS CHOSEN, because it is indexed by the triangle rather than
+        // by a vertex: the geometry's primitive `i` is the same triangle the micromap's element `i` describes, so
+        // it applies to the baked, the skinned and the plain case alike. That is also why the micromap is built
+        // from the CASTER's triangle count rather than from either of those buffers' vertex count.
+        if (micromap != nullptr) {
+            source.opacity_micromap = micromap->micromap;
+            source.opacity_index_address = micromap->indices_address;
+            source.opacity_index_stride = micromap->index_stride;
+            source.opacity_index_type = VK_INDEX_TYPE_UINT32;
+            source.opacity_usage = micromap->usage;
         }
-        return acceleration_structure::geometry_source{.vertex_address = source_vertex_address,
-                                                       .vertex_stride = caster.vertex_stride,
-                                                       .vertex_count = caster.vertex_count,
-                                                       .index_address = source_index_address,
-                                                       .index_type = caster.index_type,
-                                                       .index_count = caster.index_count};
+        return source;
     }
 
     std::expected<void, failure> structure_set::build(VkCommandBuffer const command_buffer, build_inputs const& inputs) {
@@ -339,16 +353,18 @@ namespace vulkan::ray_tracing {
             //
             // The bake is off by default and the micromap is the mechanism that replaces it, so this must not sit
             // behind the same gate: it is created for every caster that carries an alphaMode MASK material, which
-            // is the same test the bake's rule makes ("material_record::flags bit 4"). Nothing consumes the result
-            // yet - the geometry attachment is the next step - which is why every micro-triangle in it is written
-            // UNKNOWN: a micromap that answers "unknown" everywhere leaves the traversal asking the any-hit shader,
-            // exactly as it does today, so creating and building it cannot change a pixel.
+            // is the same test the bake's rule makes ("material_record::flags bit 4"). Every micro-triangle in it
+            // is written UNKNOWN, which is the state that makes the traversal invoke the any-hit shader - so this
+            // step attaches a micromap that cannot change a decision, and the next one fills it with what the
+            // material's alpha actually says.
+            uint32_t micromap_index = caster_level::micromap_none;
             if (caster->index_count >= 3u) {
                 uint32_t const material_index = caster->push.material_index.value;
                 material_record const* const material = material_index < inputs.materials.size() ? &inputs.materials[material_index] : nullptr;
                 if (material != nullptr && (material->flags & 16u) != 0u) {
                     if (auto resource = make_micromap(vk, caster->index_count / 3u); resource.has_value()) {
                         micromap_triangles += resource->triangle_count;
+                        micromap_index = static_cast<uint32_t>(this->micromaps_.size());
                         this->micromaps_.push_back(std::move(*resource));
                     } else {
                         ++skipped_micromaps;
@@ -435,7 +451,14 @@ namespace vulkan::ray_tracing {
             }
 
             acceleration_structure::geometry_source const source =
-                this->caster_geometry(*caster, source_vertex_address, source_index_address, mask_address, mask_stride, skin_address, skin_stride);
+                this->caster_geometry(*caster,
+                                      source_vertex_address,
+                                      source_index_address,
+                                      mask_address,
+                                      mask_stride,
+                                      skin_address,
+                                      skin_stride,
+                                      micromap_index != caster_level::micromap_none ? &this->micromaps_[micromap_index] : nullptr);
             // A skinned structure is built ALLOW_UPDATE so the per-frame refit is legal; everything else is built
             // once and never touched again.
             auto const added = structures.add(source, skin_address != 0);
@@ -456,7 +479,8 @@ namespace vulkan::ray_tracing {
                                                      .skin_source_stride = skin_source_stride,
                                                      .skin_destination_stride = skin_stride,
                                                      .skin_vertex_count = skin_vertex_count,
-                                                     .skin_base = skin_base});
+                                                     .skin_base = skin_base,
+                                                     .micromap_index = micromap_index});
         }
 
         // The skinned casters' first skinning pass, recorded here because the BUILD below has to read skinned

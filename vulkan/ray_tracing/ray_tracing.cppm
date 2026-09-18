@@ -65,6 +65,9 @@ export namespace vulkan::ray_tracing {
         uint32_t skin_destination_stride = 0; // 32 (position, normal, uv)
         uint32_t skin_vertex_count = 0;
         uint32_t skin_base = 0;
+        /// index into `micromaps()`, or `micromap_none`: which opacity micromap this caster's geometry consults
+        static constexpr uint32_t micromap_none = 0xFFFFFFFFu;
+        uint32_t micromap_index = micromap_none;
     };
 
     /**
@@ -175,9 +178,16 @@ export namespace vulkan::ray_tracing {
         ~structure_set();
 
     private:
+    private:
         /// @brief the shared half of abandon() and the destructor: destroy every micromap, then drop them
         void release_micromaps() noexcept;
 
+    public:
+        /// @brief defined below, in the block that documents it: this declaration is only here so
+        ///        caster_geometry (below, in a private section) can take a pointer to it
+        struct micromap_resource;
+
+    private:
     private:
         /// drop everything: the structures, the map and the copies they were built from (all four are one fact)
         void abandon() noexcept;
@@ -187,7 +197,8 @@ export namespace vulkan::ray_tracing {
                                                                               VkDeviceAddress mask_address,
                                                                               uint32_t mask_stride,
                                                                               VkDeviceAddress skin_address,
-                                                                              uint32_t skin_stride) const noexcept;
+                                                                              uint32_t skin_stride,
+                                                                              micromap_resource const* micromap) const noexcept;
 
         core* device_ = nullptr;
         std::optional<acceleration_structure::bottom_level_structures> bottom_ = {};
