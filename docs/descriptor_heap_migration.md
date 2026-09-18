@@ -151,6 +151,48 @@ So the next step is: publish the size from `structure_set` - it is known where t
 and `write_buffer` with `VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR`, at grid slot `heap_slots::tlas +
 frame_slot`, inside the existing `rt_binding_written[frame_slot] != tlas` guard.
 
+## Where the work stands (measured, not claimed)
+
+POPULATED AND VERIFIED IN THE LOG. The grid is reserved at 1 MiB and every write below is proven by its own log
+line, because a heap write has no picture to show for itself until the shaders read the heap:
+
+| what | grid slot(s) | evidence |
+| --- | --- | --- |
+| 6 shared samplers | sampler grid at 65536 | `6 shared samplers written to the sampler grid at 65536` |
+| material table (binding 5) | 512 | `material table written (... offset 1081344)` = (16384 + 512) * 64 |
+| texture array (binding 1) | 0 + index | `N texture descriptors written` |
+| camera / clusters (0, 11, 12) | 514, 518, 520 (+frame slot) | `2 per-frame descriptor(s) written for grid slots 16898..16899` (and 16902, 16904) |
+| motion / skin / morph (13, 9, 10) | 524, 526, 528 (+frame slot) | the same lines for 16908, 16910, 16912 |
+| instance table (6) | 522 | silent success, no `did not reach` line |
+| env / irradiance / BRDF LUT (2, 3, 4) | 532, 533, 534 | silent success, no `did not reach` line |
+| top level structure (16) | 703 + frame slot | silent success, validation SILENT with a real range size |
+| light UBO (7) | 516 + frame slot | silent success |
+
+WHAT THE HEAP WRITES ALREADY TAUGHT (each cost a build or a validation cycle):
+
+- A heap-bound buffer needs `VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT` (VUID-VkBufferDeviceAddressInfo-buffer-02601:
+  the material table, the light UBO, then motion/skin/morph and the instance table in one round).
+- A heap range needs a REAL size, never `VK_WHOLE_SIZE` (VUID-VkDeviceAddressRangeKHR-address-11365).
+- `vkGetAccelerationStructureDeviceAddressKHR` is not exported by the loader: resolve it per device.
+- Success must be logged, or "wrote it" and "the vector was empty" look the same.
+
+STILL TO POPULATE: the shadow map (binding 8, base slot 535), the per-swapchain G-buffer and post images (base
+slots 551..702), the storage images (binding 15 and the megalights outputs), the mask/instance table at binding 17
+(its write site is `runtime::write_rt_structure_binding`, which already handles 16 and 17 together), and any
+image whose binding is repointed later (the furnace mode).
+
+STILL TO DO, and it is the larger half: (2) heap-native shaders in place of `layout(set, binding)` - untyped
+declarations indexed with `descriptor_stride = 64`, combined image samplers CONSTRUCTED at the use site, and the
+`frame_slot` / `image index` carried in PUSH CONSTANTS, because push data only feeds mapping sources; (3) every
+pipeline created with `VkPipelineCreateFlags2CreateInfo` + `VK_PIPELINE_CREATE_2_DESCRIPTOR_HEAP_BIT_EXT` and a
+NULL layout; (4) bind the heaps once per frame and delete descriptor sets, set layouts, pools and the mapping
+shim (`scene_heap_layout`, `scene_heap_stage_mapping`, `set_scene_heap_layout`, `build_cluster`'s
+`map_from_heap` flag, `push_heap_frame_slot`). Then the flip, and the negative proof: push a WRONG index and show
+the picture break.
+
+The migration is still one frame-wide switch, for the reason at the top of this file: a frame whose stages do not
+all read the heap renders nothing at all.
+
 ## What populating the IMAGE half needs (found by trying)
 
 A heap image descriptor carries a **`VkImageViewCreateInfo`, not a view** - the driver creates the view inside
