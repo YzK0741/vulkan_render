@@ -2450,7 +2450,11 @@ namespace vulkan {
         // it, and a secondary records that itself (state is not inherited from the primary). The offset is the
         // declaration's own - where the scene's push block ends.
         uint32_t const index = cascade_index;
-        vkCmdPushConstants(secondary, pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, render_resource::shadow_io.push->offset, sizeof(index), &index);
+        // PUSHED AS DATA, not as a push constant: the pipeline has no layout any more (see
+        // render_environment::push_block). This is ONE 4-byte slice of the shadow stage's block - the cascade
+        // index's own offset - while the rest of the block is the material's, pushed per caster below. A
+        // secondary records its own state (nothing is inherited from the primary), which is why it is set here.
+        [[maybe_unused]] bool const pushed = vk.descriptor_heaps.push_data(secondary, render_resource::shadow_io.push->offset, std::as_bytes(std::span(&index, 1)));
         self->record_shadow_content(secondary, pipeline, pipeline_layout);
         vkEndCommandBuffer(secondary);
         return true;
@@ -2651,6 +2655,10 @@ namespace vulkan {
             vkCmdSetCullMode(cb, mode);
         };
         env.layout = vk.scene_pipeline_layout;
+        // The shadow session's endpoint (see render_environment::push_block). `this` is const here because the
+        // method is; the endpoint only records into the command buffer, so the cast is a formality.
+        env.push_owner = const_cast<runtime*>(this);
+        env.push_block = &runtime::push_stage_block;
         // draw only the casters that can throw a shadow into the camera frustum (see
         // shadow_casters in begin_recording); the whole scene only when culling is disabled.
         // BLEND (transparent) leaves are skipped: a depth-only pass has no sensible way to blend
@@ -3616,6 +3624,11 @@ namespace vulkan {
         // the main pass must not, or double-sided handling would cost fill rate)
         env.set_cull_mode_fn = [](VkCommandBuffer const cb, VkCullModeFlags const mode) { vkCmdSetCullMode(cb, mode); };
         env.layout = self.vulkan_core.scene_pipeline_layout;
+        // THE HEAP PUSH (see render_environment::push_block): every draw in this session sends its block through
+        // the same endpoint a converted pass uses; that endpoint is what appends the two heap indices, which is
+        // why a primitive's own push struct never had to grow a field.
+        env.push_owner = &self;
+        env.push_block = &runtime::push_stage_block;
         return env;
     }
 
@@ -3998,7 +4011,7 @@ namespace vulkan {
             return false;
         }
         this->fill_compute_skin_requests(casters);
-        return this->compute_skin.record(command_buffer, static_cast<uint32_t>(this->vulkan_core.current_frame), this->compute_skin_requests);
+        return this->compute_skin.record(command_buffer, this->compute_skin_requests, this, &runtime::push_index_block);
     }
 
     // THE RAY-TRACED SHADOW PASS'S RESOLVER IS GONE (S3): its one barrier image comes from the frame's resource
@@ -4999,27 +5012,48 @@ namespace vulkan {
         return static_cast<runtime*>(owner)->mask_bake.ready();
     }
 
+    namespace {
+        /// Push @p bytes and then @p lanes index lanes (see runtime::push_stage_block). The three endpoints differ
+        /// only in that count, because a stage's shader declares exactly as many lanes as it reads: the post chain
+        /// three (its source slot included), everything else two, the mask bake none.
+        bool push_with_lanes(core const& vk, uint32_t const frame_slot, uint32_t const image_index, VkCommandBuffer const command_buffer,
+                             std::span<std::byte const> const bytes, uint32_t const extra_lane, std::size_t const lanes) {
+            constexpr std::size_t window = 256; // maxPushDataSize on this device (see heap_limits)
+            std::array<std::byte, window> staging = {};
+            std::size_t const lane_bytes = lanes * sizeof(uint32_t);
+            if (bytes.size() + lane_bytes > staging.size()) {
+                utility::log("heap push: a block of {} B plus {} index lanes does not fit the push-data window", bytes.size(), lanes);
+                return false;
+            }
+            std::memcpy(staging.data(), bytes.data(), bytes.size());
+            std::array<uint32_t, 3> const indices = {frame_slot, image_index, extra_lane};
+            std::memcpy(staging.data() + bytes.size(), indices.data(), lane_bytes);
+            return vk.descriptor_heaps.push_data(command_buffer, 0u, std::span<std::byte const>(staging.data(), bytes.size() + lane_bytes));
+        }
+    } // namespace
+
     bool runtime::push_stage_block(void* const owner, VkCommandBuffer const command_buffer, std::span<std::byte const> const bytes, uint32_t const extra_lane) {
         // THE INDICES ARE APPENDED HERE, and that placement is the whole trick: the renderer knows the frame slot and
         // the swapchain image, a pass knows neither, and a converted stage's shader declares them as its block's
         // LAST two fields (see shaders/heap_slots.glsl). Doing it here is what keeps every pass's push struct - and
         // its static_assert on the size - untouched. The optional third lane is the post chain's own source slot,
-        // which only that chain's passes can name; a stage that does not declare it simply ignores the extra bytes.
+        // which only that chain's passes can name.
         runtime* const self = static_cast<runtime*>(owner);
-        constexpr std::size_t lane_bytes = 3u * sizeof(uint32_t);
-        std::array<std::byte, 256> staging = {}; // maxPushDataSize on this device (see heap_limits)
-        if (bytes.size() + lane_bytes > staging.size()) {
-            utility::log("heap push: a block of {} B plus the three index lanes does not fit the push-data window", bytes.size());
-            return false;
-        }
-        std::memcpy(staging.data(), bytes.data(), bytes.size());
-        std::array<uint32_t, 3> const indices = {static_cast<uint32_t>(self->vulkan_core.current_frame), self->current_image_index, extra_lane};
-        std::memcpy(staging.data() + bytes.size(), indices.data(), lane_bytes);
-        return self->vulkan_core.descriptor_heaps.push_data(command_buffer, 0u, std::span<std::byte const>(staging.data(), bytes.size() + lane_bytes));
+        return push_with_lanes(self->vulkan_core, static_cast<uint32_t>(self->vulkan_core.current_frame), self->current_image_index, command_buffer, bytes, extra_lane, 3u);
+    }
+
+    bool runtime::push_index_block(void* const owner, VkCommandBuffer const command_buffer, std::span<std::byte const> const bytes, uint32_t const extra_lane) {
+        runtime* const self = static_cast<runtime*>(owner);
+        return push_with_lanes(self->vulkan_core, static_cast<uint32_t>(self->vulkan_core.current_frame), self->current_image_index, command_buffer, bytes, extra_lane, 2u);
+    }
+
+    bool runtime::push_raw_block(void* const owner, VkCommandBuffer const command_buffer, std::span<std::byte const> const bytes) {
+        runtime* const self = static_cast<runtime*>(owner);
+        return push_with_lanes(self->vulkan_core, 0u, 0u, command_buffer, bytes, 0u, 0u);
     }
 
     void runtime::structure_record_mask_bake(void* const owner, VkCommandBuffer const command_buffer, pass::mask_bake_request const& request) {
-        static_cast<runtime*>(owner)->mask_bake.record(command_buffer, request);
+        static_cast<runtime*>(owner)->mask_bake.record(command_buffer, request, owner, &runtime::push_raw_block);
     }
 
     bool runtime::structure_skin_ready(void* const owner) noexcept {

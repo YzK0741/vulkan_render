@@ -95,10 +95,12 @@ export namespace vulkan::pass {
         [[nodiscard]] std::expected<void, std::string> create(pass_context const& context);
         /**
          * @brief record one dispatch per request, then the build-ordering barrier; whether anything was recorded
-         * @param slot the FRAME SLOT whose per-joint buffer this recording reads (the renderer paces it; the job
-         *        cannot know it, and picking the wrong one would skin against another frame's animation)
+         * @param push_owner the renderer, @param push_indices its endpoint: the block is sent as DATA with the two
+         *        heap indices appended (this shader reads the per-frame joint matrices, so it declares both), which
+         *        is why the frame slot is no longer a parameter here - the endpoint carries it.
          */
-        [[nodiscard]] bool record(VkCommandBuffer command_buffer, uint32_t slot, std::span<compute_skin_request const> requests) const noexcept;
+        [[nodiscard]] bool record(VkCommandBuffer command_buffer, std::span<compute_skin_request const> requests, void* push_owner,
+                                  bool (*push_indices)(void* owner, VkCommandBuffer command_buffer, std::span<std::byte const> bytes, uint32_t extra_lane)) const noexcept;
         /// @brief whether the job built what it records with (the renderer's gate for skinning at all)
         [[nodiscard]] bool ready() const noexcept;
 

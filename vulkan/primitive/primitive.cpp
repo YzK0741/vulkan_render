@@ -1,11 +1,27 @@
 module;
 
+#include <cstddef>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+#include <span>
 #include <vulkan/vulkan.h>
 
 module vulkan.primitive;
 namespace vulkan {
+    namespace {
+        /// Send this draw's stage block to the pipeline it is about to draw with.
+        ///
+        /// A block is DATA now: no pipeline in this renderer has a layout (`vkCmdPushConstants` would have
+        /// nothing to push to), and a heap-native shader reads `vkCmdPushDataEXT` exactly as it read push
+        /// constants. The environment's endpoint appends the two heap indices - the frame slot and the swapchain
+        /// image - as the block's last fields, so what is pushed here is the block alone. See
+        /// `render_environment::push_block` and shaders/heap_slots.glsl.
+        void push_stage_block(render_environment const& env, auto const& block) {
+            if (env.push_block != nullptr) {
+                [[maybe_unused]] bool const pushed = env.push_block(env.push_owner, env.command_buffer, std::as_bytes(std::span(&block, 1)), 0u);
+            }
+        }
+    } // namespace
     void primitive::set_world(glm::mat4 const& world) {
         // the accumulated world transform written by a scene tree walk (scene_tree::primitive
         // interface); draw() pushes push.model verbatim, so this is all the leaf needs
@@ -23,12 +39,7 @@ namespace vulkan {
         vkCmdBindVertexBuffers(command_buffer, 0, 1, &this->vertex_detail->buffer, &vertex_offset);
         vkCmdBindIndexBuffer(command_buffer, this->index_detail->buffer, 0, this->index_type);
 
-        vkCmdPushConstants(command_buffer,
-                           env.layout,
-                           VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                           0,
-                           sizeof(this->push),
-                           &this->push);
+        push_stage_block(env, this->push);
     }
 
     // Default-semantics draws (normal / instanced / static): request the recording session's
@@ -75,12 +86,7 @@ namespace vulkan {
         vkCmdBindVertexBuffers(command_buffer, 0, 1, &geometry_source.vertex_detail->buffer, &vertex_offset);
         vkCmdBindIndexBuffer(command_buffer, geometry_source.index_detail->buffer, 0, geometry_source.index_type);
 
-        vkCmdPushConstants(command_buffer,
-                           env.layout,
-                           VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                           0,
-                           sizeof(this->push),
-                           &this->push);
+        push_stage_block(env, this->push);
         vkCmdDrawIndexed(command_buffer, geometry_source.index_count, this->instance_count, 0, 0, 0);
     }
 
@@ -113,12 +119,7 @@ namespace vulkan {
                 p.material_index = chunk.material_index;
                 return p;
             }();
-            vkCmdPushConstants(command_buffer,
-                               env.layout,
-                               VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                               0,
-                               sizeof(chunk_push),
-                               &chunk_push);
+            push_stage_block(env, chunk_push);
             vkCmdDrawIndexed(command_buffer,
                              chunk.index_count,
                              1,

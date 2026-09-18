@@ -113,8 +113,17 @@ export namespace vulkan::pass {
 
         /// @brief build the pipeline and write the job's own set; an error message says what was missing
         [[nodiscard]] std::expected<void, std::string> create(pass_context const& context);
-        /// @brief bind this job's pipeline and set and dispatch ONE caster's bake
-        void record(VkCommandBuffer command_buffer, mask_bake_request const& request) const noexcept;
+        /**
+         * @brief dispatch ONE caster's bake
+         * @param push_owner the renderer, @param push_raw its endpoint for a stage that declares NO index lanes
+         *
+         * The block goes to the pipeline as DATA now: no pipeline in this renderer has a layout (`vkCmdPushConstants`
+         * would have nothing to push to), so `vulkan.core`'s conversion made every stage read `vkCmdPushDataEXT`
+         * instead. RAW - with no heap indices appended - is the exact endpoint this shader wants: it declares none,
+         * because everything it reads is a device address pushed here or a material record in the heap.
+         */
+        void record(VkCommandBuffer command_buffer, mask_bake_request const& request, void* push_owner,
+                    bool (*push_raw)(void* owner, VkCommandBuffer command_buffer, std::span<std::byte const> bytes)) const noexcept;
         /// @brief whether the job built what it records with (the renderer's gate for baking at all)
         [[nodiscard]] bool ready() const noexcept;
 

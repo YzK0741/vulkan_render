@@ -116,16 +116,15 @@ namespace vulkan::pass {
         return {};
     }
 
-    bool compute_skin_job::record(VkCommandBuffer const command_buffer, uint32_t const slot, std::span<compute_skin_request const> const requests) const noexcept {
-        if (!this->ready() || requests.empty()) {
-            return false;
-        }
-        VkDescriptorSet const set_handle = this->set(slot);
-        if (set_handle == VK_NULL_HANDLE) {
+    bool compute_skin_job::record(VkCommandBuffer const command_buffer, std::span<compute_skin_request const> const requests, void* const push_owner,
+                                  bool (*push_indices)(void* owner, VkCommandBuffer command_buffer, std::span<std::byte const> bytes, uint32_t extra_lane)) const noexcept {
+        if (!this->ready() || requests.empty() || push_indices == nullptr) {
             return false;
         }
         vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, this->pipeline());
-        vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, this->pipeline_layout_, 0, 1, &set_handle, 0, nullptr);
+        // No descriptor set is bound: the per-joint matrices are a heap slot the shader names itself, and a set
+        // bound to a layout-less pipeline is invalid. The block travels as data (see the header) with the two heap
+        // indices appended, which is how the shader finds the frame's matrices at all.
 
         bool recorded = false;
         for (compute_skin_request const& request : requests) {
@@ -140,7 +139,7 @@ namespace vulkan::pass {
                 .vertex_count = request.vertex_count,
                 .skin_base = request.skin_base,
             };
-            vkCmdPushConstants(command_buffer, this->pipeline_layout_, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
+            [[maybe_unused]] bool const pushed = push_indices(push_owner, command_buffer, std::as_bytes(std::span(&push, 1)), 0u);
             vkCmdDispatch(command_buffer, (push.vertex_count + group_size - 1u) / group_size, 1, 1);
             recorded = true;
         }

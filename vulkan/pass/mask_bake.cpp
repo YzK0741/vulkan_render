@@ -104,7 +104,8 @@ namespace vulkan::pass {
         return {};
     }
 
-    void mask_bake_job::record(VkCommandBuffer const command_buffer, mask_bake_request const& request) const noexcept {
+    void mask_bake_job::record(VkCommandBuffer const command_buffer, mask_bake_request const& request, void* const push_owner,
+                               bool (*push_raw)(void* owner, VkCommandBuffer command_buffer, std::span<std::byte const> bytes)) const noexcept {
         if (!this->ready() || request.triangle_count == 0) {
             return;
         }
@@ -121,11 +122,13 @@ namespace vulkan::pass {
         bake.triangle_count = request.triangle_count;
         bake.material_index = request.material_index;
         vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, this->pipeline());
-        // The bake's own set - NOT the frame's scene set, which this same command buffer will have updated by
-        // the end of the frame (binding 16). See the file's header for what that cost when it was not split.
-        VkDescriptorSet const bake_set = this->set_.get();
-        vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, this->pipeline_layout_, 0, 1, &bake_set, 0, nullptr);
-        vkCmdPushConstants(command_buffer, this->pipeline_layout_, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(bake), &bake);
+        // THE BLOCK GOES AS DATA, not as a push constant: the pipeline has no layout (see the header). This shader
+        // declares no heap indices, so nothing is appended - the block is pushed exactly as declared. The job's own
+        // set is no longer bound either: the material table and the bindless textures are heap slots the shader
+        // names itself, and a set bound to a layout-less pipeline is invalid.
+        if (push_raw != nullptr) {
+            [[maybe_unused]] bool const pushed = push_raw(push_owner, command_buffer, std::as_bytes(std::span(&bake, 1)));
+        }
         vkCmdDispatch(command_buffer, (bake.triangle_count + group_size - 1u) / group_size, 1, 1);
     }
 

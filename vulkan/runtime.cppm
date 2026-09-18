@@ -1168,6 +1168,15 @@ namespace vulkan {
          *       are the two heap indices the renderer fills in before calling this.
          */
         static bool push_stage_block(void* owner, VkCommandBuffer command_buffer, std::span<std::byte const> bytes, uint32_t extra_lane);
+        /**
+         * @brief the same append, WITHOUT the post chain's third lane
+         * @note the compute skin stage declares the two heap indices and nothing else, and pushing lanes a shader
+         *       has not declared is not something to guess at - so each stage's endpoint appends what it declares.
+         */
+        static bool push_index_block(void* owner, VkCommandBuffer command_buffer, std::span<std::byte const> bytes, uint32_t extra_lane);
+        /// @brief a block pushed VERBATIM, with no index lanes: the mask bake declares none (it addresses its
+        ///        sources and its destination through device addresses and reads one material table)
+        static bool push_raw_block(void* owner, VkCommandBuffer command_buffer, std::span<std::byte const> bytes);
         static bool structure_skin_ready(void* owner) noexcept;
         static bool structure_record_skin(void* owner, VkCommandBuffer command_buffer, std::span<ray_tracing::caster_level const> casters);
         /** @brief point a scene set's binding 16 (the structure) and binding 17 (its instance table) at @p tlas's slot */
