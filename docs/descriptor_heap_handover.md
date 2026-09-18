@@ -184,6 +184,7 @@ that were only assumed before:
 | depth state | `make_depth_stencil_state`: `depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL`, cull BACK, front face CCW |
 | blend state | `make_color_blend_attachment_opaque()` - `blendEnable = VK_FALSE` |
 | the G-buffer descriptors | written to `heap_slots::gbuffer_albedo + i` (etc.) at creation - the same slots the shaders name |
+| **the image itself** | `[diag] heap gbuffer albedo for image 0 is image 0x250000000025 view 0x270000000027` and `[diag] scene target 0 image 0x250000000025 view 0x270000000027` - **the scene renders into exactly the image and view the heap descriptor names** |
 | the heap bind | validation is silent, which is itself the proof: an unbound heap is `VUID-vkCmdDrawIndexed-None-11308` |
 | the unlit path | also black, so it is not the lighting |
 | culling, discard, vertex fetch, camera, model matrix, the whole fragment stage | each neutralised in turn - no change |
