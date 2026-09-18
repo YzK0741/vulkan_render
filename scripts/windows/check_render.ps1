@@ -28,6 +28,15 @@
 #     `deferred_ssao_off` - so the flakiness is a property of those builds and not of any pass. The
 #     references are Release captures, and "0 changed" is only meaningful against them.
 #
+#  4. WHICH DRIVER: the references are per-DRIVER values, not merely per-renderer ones. Updating the GPU driver
+#     changes what this renderer outputs without a line of code changing: measured on 2026-09-18, moving the
+#     NVIDIA driver from 591.59 to 616.92 made 8 of the 9 scenarios differ (`transparent_blend` was the only one
+#     that survived), and the PARENT COMMIT - built without the change that was under test - reproduced exactly
+#     the same 8 against the same references, which is how the driver was shown to be the cause rather than the
+#     code. The lesson is procedural: after a driver update, run the gate on the commit BEFORE your own change
+#     to see whether "changed" is yours, and re-baseline (-Update) with the reason written down - archiving the
+#     old set first, because it is the only record of what the previous driver looked like.
+#
 # Usage:
 #   pwsh -File scripts/windows/check_render.ps1                 # compare against the references
 #   pwsh -File scripts/windows/check_render.ps1 -Update         # accept the current output as reference
