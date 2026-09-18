@@ -18,10 +18,15 @@ import utility;
 
 namespace vulkan {
     namespace {
-        /// the working sizes: the scene set's descriptors are hundreds of bytes, and the sampler heap's
-        /// meaningful floor is the reserved window the embedded-sampler path requires
-        constexpr VkDeviceSize resource_working_size = 256u * 1024u;
-        constexpr VkDeviceSize sampler_working_size = 64u * 1024u;
+        /// The working sizes. THIS RENDERER'S LAYOUT DECIDES THEM, not the device: the slot grid every
+        /// heap-native shader addresses (see docs/descriptor_heap_migration.md) starts at a FIXED 1 MiB, so the
+        /// resource heap has to be able to hold that base plus its slots - the first version asked for 256 KiB,
+        /// which could not even fit the base, and the grid was refused with the heap left unused (measured). The
+        /// sampler heap is capped at 128 KiB by the API, so its grid base is 64 KiB instead, which has to leave
+        /// room for the samplers themselves - 64 KiB was entirely the reserved window the embedded-sampler path
+        /// requires, i.e. no usable sampler space at all.
+        constexpr VkDeviceSize resource_working_size = (1024u + 64u) * 1024u; // the 1 MiB grid base + its 64 KiB
+        constexpr VkDeviceSize sampler_working_size = 128u * 1024u;           // the API's maximum (64 reserved + 64 usable)
 
         /// the VkBuffer behind a vk_buffer (the wrapper holds a VMA handle, not the Vulkan one)
         VkBuffer buffer_of(vma_allocator& allocator, vk_buffer const& buffer) noexcept {

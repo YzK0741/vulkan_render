@@ -61,6 +61,58 @@ namespace vulkan {
         //      alignment - logs and leaves the renderer on descriptor sets, which is what the false return means.
         if (this->descriptor_heap_limits.max_resource_size != 0) {
             if (this->descriptor_heaps.init(this->vma, this->device, this->descriptor_heap_limits)) {
+                // ---- THE SLOT GRID, RESERVED FIRST BECAUSE ITS BASE IS FIXED (see core.cppm's heap_slots), and
+                //      that is the whole reason it comes before the blocks below: a heap-native shader bakes
+                //      `array[heap_slots_x + i]`, so slot 0 has to land at 1 MiB on every device. The cursor
+                //      starts at the implementation's reserved window (94 KiB here), so the distance up to 1 MiB
+                //      is reserved first - alignment-1 bookkeeping inside this allocator, not an API constraint -
+                //      and the grid is then reserved with the stride as its alignment, which is what a descriptor
+                //      write needs.
+                VkDeviceSize const grid_base_bytes = static_cast<VkDeviceSize>(heap_slot_base) * heap_slot_stride;
+                VkDeviceSize const grid_bytes = static_cast<VkDeviceSize>(heap_slot_count) * heap_slot_stride;
+                // The RESOURCE grid needs the 64 B stride; the SAMPLER grid is a separate heap with its own fixed
+                // base (64 KiB - the API caps that heap at 128 KiB, so it cannot use the resource grid's 1 MiB)
+                // and the device's own sampler stride. Both are CHECKED rather than assumed, because a device
+                // that missed either would make the shaders' baked base indices address the wrong descriptors -
+                // and that is silent in validation, which is why the heap path is refused instead.
+                bool const descriptors_fit = this->descriptor_heaps.limits().buffer_descriptor_size <= heap_slot_stride &&
+                                             this->descriptor_heaps.limits().image_descriptor_size <= heap_slot_stride &&
+                                             this->descriptor_heaps.limits().sampler_descriptor_size <= heap_sampler_stride &&
+                                             this->descriptor_heaps.limits().sampler_reserved_with_embedded <= static_cast<VkDeviceSize>(heap_sampler_base) * heap_sampler_stride;
+                if (descriptors_fit) {
+                    // ALIGN_UP IS THE WHOLE MECHANISM: the cursor starts at the implementation's reserved window
+                    // (94 KiB on this device, logged here), and reserving the grid with 1 MiB as its ALIGNMENT
+                    // puts slot 0 at 1 MiB in one step. The first version reserved the distance up to 1 MiB and
+                    // then the grid; it landed at the window instead, which is the measured reason this is one
+                    // call rather than two - a filler reservation is a second thing that can silently not happen.
+                    this->heap_grid_offset = this->descriptor_heaps.reserve_bytes(grid_bytes, grid_base_bytes);
+                    utility::log("descriptor heap: the reserved window ends at {} B, so the grid's 1 MiB base is {} B away", this->descriptor_heaps.usable_offset(), grid_base_bytes);
+                }
+                if (descriptors_fit && this->heap_grid_offset == grid_base_bytes) {
+                    utility::log("descriptor heap: slot grid at {} ({} slots x {} B; textures {} materials {} tlas {} camera {} light {} clusters {}/{} gbuffer {} env {} lut {})",
+                                 this->heap_grid_offset,
+                                 heap_slot_count,
+                                 heap_slot_stride,
+                                 heap_slots::textures - heap_slot_base,
+                                 heap_slots::materials - heap_slot_base,
+                                 heap_slots::tlas - heap_slot_base,
+                                 heap_slots::scene_camera - heap_slot_base,
+                                 heap_slots::scene_light - heap_slot_base,
+                                 heap_slots::cluster_counts - heap_slot_base,
+                                 heap_slots::cluster_indices - heap_slot_base,
+                                 heap_slots::gbuffer_albedo - heap_slot_base,
+                                 heap_slots::env_cube - heap_slot_base,
+                                 heap_slots::brdf_lut - heap_slot_base);
+                } else {
+                    utility::log("descriptor heap: NO slot grid (base {} B, expected {} B, descriptors {} {} {} B against the {} B stride), so the heap stays unused",
+                                 this->heap_grid_offset,
+                                 grid_base_bytes,
+                                 this->descriptor_heaps.limits().buffer_descriptor_size,
+                                 this->descriptor_heaps.limits().image_descriptor_size,
+                                 this->descriptor_heaps.limits().sampler_descriptor_size,
+                                 static_cast<uint64_t>(heap_slot_stride));
+                    this->heap_grid_offset = VK_WHOLE_SIZE;
+                }
                 // THE LAYOUT, reserved once and published (see core.cppm): the runtime WRITES the contents, the
                 // pipeline builders build the mappings, and both read these two numbers rather than computing their
                 // own - the one way this design has of being wrong without anything saying so.

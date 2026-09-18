@@ -471,6 +471,78 @@ namespace vulkan {
         /// @brief the offset of set-0 binding b inside a slot's block, or VK_WHOLE_SIZE when the heap has no slot for it
         std::array<VkDeviceSize, 18> heap_scene_binding_offset = {};
 
+        /**
+         * @brief THE SLOT GRID: where every descriptor this renderer uses lives, in SLOTS of @ref heap_slot_stride
+         *        bytes, and why an index is a slot number rather than a byte offset
+         *
+         * @note A HEAP-NATIVE SHADER CAN ONLY NAME `array[index]`, which GL_EXT_descriptor_heap resolves to
+         *       `heapBase + index * stride`. Every such array aliases the heap FROM OFFSET 0, so an index IS a
+         *       byte offset divided by that array's stride - and the only way a shader can find its data at a
+         *       compile-time-known index is for the data to sit on a grid whose base is FIXED. Both heaps start
+         *       their grid at 1 MiB (past any reserved window a driver reports here - 94 KiB of resource heap,
+         *       64 KiB of sampler heap - and the same number on every device), the stride is 64 B, and every
+         *       array below is a CONTIGUOUS RUN OF SLOTS.
+         *
+         * @note @ref heap_slot_stride IS AN OVERRIDE, not the device's stride: the resources are mixed kinds
+         *       (16 B buffers, 32 B images at this device), and one power-of-two stride covering all of them is
+         *       what makes a single grid possible - the shader declares `descriptor_stride = 64` and the host
+         *       writes 64 B apart. A device whose largest descriptor exceeded it would make the grid ambiguous,
+         *       so that is checked once at startup and the grid is REFUSED rather than wrong.
+         *
+         * @note THESE NUMBERS ARE MIRRORED IN shaders/heap_slots.glsl and they have to be, because the shader
+         *       bakes its base indices. A drift is invisible to validation and shows up as a wrong picture, so
+         *       the constructor logs this table (see the `descriptor heap: slot grid` line).
+         */
+        static constexpr VkDeviceSize heap_slot_stride = 64;
+        static constexpr uint32_t heap_slot_base = 16384;  // 1 MiB / 64 B: the grid's slot 0
+        static constexpr uint32_t heap_slot_count = 1024;  // 703 slots are in use, the rest is room to grow
+        static constexpr uint32_t heap_image_capacity = 8; // per-swapchain-image arrays (3-4 images in practice)
+        /// The SAMPLER heap is a second grid with its own base, and it cannot share the resource one: the API caps
+        /// the sampler heap at 128 KiB, so 64 KiB - the reserved window the embedded-sampler path requires - is the
+        /// largest base it can have. Its stride is the device's own sampler descriptor size (32 B here).
+        static constexpr uint32_t heap_sampler_base = 2048; // 64 KiB / 32 B
+        static constexpr VkDeviceSize heap_sampler_stride = 32;
+        struct heap_slots {
+            static constexpr uint32_t textures = heap_slot_base + 0u;              // binding 1, the bindless array
+            static constexpr uint32_t materials = heap_slot_base + 512u;           // binding 5
+            static constexpr uint32_t tlas = heap_slot_base + 513u;                // binding 16
+            static constexpr uint32_t scene_camera = heap_slot_base + 514u;        // binding 0, per frame slot
+            static constexpr uint32_t scene_light = heap_slot_base + 516u;         // binding 7, per frame slot
+            static constexpr uint32_t cluster_counts = heap_slot_base + 518u;      // binding 11, per frame slot
+            static constexpr uint32_t cluster_indices = heap_slot_base + 520u;     // binding 12, per frame slot
+            static constexpr uint32_t instance_transforms = heap_slot_base + 522u; // binding 6, per frame slot
+            static constexpr uint32_t previous_transforms = heap_slot_base + 524u; // binding 13, per frame slot
+            static constexpr uint32_t skin_matrices = heap_slot_base + 526u;       // binding 9, per frame slot
+            static constexpr uint32_t morph_data = heap_slot_base + 528u;          // binding 10, per frame slot
+            static constexpr uint32_t mask_instances = heap_slot_base + 530u;      // binding 17, per frame slot
+            static constexpr uint32_t env_cube = heap_slot_base + 532u;            // binding 2
+            static constexpr uint32_t irradiance_cube = heap_slot_base + 533u;     // binding 3
+            static constexpr uint32_t brdf_lut = heap_slot_base + 534u;            // binding 4
+            static constexpr uint32_t shadow_map = heap_slot_base + 535u;          // binding 8, per image
+            static constexpr uint32_t rt_visibility = heap_slot_base + 543u;       // binding 15, per image
+            static constexpr uint32_t gbuffer_albedo = heap_slot_base + 551u;      // per image, then five in a row
+            static constexpr uint32_t gbuffer_normal = heap_slot_base + 559u;
+            static constexpr uint32_t gbuffer_material = heap_slot_base + 567u;
+            static constexpr uint32_t gbuffer_depth = heap_slot_base + 575u;
+            static constexpr uint32_t gbuffer_velocity = heap_slot_base + 583u;
+            static constexpr uint32_t ml_trace = heap_slot_base + 591u; // per image: megalights' chain
+            static constexpr uint32_t ml_history = heap_slot_base + 599u;
+            static constexpr uint32_t ml_resolved = heap_slot_base + 607u;
+            static constexpr uint32_t ml_lighting = heap_slot_base + 615u;
+            static constexpr uint32_t taa_current = heap_slot_base + 623u; // per image: TAA's pair
+            static constexpr uint32_t taa_history = heap_slot_base + 631u;
+            static constexpr uint32_t post_color = heap_slot_base + 639u; // per image: the post chain
+            static constexpr uint32_t bloom_l0 = heap_slot_base + 647u;
+            static constexpr uint32_t bloom_l1 = heap_slot_base + 655u;
+            static constexpr uint32_t bloom_l2 = heap_slot_base + 663u;
+            static constexpr uint32_t bloom_l3 = heap_slot_base + 671u;
+            static constexpr uint32_t post_depth = heap_slot_base + 679u;
+            static constexpr uint32_t post_normal = heap_slot_base + 687u;
+            static constexpr uint32_t display_color = heap_slot_base + 695u;
+        };
+        /// @brief the byte offset of slot 0 (see @ref heap_slots), or VK_WHOLE_SIZE when the heap is not in use
+        VkDeviceSize heap_grid_offset = VK_WHOLE_SIZE;
+
         // ---- frame synchronization (timeline semaphores; see create_sync_objects) ----
         // vkAcquireNextImageKHR and vkQueuePresentKHR both require BINARY semaphores:
         //   - image_available_semaphores: binary, per frame slot (acquire signal)
