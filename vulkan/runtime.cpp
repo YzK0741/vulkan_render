@@ -272,18 +272,18 @@ namespace vulkan {
 
         // ---- THE MATERIAL TABLE'S HEAP DESCRIPTOR, written ONCE here ----
         //
-        // A storage buffer descriptor is just an address range, so putting one on the heap is the smallest complete
-        // test of the whole mechanism (write -> mapping -> bind) with nothing else in the way: no image view to
-        // create, no sampler, no embedded sampler. The buffer has a FIXED capacity and is created above, so its
-        // address is stable and one write covers it - which is why this is not a per-frame write. The block was
-        // reserved by core (heap_material_table_offset) rather than computed here: the mapping that points a shader
-        // at it is built by core too, and both have to use the same number.
-        if (this->vulkan_core.descriptor_heaps.ready() && this->vulkan_core.heap_material_table_offset != VK_WHOLE_SIZE) {
+        // A storage buffer descriptor is just an address range, so this is the simplest descriptor in the
+        // renderer: no image view to create, no sampler, no embedded sampler. The buffer has a FIXED capacity and
+        // is created above, so its address is stable and one write covers it - which is why this is not a
+        // per-frame write. It goes at its OWN GRID SLOT (core::heap_slots::materials), which is the same number a
+        // heap-native shader bakes as `heap_slots_materials` (shaders/heap_slots.glsl): the write and the read are
+        // the same number by construction rather than by review.
+        if (this->vulkan_core.descriptor_heaps.ready() && this->vulkan_core.heap_grid_offset != VK_WHOLE_SIZE) {
             auto const* const detail = this->vulkan_core.vma.get_buffer_detail(this->material_buffer.handle());
             if (detail != nullptr) {
                 VkBufferDeviceAddressInfo const address_info = {.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .pNext = nullptr, .buffer = detail->buffer};
                 VkDeviceAddress const address = vkGetBufferDeviceAddress(this->vulkan_core.device, &address_info);
-                bool const written = this->vulkan_core.descriptor_heaps.write_buffer(this->vulkan_core.heap_material_table_offset,
+                bool const written = this->vulkan_core.descriptor_heaps.write_buffer(static_cast<VkDeviceSize>(core::heap_slots::materials) * core::heap_slot_stride,
                                                                                      address,
                                                                                      static_cast<VkDeviceSize>(vulkan::material_capacity) * sizeof(material_record),
                                                                                      VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
@@ -291,7 +291,7 @@ namespace vulkan {
                              written ? "written" : "NOT written",
                              address,
                              vulkan::material_capacity,
-                             this->vulkan_core.heap_material_table_offset);
+                             static_cast<VkDeviceSize>(core::heap_slots::materials) * core::heap_slot_stride);
             }
         }
 
@@ -836,11 +836,10 @@ namespace vulkan {
             // carries a VkImageViewCreateInfo while a VkDescriptorImageInfo carries a view, not the image and range
             // that create info is made of - so image bindings are written where those images are known (the texture
             // array already is; the IBL, shadow and visibility images are not yet).
-            if (this->vulkan_core.descriptor_heaps.ready() && this->vulkan_core.heap_scene_set_base != VK_WHOLE_SIZE) {
+            if (this->vulkan_core.descriptor_heaps.ready() && this->vulkan_core.heap_grid_offset != VK_WHOLE_SIZE) {
                 VkBufferDeviceAddressInfo const address_info = {.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .pNext = nullptr, .buffer = light_info.buffer};
                 VkDeviceAddress const light_address = vkGetBufferDeviceAddress(this->vulkan_core.device, &address_info);
-                VkDeviceSize const heap_offset = this->vulkan_core.heap_scene_set_base + static_cast<VkDeviceSize>(slot) * this->vulkan_core.heap_scene_slot_stride +
-                                                 this->vulkan_core.heap_scene_binding_offset[7];
+                VkDeviceSize const heap_offset = heap_slot_offset(core::heap_slots::scene_light + slot);
                 if (!this->vulkan_core.descriptor_heaps.write_buffer(heap_offset, light_address, light_info.range, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER)) {
                     utility::log("descriptor heap: the light UBO did not fit slot {}'s block at offset {}", slot, heap_offset);
                 }
@@ -1038,18 +1037,18 @@ namespace vulkan {
             writes[write_count].pImageInfo = &image_infos[write_count];
             ++write_count;
 
-            // ---- THE SAME DESCRIPTOR, WRITTEN INTO THE DESCRIPTOR HEAP (see vulkan/core/descriptor_heap) ----
-            //
             // A texture is registered ONCE, at scene load, and never rewritten - which is why the texture array is
             // the first binding this renderer puts on the heap: there is no per-frame rewrite and therefore no
-            // frame-in-flight hazard to design around. The heap is a flat array of descriptors, so the array
-            // element is `index * imageDescriptorSize`, and the descriptor is a VIEW TO CREATE rather than the
-            // view above: VkImageDescriptorInfoEXT carries a VkImageViewCreateInfo and the driver makes the view
-            // itself. The values below are the ones core::make_image_view uses, on purpose - a view that differs
-            // in mip range would sample a different image than the descriptor-set path.
+            // frame-in-flight hazard to design around. The array starts at its own grid slot
+            // (core::heap_slots::textures) and advances one SLOT per texture, i.e. 64 B - NOT the device's
+            // imageDescriptorSize: the grid's single stride is what lets a shader index it with
+            // `descriptor_stride = 64` (see docs/descriptor_heap_migration.md). The descriptor is a VIEW TO CREATE
+            // rather than the view above: VkImageDescriptorInfoEXT carries a VkImageViewCreateInfo and the driver
+            // makes the view itself. The values below are the ones core::make_image_view uses, on purpose - a view
+            // that differs in mip range would sample a different image than the descriptor-set path.
             //
-            // Nothing READS the heap yet (the mapping that points a shader stage at it comes next), so a failure
-            // here is a log line and not a wrong frame - but it is the write path that has to work first.
+            // Nothing READS the heap yet, so a failure here is a log line and not a wrong frame - but it is the
+            // write path that has to work first.
             if (this->vulkan_core.descriptor_heaps.ready()) {
                 auto const* const texture_detail = this->vulkan_core.vma.get_image_detail(this->owned_textures.back().handle());
                 if (texture_detail != nullptr) {
@@ -1061,7 +1060,7 @@ namespace vulkan {
                                                              .format = slots[i].second,
                                                              .components = {VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY},
                                                              .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS}};
-                    VkDeviceSize const heap_offset = this->vulkan_core.descriptor_heaps.descriptor_offset(this->vulkan_core.heap_texture_array_offset, index, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE);
+                    VkDeviceSize const heap_offset = heap_slot_offset(core::heap_slots::textures + index);
                     if (this->vulkan_core.descriptor_heaps.write_image(heap_offset, heap_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)) {
                         ++heap_texture_descriptors;
                     } else {
