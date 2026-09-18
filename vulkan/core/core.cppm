@@ -229,22 +229,18 @@ namespace vulkan {
         uint32_t graphics_family_index = 0;
         uint32_t present_family_index = 0;
         VkDebugUtilsMessengerEXT debug_messenger = VK_NULL_HANDLE;
-        void init_instance() noexcept;
 
         GLFWwindow* window = nullptr;
-        void init_window(int width, int height, std::string_view window_name = "") noexcept;
 
         // ---- facade operations (keep raw Vulkan / GLFW calls out of the caller) ----
         void wait_idle() const noexcept;                              // vkDeviceWaitIdle
         void set_window_title(std::string_view title) const noexcept; // glfwSetWindowTitle
 
         VkSurfaceKHR surface = VK_NULL_HANDLE;
-        void init_surface() noexcept;
 
         VkQueue graphics_queue = VK_NULL_HANDLE;
         VkQueue present_queue = VK_NULL_HANDLE;
         uint32_t graphics_queue_family = VK_QUEUE_FAMILY_IGNORED;
-        void init_device_and_queue() noexcept;
 
         VkSwapchainKHR swap_chain = {};
         std::vector<VkImage> swap_chain_images = {};
@@ -255,15 +251,11 @@ namespace vulkan {
         // legal when this is true - see init_swap_chain().
         bool swapchain_transfer_src_supported = false;
 
-        void init_swap_chain() noexcept;
-
         // MSAA used to live here. It is gone with the forward path that was its only consumer: a
         // G-buffer cannot be multisampled without per-sample shading, so the scene has always
         // rendered at 1x, and with no second path there is nothing left for the setting to select.
         // The anti-aliasing story is TAA (and FXAA) on the shaded image instead.
         std::vector<VkImageView> swap_chain_image_views = {};
-
-        void init_image_views() noexcept;
 
         VkFormat color_format = VK_FORMAT_UNDEFINED;
         // HDR scene targets (one per swapchain image, format hdr_format): the lighting stage (or the
@@ -271,7 +263,6 @@ namespace vulkan {
         std::vector<VkImage> hdr_images = {};
         std::vector<VkDeviceMemory> hdr_image_memories = {};
         std::vector<VkImageView> hdr_image_views = {};
-        void create_render_targets();
         // create_render_targets() runs again on every swapchain recreation (it rebuilds the
         // HDR/LDR/bloom/G-buffer targets); its teardown must be pushed onto the cleanup stack only
         // once, or the stack grows one identical lambda per resize.
@@ -383,15 +374,6 @@ namespace vulkan {
          *       ever had were the forward path's, and that path is gone. The sample count is fixed
          *       rather than a parameter so there is one less thing a caller can get wrong.
          */
-        void create_target_image(
-            uint32_t width,
-            uint32_t height,
-            VkFormat format,
-            VkImageTiling tiling,
-            VkImageUsageFlags usage,
-            VkMemoryPropertyFlags properties,
-            VkImage& image,
-            VkDeviceMemory& image_memory) const noexcept;
 
         /**
          * @ingroup vulkan_core
@@ -410,42 +392,16 @@ namespace vulkan {
          *       create_target_image_3d has one: a cube is six layers AND the compatibility flag, and a caller
          *       that got one of those wrong would have an image the sampler refuses.
          */
-        void create_target_image_cube(
-            uint32_t size,
-            VkFormat format,
-            VkImageTiling tiling,
-            VkImageUsageFlags usage,
-            VkMemoryPropertyFlags properties,
-            VkImage& image,
-            VkDeviceMemory& image_memory) const noexcept;
-
-        void create_target_image_3d(
-            uint32_t width,
-            uint32_t height,
-            uint32_t depth,
-            VkFormat format,
-            VkImageTiling tiling,
-            VkImageUsageFlags usage,
-            VkMemoryPropertyFlags properties,
-            VkImage& image,
-            VkDeviceMemory& image_memory) const noexcept;
 
         VkFormat depth_format = {};
         std::vector<VkImage> depth_images = {};
         std::vector<VkDeviceMemory> depth_image_memories = {};
         std::vector<VkImageView> depth_image_views = {};
-        void create_depth_image(VkImage& image, VkDeviceMemory& image_memory, VkImageView& image_view) const noexcept;
-        void create_depth_resources() noexcept;
-
-        void create_color_resources();
 
         VkCommandPool command_pool = {};
-        void create_command_pool() noexcept;
 
         VkDescriptorPool descriptor_pool = VK_NULL_HANDLE;
-        void create_descriptor_pool() noexcept;
         /** @brief create the shared samplers above: device-level, reference-counted by nobody, destroyed with core */
-        void create_samplers();
 
         // shared scene layouts (see the scene_texture_capacity / scene_push_constant_size docs above);
         // all pipelines are created against scene_pipeline_layout, so one descriptor set works for all
@@ -466,7 +422,6 @@ namespace vulkan {
         vk_sampler post_sampler = {};         // the post chain and the FXAA filter: LINEAR, clamp
         vk_sampler post_nearest_sampler = {}; // the composite's GI upsample: NEAREST, clamp (depths are not colours)
         vk_sampler shadow_sampler = {};       // the cascaded map: depth-compare + LINEAR (hardware PCF), clamp
-        void init_scene_layouts() noexcept;
 
         vma_allocator vma = {};
         /// the device-wide descriptor heap (see vulkan/core/descriptor_heap): one resource heap and one
@@ -498,8 +453,6 @@ namespace vulkan {
 
         static constexpr int MAX_FRAMES_IN_FLIGHT = 2;
 
-        void create_sync_objects();
-
         // ---- GPU pass timing (VK_QUERY_TYPE_TIMESTAMP) ----
         // A timestamp pool with one contiguous range of gpu_timing_mark_capacity queries per frame
         // slot: the frame records vkCmdResetQueryPool + one vkCmdWriteTimestamp per pass boundary
@@ -519,7 +472,6 @@ namespace vulkan {
         // frame_done value each slot's timings were last read for: a slot is read at most once per
         // submission, so a frame that hits an early return cannot fetch the same results twice
         std::array<uint64_t, MAX_FRAMES_IN_FLIGHT> gpu_timing_read_value = {};
-        void create_timestamp_query_pool() noexcept;
 
         /**
          * @ingroup vulkan_core
@@ -734,5 +686,75 @@ namespace vulkan {
         std::expected<vk_pipeline, std::string_view> make_gbuffer_pipeline(
             std::span<unsigned char const> vertex_shader_code,
             std::span<unsigned char const> fragment_shader_code) const;
+
+    private:
+        // ---- THE INITIALIZATION STEPS, and they are private because the constructor is their only caller:
+        //      the order in which they run IS the initialization order (see the constructor in core.cpp), and a
+        //      caller that could run one on its own would be able to build half a core. The exception is the
+        //      swapchain recreation path, which is a member of this class and re-runs three of them. What stays
+        //      PUBLIC is the state they produce (the device, the queues, the samplers, the image views and the
+        //      layouts) plus the facade operations (wait_idle, set_window_title).
+        void init_instance() noexcept;
+        void init_window(int width, int height, std::string_view window_name = "") noexcept;
+        void init_surface() noexcept;
+        void init_device_and_queue() noexcept;
+        void init_swap_chain() noexcept;
+        void init_image_views() noexcept;
+        void create_render_targets();
+        /**
+         * @brief create a single-sampled device-local image with its memory, and return both
+         * @param width / @param height the extent in texels
+         * @param format the image format
+         * @param tiling OPTIMAL or LINEAR (staging images that are mapped on the host)
+         * @param usage the usage flags the image is created with
+         * @param properties the memory type the image is bound to
+         * @note every target the engine creates is single-sampled: the only multisampled images it
+         *       ever had were the forward path's, and that path is gone. The sample count is fixed
+         *       rather than a parameter so there is one less thing a caller can get wrong.
+         */
+        void create_target_image(
+            uint32_t width,
+            uint32_t height,
+            VkFormat format,
+            VkImageTiling tiling,
+            VkImageUsageFlags usage,
+            VkMemoryPropertyFlags properties,
+            VkImage& image,
+            VkDeviceMemory& image_memory) const noexcept;
+        /**
+         * @ingroup vulkan_core
+         * @brief create a single-sampled CUBE target: a six-layer 2D array with CUBE_COMPATIBLE set
+         * @param size the edge length of one face, in texels (all six faces are the same size)
+         * @note its own entry point rather than a generalised array helper, for the same reason
+         *       create_target_image_3d has one: a cube is six layers AND the compatibility flag, and a caller
+         *       that got one of those wrong would have an image the sampler refuses.
+         */
+        void create_target_image_cube(
+            uint32_t size,
+            VkFormat format,
+            VkImageTiling tiling,
+            VkImageUsageFlags usage,
+            VkMemoryPropertyFlags properties,
+            VkImage& image,
+            VkDeviceMemory& image_memory) const noexcept;
+        void create_target_image_3d(
+            uint32_t width,
+            uint32_t height,
+            uint32_t depth,
+            VkFormat format,
+            VkImageTiling tiling,
+            VkImageUsageFlags usage,
+            VkMemoryPropertyFlags properties,
+            VkImage& image,
+            VkDeviceMemory& image_memory) const noexcept;
+        void create_depth_image(VkImage& image, VkDeviceMemory& image_memory, VkImageView& image_view) const noexcept;
+        void create_depth_resources() noexcept;
+        void create_color_resources();
+        void create_command_pool() noexcept;
+        void create_descriptor_pool() noexcept;
+        void create_samplers();
+        void init_scene_layouts() noexcept;
+        void create_sync_objects();
+        void create_timestamp_query_pool() noexcept;
     };
 } // namespace vulkan
