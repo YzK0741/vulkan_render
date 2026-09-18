@@ -847,6 +847,7 @@ namespace vulkan {
         std::array<VkDescriptorImageInfo, 5> image_infos = {};
         std::array<VkWriteDescriptorSet, 5> writes = {};
         uint32_t write_count = 0;
+        uint32_t heap_texture_descriptors = 0; // how many went into the descriptor heap (see the log below)
         bool white_needed = false;
         VkSampler const sampler = *this->vulkan_core.texture_sampler;
         for (int i = 0; i < 5; ++i) {
@@ -909,6 +910,38 @@ namespace vulkan {
             writes[write_count].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
             writes[write_count].pImageInfo = &image_infos[write_count];
             ++write_count;
+
+            // ---- THE SAME DESCRIPTOR, WRITTEN INTO THE DESCRIPTOR HEAP (see vulkan/core/descriptor_heap) ----
+            //
+            // A texture is registered ONCE, at scene load, and never rewritten - which is why the texture array is
+            // the first binding this renderer puts on the heap: there is no per-frame rewrite and therefore no
+            // frame-in-flight hazard to design around. The heap is a flat array of descriptors, so the array
+            // element is `index * imageDescriptorSize`, and the descriptor is a VIEW TO CREATE rather than the
+            // view above: VkImageDescriptorInfoEXT carries a VkImageViewCreateInfo and the driver makes the view
+            // itself. The values below are the ones core::make_image_view uses, on purpose - a view that differs
+            // in mip range would sample a different image than the descriptor-set path.
+            //
+            // Nothing READS the heap yet (the mapping that points a shader stage at it comes next), so a failure
+            // here is a log line and not a wrong frame - but it is the write path that has to work first.
+            if (this->vulkan_core.descriptor_heaps.ready()) {
+                auto const* const texture_detail = this->vulkan_core.vma.get_image_detail(this->owned_textures.back().handle());
+                if (texture_detail != nullptr) {
+                    VkImageViewCreateInfo const heap_view = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                                                             .pNext = nullptr,
+                                                             .flags = 0,
+                                                             .image = texture_detail->image,
+                                                             .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                                                             .format = slots[i].second,
+                                                             .components = {VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY},
+                                                             .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS}};
+                    VkDeviceSize const heap_offset = this->vulkan_core.descriptor_heaps.descriptor_offset(0u, index, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE);
+                    if (this->vulkan_core.descriptor_heaps.write_image(heap_offset, heap_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)) {
+                        ++heap_texture_descriptors;
+                    } else {
+                        utility::log("descriptor heap: texture {} did not fit the resource heap at offset {}", index, heap_offset);
+                    }
+                }
+            }
         }
 
         // material slots that fell back to white share element 0; write it once when used
@@ -945,6 +978,16 @@ namespace vulkan {
         }
         if (write_count > 0) {
             this->update_all_scene_sets(writes.data(), write_count);
+        }
+        // SAY WHAT WENT INTO THE HEAP, because the success path of a heap write is silent by nature (it returns
+        // true and writes memory) and "no failure line" is not evidence that anything happened. This is the line a
+        // reader checks to know the texture array really is on the heap; the mapping that points a shader stage at
+        // it is the step after this one.
+        if (heap_texture_descriptors > 0) {
+            utility::log("descriptor heap: {} texture descriptors written ({} B each, {} KiB resource heap)",
+                         heap_texture_descriptors,
+                         this->vulkan_core.descriptor_heaps.limits().image_descriptor_size,
+                         this->vulkan_core.descriptor_heaps.resource_size() / 1024);
         }
 
         // ---- 2. Append one material record: texture indices + presence flags; factors keep

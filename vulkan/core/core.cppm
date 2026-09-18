@@ -422,6 +422,14 @@ namespace vulkan {
         vk_sampler post_sampler = {};         // the post chain and the FXAA filter: LINEAR, clamp
         vk_sampler post_nearest_sampler = {}; // the composite's GI upsample: NEAREST, clamp (depths are not colours)
         vk_sampler shadow_sampler = {};       // the cascaded map: depth-compare + LINEAR (hardware PCF), clamp
+        /**
+         * @brief the CREATE INFO of @ref texture_sampler, kept because the descriptor heap needs it as an
+         *        EMBEDDED SAMPLER: a heap binding for a combined image sampler takes its sampler from a
+         *        VkSamplerCreateInfo (the driver creates one), not from a VkSampler, and it has to be the SAME
+         *        sampler the descriptor-set path uses - a different max_lod alone changes which mip is read.
+         * @note filled where the sampler is created (create_samplers), so the two cannot drift.
+         */
+        VkSamplerCreateInfo texture_sampler_info = {};
 
         vma_allocator vma = {};
         /// the device-wide descriptor heap (see vulkan/core/descriptor_heap): one resource heap and one

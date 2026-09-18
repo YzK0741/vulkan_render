@@ -1822,6 +1822,7 @@ namespace vulkan {
         // The seven shared samplers, in one place: each is a device-level object a pass DECLARES by hint, so their
         // creation belongs with the device rather than with whichever subsystem happened to need one first (see
         // core.cppm's block for why, and for the one sampler that deliberately stays out).
+        this->texture_sampler_info = make_texture_sampler_info(VK_SAMPLER_ADDRESS_MODE_REPEAT, 12.0f);
         this->texture_sampler = this->make_sampler(VK_SAMPLER_ADDRESS_MODE_REPEAT, 12.0f);
         this->post_sampler = this->make_sampler(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, 1.0f);
         this->shadow_sampler = this->make_shadow_sampler();

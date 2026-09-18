@@ -113,8 +113,12 @@ namespace vulkan {
          * @param descriptors_offset the byte offset into the resource heap the first descriptor lands at
          * @param infos one VkResourceDescriptorInfoEXT per descriptor (a buffer is written as an address range)
          * @return whether the write happened (false when the heap is not ready or the range would overflow it)
-         * @note the host range handed to vkWriteResourceDescriptorsEXT is the heap buffer itself, which is why
-         *       the heap is HOST_VISIBLE: writing a descriptor is a memcpy into memory the driver also reads.
+         * @note THE DESTINATION IS A HOST ADDRESS, not the heap's device address:
+         *       vkWriteResourceDescriptorsEXT takes VkHostAddressRangeEXT, i.e. a pointer into memory the host has
+         *       mapped, and this class keeps the heap's mapped pointer for exactly that. (Writing through the
+         *       DEVICE address - which the first version of this did - crashes the process the moment a driver
+         *       accepts the descriptor and dereferences it, and validation says nothing about it because the
+         *       address is just a void* to it.)
          */
         [[nodiscard]] bool write_descriptors(VkDeviceSize descriptors_offset, std::span<VkResourceDescriptorInfoEXT const> infos) noexcept;
 
@@ -129,19 +133,21 @@ namespace vulkan {
         [[nodiscard]] uint32_t descriptor_stride(VkDescriptorType type) const noexcept;
 
         /**
-         * @brief write ONE image descriptor (a sampled image or a combined image sampler) into the resource heap
+         * @brief write ONE image descriptor (a SAMPLED image) into the resource heap
          * @param offset_bytes the byte offset in the heap, e.g. `descriptor_offset(block, index, type)`
          * @param view the VIEW TO CREATE - and this is the model difference worth knowing: a heap image
          *        descriptor carries a VkImageViewCreateInfo, not an existing VkImageView, because the driver
          *        creates the view inside the descriptor. A descriptor-set path that already holds a view has to
          *        keep the create info it made that view from in order to write the same binding here.
          * @param layout the layout the image will be in when sampled
-         * @param type VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE or VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER
-         * @note a COMBINED_IMAGE_SAMPLER's sampler does NOT come from here: it is the mapping's business (an
-         *       embedded sampler, or a sampler-heap offset), which is what minSamplerHeapReservedRangeWithEmbedded
-         *       exists for.
+         * @param type VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE or VK_DESCRIPTOR_TYPE_STORAGE_IMAGE - and NOT
+         *        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, which the resource heap does not accept at all
+         *        (VUID-VkResourceDescriptorInfoEXT-type-11210 lists the kinds a heap descriptor may be, and a
+         *        combined image sampler is not among them): the heap holds the IMAGE, and the sampler comes from
+         *        the mapping - an embedded sampler, or a sampler-heap offset - which is what
+         *        minSamplerHeapReservedRangeWithEmbedded exists for.
          */
-        [[nodiscard]] bool write_image(VkDeviceSize offset_bytes, VkImageViewCreateInfo const& view, VkImageLayout layout, VkDescriptorType type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) noexcept;
+        [[nodiscard]] bool write_image(VkDeviceSize offset_bytes, VkImageViewCreateInfo const& view, VkImageLayout layout, VkDescriptorType type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE) noexcept;
         /// @brief write ONE buffer descriptor (its device address range) into the resource heap
         [[nodiscard]] bool write_buffer(VkDeviceSize offset_bytes, VkDeviceAddress address, VkDeviceSize size, VkDescriptorType type) noexcept;
 
@@ -175,6 +181,8 @@ namespace vulkan {
         VkDevice device = VK_NULL_HANDLE;
         vk_buffer resource_heap_ = {};
         vk_buffer sampler_heap_ = {};
+        /// the MAPPED pointer of the resource heap: vkWriteResourceDescriptorsEXT writes through a HOST address
+        void* resource_mapped_ = nullptr;
         VkDeviceAddress resource_address_ = 0;
         VkDeviceAddress sampler_address_ = 0;
         VkDeviceSize resource_size_ = 0;

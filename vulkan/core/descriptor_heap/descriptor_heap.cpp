@@ -83,6 +83,16 @@ namespace vulkan {
             return false;
         }
         this->resource_address_ = address_of(allocator, device, this->resource_heap_);
+        // THE MAPPED POINTER, which is NOT the address above: a descriptor is written through a HOST address
+        // (VkHostAddressRangeEXT), so this is what write_descriptors needs. A heap that is not mapped cannot be
+        // written by the host at all, so a missing mapping disables the heap instead of crashing on first write.
+        auto const* const resource_detail = this->resource_heap_.valid() ? allocator.get_buffer_detail(this->resource_heap_.handle()) : nullptr;
+        this->resource_mapped_ = resource_detail != nullptr ? resource_detail->allocation_info.pMappedData : nullptr;
+        if (this->resource_mapped_ == nullptr) {
+            utility::log("descriptor heap: the resource heap is not mapped, so descriptor sets stay the binding model");
+            this->destroy();
+            return false;
+        }
         this->sampler_address_ = address_of(allocator, device, this->sampler_heap_);
         if (this->resource_address_ == 0 || this->sampler_address_ == 0) {
             utility::log("descriptor heap: the heap buffers have no device address, so descriptor sets stay the binding model");
@@ -139,8 +149,11 @@ namespace vulkan {
             utility::log("descriptor heap: a write of {} descriptors ({} B) at offset {} does not fit the {} B resource heap", infos.size(), needed, descriptors_offset, this->resource_size_);
             return false;
         }
-        VkHostAddressRangeEXT host_range = {}; // the heap's own memory: a descriptor write is a memcpy the driver validates
-        host_range.address = reinterpret_cast<void*>(static_cast<std::uintptr_t>(this->resource_address_ + descriptors_offset));
+        // THE HOST RANGE IS A HOST POINTER, i.e. the heap's MAPPED memory at the offset the descriptors go to - not
+        // the heap's device address re-cast as a pointer, which is what this did first and which crashes the
+        // process as soon as a driver accepts the descriptor and writes through it.
+        VkHostAddressRangeEXT host_range = {};
+        host_range.address = static_cast<unsigned char*>(this->resource_mapped_) + descriptors_offset;
         host_range.size = static_cast<std::size_t>(needed);
         return this->write_descriptors_(this->device, static_cast<uint32_t>(infos.size()), infos.data(), &host_range) == VK_SUCCESS;
     }
