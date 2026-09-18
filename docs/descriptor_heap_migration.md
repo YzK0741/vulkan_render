@@ -193,7 +193,39 @@ the picture break.
 The migration is still one frame-wide switch, for the reason at the top of this file: a frame whose stages do not
 all read the heap renders nothing at all.
 
-## The native path's two open questions, and the POC that died answering them
+## The native path's shape, from the extension proposal (no experiment needed)
+
+The two questions above are ANSWERED by the proposal text
+([VK_EXT_descriptor_heap](https://docs.vulkan.org/features/latest/features/proposals/VK_EXT_descriptor_heap.html)),
+so they cost a search rather than a build:
+
+- **The flag forces a NULL layout, in so many words**: "This has the same effect as the pipeline flag - the
+  pipeline layout must be `NULL` and shader resources will be sourced from a descriptor heap." So every
+  converted pipeline is created with `VkPipelineCreateFlags2CreateInfo` +
+  `VK_PIPELINE_CREATE_2_DESCRIPTOR_HEAP_BIT_EXT` and `layout = VK_NULL_HANDLE`, and the set layouts it used to
+  name go away with it.
+- **PUSH CONSTANTS SURVIVE, through `vkCmdPushDataEXT`**: "Push constants in this data can be accessed in the
+  same way as before via the `PushConstant` storage class, it is now simply unnecessary to construct a pipeline
+  layout to do that." That is the mechanism this design needs: the shaders keep their `layout(push_constant)`
+  blocks (and gain the frame slot / image index in them), and the HOST changes only HOW it sends them - one
+  `vkCmdPushDataEXT` per push instead of `vkCmdPushConstants`. The window is `maxPushDataSize` (256 B on this
+  device), and the two commands invalidate each other, so a converted frame uses push data and nothing else.
+- **Mappings are not needed for the native model at all**: "Applications can fully ignore the mappings; bindless
+  interfaces are provided for all resource types." They remain only as the interface for existing set/binding
+  declarations, and "VkShaderDescriptorSetAndBindingMappingInfoEXT is ignored if the shader or pipeline is
+  created with a pipeline layout or descriptor layouts" - which is why the shim built earlier is inert here.
+- The one exception worth knowing: mappings are still required for **embedded samplers and input attachments**.
+  The native form sidesteps the first by taking samplers from the SAMPLER heap explicitly (`sampler2D(tex, samp)`
+  at the use site), which is why the grid gives the six shared samplers their own slots.
+
+So the conversion is, in order: (1) every push site sends its block through `vkCmdPushDataEXT`; (2) every
+pipeline drops its set layouts and takes the flag with a null layout; (3) every shader converts its
+`layout(set, binding)` declarations to `descriptor_heap` ones and its fetches to constructed samplers; (4) the
+frame binds the heaps once and nothing binds a set; (5) delete the layouts, families, pools and the mapping
+shim. Nothing in that list is a question any more, only work - and it is one frame-wide commit, because a frame
+whose stages do not all read the heap renders nothing at all.
+
+## The POC that died - and the method lesson it left (the questions above are now answered)
 
 The plan was to prove the heap-native shader path on the MASK BAKE, which looks ideal: it reads exactly two
 descriptors (the material table and the bindless texture array, both already on the grid), it is a job rather
