@@ -25,8 +25,8 @@ namespace vulkan {
         /// sampler heap is capped at 128 KiB by the API, so its grid base is 64 KiB instead, which has to leave
         /// room for the samplers themselves - 64 KiB was entirely the reserved window the embedded-sampler path
         /// requires, i.e. no usable sampler space at all.
-        constexpr VkDeviceSize resource_working_size = (1024u + 64u) * 1024u; // the 1 MiB grid base + its 64 KiB
-        constexpr VkDeviceSize sampler_working_size = 128u * 1024u;           // the API's maximum (64 reserved + 64 usable)
+        constexpr VkDeviceSize resource_working_size = (1280u) * 1024u; // the 1 MiB grid base + its 64 KiB + the older blocks still in place
+        constexpr VkDeviceSize sampler_working_size = 128u * 1024u;     // the API's maximum (64 reserved + 64 usable)
 
         /// the VkBuffer behind a vk_buffer (the wrapper holds a VMA handle, not the Vulkan one)
         VkBuffer buffer_of(vma_allocator& allocator, vk_buffer const& buffer) noexcept {
@@ -55,9 +55,10 @@ namespace vulkan {
             return false; // no device, or a device that published no heap limits: nothing to lay out
         }
         this->write_descriptors_ = reinterpret_cast<PFN_vkWriteResourceDescriptorsEXT>(vkGetDeviceProcAddr(device, "vkWriteResourceDescriptorsEXT"));
+        this->write_samplers_ = reinterpret_cast<PFN_vkWriteSamplerDescriptorsEXT>(vkGetDeviceProcAddr(device, "vkWriteSamplerDescriptorsEXT"));
         this->bind_resource_heap = reinterpret_cast<PFN_vkCmdBindResourceHeapEXT>(vkGetDeviceProcAddr(device, "vkCmdBindResourceHeapEXT"));
         this->bind_sampler_heap = reinterpret_cast<PFN_vkCmdBindSamplerHeapEXT>(vkGetDeviceProcAddr(device, "vkCmdBindSamplerHeapEXT"));
-        if (this->write_descriptors_ == nullptr || this->bind_resource_heap == nullptr || this->bind_sampler_heap == nullptr) {
+        if (this->write_descriptors_ == nullptr || this->write_samplers_ == nullptr || this->bind_resource_heap == nullptr || this->bind_sampler_heap == nullptr) {
             // The extension entry points come from the device rather than from the link line, the same rule the
             // acceleration-structure module follows: vulkan-1's import library exports no extension command.
             utility::log("descriptor heap: the device did not publish the heap entry points, so descriptor sets stay the binding model");
@@ -93,6 +94,11 @@ namespace vulkan {
         // written by the host at all, so a missing mapping disables the heap instead of crashing on first write.
         auto const* const resource_detail = this->resource_heap_.valid() ? allocator.get_buffer_detail(this->resource_heap_.handle()) : nullptr;
         this->resource_mapped_ = resource_detail != nullptr ? resource_detail->allocation_info.pMappedData : nullptr;
+        // ... and the sampler heap's, for the same reason: vkWriteSamplerDescriptorsEXT also takes a HOST range.
+        // A null here is not fatal at this point - write_samplers() refuses - which keeps this a one-line mirror
+        // of the resource side rather than a second failure path.
+        auto const* const sampler_detail = this->sampler_heap_.valid() ? allocator.get_buffer_detail(this->sampler_heap_.handle()) : nullptr;
+        this->sampler_mapped_ = sampler_detail != nullptr ? sampler_detail->allocation_info.pMappedData : nullptr;
         if (this->resource_mapped_ == nullptr) {
             utility::log("descriptor heap: the resource heap is not mapped, so descriptor sets stay the binding model");
             this->destroy();
@@ -258,6 +264,26 @@ namespace vulkan {
         mapping.sourceData.constantOffset.samplerHeapOffset = 0;
         mapping.sourceData.constantOffset.samplerHeapArrayStride = 0;
         return true;
+    }
+
+    bool descriptor_heap::write_samplers(VkDeviceSize const descriptors_offset, std::span<VkSamplerCreateInfo const> const samplers) noexcept {
+        if (!this->ready() || this->write_samplers_ == nullptr || this->sampler_mapped_ == nullptr || samplers.empty()) {
+            return false;
+        }
+        VkDeviceSize const stride = this->limits_.sampler_descriptor_size != 0 ? this->limits_.sampler_descriptor_size : 1u;
+        VkDeviceSize const bytes = stride * samplers.size();
+        if (descriptors_offset + bytes > this->sampler_size_) {
+            utility::log("descriptor heap: a write of {} sampler descriptors ({} B at {}) does not fit the {} B sampler heap", samplers.size(), bytes, descriptors_offset, this->sampler_size_);
+            return false;
+        }
+        // A HOST ADDRESS, not the heap's device address: vkWriteSamplerDescriptorsEXT takes the same
+        // VkHostAddressRangeEXT a resource write does, and writing through the device address is the mistake that
+        // crashes the process the moment a driver dereferences it (see write_descriptors).
+        VkHostAddressRangeEXT const range = {
+            .address = static_cast<unsigned char*>(this->sampler_mapped_) + descriptors_offset,
+            .size = bytes,
+        };
+        return this->write_samplers_(this->device, static_cast<uint32_t>(samplers.size()), samplers.data(), &range) == VK_SUCCESS;
     }
 
     VkDeviceSize descriptor_heap::reserve(uint32_t const count, VkDescriptorType const type) noexcept {

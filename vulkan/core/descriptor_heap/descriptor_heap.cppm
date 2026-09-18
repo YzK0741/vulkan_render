@@ -134,6 +134,18 @@ namespace vulkan {
         [[nodiscard]] bool write_descriptors(VkDeviceSize descriptors_offset, std::span<VkResourceDescriptorInfoEXT const> infos) noexcept;
 
         /**
+         * @brief write SAMPLER descriptors into the sampler heap
+         * @param descriptors_offset the byte offset in the SAMPLER heap the first descriptor lands at
+         * @param samplers the VkSamplerCreateInfo of each sampler, in the order they are written
+         * @return whether the write happened (false when the heap is not ready or the range would overflow it)
+         * @note SAMPLERS ARE THE OTHER HEAP, and this is not a detail: the API splits resources and samplers into
+         *       two heaps, so a shader that names a heap sampler at all needs the sampler heap bound as well (see
+         *       record_bind). The create info is what a heap descriptor carries - exactly as a heap IMAGE
+         *       descriptor carries a view create info - because the driver creates the object inside the heap.
+         */
+        [[nodiscard]] bool write_samplers(VkDeviceSize descriptors_offset, std::span<VkSamplerCreateInfo const> samplers) noexcept;
+
+        /**
          * @brief bind both heaps for the command buffer being recorded
          * @note the reserved range is what makes embedded samplers legal: a combined image sampler whose sampler
          *       lives in the resource heap needs the sampler heap's reserved window declared here.
@@ -230,6 +242,8 @@ namespace vulkan {
         vk_buffer sampler_heap_ = {};
         /// the MAPPED pointer of the resource heap: vkWriteResourceDescriptorsEXT writes through a HOST address
         void* resource_mapped_ = nullptr;
+        /// the same for the sampler heap, whose descriptors are written by vkWriteSamplerDescriptorsEXT
+        void* sampler_mapped_ = nullptr;
         VkDeviceAddress resource_address_ = 0;
         VkDeviceAddress sampler_address_ = 0;
         VkDeviceSize resource_size_ = 0;
@@ -238,6 +252,7 @@ namespace vulkan {
         VkDeviceSize next_free_ = 0;
         heap_limits limits_ = {};
         PFN_vkWriteResourceDescriptorsEXT write_descriptors_ = nullptr;
+        PFN_vkWriteSamplerDescriptorsEXT write_samplers_ = nullptr;
         PFN_vkCmdBindResourceHeapEXT bind_resource_heap = nullptr;
         PFN_vkCmdBindSamplerHeapEXT bind_sampler_heap = nullptr;
     };

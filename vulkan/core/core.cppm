@@ -430,6 +430,15 @@ namespace vulkan {
          * @note filled where the sampler is created (create_samplers), so the two cannot drift.
          */
         VkSamplerCreateInfo texture_sampler_info = {};
+        /**
+         * @brief the CREATE INFO of every shared sampler, in the order shaders/heap_slots.glsl names them, because
+         *        a heap descriptor for a sampler IS a create info - and the heap is created LATER in the
+         *        constructor than these samplers are (create_samplers runs first), so the infos have to be kept
+         *        here to be written onto the sampler grid once it exists.
+         * @note index 0 texture (linear, repeat mips), 1 post (linear, clamp, one mip), 2 gbuffer (nearest, clamp),
+         *       3 post-nearest (nearest, clamp), 4 taa (linear mag / nearest min, clamp), 5 shadow (depth compare).
+         */
+        std::array<VkSamplerCreateInfo, 6> shared_sampler_infos = {};
 
         vma_allocator vma = {};
         /// the device-wide descriptor heap (see vulkan/core/descriptor_heap): one resource heap and one

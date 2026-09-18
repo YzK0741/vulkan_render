@@ -158,6 +158,25 @@ namespace vulkan {
                              this->heap_scene_binding_offset.size(),
                              this->heap_scene_slot_stride,
                              this->heap_scene_set_base + this->heap_scene_slot_stride * MAX_FRAMES_IN_FLIGHT);
+                // THE SAMPLERS COME LAST BECAUSE THE HEAP DID NOT EXIST WHEN THEY WERE MADE: create_samplers()
+                // ran earlier in this constructor and kept the create infos (core.cppm's shared_sampler_infos),
+                // and a heap sampler descriptor IS such a create info - the driver creates the sampler inside the
+                // heap, exactly as it creates a view inside a heap image descriptor. Six of them, on the SAMPLER
+                // heap's own grid, in the order shaders/heap_slots.glsl names them.
+                if (descriptors_fit) {
+                    VkDeviceSize const sampler_grid = static_cast<VkDeviceSize>(heap_sampler_base) * heap_sampler_stride;
+                    uint32_t written = 0;
+                    for (uint32_t index = 0; index < this->shared_sampler_infos.size(); ++index) {
+                        VkSamplerCreateInfo const& info = this->shared_sampler_infos[index];
+                        if (info.sType != VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO) {
+                            continue; // a sampler that never got created is not written, and validation would say so
+                        }
+                        if (this->descriptor_heaps.write_samplers(sampler_grid + index * heap_sampler_stride, std::span<VkSamplerCreateInfo const>(&info, 1))) {
+                            ++written;
+                        }
+                    }
+                    utility::log("descriptor heap: {} shared samplers written to the sampler grid at {}", written, sampler_grid);
+                }
             } else {
                 utility::log("descriptor heap: not created, so descriptor sets stay the binding model");
             }
@@ -1951,6 +1970,18 @@ namespace vulkan {
         if (vkCreateSampler(this->device, &taa_info, nullptr, &taa) == VK_SUCCESS) {
             this->taa_sampler = vk_sampler(taa, this->device);
         }
+
+        // THE HEAP'S COPY OF THESE, in the order shaders/heap_slots.glsl names them (see core.cppm's
+        // shared_sampler_infos): the heap descriptor for a sampler is the create info, and the heap itself is
+        // created later in the constructor than this function runs - so the infos are kept here and written onto
+        // the sampler grid afterwards. Recomputed rather than stored one by one because two of the six share
+        // gbuffer_info (the G-buffer read and the composite's nearest tap are the same sampler twice).
+        this->shared_sampler_infos[0] = this->texture_sampler_info;
+        this->shared_sampler_infos[1] = make_texture_sampler_info(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, 1.0f);
+        this->shared_sampler_infos[2] = gbuffer_info;
+        this->shared_sampler_infos[3] = gbuffer_info;
+        this->shared_sampler_infos[4] = taa_info;
+        this->shared_sampler_infos[5] = make_shadow_sampler_info();
     }
     std::expected<vk_pipeline, std::string_view> core::make_gbuffer_pipeline(
         std::span<unsigned char const> const vertex_shader_code,

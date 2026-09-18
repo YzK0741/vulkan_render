@@ -78,10 +78,13 @@ const uint heap_slot_count = 1024u;
 // core::create_samplers makes them.
 const uint heap_sampler_base = 2048u; // 64 KiB / 32 B
 const uint heap_sampler_stride = 32u;
-const uint heap_sampler_linear_repeat = heap_sampler_base + 0u;
-const uint heap_sampler_linear_clamp = heap_sampler_base + 1u;
-const uint heap_sampler_nearest_clamp = heap_sampler_base + 2u;
-const uint heap_sampler_aniso_repeat = heap_sampler_base + 3u;
-const uint heap_sampler_shadow = heap_sampler_base + 4u;
+// In the order core::create_samplers makes them (see core.cppm's shared_sampler_infos), which is also the order
+// they are written onto this grid.
+const uint heap_sampler_texture = heap_sampler_base + 0u;        // linear, repeat, mips to 12
+const uint heap_sampler_post = heap_sampler_base + 1u;           // linear, clamp, one mip
+const uint heap_sampler_gbuffer = heap_sampler_base + 2u;        // nearest, clamp
+const uint heap_sampler_post_nearest = heap_sampler_base + 3u;   // nearest, clamp (the same sampler twice)
+const uint heap_sampler_taa = heap_sampler_base + 4u;            // linear mag / nearest min, clamp
+const uint heap_sampler_shadow = heap_sampler_base + 5u;         // depth compare, clamp
 
 #endif // HEAP_SLOTS_GLSL
