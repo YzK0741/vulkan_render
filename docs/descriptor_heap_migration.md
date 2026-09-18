@@ -111,6 +111,29 @@ Push *data* (`vkCmdPushDataEXT`) cannot carry these: it only feeds mapping sourc
 deliberate **wrong-index** push as the negative proof (the picture must break, which is what proves the shaders
 read the heap).
 
+## What populating the IMAGE half needs (found by trying)
+
+A heap image descriptor carries a **`VkImageViewCreateInfo`, not a view** - the driver creates the view inside
+the descriptor (this is why `descriptor_heap::write_image` takes a create info). The renderer builds its views
+through `core::make_image_view`, which throws its create info away, so the heap twin needs that info again.
+
+IT DOES NOT NEED NEW PLUMBING: `vulkan::make_image_view_info(image, format, view_type, aspect, mip_levels,
+array_layers)` - a `constexpr` function in **`vulkan.constant_init`**, which `runtime.cpp` already imports - is
+already the one place that builds it, and `core::make_image_view` is a call to it plus `vkCreateImageView`. So
+the rule for every image is: write the heap descriptor **where the image and its view are created**, from the
+same `make_image_view_info` arguments - not in `write_*_bindings`, which only carry handles.
+
+Two consequences worth knowing before doing it:
+
+- The site that WRITES the heap descriptor has to be the site that knows the format and range. `set_ibl` knows
+  them (it creates the environment, irradiance and BRDF-LUT images), while `write_ibl_bindings` only sees the
+  three views - so the IBL writes belong in `set_ibl`.
+- A binding that CHANGES VIEW later needs a heap rewrite beside that change: the furnace mode points slots 0 and
+  1 at the constant cube instead of the real environment (`write_ibl_bindings`), and a heap descriptor written
+  only at creation time would keep reading the old image. The per-frame slot arrays are the same kind of trap
+  seen from the other side: which SLOT is read is a shader index, and it is the host's job to keep the contents
+  of every slot that index can name current.
+
 ## The grid as it stands (measured at startup)
 
 ```
