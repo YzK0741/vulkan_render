@@ -242,6 +242,25 @@ VkPipelineLayout, either set the layout to NULL or remove the heaps from the sha
 only route, and the probe (flag + null layout + `vkCmdPushDataEXT`, reading the default material's white base
 colour as `0xffff`) is the proof that the route works.
 
+### Ray tracing is covered, and it says so in three VUIDs
+
+The one pipeline kind whose flag EXPRESSIBILITY was in doubt is the ray-tracing one: its `flags` field is 32-bit
+and the heap bit lives past bit 31, so the flag can only arrive through `VkPipelineCreateFlags2CreateInfo` in its
+`pNext`. It does - measured by chaining exactly that into the ray-traced shadow pipeline and reading what
+validation said (three VUIDs, all of which are the *rules*, not a refusal):
+
+- `VUID-VkRayTracingPipelineCreateInfoKHR-flags-11311`: with the flag, `layout` must be `VK_NULL_HANDLE` - the
+  same rule compute pipelines have, so a ray-tracing pipeline is converted the same way.
+- `VUID-VkRayTracingPipelineCreateInfoKHR-flags-11312`: with the flag, every shader variable carrying a
+  `DescriptorSet`/`Binding` decoration must have a mapping in `VkShaderDescriptorSetAndBindingMappingInfoEXT` -
+  i.e. an RT shader is either native or mapped, with no third option.
+- `VUID-vkCmdTraceRaysKHR-None-11376`: with the flag, a push constant the shader uses must have been set by
+  `vkCmdPushDataEXT` - so the push-data rule holds for ray tracing too.
+
+The measurement edit was reverted (it left the pipeline flagged with a non-null layout, which is a validation
+error by 11311); what is kept is the knowledge, because it means objective item (3) - "graphics, compute and
+ray-tracing" - has no hidden exception to design around.
+
 ## The POC that died - and the method lesson it left (the questions above are now answered)
 
 The plan was to prove the heap-native shader path on the MASK BAKE, which looks ideal: it reads exactly two
