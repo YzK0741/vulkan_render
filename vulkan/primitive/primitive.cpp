@@ -1,12 +1,17 @@
 module;
 
 #include <cstddef>
+#include <cstdio>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <span>
 #include <vulkan/vulkan.h>
 
 module vulkan.primitive;
+
+import utility; // DIAGNOSTIC only (see normal_draw_primitive::draw): this app is a GUI-subsystem binary, so
+                // stdout/stderr go nowhere and every traceable line has to come through utility::log.
+
 namespace vulkan {
     namespace {
         /// Send this draw's stage block to the pipeline it is about to draw with.
@@ -49,6 +54,15 @@ namespace vulkan {
     // leaves disable depth writes so they blend onto whatever is behind them. All commands
     // record onto env.command_buffer.
     void normal_draw_primitive::draw(render_environment& env) const {
+        // DIAGNOSTIC (temporary): an indexed geometry draw that rasterises nothing can simply have no indices, and
+        // no shader-side experiment can tell that apart from a draw that never happens at all.
+        {
+            static int logged = 0;
+            if (logged < 4) {
+                ++logged;
+                utility::log("[diag] normal draw: index_count={} vertex_count={} vertex_detail={} index_detail={}", this->index_count, this->vertex_count, static_cast<void const*>(this->vertex_detail) != nullptr, static_cast<void const*>(this->index_detail) != nullptr);
+            }
+        }
         env.bind_default();
         env.set_depth_write(!this->transparent);
         VkCommandBuffer const command_buffer = env.command_buffer;

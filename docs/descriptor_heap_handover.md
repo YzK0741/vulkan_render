@@ -173,27 +173,35 @@ probes prove that a heap read and a heap draw both work, and no push is refused.
 * **The viewport.** Dynamic viewport/scissor are set per pipeline bind (`vk_pipeline::begin_pipeline`), so
   a secondary gets them; the scene path is not missing them.
 
-**What that leaves.** Every input to the scene's rasterisation has now been *printed and verified correct*,
-one at a time:
+**What that leaves.** Every link in the chain has now been printed and verified correct, including the ones
+that were only assumed before:
 
-| what | measured |
+| link | measured |
 | --- | --- |
-| the pass draws | `scene segment: 1 leaf/leaves, heap push endpoint SET` |
-| the instance | `scene instance: 6 resolved target(s), 6 declared target(s) -> 5 color attachment(s), depth YES; renderArea 1080x960` |
-| the viewport | `pipeline bind: stored viewport 1080x960 at (0, 0), scissor 1080x960` |
-| the blend state | `make_color_blend_attachment_opaque()` - `blendEnable = VK_FALSE`, so it writes what the shader outputs |
-| the depth clear | `1.0f` (`constant_init.cppm:327`), so a `LESS`/`LESS_OR_EQUAL` compare rejects nothing |
-| the discard | disabled (`surface.glsl`) - no change |
-| the vertex stage | synthetic `gl_VertexIndex` positions and a hand projection, no camera, no vertex fetch - no change |
-| the fragment stage | a forced flat green albedo - no change |
-| the recording level | the segment recorded straight onto the PRIMARY, flag removed - no change |
+| the draw is issued | `[diag] normal draw: index_count=46356 vertex_count=14556 vertex_detail=true index_detail=true` |
+| the instance | `5 color attachment(s), depth YES; renderArea 1080x960` |
+| viewport AND scissor | `viewport 1080x960 at (0, 0) depth [0, 1], SCISSOR 1080x960 at (0, 0)` |
+| depth state | `make_depth_stencil_state`: `depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL`, cull BACK, front face CCW |
+| blend state | `make_color_blend_attachment_opaque()` - `blendEnable = VK_FALSE` |
+| the G-buffer descriptors | written to `heap_slots::gbuffer_albedo + i` (etc.) at creation - the same slots the shaders name |
+| the heap bind | validation is silent, which is itself the proof: an unbound heap is `VUID-vkCmdDrawIndexed-None-11308` |
+| the unlit path | also black, so it is not the lighting |
+| culling, discard, vertex fetch, camera, model matrix, the whole fragment stage | each neutralised in turn - no change |
 
-A draw with all of that in place writes nothing, while the post chain's draw in the *same command buffer*
-does. Nothing left in the shading, descriptor, index, push, viewport, blend, depth or instance path
-explains it, so the next instrument must look at the target rather than at the inputs: read the G-buffer
-albedo image back **immediately after the scene pass** (the pattern `heap_probe.frag` and
-`runtime::run_heap_graphics_probe` already use), or take a GPU capture. That is the one question left -
-whether the fragments reach the image at all - and it is not answerable by reasoning about the code.
+And the two facts that bound it from the other side: the **post chain renders** (flat red changed the
+captured hash to `90BC07F22EE6BBD2`), and that red reached the capture *through* `fxaa.frag` reading
+`display_texture[heap_slots_display_color + heap_image_index]`, so the per-image index and the capture
+path are correct.
+
+**The surviving hypothesis, and the probe that settles it.** Writes to per-image target slots work (the
+post chain), and *one* kind of read demonstrably works (the graphics probe reads the material table at
+slot 512 and gets white). What has never been verified is a **read of a per-image target slot**: the
+deferred pass reads `gbuffer_albedo + image_index`, the background branch reads the environment, and the
+G-buffer debug view reads the same slots - and all of them come out black. That is consistent with those
+reads returning zero rather than with the targets being empty, and the experiment is the probe pattern
+that has never misled here: have `heap_probe` **sample a G-buffer target slot** after a frame has
+rendered and print the texel. Zero means the target slot read is the fault; non-zero means the scene
+never wrote the image and the search returns to the draw, with the depth attachment as the first suspect.
 
 **The measurement worth carrying forward:** the black frame's hash is `dc5f6d66428c26d8…` - byte for byte
 the hash this migration recorded earlier as "a half-migrated frame renders nothing". It is a *uniform*
