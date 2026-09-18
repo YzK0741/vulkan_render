@@ -490,7 +490,11 @@ namespace vulkan {
                                         vulkan::buffer_type::uniform_coherent,
                                         "light ubo buffer",
                                         this->light_buffers,
-                                        &this->light_mapped);
+                                        &this->light_mapped,
+                                        // it goes on the descriptor heap (a heap descriptor for a buffer is its
+                                        // device address), so the address has to exist - validation states it as
+                                        // VUID-VkBufferDeviceAddressInfo-buffer-02601 the moment it is queried
+                                        VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT);
     }
 
     void runtime::ensure_cluster_buffers() {
@@ -746,6 +750,26 @@ namespace vulkan {
             writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
             writes[1].pImageInfo = &shadow_info;
             vkUpdateDescriptorSets(this->vulkan_core.device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+
+            // ---- AND THE SAME DESCRIPTOR INTO THE HEAP'S BLOCK FOR THIS SLOT ----
+            //
+            // This is the pattern every BUFFER binding of set 0 follows during the migration, and it is five lines
+            // because a heap descriptor for a buffer IS an address range: take the buffer's device address, write it
+            // at the binding's offset inside this slot's block (core reserved the block and computed the offsets), and
+            // nothing else changes - the descriptor set above keeps working, which is what lets the two paths be
+            // compared frame for frame. What does NOT work this way is an IMAGE binding: a heap image descriptor
+            // carries a VkImageViewCreateInfo while a VkDescriptorImageInfo carries a view, not the image and range
+            // that create info is made of - so image bindings are written where those images are known (the texture
+            // array already is; the IBL, shadow and visibility images are not yet).
+            if (this->vulkan_core.descriptor_heaps.ready() && this->vulkan_core.heap_scene_set_base != VK_WHOLE_SIZE) {
+                VkBufferDeviceAddressInfo const address_info = {.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .pNext = nullptr, .buffer = light_info.buffer};
+                VkDeviceAddress const light_address = vkGetBufferDeviceAddress(this->vulkan_core.device, &address_info);
+                VkDeviceSize const heap_offset = this->vulkan_core.heap_scene_set_base + static_cast<VkDeviceSize>(slot) * this->vulkan_core.heap_scene_slot_stride +
+                                                 this->vulkan_core.heap_scene_binding_offset[7];
+                if (!this->vulkan_core.descriptor_heaps.write_buffer(heap_offset, light_address, light_info.range, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER)) {
+                    utility::log("descriptor heap: the light UBO did not fit slot {}'s block at offset {}", slot, heap_offset);
+                }
+            }
         }
     }
 
