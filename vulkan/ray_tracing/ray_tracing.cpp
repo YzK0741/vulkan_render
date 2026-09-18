@@ -7,6 +7,7 @@ module;
 
 #include <chrono>
 #include <cstdint>
+#include <cstring>
 #include <expected>
 #include <optional>
 #include <span>
@@ -45,6 +46,24 @@ namespace vulkan::ray_tracing {
         return this->casters_;
     }
 
+    void structure_set::release_micromaps() noexcept {
+        if (this->device_ != nullptr) {
+            auto const destroy = reinterpret_cast<PFN_vkDestroyMicromapEXT>(vkGetDeviceProcAddr(this->device_->device, "vkDestroyMicromapEXT"));
+            if (destroy != nullptr) {
+                for (micromap_resource const& resource : this->micromaps_) {
+                    if (resource.micromap != VK_NULL_HANDLE) {
+                        destroy(this->device_->device, resource.micromap, nullptr);
+                    }
+                }
+            }
+        }
+        this->micromaps_.clear();
+    }
+
+    structure_set::~structure_set() {
+        this->release_micromaps();
+    }
+
     void structure_set::abandon() noexcept {
         this->bottom_.reset();
         this->top_.reset();
@@ -54,6 +73,163 @@ namespace vulkan::ray_tracing {
         this->skin_buffers_.clear();
         this->skin_levels_.clear();
         this->casters_.clear();
+        // The micromaps go too, and they are the ONE thing here that does not free itself: VkMicromapEXT has no
+        // RAII wrapper in this project, so the handle is destroyed explicitly before the buffers that back it.
+        this->release_micromaps();
+    }
+
+    /**
+     * @brief create and build ONE opacity micromap for a MASK caster's triangles
+     *
+     * WHAT IS IN IT, for this first step: every micro-triangle is written as UNKNOWN. A 4-state micromap at
+     * subdivision level 0 has one micro-triangle per triangle (two bits, so one byte of the packed array per
+     * triangle, which this writes with a 4-byte stride to keep every dataOffset 4-byte aligned), and an unknown
+     * micro-triangle is what makes the traversal invoke the any-hit shader - so a micromap that says "unknown"
+     * everywhere leaves the image EXACTLY as it was and can be attached, built and debugged on its own. That is
+     * the point of this step: create, size, allocate, build and synchronize the object, with an acceptance that
+     * cannot be confused with a rendering change.
+     *
+     * WHY THE LAYOUT IS EXPLICIT: `triangleArray` carries a per-triangle {dataOffset, subdivisionLevel, format}
+     * record, which is the one layout this pass controls completely (the alternative, usage counts alone, fixes
+     * the packing) and the one the spec documents byte for byte: 4-byte offset, then 2-byte level, then 2-byte
+     * format.
+     *
+     * @param vk the device (and its allocator)
+     * @param triangle_count the caster's triangles; 0 makes this a no-op that returns nothing
+     * @return the resource, or nullopt when the device does not publish the entry points or an allocation fails
+     */
+    std::optional<structure_set::micromap_resource> make_micromap(core& vk, uint32_t const triangle_count) {
+        if (triangle_count == 0) {
+            return std::nullopt;
+        }
+        auto const get_sizes = reinterpret_cast<PFN_vkGetMicromapBuildSizesEXT>(vkGetDeviceProcAddr(vk.device, "vkGetMicromapBuildSizesEXT"));
+        auto const create = reinterpret_cast<PFN_vkCreateMicromapEXT>(vkGetDeviceProcAddr(vk.device, "vkCreateMicromapEXT"));
+        auto const destroy = reinterpret_cast<PFN_vkDestroyMicromapEXT>(vkGetDeviceProcAddr(vk.device, "vkDestroyMicromapEXT"));
+        if (get_sizes == nullptr || create == nullptr || destroy == nullptr) {
+            return std::nullopt;
+        }
+
+        // The two attribute records, both 4-byte-per-triangle so the dataOffsets are aligned: 0x03 is the 4-state
+        // "unknown" pair (see the spec's Ray Opacity Micromap table), one micro-triangle per triangle.
+        constexpr uint32_t data_stride = 4u;
+        constexpr unsigned char unknown_state = 0x03u;
+        std::vector<unsigned char> const data(static_cast<std::size_t>(triangle_count) * data_stride, unknown_state);
+        std::vector<VkMicromapTriangleEXT> triangles = [triangle_count] {
+            std::vector<VkMicromapTriangleEXT> records(static_cast<std::size_t>(triangle_count));
+            for (uint32_t i = 0; i < triangle_count; ++i) {
+                records[i] = VkMicromapTriangleEXT{.dataOffset = i * data_stride,
+                                                   .subdivisionLevel = 0u,
+                                                   .format = static_cast<uint16_t>(VK_OPACITY_MICROMAP_FORMAT_4_STATE_EXT)};
+            }
+            return records;
+        }();
+        std::vector<uint32_t> indices(static_cast<std::size_t>(triangle_count), 0u); // identity is not needed: one micromap triangle each
+
+        structure_set::micromap_resource out;
+        out.usage = VkMicromapUsageEXT{.count = triangle_count, .subdivisionLevel = 0u, .format = VK_OPACITY_MICROMAP_FORMAT_4_STATE_EXT};
+        out.triangle_array_stride = sizeof(VkMicromapTriangleEXT);
+        out.index_stride = sizeof(uint32_t);
+        out.triangle_count = triangle_count;
+
+        // The inputs and the scratch: `data` and `triangleArray` must carry MICROMAP_BUILD_INPUT_READ_ONLY and a
+        // device address, the scratch must be STORAGE, and the micromap's own memory must carry MICROMAP_STORAGE.
+        //
+        // THE ADDRESS ALIGNMENT IS 256 BYTES and it is a requirement on the ADDRESS rather than on the buffer
+        // (VUID-vkCmdBuildMicromapsEXT-pInfos-07515, which validation reported the first time this ran), so the
+        // buffers are allocated with a quarter-kilobyte of slack and the payload is written at the first
+        // 256-aligned address inside them. The allocator's addresses are not aligned to anything in particular,
+        // so there is no "create it aligned" flag that could have done this for us.
+        constexpr VkDeviceSize micromap_address_alignment = 256u;
+        VkBufferUsageFlags const input_usage = VK_BUFFER_USAGE_MICROMAP_BUILD_INPUT_READ_ONLY_BIT_EXT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+        // A `vk_buffer` holds a VMA handle, so the VkBuffer behind it (and the address of that) comes from
+        // get_buffer_detail() - the same shape the mask bake's expanded buffer uses. Every buffer here carries
+        // SHADER_DEVICE_ADDRESS_BIT, which is what makes its address queryable at all.
+        auto const buffer_of = [&vk](vk_buffer const& buffer) -> VkBuffer {
+            auto const* const detail = buffer.valid() ? vk.vma.get_buffer_detail(buffer.handle()) : nullptr;
+            return detail != nullptr ? detail->buffer : VK_NULL_HANDLE;
+        };
+        auto const address_of = [&vk, &buffer_of](vk_buffer const& buffer) -> VkDeviceAddress {
+            VkBuffer const handle = buffer_of(buffer);
+            if (handle == VK_NULL_HANDLE) {
+                return 0;
+            }
+            VkBufferDeviceAddressInfo const info = {.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .pNext = nullptr, .buffer = handle};
+            return vkGetBufferDeviceAddress(vk.device, &info);
+        };
+        auto const create_setup_buffer = [&vk, &address_of](std::vector<unsigned char> const& bytes) -> std::pair<vk_buffer, VkDeviceAddress> {
+            vk_buffer buffer = vk.vma.create_buffer(nullptr, bytes.size() + micromap_address_alignment, buffer_type::storage_coherent, input_usage);
+            VkDeviceAddress const base = address_of(buffer);
+            auto const* const detail = buffer.valid() ? vk.vma.get_buffer_detail(buffer.handle()) : nullptr;
+            if (base == 0 || detail == nullptr || detail->allocation_info.pMappedData == nullptr) {
+                return {std::move(buffer), 0};
+            }
+            VkDeviceSize const offset = (micromap_address_alignment - (base % micromap_address_alignment)) % micromap_address_alignment;
+            std::memcpy(static_cast<unsigned char*>(detail->allocation_info.pMappedData) + offset, bytes.data(), bytes.size());
+            return {std::move(buffer), base + offset};
+        };
+
+        std::vector<unsigned char> const data_bytes(data);
+        auto [data_buffer, data_address] = create_setup_buffer(data_bytes);
+        out.data = std::move(data_buffer);
+        out.data_address = data_address;
+        std::vector<unsigned char> triangle_bytes(triangles.size() * sizeof(VkMicromapTriangleEXT));
+        std::memcpy(triangle_bytes.data(), triangles.data(), triangle_bytes.size());
+        auto [triangle_buffer, triangle_address] = create_setup_buffer(triangle_bytes);
+        out.triangles = std::move(triangle_buffer);
+        out.triangles_address = triangle_address;
+        std::vector<unsigned char> index_bytes(indices.size() * sizeof(uint32_t));
+        std::memcpy(index_bytes.data(), indices.data(), index_bytes.size());
+        auto [index_buffer, index_address] = create_setup_buffer(index_bytes);
+        out.indices = std::move(index_buffer);
+        out.indices_address = index_address;
+        if (!out.data.valid() || !out.triangles.valid() || !out.indices.valid() || out.data_address == 0 || out.triangles_address == 0 || out.indices_address == 0) {
+            return std::nullopt;
+        }
+        if (out.data_address == 0 || out.triangles_address == 0 || out.indices_address == 0) {
+            return std::nullopt;
+        }
+
+        VkMicromapBuildInfoEXT info = {};
+        info.sType = VK_STRUCTURE_TYPE_MICROMAP_BUILD_INFO_EXT;
+        info.type = VK_MICROMAP_TYPE_OPACITY_MICROMAP_EXT;
+        info.flags = VK_BUILD_MICROMAP_PREFER_FAST_TRACE_BIT_EXT;
+        info.mode = VK_BUILD_MICROMAP_MODE_BUILD_EXT;
+        info.usageCountsCount = 1;
+        info.pUsageCounts = &out.usage;
+        info.data.deviceAddress = out.data_address;
+        info.triangleArray.deviceAddress = out.triangles_address;
+        info.triangleArrayStride = out.triangle_array_stride;
+
+        VkMicromapBuildSizesInfoEXT sizes = {};
+        sizes.sType = VK_STRUCTURE_TYPE_MICROMAP_BUILD_SIZES_INFO_EXT;
+        get_sizes(vk.device, VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &info, &sizes);
+        if (sizes.micromapSize == 0) {
+            return std::nullopt;
+        }
+        out.storage = vk.vma.create_buffer(nullptr, sizes.micromapSize, buffer_type::storage_gpu_only, VK_BUFFER_USAGE_MICROMAP_STORAGE_BIT_EXT);
+        if (sizes.buildScratchSize != 0) {
+            out.scratch = vk.vma.create_buffer(nullptr, sizes.buildScratchSize, buffer_type::storage_gpu_only, 0);
+            out.scratch_address = address_of(out.scratch);
+            if (out.scratch_address == 0) {
+                return std::nullopt;
+            }
+        }
+        VkDeviceAddress const storage_address = address_of(out.storage);
+        if (storage_address == 0) {
+            return std::nullopt;
+        }
+
+        VkMicromapCreateInfoEXT create_info = {};
+        create_info.sType = VK_STRUCTURE_TYPE_MICROMAP_CREATE_INFO_EXT;
+        create_info.buffer = buffer_of(out.storage);
+        create_info.offset = 0;
+        create_info.size = sizes.micromapSize;
+        create_info.type = VK_MICROMAP_TYPE_OPACITY_MICROMAP_EXT;
+        create_info.deviceAddress = 0;
+        if (create(vk.device, &create_info, nullptr, &out.micromap) != VK_SUCCESS || out.micromap == VK_NULL_HANDLE) {
+            return std::nullopt;
+        }
+        return out;
     }
 
     acceleration_structure::geometry_source structure_set::caster_geometry(primitive const& caster,
@@ -115,6 +291,11 @@ namespace vulkan::ray_tracing {
         // ... and the same two counters for the skinned casters (see the SKINNED branch below).
         uint32_t skinned_baked = 0;
         uint32_t skipped_skin_buffers = 0;
+        // ... and the micromaps: how many were created and built, how many triangles they describe, and how many
+        // casters could not have one (an allocation or a missing entry point, which is again a log line rather
+        // than a failed build).
+        uint32_t micromap_triangles = 0;
+        uint32_t skipped_micromaps = 0;
         for (primitive const* caster : inputs.casters) {
             if (caster == nullptr) {
                 continue;
@@ -154,6 +335,27 @@ namespace vulkan::ray_tracing {
             // outlives the loop: the build below reads it, and hit shading reads its vertices through the instance
             // table for as long as the structures live). The pipeline, its layout, the set it binds and the
             // dispatch are the JOB's (vulkan.pass.mask_bake_job), reached through the hook.
+            // ---- THE OPACITY MICROMAP for this caster, created HERE and independently of the bake above ----
+            //
+            // The bake is off by default and the micromap is the mechanism that replaces it, so this must not sit
+            // behind the same gate: it is created for every caster that carries an alphaMode MASK material, which
+            // is the same test the bake's rule makes ("material_record::flags bit 4"). Nothing consumes the result
+            // yet - the geometry attachment is the next step - which is why every micro-triangle in it is written
+            // UNKNOWN: a micromap that answers "unknown" everywhere leaves the traversal asking the any-hit shader,
+            // exactly as it does today, so creating and building it cannot change a pixel.
+            if (caster->index_count >= 3u) {
+                uint32_t const material_index = caster->push.material_index.value;
+                material_record const* const material = material_index < inputs.materials.size() ? &inputs.materials[material_index] : nullptr;
+                if (material != nullptr && (material->flags & 16u) != 0u) {
+                    if (auto resource = make_micromap(vk, caster->index_count / 3u); resource.has_value()) {
+                        micromap_triangles += resource->triangle_count;
+                        this->micromaps_.push_back(std::move(*resource));
+                    } else {
+                        ++skipped_micromaps;
+                    }
+                }
+            }
+
             VkDeviceAddress mask_address = 0;
             uint32_t mask_stride = 0;
             if (inputs.mask_bake && inputs.hooks.mask_ready != nullptr && inputs.hooks.mask_ready(inputs.hooks.owner)) {
@@ -291,6 +493,74 @@ namespace vulkan::ray_tracing {
                                                       .imageMemoryBarrierCount = 0,
                                                       .pImageMemoryBarriers = nullptr};
             vkCmdPipelineBarrier2(command_buffer, &bake_dependency);
+        }
+
+        // ---- THE MICROMAP BUILDS, recorded here because the structure builds below READ them ----
+        //
+        // The two barriers are the ones the spec names for exactly this pair of operations, and they are not
+        // symmetric: the micromap's INPUT buffers were written by the HOST (they are host-visible and coherent, and
+        // filled at setup), so they need HOST_WRITE -> MICROMAP_BUILD/SHADER_READ; the micromap itself is written
+        // by MICROMAP_BUILD/MICROMAP_WRITE and read by ACCELERATION_STRUCTURE_BUILD/MICROMAP_READ, which is what
+        // makes the attachment in the next step legal. Getting the first one wrong reads a micromap built from
+        // memory the host had not published; getting the second wrong reads a micromap that is still being built.
+        if (!this->micromaps_.empty()) {
+            auto const build_micromaps = reinterpret_cast<PFN_vkCmdBuildMicromapsEXT>(vkGetDeviceProcAddr(vk.device, "vkCmdBuildMicromapsEXT"));
+            if (build_micromaps != nullptr) {
+                std::vector<VkMicromapBuildInfoEXT> infos(this->micromaps_.size());
+                for (std::size_t i = 0; i < this->micromaps_.size(); ++i) {
+                    micromap_resource const& resource = this->micromaps_[i];
+                    VkMicromapBuildInfoEXT& info = infos[i];
+                    info = VkMicromapBuildInfoEXT{};
+                    info.sType = VK_STRUCTURE_TYPE_MICROMAP_BUILD_INFO_EXT;
+                    info.type = VK_MICROMAP_TYPE_OPACITY_MICROMAP_EXT;
+                    info.flags = VK_BUILD_MICROMAP_PREFER_FAST_TRACE_BIT_EXT;
+                    info.mode = VK_BUILD_MICROMAP_MODE_BUILD_EXT;
+                    info.dstMicromap = resource.micromap;
+                    info.usageCountsCount = 1;
+                    info.pUsageCounts = &this->micromaps_[i].usage;
+                    info.data.deviceAddress = resource.data_address;
+                    info.triangleArray.deviceAddress = resource.triangles_address;
+                    info.triangleArrayStride = resource.triangle_array_stride;
+                    info.scratchData.deviceAddress = resource.scratch_address;
+                }
+                VkMemoryBarrier2 const inputs_ready = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+                                                       .pNext = nullptr,
+                                                       .srcStageMask = VK_PIPELINE_STAGE_2_HOST_BIT,
+                                                       .srcAccessMask = VK_ACCESS_2_HOST_WRITE_BIT,
+                                                       .dstStageMask = VK_PIPELINE_STAGE_2_MICROMAP_BUILD_BIT_EXT,
+                                                       .dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT};
+                VkDependencyInfo const before = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+                                                 .pNext = nullptr,
+                                                 .dependencyFlags = 0,
+                                                 .memoryBarrierCount = 1,
+                                                 .pMemoryBarriers = &inputs_ready,
+                                                 .bufferMemoryBarrierCount = 0,
+                                                 .pBufferMemoryBarriers = nullptr,
+                                                 .imageMemoryBarrierCount = 0,
+                                                 .pImageMemoryBarriers = nullptr};
+                vkCmdPipelineBarrier2(command_buffer, &before);
+                build_micromaps(command_buffer, static_cast<uint32_t>(infos.size()), infos.data());
+                VkMemoryBarrier2 const micromaps_ready = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+                                                          .pNext = nullptr,
+                                                          .srcStageMask = VK_PIPELINE_STAGE_2_MICROMAP_BUILD_BIT_EXT,
+                                                          .srcAccessMask = VK_ACCESS_2_MICROMAP_WRITE_BIT_EXT,
+                                                          .dstStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+                                                          .dstAccessMask = VK_ACCESS_2_MICROMAP_READ_BIT_EXT};
+                VkDependencyInfo const after = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+                                                .pNext = nullptr,
+                                                .dependencyFlags = 0,
+                                                .memoryBarrierCount = 1,
+                                                .pMemoryBarriers = &micromaps_ready,
+                                                .bufferMemoryBarrierCount = 0,
+                                                .pBufferMemoryBarriers = nullptr,
+                                                .imageMemoryBarrierCount = 0,
+                                                .pImageMemoryBarriers = nullptr};
+                vkCmdPipelineBarrier2(command_buffer, &after);
+                utility::log("ray-traced shadows: built {} opacity micromaps ({} triangles, subdivision level 0, 4-state, every micro-triangle UNKNOWN, {} casters skipped - so this step cannot change a pixel)",
+                             this->micromaps_.size(),
+                             micromap_triangles,
+                             skipped_micromaps);
+            }
         }
 
         if (auto const built = structures.record_build(command_buffer); !built) {

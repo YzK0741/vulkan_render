@@ -166,6 +166,17 @@ export namespace vulkan::ray_tracing {
         [[nodiscard]] VkBuffer instance_table(uint32_t frame_slot) const noexcept;
         /// @brief the casters that were built, in the order they were added (see caster_level)
         [[nodiscard]] std::span<caster_level const> casters() const noexcept;
+        /**
+         * @brief destroy the micromaps this set owns
+         * @note EXPLICIT, and it runs from the destructor as well as from abandon(): VkMicromapEXT is a child
+         *       object of the device that nothing in this project wraps in RAII, and validation reports a
+         *       surviving one at vkDestroyDevice (measured: it does, as soon as the micromaps exist).
+         */
+        ~structure_set();
+
+    private:
+        /// @brief the shared half of abandon() and the destructor: destroy every micromap, then drop them
+        void release_micromaps() noexcept;
 
     private:
         /// drop everything: the structures, the map and the copies they were built from (all four are one fact)
@@ -190,6 +201,42 @@ export namespace vulkan::ray_tracing {
         std::vector<uint32_t> skin_levels_ = {};
         bool attempted_ = false;
         bool top_logged_ = false;
+
+    public:
+        /**
+         * @ingroup vulkan_ray_tracing
+         * @brief ONE built opacity micromap and every buffer that describes it
+         * @note the ownership of `micromap` is explicit rather than RAII: VkMicromapEXT has no wrapper in this
+         *       project (it is not a buffer, an image or a pipeline), so `structure_set::abandon()` destroys it
+         *       with vkDestroyMicromapEXT and the buffers below free themselves.
+         * @note the five buffers are the micromap's own memory (`storage`, created with MICROMAP_STORAGE), the
+         *       packed opacity states (`data`), the per-triangle descriptor array (`triangles`), the build's
+         *       scratch and the per-triangle index the GEOMETRY reads to find its micromap triangle (`indices` -
+         *       the attachment's input, filled here so the two halves of the mechanism are created together).
+         */
+        struct micromap_resource {
+            VkMicromapEXT micromap = VK_NULL_HANDLE;
+            vk_buffer storage = {};
+            vk_buffer data = {};
+            vk_buffer triangles = {};
+            vk_buffer indices = {};
+            vk_buffer scratch = {};
+            VkMicromapUsageEXT usage = {}; // count / subdivisionLevel / format - the geometry attachment repeats it
+            VkDeviceAddress data_address = 0;
+            VkDeviceAddress triangles_address = 0;
+            VkDeviceAddress scratch_address = 0;
+            VkDeviceAddress indices_address = 0;
+            VkDeviceSize triangle_array_stride = 0;
+            VkDeviceSize index_stride = 0;
+            uint32_t triangle_count = 0;
+        };
+        /// @brief the micromaps this set owns, one per alphaMode MASK caster (see build())
+        [[nodiscard]] std::span<micromap_resource const> micromaps() const noexcept {
+            return this->micromaps_;
+        }
+
+    private:
+        std::vector<micromap_resource> micromaps_ = {};
     };
 
 } // namespace vulkan::ray_tracing
