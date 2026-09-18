@@ -219,6 +219,36 @@ namespace vulkan {
         this->white_texture_index = static_cast<uint32_t>(this->texture_array_views.size());
         this->texture_array_views.push_back(*this->owned_texture_views.back());
 
+        // THE WHITE ELEMENT NEEDS ITS OWN HEAP DESCRIPTOR HERE, and its absence was a class of black frames.
+        // Every texture that reaches the bindless array through register_material has its heap slot written
+        // there, but this one is created above that loop and never passes through it - so slot
+        // heap_slots::textures + 0 stayed EMPTY and sampled as zero. A material slot with no texture arrives
+        // here (Sponza's stone carries no occlusion map), so its ao read 0 - and shading.glsl multiplies BOTH
+        // the diffuse ambient and the specular IBL by s.ao, which left those surfaces lit by the sun alone:
+        // a black interior, while the metal test assets (whose materials do carry an occlusion map, and whose
+        // diffuse term is multiplied away by (1 - metallic) anyway) looked untouched. The startup probe had
+        // it in the log the whole time: "the heap-native probe sampled grid slot 16384 ... read back
+        // 0x00000000", on the very slot this write fills, while the material table's white record read 0xffff.
+        // @note heap_slot_offset() is defined below this constructor, so the arithmetic is spelled out: a slot
+        //       number is already absolute and the stride is the one every heap array agrees on.
+        if (this->vulkan_core.descriptor_heaps.ready()) {
+            auto const* const white_detail = this->vulkan_core.vma.get_image_detail(this->owned_textures.back().handle());
+            if (white_detail != nullptr) {
+                VkImageViewCreateInfo const heap_view = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                                                         .pNext = nullptr,
+                                                         .flags = 0,
+                                                         .image = white_detail->image,
+                                                         .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                                                         .format = VK_FORMAT_R8G8B8A8_UNORM,
+                                                         .components = {VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY},
+                                                         .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS}};
+                VkDeviceSize const white_offset = static_cast<VkDeviceSize>(core::heap_slots::textures + this->white_texture_index) * core::heap_slot_stride;
+                if (!this->vulkan_core.descriptor_heaps.write_image(white_offset, heap_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)) {
+                    utility::log("descriptor heap: the white fallback texture did not reach grid slot {}", core::heap_slots::textures + this->white_texture_index);
+                }
+            }
+        }
+
         // (The sampler the array entries are read through is NOT created here: the maxLod-12 REPEAT
         // sampler the comment that used to sit here described moved into the core, next to the other six
         // - see core::create_samplers / shared_samplers.) The white element above is the one entry this
