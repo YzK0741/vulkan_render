@@ -285,6 +285,18 @@ namespace vulkan {
         if (capabilities.opacity_micromap_available) {
             creation_info.extensions.push_back(VK_EXT_OPACITY_MICROMAP_EXTENSION_NAME);
         }
+        // ... and the descriptor heap, which is independent of all of the above: it changes how BINDINGS are
+        // stored (descriptors in a buffer the application writes) rather than how rays are traced. Its feature
+        // struct is the first extension link in the query chain for the same reason, and it is pushed here on
+        // the same rule - the capability query proved both the extension and its feature.
+        if (capabilities.descriptor_heap_available) {
+            // ITS DEPENDENCY FIRST, because the heap is not a legal enabled extension without one of the two
+            // (VUID-vkCreateDevice-ppEnabledExtensionNames-01387). The capability query resolved which of them
+            // this device has and made the heap unavailable when it has neither, so this cannot push a name the
+            // device does not support.
+            creation_info.extensions.push_back(capabilities.descriptor_heap_dependency);
+            creation_info.extensions.push_back(VK_EXT_DESCRIPTOR_HEAP_EXTENSION_NAME);
+        }
 
         if (!check_device_extension_support(physical_device, creation_info.extensions)) {
             utility::panic("Required device extensions not supported");

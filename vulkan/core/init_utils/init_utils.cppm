@@ -120,6 +120,33 @@ export struct device_capabilities {
     bool ray_tracing_pipeline_available = false;
     /// @brief whether the device has VK_EXT_opacity_micromap AND its feature (it needs the RT pipeline too)
     bool opacity_micromap_available = false;
+    /**
+     * @brief VK_EXT_descriptor_heap: descriptors in a buffer the APPLICATION manages, instead of descriptor
+     *        sets, layouts and pools (see vulkan/core/core.cpp for what the renderer does with it)
+     *
+     * @note independent of everything above: the heap replaces the SET model rather than extending the
+     *       ray-tracing one, so its two structs are the first extension links in the chains below.
+     * @note the PROPERTIES are the numbers a heap cannot be laid out without: bufferDescriptorSize /
+     *       imageDescriptorSize / samplerDescriptorSize are the strides a descriptor of each kind occupies
+     *       (with their own alignment fields), resourceHeapAlignment and samplerHeapAlignment are what a heap
+     *       binding's offset must respect, and minResourceHeapReservedRange plus
+     *       minSamplerHeapReservedRangeWithEmbedded are how much of each heap an implementation wants
+     *       reserved before descriptors may be placed after the reserved area - the WithEmbedded one being
+     *       for combined image samplers whose sampler part lives in the resource heap.
+     */
+    VkPhysicalDeviceDescriptorHeapFeaturesEXT descriptor_heap_features = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_HEAP_FEATURES_EXT};
+    VkPhysicalDeviceDescriptorHeapPropertiesEXT descriptor_heap_properties = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_HEAP_PROPERTIES_EXT};
+    /**
+     * @brief which extension satisfies the heap's own dependency, or nullptr when neither is present
+     *
+     * @note VK_EXT_descriptor_heap REQUIRES one of VK_KHR_extended_flags or VK_KHR_maintenance5 to be enabled
+     *       alongside it, which validation states as VUID-vkCreateDevice-ppEnabledExtensionNames-01387 the
+     *       moment the heap is enabled without one. It is held as a NAME rather than as a second bool because
+     *       the device-creation list needs the string, and both are static string literals.
+     */
+    char const* descriptor_heap_dependency = nullptr;
+    /// @brief whether the device has VK_EXT_descriptor_heap, its descriptorHeap feature, AND that dependency
+    bool descriptor_heap_available = false;
 
     // ---- Property chain (query only, for renderer decisions/diagnostics) ----
     VkPhysicalDeviceProperties2 properties_2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};

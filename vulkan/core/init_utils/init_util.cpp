@@ -80,6 +80,18 @@ void device_capabilities::query(VkPhysicalDevice const physical_device, uint32_t
     bool const ray_tracing_pipeline_extensions = ray_tracing_extensions && has_extension(VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME) &&
                                                  has_extension(VK_KHR_RAY_TRACING_MAINTENANCE_1_EXTENSION_NAME);
     bool const opacity_micromap_extension = ray_tracing_pipeline_extensions && has_extension(VK_EXT_OPACITY_MICROMAP_EXTENSION_NAME);
+    // DESCRIPTOR HEAP, and it is an extension of the BINDING MODEL rather than of ray tracing: it replaces
+    // descriptor sets with descriptors the application writes into a buffer, so it shares nothing with the two
+    // conditions above and joins the chains as their FIRST extension link rather than after them.
+    //
+    // It also REQUIRES one of two other extensions to be enabled with it (VK_KHR_extended_flags or
+    // VK_KHR_maintenance5), which validation reported as VUID-vkCreateDevice-ppEnabledExtensionNames-01387 the
+    // first time the heap was enabled without one - so the dependency is resolved here and the NAME is kept
+    // for the device-creation list rather than being re-derived there.
+    char const* const descriptor_heap_dependency = has_extension(VK_KHR_MAINTENANCE_5_EXTENSION_NAME)    ? VK_KHR_MAINTENANCE_5_EXTENSION_NAME
+                                                   : has_extension(VK_KHR_EXTENDED_FLAGS_EXTENSION_NAME) ? VK_KHR_EXTENDED_FLAGS_EXTENSION_NAME
+                                                                                                         : nullptr;
+    bool const descriptor_heap_extension = has_extension(VK_EXT_DESCRIPTOR_HEAP_EXTENSION_NAME) && descriptor_heap_dependency != nullptr;
 
     // ---- Feature pNext chain: features_2 -> 1_1 -> 1_2 -> 1_3 -> 1_4 (truncated by api_version),
     //      then the extension features when the device has them. The TAIL is tracked rather than
@@ -107,7 +119,11 @@ void device_capabilities::query(VkPhysicalDevice const physical_device, uint32_t
     }
     // (the cast is what the newer headers need: a concrete feature struct's pNext is void*, while
     // VkBaseOutStructure's own pNext is typed - and the tail is reached through the base type)
-    static_cast<VkBaseOutStructure*>(feature_tail)->pNext = ray_tracing_extensions ? reinterpret_cast<VkBaseOutStructure*>(&acceleration_structure_features) : nullptr;
+    // THE DESCRIPTOR HEAP IS THE FIRST EXTENSION LINK, ahead of the ray-tracing chain, because the two are
+    // independent: a device can have the heap without ray tracing and the other way round, and each unlink
+    // below therefore cuts only its OWN link rather than everything downstream of it.
+    static_cast<VkBaseOutStructure*>(feature_tail)->pNext = descriptor_heap_extension ? reinterpret_cast<VkBaseOutStructure*>(&descriptor_heap_features) : nullptr;
+    descriptor_heap_features.pNext = ray_tracing_extensions ? reinterpret_cast<VkBaseOutStructure*>(&acceleration_structure_features) : nullptr;
     acceleration_structure_features.pNext = ray_tracing_extensions ? &ray_query_features : nullptr;
     // ... and the rest of the ray-tracing chain hangs off ray query, each link present only when its own
     // extensions are: an extension feature struct whose extension is NOT enabled must not appear in the
@@ -124,6 +140,8 @@ void device_capabilities::query(VkPhysicalDevice const physical_device, uint32_t
     ray_query_available = ray_tracing_extensions && acceleration_structure_features.accelerationStructure == VK_TRUE && ray_query_features.rayQuery == VK_TRUE;
     ray_tracing_pipeline_available = ray_tracing_pipeline_extensions && ray_query_available && ray_tracing_pipeline_features.rayTracingPipeline == VK_TRUE;
     opacity_micromap_available = opacity_micromap_extension && ray_tracing_pipeline_available && opacity_micromap_features.micromap == VK_TRUE;
+    descriptor_heap_available = descriptor_heap_extension && descriptor_heap_features.descriptorHeap == VK_TRUE;
+    this->descriptor_heap_dependency = descriptor_heap_available ? descriptor_heap_dependency : nullptr; // the member, set from the local of the same name
     // Unlink every struct whose feature came back false: the extension may be advertised by a device
     // that does not actually support it, and an enabled-but-unsupported struct is a device-creation error.
     if (!opacity_micromap_available) {
@@ -133,8 +151,13 @@ void device_capabilities::query(VkPhysicalDevice const physical_device, uint32_t
         ray_query_features.pNext = nullptr;
     }
     if (!ray_query_available) {
-        static_cast<VkBaseOutStructure*>(feature_tail)->pNext = nullptr;
+        descriptor_heap_features.pNext = nullptr; // cuts only the ray-tracing chain the heap link was holding
         acceleration_structure_features.pNext = nullptr;
+    }
+    if (!descriptor_heap_available) {
+        // The heap is the FIRST link, so dropping it has to hand the tail to whatever it was pointing at -
+        // setting the tail to null here would silently take the ray-tracing chain with it.
+        static_cast<VkBaseOutStructure*>(feature_tail)->pNext = ray_query_available ? reinterpret_cast<VkBaseOutStructure*>(&acceleration_structure_features) : nullptr;
     }
 
     // ---- Property pNext chain: properties_2 -> driver -> subgroup -> descriptor indexing -> maintenance4
@@ -143,7 +166,8 @@ void device_capabilities::query(VkPhysicalDevice const physical_device, uint32_t
     driver_properties.pNext = &subgroup_properties;
     subgroup_properties.pNext = &descriptor_indexing_properties;
     descriptor_indexing_properties.pNext = &maintenance4_properties;
-    maintenance4_properties.pNext = ray_query_available ? &acceleration_structure_properties : nullptr;
+    maintenance4_properties.pNext = descriptor_heap_extension ? reinterpret_cast<VkBaseOutStructure*>(&descriptor_heap_properties) : nullptr;
+    descriptor_heap_properties.pNext = ray_query_available ? &acceleration_structure_properties : nullptr;
     acceleration_structure_properties.pNext = opacity_micromap_available ? reinterpret_cast<VkBaseOutStructure*>(&opacity_micromap_properties) : nullptr;
     opacity_micromap_properties.pNext = ray_tracing_pipeline_available ? reinterpret_cast<VkBaseOutStructure*>(&ray_tracing_pipeline_properties) : nullptr;
     ray_tracing_pipeline_properties.pNext = nullptr;
@@ -346,6 +370,30 @@ void print_device_capabilities(device_capabilities const& capabilities) {
                      capabilities.acceleration_structure_properties.minAccelerationStructureScratchOffsetAlignment);
     } else {
         utility::log(" ray tracing   : not available (ray-traced shadows and GI stay off)");
+    }
+
+    // ---- Descriptor heap: independent of ray tracing, so it reports outside that block ----
+    if (capabilities.descriptor_heap_available) {
+        utility::log(" descriptor heap: available (VK_EXT_descriptor_heap, revision 1)");
+        utility::log("   descriptors : buffer {} B (align {}), image {} B (align {}), sampler {} B (align {})",
+                     capabilities.descriptor_heap_properties.bufferDescriptorSize,
+                     capabilities.descriptor_heap_properties.bufferDescriptorAlignment,
+                     capabilities.descriptor_heap_properties.imageDescriptorSize,
+                     capabilities.descriptor_heap_properties.imageDescriptorAlignment,
+                     capabilities.descriptor_heap_properties.samplerDescriptorSize,
+                     capabilities.descriptor_heap_properties.samplerDescriptorAlignment);
+        utility::log("   heaps       : resource max {} MiB (alignment {}), sampler max {} KiB (alignment {})",
+                     capabilities.descriptor_heap_properties.maxResourceHeapSize / (1024 * 1024),
+                     capabilities.descriptor_heap_properties.resourceHeapAlignment,
+                     capabilities.descriptor_heap_properties.maxSamplerHeapSize / 1024,
+                     capabilities.descriptor_heap_properties.samplerHeapAlignment);
+        utility::log("   reserved    : {} KiB resource, {} KiB sampler with embedded samplers, {} embedded samplers max, push data {} B",
+                     capabilities.descriptor_heap_properties.minResourceHeapReservedRange / 1024,
+                     capabilities.descriptor_heap_properties.minSamplerHeapReservedRangeWithEmbedded / 1024,
+                     capabilities.descriptor_heap_properties.maxDescriptorHeapEmbeddedSamplers,
+                     capabilities.descriptor_heap_properties.maxPushDataSize);
+    } else {
+        utility::log(" descriptor heap: not available (descriptor sets stay the binding model)");
     }
 
     utility::log("{}", box_line);
