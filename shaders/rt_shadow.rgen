@@ -17,8 +17,10 @@
  * to paper over and measured as worse than doing nothing. A traced ray can run an any-hit shader, and it can
  * consult an OPACITY MICROMAP, which is the hardware answer to the same question (per-microtriangle opacity,
  * with the any-hit shader as the fallback for the states the micromap calls unknown). This file is the first
- * of those three steps: the estimator on the new path, with no alpha test yet, so its output is bit-identical
- * to the ray-query form it replaces.
+ * of those three steps: the estimator on the new path, with no alpha test yet, so its output lands on the
+ * raster reference the way the ray-query form does (whole-frame mean|d| = 0.0287, all of it at the shadow
+ * edge; the payload trap that stood between the two is documented at the payload declaration and in the pass
+ * header, because it cost more to find than the whole rest of this step did).
  *
  * What the ray buys over a cascaded shadow map is not sharpness but CORRECTNESS of the occluder set: a caster
  * outside every cascade's fitted box, a caster between two cascades, a contact shadow at the base of an
@@ -61,8 +63,13 @@ layout(push_constant) uniform RtShadowPush {
     vec4 params;        // x = ray tmin, y = absolute normal-offset floor, z = relative offset scale, w = unused
 } pc;
 
-/// 1.0 = the ray hit something, which the hit group writes. Initialised to 0.0 before every trace, so the miss
-/// shader has nothing to do: "no hit" IS the initial value.
+/// 1.0 = the ray hit something (the hit group writes it), 0.0 = nothing did (the miss shader writes it). It is
+/// NOT initialised here, and that is a measured requirement rather than a style choice: the payload must be
+/// written by the stage that ends the ray, on EVERY path. A raygen that stores the same 0.0 the miss shader
+/// stores makes the miss shader's store look redundant, and this device's compiler then drops it and reads the
+/// payload back uninitialised - which is the shadow bug the pass header records (61.22 against a 76.48
+/// reference). One store per path, no pre-initialisation, and the traversal agrees with the inline ray query
+/// and the raster reference. The full four-arm measurement is in the pass header.
 layout(location = 0) rayPayloadEXT float payload_occluded;
 
 /**
@@ -105,7 +112,8 @@ void main() {
     const float distance = length(world_pos - camera.camera_pos.xyz);
     const vec3 origin = world_pos + normal * max(pc.params.y, pc.params.z * distance);
 
-    payload_occluded = 0.0;
+    // The payload is written by the hit group (1.0) and by the miss shader (0.0) - exactly one store per path -
+    // and deliberately NOT initialised here: see the note above the payload declaration.
     traceRayEXT(tlas,
                 gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT,
                 0xFF, // every instance can occlude

@@ -240,6 +240,12 @@
  *   roughness, flags), so the same state scales the surface by its own alpha and mixes it with the
  *   cleared target - a fully-rough fragment would erase its own albedo. G-buffer pipelines pass
  *   `color_blending = false` and use `make_color_blend_attachment_opaque()`.
+ * - **A ray payload is written by the stage that ENDS the ray, and never pre-initialised by the raygen.**
+ *   A raygen that stores the same value the miss shader stores makes the miss shader's store redundant;
+ *   this device's compiler then drops it and reads the payload back uninitialised, so every escaped ray
+ *   came back classified as occluded and the sun was killed on all the sunlit ground. One store per path -
+ *   `rt_shadow.rchit` writes 1.0 for a hit, `rt_shadow.rmiss` writes 0.0 for a miss - and no raygen store.
+ *   The four-arm measurement that isolated it is in `vulkan/pass/rt_shadow.cppm`.
  * - **Comments here are the reference.** Every non-obvious decision (bias choices, guards against
  *   NaN at grazing angles, banding, the gamma/encode split) is documented where it is implemented,
  *   and those comments are what Doxygen shows for the matching symbol.

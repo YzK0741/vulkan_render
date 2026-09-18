@@ -13,8 +13,10 @@
  * cuts the triangle out, the limitation the ray-query form cannot express) and an opacity micromap in front of
  * it belong exactly here.
  *
- * The payload is inout: the raygen initialises it to 0.0 before tracing, so "hit" is the only thing this stage
- * has to say.
+ * The payload is written here and NOWHERE ELSE on this path: the raygen deliberately does not initialise it (an
+ * initialisation that stores the same value the miss shader stores is what the bug in the pass header was - the
+ * compiler dropped the redundant store and every escaped ray came back occluded), so this 1.0 and the miss
+ * shader's 0.0 are the two halves of the contract.
  */
 
 layout(location = 0) rayPayloadInEXT float payload_occluded;

@@ -5,49 +5,65 @@
  * @brief The ninth real pass, and the only one that traces outside the chain: the ray-traced sun shadow.
  * @defgroup vulkan_pass_rt_shadow Ray-Traced Shadow Pass
  *
- * WHAT IT OWNS: its pipeline layout and its compute pipeline (built at create time from its own declaration's
- * push-block size and the two shared set layouts its owner hands over); the frame's recording - the two barriers
- * around the visibility image it rewrites, the two shared sets it binds, the push block's values (composed by the
- * renderer) and the full-resolution dispatch; and the one-shot log that says how many rays a frame traces, which
- * used to live in the runtime as a bool next to the pipeline.
+ * WHAT IT OWNS: its pipeline layout and its RAY TRACING pipeline (three stages - raygen, closest hit and miss -
+ * with the three shader groups and the shader binding table regions that go with them, built at create time from
+ * its own declaration's push-block size and the two shared set layouts its owner hands over); the frame's
+ * recording - the two barriers around the visibility image it rewrites, the two shared sets it binds, the push
+ * block's values (composed by the renderer) and the full-resolution `traceRays` launch; and the one-shot log that
+ * says what was built, which used to live in the runtime as a bool next to the pipeline.
  *
  * WHAT IT DOES NOT OWN, in the same shape as the tracer and the spatial filter: no descriptor set of its own.
  * The camera, the light UBO and the top level structure are the shared scene set's, the surface each ray starts
  * from is the shared G-buffer set's, and the visibility image it writes lives in the G-buffer set too - so the
  * only handle it needs is the IMAGE it transitions, and that arrives through `pass_io::barrier_images`.
  *
- * OPEN DEFECT, MEASURED, and it is why the ray-query form is still the one this renderer ships: the pipeline
- * path OVER-OCCLUDES. With a scenario that pins `rt_shadows = true`, the ray-tracing build's frame is darker
- * than the ray-query build's on 5.0% of pixels and BRIGHTER on none (model-region mean 61.2 against 76.6; the
- * ray-query frame matches the shipped cascaded reference to 0.03), so the sun term is being killed where the
- * query left it alone. What the probes established rather than guessed:
+ * THE OVER-OCCLUSION THIS PASS SHIPPED WITH WAS THE PAYLOAD, and the fix is the miss shader's one assignment.
+ * It is recorded at this length because its shape is a trap: nothing about it is visible in the source,
+ * validation is silent about it, and the two SPIR-V modules involved differ by a single float constant.
  *
- *  - the push constants ARRIVE (writing `pc.params.x * 100` as the visibility gives a fully lit frame, 78.5),
- *    `world_pos` reconstructs correctly (writing its Y as the visibility gives a smooth gradient over the
- *    model with the expected sign), and the raygen really writes the image (a constant 1.0 lights the frame);
- *  - it is NOT a mirrored write (comparing the frame against vertically, horizontally and 180-degree flipped
- *    references: as-is is by far the closest);
- *  - the hit shader's distance, written out as the visibility, shows ~20% of model pixels hit at t ~ 0 (a
- *    self-hit) and the rest at t ~ 1-4, i.e. the traversal finds geometry the query does not;
- *  - THE PIPELINE'S PLUMBING IS PROVEN GOOD, which is what makes the difference a TRAVERSAL one: a ray query
- *    run INSIDE this pass's raygen (instead of the trace) reproduces the compute build's ray-query frame to
- *    mean|d| = 0.0001 - the SBT, the entry points, the descriptors, the barriers and the lighting stage's read
- *    are all exercised by that and are all right. Two traversals of the SAME ray, built from the same origin,
- *    tmin, direction and tmax in one invocation, disagree on ~46% of the model (46.5% of its pixels land in
- *    the 'blocked' cluster against 46.3% in the 'lit' one).
+ * WHAT WENT WRONG: the raygen stored 0.0 into the payload before `traceRayEXT` and used the value it read back
+ * afterwards, and the miss shader was empty - "no hit is the initial value". On this device (NVIDIA RTX 4060,
+ * 591.59.0.0) EVERY ESCAPED RAY came back classified as occluded under that arrangement: the DamagedHelmet
+ * scenario measured 61.22 mean over the model against 76.48 for the shipped raster shadow map, 100% of the
+ * differing pixels darker, so the whole sunlit ground and every convex lit side lost its sun. Four arms, all the
+ * same scenario at the same capture pose, isolated it:
  *
- * So the next experiment is to encode the QUERY's hit distance and the TRACE's hit distance for the same pixel
- * and compare them: a trace that reports plausible distances where the query reports a miss means the two are
- * traversing different things (the structure the raygen's descriptor names is the same binding, so the
- * difference would have to be in how the traversal reads its arguments), while nonsense distances would point
- * at the SBT/arguments instead. (A first hypothesis - the barriers naming COMPUTE_SHADER while the writer is
- * now the ray-tracing stage - was fixed here and changed NOTHING: the frame stayed byte-identical.)
+ *   | arm                | raygen          | miss shader     | model mean | whole-frame mean|d| vs raster |
+ *   |--------------------|-----------------|-----------------|------------|----------------------------------|
+ *   | A (broken)         | stores 0.0      | empty           | 61.22      | 1.5388                           |
+ *   | C (broken)         | stores 0.0      | stores 0.0      | 61.22      | 1.5388                           |
+ *   | B (fixed)          | stores 0.0      | stores 0.25     | 76.48      | 0.0287                           |
+ *   | D (fixed, shipped) | stores nothing  | stores 0.0      | 76.48      | 0.0287                           |
+ *   | raster reference   | -               | -               | 76.48      | 0                                |
  *
- * The SBT itself is fine (group 0 raygen / 1 miss / 2 hit, the instance's SBT record offset is 0, one geometry
- * per BLAS, `VK_GEOMETRY_OPAQUE_BIT_KHR` set, mask 0xFF, facing-cull disabled), and validation is clean. So the
- * remaining suspects are the TRAVERSAL SEMANTICS of a traced ray versus a query - and the next diagnostic is to
- * write the hit t out as the visibility on BOTH builds and diff the two, which separates "the same hits at the
- * same distances" from "different hits" before anything else is changed.
+ * Arm C is the interesting one: writing the SAME value the raygen already stored is not enough, because the
+ * store is then redundant and the compiler drops it. `spirv-dis` shows the two miss modules differ only in that
+ * constant (`OpStore %payload_occluded %float_0` against `%float_0_25`), so the elimination happens after SPIR-V,
+ * in the driver's own compiler - and what it eliminates is the store a traversal needs in order to preserve the
+ * payload at all. Arms B and D are byte-identical to each other (mean|d| = 0.0000) and both match the raster
+ * reference at the shadow edge only: 157 of 255 at the penumbra, which is the hard-versus-PCF difference this
+ * pass documents rather than a disagreement. The rule the pass follows from here on is therefore "exactly one
+ * payload store per path and no raygen pre-initialisation": the hit group writes 1.0, the miss shader writes 0.0,
+ * the raygen writes nothing. Both shaders carry the note.
+ *
+ * HOW IT WAS FOUND, because the same instrument is what any future traversal question wants: FOUR ROW CLASSES IN
+ * ONE FRAME (row % 4) reporting the ray-query verdict, the traced verdict, which program actually ran, and
+ * whether the two verdicts agree on that pixel - so every comparison is against the neighbouring row in the same
+ * image rather than against another build. At the reference pose the query class and the trace class both
+ * reproduced the raster reference (76.37 and 76.58 against the raster rows' 76.37 and 76.60) where the committed
+ * build's same rows measured 61.1-61.3, and the "which program ran" class (the miss shader writing 0.25 straight
+ * into the visibility) is what proved the write was reaching the image at all. Two earlier probes had produced
+ * numbers that looked contradictory because they compared captures taken at different CAMERA POSES: comparing two
+ * frames requires `--capture-camera`, and a whole-frame mean|d| of tens is the signature of that mistake rather
+ * than of a rendering change.
+ *
+ * The SBT was verified along the way and is correct: group 0 raygen / 1 miss / 2 hit, the instance's SBT record
+ * offset 0, one geometry per BLAS, `VK_GEOMETRY_OPAQUE_BIT_KHR` set, mask 0xFF, facing-cull disabled, and
+ * validation silent throughout. One real fix came out of the search without being the cause - the pass's two image
+ * barriers were the shared constants written for a COMPUTE producer, so the GENERAL -> SHADER_READ transition
+ * named COMPUTE_SHADER in `srcStageMask` while the writer had become the ray-tracing stage; the producer stage is
+ * overridden in the recording now, and it changed nothing (the frame stayed byte-identical), which is itself the
+ * evidence that this was never an ordering problem.
  *
  * WHY IT IS A PASS RATHER THAN A `record_*` FUNCTION: its position is an ordering constraint - after the G-buffer
  * pass (whose depth and normal the rays start from) and before the lighting stage (which multiplies the sun term
