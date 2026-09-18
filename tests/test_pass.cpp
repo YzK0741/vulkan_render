@@ -27,26 +27,21 @@ namespace {
     namespace vp = vulkan::pass;
     namespace rr = vulkan::render_resource;
 
-    /// The own-binding + shared-set pair every fake pass carries: one sampled image of its OWN at set 1, and the
-    /// shared scene set - the shape a fake pass needs from the schema, spelled out here.
-    std::array<rr::pass_binding, 1> const fake_own_bindings = {{{.set = 1,
-                                                                 .binding = 0,
-                                                                 .owner = rr::set_owner::own,
+    /// The own binding every fake pass carries: one sampled image of its OWN at binding 0. What a pass reaches
+    /// through the frame's heap is not a declaration the fake host has to spell out - the framework has no set to
+    /// resolve it into (every stage reads the descriptor heap).
+    std::array<rr::pass_binding, 1> const fake_own_bindings = {{{.binding = 0,
+                                                                 .owner = rr::binding_owner::own,
                                                                  .kind = rr::binding_kind::sampled_image,
                                                                  .resource = rr::resource_id::ml_trace,
                                                                  .access = rr::binding_access::read,
                                                                  .sampler = rr::sampler_hint::gbuffer}}};
-    std::array<rr::shared_set, 1> const fake_shared_sets = {{{.family = 0}}};
 
     /// the declaration every fake pass carries, renamed to the pass it belongs to
     rr::pass_io named_io(std::string_view const name, std::span<rr::render_target const> const targets = {}) {
         return rr::pass_io{
             .name = name,
-            .own_set = 1,
             .bindings = fake_own_bindings,
-            // ... WITH the set those bindings come from: the validator refuses non-own bindings whose shared set
-            // is not declared (the rule test_render_resources checks).
-            .shared_sets = fake_shared_sets,
             .targets = targets,
             .push = std::nullopt,
         };
@@ -182,9 +177,9 @@ namespace {
     /// a declaration the schema must refuse: a binding whose resource was never set
     rr::pass_io const& bad_io() {
         static constexpr std::array<rr::pass_binding, 1> bindings = {{
-            {.set = 1, .binding = 0, .owner = rr::set_owner::own, .kind = rr::binding_kind::sampled_image, .resource = rr::resource_id::none, .sampler = rr::sampler_hint::post},
+            {.binding = 0, .owner = rr::binding_owner::own, .kind = rr::binding_kind::sampled_image, .resource = rr::resource_id::none, .sampler = rr::sampler_hint::post},
         }};
-        static constexpr rr::pass_io io = {.name = "bad", .own_set = 1, .bindings = bindings, .push = std::nullopt};
+        static constexpr rr::pass_io io = {.name = "bad", .bindings = bindings, .push = std::nullopt};
         return io;
     }
 
@@ -493,12 +488,12 @@ int main() {
         CHECK(samplers.of(rr::sampler_hint::shadow) == reinterpret_cast<VkSampler>(0x22));
         CHECK(samplers.of(rr::sampler_hint::gbuffer) == reinterpret_cast<VkSampler>(0x11));
         CHECK(samplers.of(rr::sampler_hint::none) == VK_NULL_HANDLE); // "no sampler", which the validator enforces
-        // a declaration's own set is exactly the bindings its shader declares, in order - checked against the
+        // a declaration's own bindings are exactly the bindings its shader declares, in order - checked against the
         // stochastic punctual lighting chain's temporal resolve, which is the shape the pipeline builder this
         // test covers still builds from (that declaration went with the removed chain)
         uint32_t own = 0;
         for (rr::pass_binding const& b : rr::megalights_temporal_io.bindings) {
-            if (b.set == rr::megalights_temporal_io.own_set) {
+            if (b.owner == rr::binding_owner::own) {
                 CHECK(b.binding == own); // contiguous from zero: the index IS the binding number
                 ++own;
             }
@@ -792,14 +787,11 @@ int main() {
         CHECK(io.pipelines[0] == pass.owned_pipeline);
         pass.owned_pipeline = VK_NULL_HANDLE;
 
-        // A DECLARED SHARED SET IS A DECLARATION FACT NOW, not a resolution one: the framework has no set to hand
-        // a pass (every stage reads its descriptors from the frame's heap), so a declaration that names one
-        // resolves exactly like one that names none - what the declaration still does is tell the VALIDATOR which
-        // sets a pass claims (the rule test_render_resources checks). The blocks below therefore assert the
-        // remaining promise: the declaration's shared-set entries - including the (family, element) pair the post
-        // chain names - do not change what the resolver hands over.
-        constexpr std::array<rr::shared_set, 1> scene_only = {{{.family = 0}}};
-        rr::pass_io const shared_only = {.name = "shared", .own_set = 1, .bindings = {}, .shared_sets = scene_only, .targets = {}, .push = std::nullopt};
+        // A DECLARATION WITH NO BINDING OF ITS OWN IS STILL A DECLARATION: the framework has no set to hand a pass
+        // (every stage reads its descriptors from the frame's heap), so such a declaration resolves with no own
+        // binding and no pipeline, and the extent rule is still applied. (The shared-set entries this block used
+        // to assert were declaration-only facts; they went with the vocabulary.)
+        rr::pass_io const shared_only = {.name = "shared", .bindings = {}, .targets = {}, .push = std::nullopt};
         declared_pass shared_pass;
         shared_pass.declaration = &shared_only;
         vp::resolved_io shared_io = {};
@@ -809,27 +801,16 @@ int main() {
         CHECK(shared_io.extent.width == frame.extent.width); // the extent rule is still applied
         CHECK(shared_pass.resolve(context, shared_io));      // resolving twice is idempotent (a per-frame contract)
 
-        // ... AND THE FAMILY/ELEMENT PAIR is the same statement one set over: the post chain binds ONE family whose
-        // five sets are one per STAGE, so "family 2" alone cannot say which - the ELEMENT does. That pair is
-        // carried by the declaration (and checked by the validator), and the resolver's answer does not depend on
-        // an owner being able to fill it.
-        constexpr std::array<rr::shared_set, 1> post_composite_set = {{{.family = 2, .element = 4}}};
-        constexpr std::array<rr::shared_set, 1> post_wrong_element = {{{.family = 2, .element = 3}}};
-        rr::pass_io const post_only = {.name = "post", .own_set = 1, .bindings = {}, .shared_sets = post_composite_set, .targets = {}, .push = std::nullopt};
-        rr::pass_io const post_other = {.name = "post-other", .own_set = 1, .bindings = {}, .shared_sets = post_wrong_element, .targets = {}, .push = std::nullopt};
-        declared_pass post_pass;
-        vp::resolved_io post_io = {};
-        post_pass.declaration = &post_only;
-        CHECK(post_pass.resolve(context, post_io));
-        post_pass.declaration = &post_other;
-        CHECK(post_pass.resolve(context, post_io)); // the element is the owner's business, and the owner is the heap
+        // The FAMILY/ELEMENT pair the post chain's stages used to name is gone with the shared-set vocabulary: those
+        // stages now differ by the resource ELEMENT they render into and move, which the declarations carry as
+        // `render_target::element` and `barrier_image::element` and the resolver hands over element by element.
 
         // A RUN OF ELEMENTS: ONE target entry claiming `count` consecutive elements resolves to ONE SLOT PER
         // ELEMENT - the shadow map's cascades are the case (`render_target::count`), and what makes it a
         // declaration fact rather than a resolver's is that the FRAME CAPS THE RUN: the family has the elements the
         // owner published (the layers the cascade knob asked for), and the pass renders what it is handed.
         std::array<rr::render_target, 1> const run_decl = {rr::render_target{.resource = rr::resource_id::shadow_map, .element = 0, .kind = rr::target_kind::depth, .count = 4}};
-        rr::pass_io const run_io = {.name = "shadow", .own_set = 1, .bindings = {}, .shared_sets = scene_only, .targets = run_decl, .push = std::nullopt};
+        rr::pass_io const run_io = {.name = "shadow", .bindings = {}, .targets = run_decl, .push = std::nullopt};
         declared_pass run_pass;
         run_pass.declaration = &run_io;
         // a per-FRAME-SLOT family, which is why the instance is the frame's SLOT rather than its image

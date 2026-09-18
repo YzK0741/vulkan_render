@@ -2950,7 +2950,7 @@ namespace vulkan {
         // The own bindings, indexed by their own binding number: the validator requires those to be contiguous
         // from zero, so `own[binding]` IS this binding's handle (see resolved_io).
         for (render_resource::pass_binding const& binding : decl.bindings) {
-            if (binding.owner != render_resource::set_owner::own || binding.binding >= io.own.size()) {
+            if (binding.owner != render_resource::binding_owner::own || binding.binding >= io.own.size()) {
                 continue;
             }
             check(binding.resource, binding.element, io.own[binding.binding], "own binding");
@@ -3678,7 +3678,7 @@ namespace vulkan {
     // frame-decided choice (which target and pipeline variant, and the push block that follows from it), which
     // its own `resolve` override makes; its four bloom levels and FXAA resolve ENTIRELY from their declarations -
     // the level they write (a `bloom` element), the level they read (the element before it, or nothing at level
-    // 0), their own set of the post family (`shared_set{2, level}`), their extent (the bloom element's size) and
+    // 0), their extent (the bloom element's size) and
     // the pipeline they record with, which is the COMPOSITE's R16F variant published by name (`post_hdr`) and
     // resolved by asking the chain's passes - see `resolve_pipeline`.
     //

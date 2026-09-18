@@ -146,7 +146,7 @@ export namespace vulkan::pass {
         uint32_t image_index = 0; // per-swapchain-image resources (GI, TAA, the G-buffer)
         uint32_t slot = 0;        // per-frame-slot resources (shadow maps, the light/camera buffers)
         /// how many swapchain images THIS generation has, which is not the same number as `image_index` and
-        /// is what a pass that owns a per-image descriptor family sizes it from. The passes that own one need it,
+        /// is what a pass that owns per-image bindings sizes it from. The passes that own them need it,
         /// and it is the kind of fact that used to be reachable only from inside `vulkan.runtime`
         uint32_t image_count = 0;
         VkExtent2D extent = {0, 0};
@@ -273,10 +273,10 @@ export namespace vulkan::pass {
          * order - the handles it may move between layouts but never bind as a descriptor.
          *
          * This is a THIRD channel rather than a corner of `own`, and the distinction is the point: `own` is
-         * indexed by the pass's own binding numbers and its sets are generated from it, while these resources
-         * live in sets its OWNER writes (the G-buffer set) and the pass only needs their IMAGES. A pass that
-         * wants one of these as a descriptor says so with a `shared` binding; a pass that only needs to
-         * transition it declares it here.
+         * indexed by the pass's own binding numbers, while these resources reach the pass's shaders through the
+         * frame's heap (their descriptors are published by whichever stage owns them, e.g. the G-buffer) and the
+         * pass only needs their IMAGES. A pass that wants one of these as a descriptor says so with a `shared`
+         * binding; a pass that only needs to transition it declares it here.
          */
         std::array<resolved_binding, max_barrier_images> barrier_storage = {};
         std::span<resolved_binding const> barrier_images = {};
@@ -348,7 +348,7 @@ export namespace vulkan::pass {
      * itself, the mark pair), and a pass never sees it - that rule is what stops this framework from growing a
      * context object that answers whatever the newest pass asks for. This struct is the opposite shape: it is
      * DATA the frame loop produced (the resources that exist, the frame identity, the command buffer) plus three
-     * lookups that all take the DECLARATION's own keys - "the set the declaration named", "the extent of the
+     * lookups that all take the DECLARATION's own keys - "the handles the declaration named", "the extent of the
      * resource element the behaviour named", "the pipeline the behaviour named". A pass cannot reach a resource
      * through it that its declaration did not name, because the table only answers for
      * (resource, element, instance) and the keys come from the declaration.
@@ -640,8 +640,8 @@ export namespace vulkan::pass {
          *
          * THE DEFAULT IMPLEMENTATION IS THE POINT OF THE FRAMEWORK, and it is what the renderer's sixteen
          * hand-written `resolve_*_pass` functions are being replaced by, one pass at a time: walk the
-         * declaration, ask the resource table for every own binding, target and barrier entry, take the shared
-         * sets the declaration names and the pipelines the behaviour names, and the extent from the behaviour's
+         * declaration, ask the resource table for every own binding, target and barrier entry, take the
+         * pipelines the behaviour names, and the extent from the behaviour's
          * own rule. A pass whose declaration says everything it needs does NOT override this - there is nothing
          * left for the owner to know.
          *
@@ -1165,12 +1165,12 @@ export namespace vulkan::pass {
         // ---- the pass's own bindings, indexed by their own binding number ----
         uint32_t own_count = 0;
         for (render_resource::pass_binding const& binding : declaration.bindings) {
-            if (binding.owner != render_resource::set_owner::own) {
+            if (binding.owner != render_resource::binding_owner::own) {
                 continue;
             }
             render_resource::resource_info const* const info = render_resource::find(binding.resource);
             if (info == nullptr || binding.binding >= out.own_storage.size()) {
-                return false; // not a resource the schema knows, or not the contiguous own set the validator requires
+                return false; // not a resource the schema knows, or not the contiguous own bindings the validator requires
             }
             resolved_binding const handles = context.resources->find(binding.resource, binding.element, instance_for(info->scope, context.frame));
             if (handles.view == VK_NULL_HANDLE && handles.buffer == VK_NULL_HANDLE && handles.image == VK_NULL_HANDLE) {
@@ -1186,7 +1186,7 @@ export namespace vulkan::pass {
         // without the renderer publishing them itself. Empty for every other binding, which is the shape the
         // consumer reads: it checks each span's length before indexing it.
         for (render_resource::pass_binding const& binding : declaration.bindings) {
-            if (binding.owner != render_resource::set_owner::own || binding.binding >= out.own_per_image.size()) {
+            if (binding.owner != render_resource::binding_owner::own || binding.binding >= out.own_per_image.size()) {
                 continue;
             }
             render_resource::resource_info const* const info = render_resource::find(binding.resource);

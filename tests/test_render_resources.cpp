@@ -8,8 +8,8 @@
 // THE FAILURE CASES ARE THE TEST. A validator that only ever says "ok" would pass every check here, so each
 // malformed declaration below is asserted to be REJECTED: an unset resource, a binding kind that does not
 // fit the resource, an access the kind cannot perform, an element outside the family, a descriptor count of
-// zero, a sampled image with no sampler (and a uniform buffer with one), a duplicated (set, binding), an own
-// binding outside the pass's own set, a gap in the own bindings, and a push block that does not fit.
+// zero, a sampled image with no sampler (and a uniform buffer with one), a duplicated binding, a gap in the
+// own bindings, and a push block that does not fit.
 #include "vk_test.h"
 
 #include <algorithm>
@@ -32,7 +32,6 @@ namespace {
     std::expected<void, std::string> validate_one(rr::pass_binding const& binding) {
         rr::pass_io const io = {
             .name = "probe",
-            .own_set = 1,
             .bindings = std::span<rr::pass_binding const>(&binding, 1),
             .push = std::nullopt,
         };
@@ -41,9 +40,8 @@ namespace {
 
     /// a well-formed own binding, the starting point of every malformed one below
     constexpr rr::pass_binding good_binding = {
-        .set = 1,
         .binding = 0,
-        .owner = rr::set_owner::own,
+        .owner = rr::binding_owner::own,
         .kind = rr::binding_kind::sampled_image,
         .resource = rr::resource_id::ml_history,
         .element = 0,
@@ -70,10 +68,10 @@ int main() {
     CHECK(rr::find(rr::resource_id::bloom)->count == 4);
     {
         std::array<rr::render_target, 1> const last_level = {rr::render_target{.resource = rr::resource_id::bloom, .element = 3, .kind = rr::target_kind::color}};
-        rr::pass_io const io = {.name = "bloom", .own_set = 0, .bindings = {}, .shared_sets = {}, .targets = last_level, .push = std::nullopt};
+        rr::pass_io const io = {.name = "bloom", .bindings = {}, .targets = last_level, .push = std::nullopt};
         CHECK(rr::validate(io).has_value()); // the deepest level a pass may render into
         std::array<rr::render_target, 1> const past_the_end = {rr::render_target{.resource = rr::resource_id::bloom, .element = 4, .kind = rr::target_kind::color}};
-        rr::pass_io const bad = {.name = "bloom", .own_set = 0, .bindings = {}, .shared_sets = {}, .targets = past_the_end, .push = std::nullopt};
+        rr::pass_io const bad = {.name = "bloom", .bindings = {}, .targets = past_the_end, .push = std::nullopt};
         CHECK(!rr::validate(bad).has_value()); // ... and the one past it, which names no image at all
     }
     CHECK(rr::find(rr::resource_id::top_level_structure)->kind == rr::resource_kind::accel_struct);
@@ -83,35 +81,30 @@ int main() {
     CHECK(rr::find(rr::resource_id::ml_history)->scope == rr::resource_scope::per_swapchain_image);
     CHECK(rr::find(rr::resource_id::furnace_cube)->scope == rr::resource_scope::device_wide);
 
-    // The shared-set rule the validator enforces is checked below against a declaration built for the purpose.
+    // The binding owner decides which rules apply: the pass's OWN bindings must be numbered contiguously from
+    // zero, while a `shared` binding only USES a resource the frame's heap provides and carries no such
+    // requirement - which is the distinction the resolver and this declaration layer key on.
     {
-        // One of the SCENE set's bindings: something a pass reaches through a shared set rather than owning, which
-        // is the shape the rule is about. (static: the declaration holds a span, so the array must outlive it.)
-        static constexpr std::array<rr::pass_binding, 1> scene_binding = {{{.set = 0,
-                                                                            .binding = 1,
-                                                                            .owner = rr::set_owner::scene,
-                                                                            .kind = rr::binding_kind::sampled_image,
-                                                                            .resource = rr::resource_id::scene_textures,
-                                                                            .access = rr::binding_access::read,
-                                                                            .sampler = rr::sampler_hint::post}}};
-        static constexpr std::array<rr::shared_set, 1> scene_set_list = {{{.family = 0}}};
-        // a declaration that BINDS a shared set and NAMES none is refused ...
-        rr::pass_io const unnamed = {.name = "set-like",
-                                     .own_set = 1,
-                                     .bindings = scene_binding,
-                                     .shared_sets = {},
-                                     .targets = {},
-                                     .push = rr::push_block{.offset = 0, .size = 56, .stages = rr::stage_flag::compute}};
-        auto const refused = rr::validate(unnamed);
-        CHECK(!refused.has_value());
-        // ... while the same declaration WITH the set is accepted
-        rr::pass_io const named = {.name = "set-like",
-                                   .own_set = 1,
-                                   .bindings = scene_binding,
-                                   .shared_sets = scene_set_list,
-                                   .targets = {},
-                                   .push = rr::push_block{.offset = 0, .size = 56, .stages = rr::stage_flag::compute}};
-        CHECK(rr::validate(named).has_value());
+        std::array<rr::pass_binding, 2> const mixed = {
+            good_binding, // the pass's own binding 0
+            // One of the SCENE's resources, reached through the frame's heap rather than owned - deliberately
+            // numbered 4, which would be a contiguity error if it were an `own` binding
+            {.binding = 4,
+             .owner = rr::binding_owner::shared,
+             .kind = rr::binding_kind::sampled_image,
+             .resource = rr::resource_id::scene_textures,
+             .access = rr::binding_access::read,
+             .sampler = rr::sampler_hint::post},
+        };
+        rr::pass_io const io = {.name = "shared-like",
+                                .bindings = mixed,
+                                .targets = {},
+                                .push = rr::push_block{.offset = 0, .size = 56, .stages = rr::stage_flag::compute}};
+        CHECK(rr::validate(io).has_value());
+        // ... and the SAME pair with the shared binding marked `own` is refused, because 0,4 is not contiguous
+        std::array<rr::pass_binding, 2> const not_contiguous = {good_binding, {.binding = 4, .owner = rr::binding_owner::own, .kind = rr::binding_kind::sampled_image, .resource = rr::resource_id::scene_textures, .access = rr::binding_access::read, .sampler = rr::sampler_hint::post}};
+        rr::pass_io const gap = {.name = "shared-like", .bindings = not_contiguous, .targets = {}, .push = std::nullopt};
+        CHECK(!rr::validate(gap).has_value());
     }
 
     // ---- the well-formed binding, so the failures below mean something ----
@@ -181,30 +174,28 @@ int main() {
         CHECK(!validate_one(b).has_value());
     }
     {
-        rr::pass_binding b = good_binding;
-        b.set = 2; // own bindings live in the pass's own set
-        CHECK(!validate_one(b).has_value());
-    }
-    {
+        // The case that stood here ("an own binding outside the pass's own set") went with the set index itself:
+        // there is no set to be outside any more, and the surviving rule - own bindings numbered contiguously
+        // from zero - is the next case.
         rr::pass_binding b = good_binding;
         b.binding = 3; // ... numbered contiguously from zero
         CHECK(!validate_one(b).has_value());
     }
     {
         std::array<rr::pass_binding, 2> const dup = {good_binding, good_binding};
-        rr::pass_io const io = {.name = "probe", .own_set = 1, .bindings = dup, .push = std::nullopt};
-        CHECK(!rr::validate(io).has_value()); // the same (set, binding) twice
+        rr::pass_io const io = {.name = "probe", .bindings = dup, .push = std::nullopt};
+        CHECK(!rr::validate(io).has_value()); // the same binding twice
     }
     {
-        rr::pass_io const io = {.name = {}, .own_set = 1, .bindings = {}, .push = std::nullopt};
+        rr::pass_io const io = {.name = {}, .bindings = {}, .push = std::nullopt};
         CHECK(!rr::validate(io).has_value()); // an unnamed pass
     }
     {
-        rr::pass_io const io = {.name = "probe", .own_set = 1, .bindings = {}, .push = rr::push_block{.offset = 0, .size = 132, .stages = rr::stage_flag::compute}};
+        rr::pass_io const io = {.name = "probe", .bindings = {}, .push = rr::push_block{.offset = 0, .size = 132, .stages = rr::stage_flag::compute}};
         CHECK(!rr::validate(io).has_value()); // past the 128-byte guaranteed minimum
     }
     {
-        rr::pass_io const io = {.name = "probe", .own_set = 1, .bindings = {}, .push = rr::push_block{.offset = 0, .size = 6, .stages = rr::stage_flag::compute}};
+        rr::pass_io const io = {.name = "probe", .bindings = {}, .push = rr::push_block{.offset = 0, .size = 6, .stages = rr::stage_flag::compute}};
         CHECK(!rr::validate(io).has_value()); // not a whole number of 4-byte lanes
     }
 
@@ -215,58 +206,56 @@ int main() {
     rr::render_target const not_an_image = {.resource = rr::resource_id::light_ubo, .element = 0};
     {
         std::array<rr::render_target, 1> const target = {hdr_target};
-        rr::pass_io const io = {.name = "taa", .own_set = 1, .bindings = {}, .targets = target, .push = std::nullopt};
+        rr::pass_io const io = {.name = "taa", .bindings = {}, .targets = target, .push = std::nullopt};
         CHECK(rr::validate(io).has_value()); // the frame's HDR target, written by a fullscreen resolve
     }
     {
         std::array<rr::render_target, 1> const target = {no_target};
-        rr::pass_io const io = {.name = "taa", .own_set = 1, .bindings = {}, .targets = target, .push = std::nullopt};
+        rr::pass_io const io = {.name = "taa", .bindings = {}, .targets = target, .push = std::nullopt};
         CHECK(!rr::validate(io).has_value()); // an unset resource, exactly as for a binding
     }
     {
         std::array<rr::render_target, 1> const target = {past_the_family};
-        rr::pass_io const io = {.name = "taa", .own_set = 1, .bindings = {}, .targets = target, .push = std::nullopt};
+        rr::pass_io const io = {.name = "taa", .bindings = {}, .targets = target, .push = std::nullopt};
         CHECK(!rr::validate(io).has_value()); // element 4 of a per-swapchain-image family that holds one
     }
     {
         std::array<rr::render_target, 1> const target = {not_an_image};
-        rr::pass_io const io = {.name = "taa", .own_set = 1, .bindings = {}, .targets = target, .push = std::nullopt};
+        rr::pass_io const io = {.name = "taa", .bindings = {}, .targets = target, .push = std::nullopt};
         CHECK(!rr::validate(io).has_value()); // a buffer is not an image a pass can render into
     }
     {
         std::array<rr::render_target, 2> const target = {hdr_target, hdr_target};
-        rr::pass_io const io = {.name = "taa", .own_set = 1, .bindings = {}, .targets = target, .push = std::nullopt};
+        rr::pass_io const io = {.name = "taa", .bindings = {}, .targets = target, .push = std::nullopt};
         CHECK(!rr::validate(io).has_value()); // the same image twice
     }
     {
         // a DEPTH target: the scene pass declares one, and an instance has exactly one
         rr::render_target const depth_target = {.resource = rr::resource_id::gbuffer_depth, .element = 0, .kind = rr::target_kind::depth};
         std::array<rr::render_target, 2> const one_depth = {hdr_target, depth_target};
-        rr::pass_io const io = {.name = "scene", .own_set = 1, .bindings = {}, .targets = one_depth, .push = std::nullopt};
+        rr::pass_io const io = {.name = "scene", .bindings = {}, .targets = one_depth, .push = std::nullopt};
         CHECK(rr::validate(io).has_value()); // one colour plus one depth is what a scene instance is
     }
     {
         rr::render_target const depth_a = {.resource = rr::resource_id::gbuffer_depth, .element = 0, .kind = rr::target_kind::depth};
         rr::render_target const depth_b = {.resource = rr::resource_id::shadow_map, .element = 0, .kind = rr::target_kind::depth};
         std::array<rr::render_target, 2> const two_depths = {depth_a, depth_b};
-        rr::pass_io const io = {.name = "scene", .own_set = 1, .bindings = {}, .targets = two_depths, .push = std::nullopt};
+        rr::pass_io const io = {.name = "scene", .bindings = {}, .targets = two_depths, .push = std::nullopt};
         CHECK(!rr::validate(io).has_value()); // two depth attachments cannot be recorded
     }
 
-    // ---- the SECOND declaration: the TAA resolve, whose bindings are FRAGMENT and whose own set is 0 with no
-    //      shared set beside it, and which is the first one to declare a render TARGET ----
+    // ---- the SECOND declaration: the TAA resolve, whose bindings are FRAGMENT and all its own with nothing
+    //      shared beside them, and which is the first one to declare a render TARGET ----
     {
         CHECK(rr::validate(rr::taa_io).has_value());
-        CHECK(rr::taa_io.own_set == 0);
         CHECK(rr::taa_io.bindings.size() == 4);
         for (rr::pass_binding const& b : rr::taa_io.bindings) {
-            CHECK(b.set == rr::taa_io.own_set);
-            CHECK(b.owner == rr::set_owner::own);
+            CHECK(b.owner == rr::binding_owner::own);
             CHECK(b.kind == rr::binding_kind::sampled_image);
             CHECK(b.sampler == rr::sampler_hint::taa);
-            // THE STAGE FLAGS COME FROM THE DECLARATION, so a fragment binding declared compute would build a
-            // layout the fragment stage cannot see: every declaration before this one was a compute pass and
-            // took the default.
+            // THE STAGE FLAGS COME FROM THE DECLARATION, so a fragment binding declared compute would be one the
+            // fragment stage cannot see: every declaration before this one was a compute pass and took the
+            // default.
             CHECK(rr::has_stage(b.stages, rr::stage_flag::fragment));
             CHECK(!rr::has_stage(b.stages, rr::stage_flag::compute));
         }
@@ -274,20 +263,22 @@ int main() {
         CHECK(rr::taa_io.targets[0].resource == rr::resource_id::hdr);
         CHECK(rr::taa_io.push->size == 32); // eight floats: the history flag, two weights, texel size, two depth terms
         CHECK(rr::taa_io.push->stages == rr::stage_flag::fragment);
-        rr::descriptor_counts const own = rr::descriptor_counts_for(rr::taa_io, rr::taa_io.own_set);
-        CHECK(own.sampled_image == 4);
-        CHECK(own.total() == 4);
-        // nothing is declared in a shared set: the resolve's four inputs are all its own
-        CHECK(rr::descriptor_counts_for(rr::taa_io, 1).total() == 0);
+        // Four bindings, one descriptor each - the count the deleted pool-sizing helper used to return, now read
+        // straight off the declaration the resolver reads.
+        uint32_t descriptors = 0;
+        for (rr::pass_binding const& b : rr::taa_io.bindings) {
+            descriptors += b.descriptor_count;
+        }
+        CHECK(descriptors == 4);
+        // nothing is shared: the resolve's four inputs are all its own
+        CHECK(std::none_of(rr::taa_io.bindings.begin(), rr::taa_io.bindings.end(), [](rr::pass_binding const& b) { return b.owner != rr::binding_owner::own; }));
     }
 
-    // ---- the THIRD declaration: the scene pass, the first one with NO own bindings (it binds a whole shared
-    //      set and writes the frame's surface) and the first with six targets including the DEPTH slot ----
+    // ---- the THIRD declaration: the scene pass, the first one with NO own bindings (everything it reads is a
+    //      shared resource and it writes the frame's surface) and the first with six targets including DEPTH ----
     {
         CHECK(rr::validate(rr::scene_io).has_value());
-        CHECK(rr::scene_io.bindings.empty()); // it owns no set: everything arrives through set 0
-        CHECK(rr::scene_io.shared_sets.size() == 1);
-        CHECK(rr::scene_io.shared_sets[0].family == 0); // the shared scene set
+        CHECK(rr::scene_io.bindings.empty()); // it owns no binding: everything arrives through the frame's heap
         CHECK(rr::scene_io.targets.size() == 6);
         CHECK(rr::scene_io.targets[0].resource == rr::resource_id::gbuffer_targets);
         CHECK(rr::scene_io.targets[2].element == 2); // all three stored surface targets
@@ -303,25 +294,17 @@ int main() {
         }
         CHECK(depth_targets == 1);
         CHECK(!rr::scene_io.push.has_value()); // the per-leaf pushes belong to the leaves
-        CHECK(rr::descriptor_counts_for(rr::scene_io, rr::scene_io.own_set).total() == 0);
+        // The per-set descriptor-count assertion that stood here went with the pool-sizing helper; the fact it
+        // was about is above: this pass declares no binding at all.
     }
     {
-        // a set cannot be both the pass's own and one it only binds
-        std::array<rr::shared_set, 1> const conflicting = {{{.family = 1}}};
-        std::array<rr::pass_binding, 1> const own_at_one = {{{.set = 1,
-                                                              .binding = 0,
-                                                              .owner = rr::set_owner::own,
-                                                              .kind = rr::binding_kind::sampled_image,
-                                                              .resource = rr::resource_id::ml_trace,
-                                                              .access = rr::binding_access::read,
-                                                              .sampler = rr::sampler_hint::gbuffer}}};
-        rr::pass_io const io = {.name = "scene", .own_set = 1, .bindings = own_at_one, .shared_sets = conflicting, .targets = {}, .push = std::nullopt};
-        CHECK(!rr::validate(io).has_value());
-    }
-    {
-        std::array<rr::shared_set, 2> const twice = {rr::shared_set{.family = 0}, rr::shared_set{.family = 0}};
-        rr::pass_io const io = {.name = "scene", .own_set = 1, .bindings = {}, .shared_sets = twice, .targets = {}, .push = std::nullopt};
-        CHECK(!rr::validate(io).has_value()); // the same shared set twice
+        // The two cases that stood here - a set declared as both its own and a shared one, and the same shared
+        // set declared twice - went with the set vocabulary. Their surviving subject is covered: `binding_owner`
+        // exemption from contiguity above, and duplicate binding numbers just below.
+        std::array<rr::pass_binding, 2> const twice = {rr::pass_binding{.binding = 2, .owner = rr::binding_owner::shared, .kind = rr::binding_kind::storage_buffer, .resource = rr::resource_id::cluster_counts, .access = rr::binding_access::write},
+                                                       rr::pass_binding{.binding = 2, .owner = rr::binding_owner::shared, .kind = rr::binding_kind::storage_buffer, .resource = rr::resource_id::cluster_indices, .access = rr::binding_access::write}};
+        rr::pass_io const io = {.name = "scene", .bindings = twice, .targets = {}, .push = std::nullopt};
+        CHECK(!rr::validate(io).has_value()); // two bindings may not share a number, whatever their owner
     }
 
     // The GI tracer's declaration was asserted here (two shared sets, no own binding, twelve barrier images).
@@ -330,11 +313,11 @@ int main() {
         // the barrier-image rule the validator enforces: they must be images the schema declares, and a pass
         // indexes them by POSITION, so the same one twice is a declaration that cannot be read
         std::array<rr::barrier_image, 1> const not_an_image = {rr::barrier_image{.resource = rr::resource_id::camera_ubo, .element = 0}};
-        rr::pass_io const io = {.name = "barrier-like", .own_set = 2, .bindings = {}, .shared_sets = {}, .targets = {}, .barrier_images = not_an_image, .push = std::nullopt};
+        rr::pass_io const io = {.name = "barrier-like", .bindings = {}, .targets = {}, .barrier_images = not_an_image, .push = std::nullopt};
         CHECK(!rr::validate(io).has_value());
         std::array<rr::barrier_image, 2> const twice = {rr::barrier_image{.resource = rr::resource_id::ml_trace, .element = 0},
                                                         rr::barrier_image{.resource = rr::resource_id::ml_trace, .element = 0}};
-        rr::pass_io const dup = {.name = "barrier-like", .own_set = 2, .bindings = {}, .shared_sets = {}, .targets = {}, .barrier_images = twice, .push = std::nullopt};
+        rr::pass_io const dup = {.name = "barrier-like", .bindings = {}, .targets = {}, .barrier_images = twice, .push = std::nullopt};
         CHECK(!rr::validate(dup).has_value());
     }
 
@@ -347,92 +330,78 @@ int main() {
     // the chain; the shape itself is still covered by the ray-traced shadow's declaration below.
 
     // ---- the EIGHTH declaration, and the first one OUTSIDE the chain: the ray-traced shadow, the same
-    //      shared-sets shape as the tracer and the spatial filter but at the FRAME's resolution, and its one
+    //      shared-resource shape as the tracer and the spatial filter but at the FRAME's resolution, and its one
     //      barrier image is a per-frame-slot resource rather than a per-swapchain-image family ----
     {
         CHECK(rr::validate(rr::rt_shadow_io).has_value());
-        CHECK(rr::rt_shadow_io.bindings.empty()); // the camera, the light UBO and the TLAS are the scene set's
+        CHECK(rr::rt_shadow_io.bindings.empty()); // the camera, the light UBO and the TLAS are shared heap resources
         CHECK(rr::rt_shadow_io.targets.empty());  // a compute pass
-        CHECK(rr::rt_shadow_io.shared_sets.size() == 2);
-        CHECK(rr::rt_shadow_io.shared_sets[0].family == 0); // the scene set: the top level structure lives at binding 16
-        CHECK(rr::rt_shadow_io.shared_sets[1].family == 1); // the G-buffer set: the surface each ray starts from
+        // The two shared sets this declaration used to name are gone with that vocabulary; what survives is that
+        // the declaration binds nothing itself, and that its one barrier image is per-frame-slot.
         CHECK(rr::rt_shadow_io.barrier_images.size() == 1);
         CHECK(rr::rt_shadow_io.barrier_images[0].resource == rr::resource_id::rt_shadow_visibility);
         CHECK(rr::find(rr::resource_id::rt_shadow_visibility)->scope == rr::resource_scope::per_frame_slot);
         CHECK(rr::rt_shadow_io.push.has_value());
         CHECK(rr::rt_shadow_io.push->size == 80); // inv_view_proj (64) + the four ray-offset terms (16)
         CHECK(rr::rt_shadow_io.push->stages == rr::stage_flag::compute);
-        CHECK(rr::descriptor_counts_for(rr::rt_shadow_io, rr::rt_shadow_io.own_set).total() == 0);
     }
 
     // ---- the NINTH declaration: the clustered-light sort, the first pass whose resources are BUFFERS it
-    //      orders without binding (they are the shared scene set's bindings 11 and 12) - which is what the
-    //      barrier_buffers channel was added for ----
+    //      orders without binding (they are part of the frame's shared scene resources, bindings 11 and 12) -
+    //      which is what the barrier_buffers channel was added for ----
     {
         CHECK(rr::validate(rr::cluster_io).has_value());
-        CHECK(rr::cluster_io.bindings.empty());       // it binds the whole shared scene set, so it enumerates nothing
+        CHECK(rr::cluster_io.bindings.empty());       // it reaches the shared scene resources through the heap
         CHECK(rr::cluster_io.targets.empty());        // a compute pass
         CHECK(!rr::cluster_io.push.has_value());      // light_cluster.comp declares no push_constant block at all
         CHECK(rr::cluster_io.barrier_images.empty()); // it moves no image
-        CHECK(rr::cluster_io.shared_sets.size() == 1);
-        CHECK(rr::cluster_io.shared_sets[0].family == 0); // the scene set: the camera, the light UBO, the two buffers
         CHECK(rr::cluster_io.barrier_buffers.size() == 2);
         CHECK(rr::cluster_io.barrier_buffers[0].resource == rr::resource_id::cluster_counts);
         CHECK(rr::cluster_io.barrier_buffers[1].resource == rr::resource_id::cluster_indices);
         CHECK(rr::find(rr::resource_id::cluster_counts)->kind == rr::resource_kind::buffer);
         CHECK(rr::find(rr::resource_id::cluster_indices)->kind == rr::resource_kind::buffer);
         CHECK(rr::find(rr::resource_id::cluster_counts)->scope == rr::resource_scope::per_frame_slot);
-        CHECK(rr::descriptor_counts_for(rr::cluster_io, rr::cluster_io.own_set).total() == 0);
     }
     {
         // the barrier-BUFFER rule, the same three checks one resource class over: it must be a buffer the
         // schema declares, and a pass indexes these by position so the same one twice cannot be read
         std::array<rr::barrier_buffer, 1> const not_a_buffer = {rr::barrier_buffer{.resource = rr::resource_id::ml_trace, .element = 0}};
-        rr::pass_io const io = {.name = "cluster", .own_set = 1, .bindings = {}, .shared_sets = {}, .targets = {}, .barrier_buffers = not_a_buffer, .push = std::nullopt};
+        rr::pass_io const io = {.name = "cluster", .bindings = {}, .targets = {}, .barrier_buffers = not_a_buffer, .push = std::nullopt};
         CHECK(!rr::validate(io).has_value());
         std::array<rr::barrier_buffer, 2> const twice = {rr::barrier_buffer{.resource = rr::resource_id::cluster_counts, .element = 0},
                                                          rr::barrier_buffer{.resource = rr::resource_id::cluster_counts, .element = 0}};
-        rr::pass_io const dup = {.name = "cluster", .own_set = 1, .bindings = {}, .shared_sets = {}, .targets = {}, .barrier_buffers = twice, .push = std::nullopt};
+        rr::pass_io const dup = {.name = "cluster", .bindings = {}, .targets = {}, .barrier_buffers = twice, .push = std::nullopt};
         CHECK(!rr::validate(dup).has_value());
         // ... and an element the family does not hold is rejected too (the schema's count is the contract)
         std::array<rr::barrier_buffer, 1> const out_of_range = {rr::barrier_buffer{.resource = rr::resource_id::cluster_counts, .element = 9}};
-        rr::pass_io const bad_element = {.name = "cluster", .own_set = 1, .bindings = {}, .shared_sets = {}, .targets = {}, .barrier_buffers = out_of_range, .push = std::nullopt};
+        rr::pass_io const bad_element = {.name = "cluster", .bindings = {}, .targets = {}, .barrier_buffers = out_of_range, .push = std::nullopt};
         CHECK(!rr::validate(bad_element).has_value());
     }
 
-    // ---- the TENTH declaration: the deferred lighting stage, a fullscreen pass over the same two shared sets the
-    //      traced compute passes bind, whose only resource of its own is the target it renders into - and whose target is a
+    // ---- the TENTH declaration: the deferred lighting stage, a fullscreen pass over the same shared resources the
+    //      traced compute passes reach, whose only resource of its own is the target it renders into - and whose target is a
     //      recorded deviation (it names scene_color; the host hands over hdr on the frames TAA is off) ----
     {
         CHECK(rr::validate(rr::deferred_io).has_value());
-        CHECK(rr::deferred_io.bindings.empty()); // every binding it uses is in one of the two shared sets
-        CHECK(rr::deferred_io.shared_sets.size() == 2);
-        CHECK(rr::deferred_io.shared_sets[0].family == 0); // the scene set: camera, IBL, light UBO, shadow map
-        CHECK(rr::deferred_io.shared_sets[1].family == 1); // the G-buffer set: the surface it shades
-        CHECK(rr::deferred_io.targets.size() == 1);        // the only resource of its own: what it renders into
+        CHECK(rr::deferred_io.bindings.empty());    // every binding it uses is one of the frame's shared resources
+        CHECK(rr::deferred_io.targets.size() == 1); // the only resource of its own: what it renders into
         CHECK(rr::deferred_io.targets[0].resource == rr::resource_id::scene_color);
         CHECK(rr::deferred_io.targets[0].kind == rr::target_kind::color);
         CHECK(rr::deferred_io.barrier_images.empty()); // it moves no image of its own
         CHECK(rr::deferred_io.push.has_value());
         CHECK(rr::deferred_io.push->size == 88);                         // mat4 + vec4 + one float
         CHECK(rr::deferred_io.push->stages == rr::stage_flag::fragment); // the vertex stage pushes nothing
-        CHECK(rr::descriptor_counts_for(rr::deferred_io, rr::deferred_io.own_set).total() == 0);
     }
 
-    // ---- the post chain's FIVE declarations: the bloom chain's four levels and the composite, all on the post
-    //      shared set, with the level IS the pass boundary and the chain's edges declared where they are not the
-    //      frame loop's ----
+    // ---- the post chain's FIVE declarations: the bloom chain's four levels and the composite, each with the level
+    //      IS the pass boundary and the chain's edges declared where they are not the frame loop's ----
     {
         CHECK(rr::post_bloom_io.size() == 4);
         for (std::size_t level = 0; level < rr::post_bloom_io.size(); ++level) {
             rr::pass_io const& io = rr::post_bloom_io[level];
             auto const valid = rr::validate(io);
             CHECK_MSG(valid.has_value(), valid.has_value() ? "" : valid.error().c_str());
-            CHECK(io.bindings.empty()); // everything it reads belongs to the post set
-            CHECK(io.shared_sets.size() == 1);
-            // EACH LEVEL'S OWN SET of the post family: family 2, and the element IS the level (the set that reads
-            // the level before it) - which is the fact six declarations could not express before `shared_set`
-            CHECK(io.shared_sets[0].family == 2 && io.shared_sets[0].element == level);
+            CHECK(io.bindings.empty()); // everything it reads is a shared post-chain resource
             CHECK(io.targets.size() == 1);
             CHECK(io.targets[0].resource == rr::resource_id::bloom); // the level it writes...
             CHECK(io.targets[0].element == level);                   // ... which IS the pass boundary
@@ -452,8 +421,6 @@ int main() {
 
         auto const composite = rr::validate(rr::post_composite_io);
         CHECK_MSG(composite.has_value(), composite.has_value() ? "" : composite.error().c_str());
-        CHECK(rr::post_composite_io.shared_sets.size() == 1);
-        CHECK(rr::post_composite_io.shared_sets[0].family == 2 && rr::post_composite_io.shared_sets[0].element == 4);
         CHECK(rr::post_composite_io.targets.size() == 1);
         // the RECORDED DEVIATION: the declaration names the swapchain, and the host hands over the LDR image (and
         // the R16F pipeline that goes with it) on the frames FXAA runs
@@ -467,9 +434,7 @@ int main() {
     {
         auto const fxaa = rr::validate(rr::fxaa_io);
         CHECK_MSG(fxaa.has_value(), fxaa.has_value() ? "" : fxaa.error().c_str());
-        CHECK(rr::fxaa_io.bindings.empty()); // everything it reads belongs to the post set
-        CHECK(rr::fxaa_io.shared_sets.size() == 1);
-        CHECK(rr::fxaa_io.shared_sets[0].family == 2 && rr::fxaa_io.shared_sets[0].element == 4); // the SAME post set the composite binds
+        CHECK(rr::fxaa_io.bindings.empty()); // everything it reads is a shared post-chain resource
         CHECK(rr::fxaa_io.targets.size() == 1);
         CHECK(rr::fxaa_io.targets[0].resource == rr::resource_id::swapchain_image); // it finishes the frame
         CHECK(rr::fxaa_io.targets[0].kind == rr::target_kind::color);
@@ -487,9 +452,7 @@ int main() {
     {
         auto const debug = rr::validate(rr::gbuffer_debug_io);
         CHECK_MSG(debug.has_value(), debug.has_value() ? "" : debug.error().c_str());
-        CHECK(rr::gbuffer_debug_io.bindings.empty()); // everything it reads is in the shared G-buffer set
-        CHECK(rr::gbuffer_debug_io.shared_sets.size() == 1);
-        CHECK(rr::gbuffer_debug_io.shared_sets[0].family == 1); // the G-buffer set (1), NOT the scene's or the post's
+        CHECK(rr::gbuffer_debug_io.bindings.empty()); // everything it reads is a shared G-buffer resource
         // THE HDR TARGET, declared as itself: this is the one graphics declaration in the chain with no deviation -
         // the image it writes is the image it names
         CHECK(rr::gbuffer_debug_io.targets.size() == 1);
@@ -514,9 +477,7 @@ int main() {
         auto const shadow = rr::validate(rr::shadow_io);
         std::string const shadow_error = shadow.has_value() ? std::string{} : shadow.error(); // a temporary`s c_str() would dangle
         CHECK_MSG(shadow.has_value(), shadow_error.c_str());
-        CHECK(rr::shadow_io.bindings.empty()); // the scene set carries everything the depth-only draw reads
-        CHECK(rr::shadow_io.shared_sets.size() == 1);
-        CHECK(rr::shadow_io.shared_sets[0].family == 0); // the SCENE set (the light UBO, the material table, the textures)
+        CHECK(rr::shadow_io.bindings.empty()); // the shared scene resources carry everything the depth-only draw reads
         // ONE TARGET ENTRY, N ELEMENTS - the RUN of cascade layers, and this is what replaced "one target by
         // declaration, N by frame": the validator refuses a second DEPTH target (a rendering instance has exactly
         // one depth attachment), so the host used to hand the extra layers over itself. `render_target::count` is
@@ -543,23 +504,23 @@ int main() {
 
         // THE RUN'S OWN CHECKS: a run that reaches past its family is a declaration error ...
         std::array<rr::render_target, 1> const past_the_family = {rr::render_target{.resource = rr::resource_id::shadow_map, .element = 2, .kind = rr::target_kind::depth, .count = 4}};
-        rr::pass_io const bad_run = {.name = "shadow", .own_set = 0, .bindings = {}, .shared_sets = {}, .targets = past_the_family, .push = std::nullopt};
+        rr::pass_io const bad_run = {.name = "shadow", .bindings = {}, .targets = past_the_family, .push = std::nullopt};
         CHECK(!rr::validate(bad_run).has_value());
         // ... and so is claiming NO element, which would be a target that renders nothing ...
         std::array<rr::render_target, 1> const empty_run = {rr::render_target{.resource = rr::resource_id::shadow_map, .element = 0, .kind = rr::target_kind::depth, .count = 0}};
-        rr::pass_io const no_run = {.name = "shadow", .own_set = 0, .bindings = {}, .shared_sets = {}, .targets = empty_run, .push = std::nullopt};
+        rr::pass_io const no_run = {.name = "shadow", .bindings = {}, .targets = empty_run, .push = std::nullopt};
         CHECK(!rr::validate(no_run).has_value());
         // ... and two runs of ONE resource may not overlap, which is "rendering into one image twice" one layer
         // out. (Two depth runs would be refused by the one-depth rule first, so this case is a colour family's.)
         std::array<rr::render_target, 2> const overlapping = {rr::render_target{.resource = rr::resource_id::bloom, .element = 0, .count = 3},
                                                               rr::render_target{.resource = rr::resource_id::bloom, .element = 2, .count = 2}};
-        rr::pass_io const overlap = {.name = "post_hdr", .own_set = 0, .bindings = {}, .shared_sets = {}, .targets = overlapping, .push = std::nullopt};
+        rr::pass_io const overlap = {.name = "post_hdr", .bindings = {}, .targets = overlapping, .push = std::nullopt};
         CHECK(!rr::validate(overlap).has_value());
         // ... while two runs that TOUCH but do not overlap are legal, which keeps the rule about the IMAGES a
         // declaration claims rather than about adjacency
         std::array<rr::render_target, 2> const adjacent = {rr::render_target{.resource = rr::resource_id::bloom, .element = 0, .count = 2},
                                                            rr::render_target{.resource = rr::resource_id::bloom, .element = 2, .count = 2}};
-        rr::pass_io const touching = {.name = "post_hdr", .own_set = 0, .bindings = {}, .shared_sets = {}, .targets = adjacent, .push = std::nullopt};
+        rr::pass_io const touching = {.name = "post_hdr", .bindings = {}, .targets = adjacent, .push = std::nullopt};
         CHECK(rr::validate(touching).has_value());
     }
     // ---- the SLOT GRID's two sources of truth, compared: the host reserves it in core::heap_slots and the

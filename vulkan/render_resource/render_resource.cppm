@@ -5,15 +5,15 @@
  * @brief A pass's resources, described as DATA: what exists, and what each pass does with it.
  * @defgroup vulkan_render_resource Render Resource Descriptions
  *
- * WHY THIS MODULE EXISTS. In this renderer a pass's inputs and outputs already ARE descriptor sets - the
- * G-buffer set is the interface between the G-buffer pass, the lighting stage, the stochastic lighting chain
- * and the ray-traced shadow pass; the scene set is the substrate; each pass's private family is its own I/O.
- * What exists today is that interface written TWICE BY HAND and kept in agreement by discipline: the layout
+ * WHY THIS MODULE EXISTS. In this renderer a pass's inputs and outputs used to BE descriptor sets - the
+ * G-buffer set was the interface between the G-buffer pass, the lighting stage, the stochastic lighting chain
+ * and the ray-traced shadow pass; the scene set was the substrate; each pass's private family was its own I/O.
+ * That interface used to be written TWICE BY HAND and kept in agreement by discipline: the layout
  * in `vulkan/pipelines`, the descriptor writes in `vulkan/runtime`'s `ensure_*_descriptors()`. Both drifts
  * that pair can have are already in this project's history, and both were found by the validation layer
  * rather than by review: a pool sized for four descriptors per set while the layout asked for five, and a
- * binding whose type changed without its writer noticing. One declaration, from which both are generated,
- * is what removes the pair.
+ * binding whose type changed without its writer noticing. One declaration, from which both were generated,
+ * is what removed the pair.
  *
  * WHAT IT IS NOT, deliberately rather than unfinished:
  *
@@ -31,17 +31,18 @@
  *    which imports Vulkan the way the pipeline builders already do.
  *
  * THE RULE THAT KEEPS THE TWO HALVES FROM DRIFTING: the SCHEMA owns what a resource IS (kind, scope,
- * lifetime, how many images the family holds); a PASS owns what it DOES with one (which set and binding,
+ * lifetime, how many images the family holds); a PASS owns what it DOES with one (which binding,
  * read or write, which sampler, which stage). The only token they share is `resource_id`. A pass that
  * restates a resource's kind or scope would be a second copy of a fact - exactly the drift this module
  * exists to remove.
  *
- * OWN SETS VERSUS SHARED ONES, which the first real declaration made unavoidable: a pass with a private
- * family still binds the shared scene's resources (a probe cell's ray needs the top level structure, the material
- * table and the texture array to resolve and shade what it finds). Such a binding is declared here as USAGE -
- * which resource, which access - and `set_owner` says whose set it was; the declaration is the whole of what is
- * left of that vocabulary, because every stage is heap-native now and reaches those resources through the frame's
- * descriptor heap rather than through a set (see vulkan/core/descriptor_heap).
+ * OWN BINDINGS VERSUS SHARED ONES, which the first real declaration made unavoidable: a pass with a private
+ * family still reaches the frame's shared resources (a probe cell's ray needs the top level structure, the
+ * material table and the texture array to resolve and shade what it finds). Such a binding is declared here as
+ * USAGE - which resource, which access - and `binding_owner` says whether it is the pass's own per-image
+ * binding or something the frame's heap provides; the declaration is the whole of what is left of that
+ * vocabulary, because every stage is heap-native now and reaches those resources through the frame's descriptor
+ * heap rather than through a set (see vulkan/core/descriptor_heap).
  */
 
 module;
@@ -135,7 +136,7 @@ export namespace vulkan::render_resource {
      * is handed the frame slot; one that uses a `per_swapchain_image` resource is handed the image index.
      */
     enum class resource_scope : uint8_t {
-        per_frame_slot,      // shadow maps, the light/camera/material/instance buffers, the scene sets
+        per_frame_slot,      // shadow maps, the light/camera/material/instance buffers, the cluster buffers
         per_swapchain_image, // every GI image, the TAA history, the G-buffer, the HDR chain
         device_wide,         // the probe grid and its geometry, the furnace cube, the IBL cubes
     };
@@ -170,7 +171,7 @@ export namespace vulkan::render_resource {
      * `831-844`, one per FRAME SLOT rather than per image; the shadow map is the one family `vulkan.runtime`
      * creates itself (`runtime.cpp:495-560`, layered, one image per slot); the scene buffers and the IBL
      * textures are `vulkan.runtime`'s (`runtime.cpp:148-231`, `163-166`); the top level structure belongs to
-     * `vulkan.acceleration_structure` and reaches shaders through the scene set.
+     * `vulkan.acceleration_structure` and reaches shaders through the frame's heap.
      *
      * WHAT AN ENTRY DOES NOT SAY YET, on purpose: its format and its extent. Those are needed by the CREATION
      * step, not by the invariants checkable today, and a format copied here before it is verified against
@@ -285,20 +286,20 @@ export namespace vulkan::render_resource {
     };
 
     /**
-     * @brief who owns the SET a binding lives in
+     * @brief where a binding's resource comes from: the pass's own per-image binding, or the frame's heap
      *
-     * `own` is the pass's private family, whose layout it declares in full. The other three name shared sets
-     * whose layouts and descriptor counts belong to their owners - a pass declares only that it uses such a
-     * binding, and cannot change it.
+     * `own` marks one of the pass's private per-image bindings: the resolver indexes those by `binding`, and
+     * the validator requires them to be numbered contiguously from zero. `shared` marks a binding the pass
+     * reaches through the frame's descriptor heap - the scene's camera and material table, the G-buffer
+     * surface, the post chain's images - whose descriptors some other stage publishes; a pass declares only
+     * that it USES such a binding, and cannot change it.
      */
-    enum class set_owner : uint8_t {
+    enum class binding_owner : uint8_t {
         own,
-        scene,
-        gbuffer,
-        post,
+        shared,
     };
 
-    /// @brief shader stages as bits, so a binding can list more than one (the shared sets serve two)
+    /// @brief shader stages as bits, so a binding can list more than one (the shared resources serve two)
     enum class stage_flag : uint8_t {
         none = 0u,
         vertex = 1u << 0u,
@@ -363,19 +364,17 @@ export namespace vulkan::render_resource {
         return "?";
     }
 
-    /// @brief one binding: one use. Everything the layout, the write and the pool count need is here.
+    /// @brief one binding: one use. Everything the descriptor and the heap write need is here.
     /// @ingroup vulkan_render_resource
     struct pass_binding {
-        uint32_t set = 0;
         uint32_t binding = 0;
-        set_owner owner = set_owner::own;
+        binding_owner owner = binding_owner::own;
         binding_kind kind = binding_kind::sampled_image;
         resource_id resource = resource_id::none;
         /// which image of the resource FAMILY this binding names (0 for a single-image resource)
         uint16_t element = 0;
-        /// how many descriptors this binding declares: 1, or the capacity of a bindless array. This is the
-        /// number that must equal the layout's count - the one that was wrong once - and it is meaningful for
-        /// an OWN set only: a shared set's counts belong to that set's owner.
+        /// how many descriptors this binding declares: 1, or the capacity of a bindless array. The validator
+        /// refuses zero, so a binding that claims no descriptor cannot pass silently.
         uint16_t descriptor_count = 1;
         binding_access access = binding_access::read;
         sampler_hint sampler = sampler_hint::none;
@@ -457,8 +456,9 @@ export namespace vulkan::render_resource {
      * @brief a BUFFER a pass orders around but never binds itself - the buffer twin of `barrier_image`
      *
      * WHY THIS EXISTS, and it is a measured need rather than symmetry for its own sake: the clustered-light
-     * sort (`vulkan.pass.cluster`) writes two buffers that live in the SHARED scene set (bindings 11 and 12).
-     * The pass binds the whole set, as it must, so its declaration names no binding for either buffer - and yet
+     * sort (`vulkan.pass.cluster`) writes two buffers that are part of the frame's shared scene resources
+     * (bindings 11 and 12). The pass reaches them through the heap, so its declaration names no binding for
+     * either buffer - and yet
      * its writes are not visible to the fragment stages that read them later in the same submission without a
      * buffer memory barrier, which only the writer can place. Before this field the renderer kept the whole
      * recording for exactly that reason: a pass could declare an IMAGE it moves and had no way to name a BUFFER
@@ -476,50 +476,16 @@ export namespace vulkan::render_resource {
     };
 
     /**
-     * @brief one SHARED set a pass binds: the set FAMILY, and which element of that family
-     *
-     * WHY AN ELEMENT AND NOT JUST AN INDEX, measured rather than anticipated: the post chain binds ONE family
-     * whose five sets were one per STAGE - the four bloom levels and the composite/FXAA pair - so "set 2" does not
-     * say which of them a pass binds, and six declarations could not be resolved from their own text because of
-     * it. The FAMILY is the index the declaration vocabulary uses (0 the scene set, 1 the G-buffer set, 2
-     * the post set in this renderer), and the ELEMENT selects within it: 0 for a family that holds one set, and
-     * the stage's own index in a family that holds several. The sets themselves are gone (every stage reads the
-     * heap), so what survives is the DECLARATION's way of naming which family a binding belongs to.
-     */
-    struct shared_set {
-        uint16_t family = 0;
-        uint16_t element = 0;
-        [[nodiscard]] constexpr bool operator==(shared_set const&) const noexcept = default;
-    };
-
-    /**
      * @brief one pass's declared I/O
      *
-     * `own_set` is the set index of the `set_owner::own` bindings; the validator requires every `own` binding
-     * to live in that set and to be numbered contiguously from zero, because those are the ones the pass's
-     * own descriptor set layout is generated from.
+     * `bindings` carries both kinds: the `binding_owner::own` entries are the pass's private per-image
+     * bindings, which the validator requires to be numbered contiguously from zero, and the
+     * `binding_owner::shared` entries are declared USAGE of resources the frame's heap provides.
      * @ingroup vulkan_render_resource
      */
     struct pass_io {
         std::string_view name = {};
-        uint32_t own_set = 1;
         std::span<pass_binding const> bindings = {};
-        /**
-         * The SHARED sets this pass binds, BY INDEX - the sets it does not own and must not describe.
-         *
-         * WHY THIS IS SEPARATE FROM `bindings`, and the reason is a measured one rather than a stylistic
-         * preference: a pass that binds a whole set it does not own cannot enumerate that set's bindings
-         * without copying a fact its OWNER owns. The G-buffer set is the case that proved it - it carries the
-         * the stochastic chain's images, the post chain's depth and
-         * normal, and the scene pass that binds it reads exactly one of those. A declaration that listed them
-         * would be the drift this module exists to remove, in the one place where nothing can be GENERATED
-         * from it (this pass builds no layout from that set; its owner does).
-         *
-         * The index is what a pipeline layout needs (the sets are bound in order), and a pass that binds only
-         * such a set declares it here and declares no `own` binding at all - which is what the scene pass
-         * does: it writes attachments and binds the shared scene set.
-         */
-        std::span<shared_set const> shared_sets = {};
         /// the images this pass renders into, in the order it uses them (a fullscreen pass has one)
         std::span<render_target const> targets = {};
         /**
@@ -616,14 +582,13 @@ export namespace vulkan::render_resource {
      * binding kind fits the resource kind (a `sampler3D` cannot be declared as a 2D image; an acceleration
      * structure is not a buffer); the access fits the kind (a sampled image cannot be written); `element` is
      * inside the family; `descriptor_count` is at least one; a sampled image names a sampler and nothing else
-     * does; no two bindings share a (set, binding) pair, which would silently lose one of them in the layout;
-     * and the pass's OWN bindings are exactly the set `own_set`, numbered contiguously from zero. A render
-     * TARGET gets the same two checks a binding gets - the schema declares the resource, and the element is
-     * inside its family - plus uniqueness, because two targets naming one image would be a pass rendering into
-     * itself twice. A target that claims a RUN of elements (`render_target::count`) is checked as the run it
-     * is: the last element has to be inside the family, and two runs of one resource may not overlap. And a
-     * declaration that binds a SHARED set has to NAME one, - the rule a declaration's missing
-     * `shared_sets` entry taught this function (a null descriptor set at bind time).
+     * does; no two bindings share a binding number, which would silently lose one of them; and the pass's OWN
+     * bindings are numbered contiguously from zero, because those are the ones the resolver indexes by binding
+     * number. A render TARGET gets the same two checks a binding gets - the schema declares the resource, and
+     * the element is inside its family - plus uniqueness, because two targets naming one image would be a pass
+     * rendering into itself twice. A target that claims a RUN of elements (`render_target::count`) is checked
+     * as the run it is: the last element has to be inside the family, and two runs of one resource may not
+     * overlap.
      * @ingroup vulkan_render_resource
      */
     [[nodiscard]] inline std::expected<void, std::string> validate(pass_io const& io) {
@@ -711,7 +676,7 @@ export namespace vulkan::render_resource {
             }
         }
         for (pass_binding const& b : io.bindings) {
-            std::string const where = who + ": set " + std::to_string(b.set) + " binding " + std::to_string(b.binding);
+            std::string const where = who + ": binding " + std::to_string(b.binding);
             resource_info const* const info = find(b.resource);
             if (info == nullptr) {
                 return std::unexpected(where + " names a resource the schema does not declare");
@@ -739,16 +704,13 @@ export namespace vulkan::render_resource {
                 return std::unexpected(where + " must name a sampler exactly when it is a sampled image");
             }
             for (pass_binding const& other : io.bindings) {
-                if (&other != &b && other.set == b.set && other.binding == b.binding) {
+                if (&other != &b && other.binding == b.binding) {
                     return std::unexpected(where + " is declared twice");
                 }
             }
-            if (b.owner == set_owner::own) {
-                if (b.set != io.own_set) {
-                    return std::unexpected(where + " is an own binding outside the pass's own set");
-                }
+            if (b.owner == binding_owner::own) {
                 if (b.binding != own_count) {
-                    return std::unexpected(who + ": the pass's own bindings are not contiguous from zero (expected " +
+                    return std::unexpected(who + ": the pass's own bindings are not numbered contiguously from zero (expected " +
                                            std::to_string(own_count) + ", found " + std::to_string(b.binding) + ")");
                 }
                 ++own_count;
@@ -759,82 +721,7 @@ export namespace vulkan::render_resource {
                 return std::unexpected(who + ": the push block does not fit the 128-byte guaranteed minimum in 4-byte units");
             }
         }
-        // THE SHARED SETS, checked after the bindings are counted: a set cannot be both the pass's own (whose
-        // layout it generates and whose bindings it describes) and one it merely binds.
-        //
-        // ... AND A DECLARATION THAT BINDS A SHARED SET HAS TO DECLARE IT. This rule was ADDED because a pass got
-        // it wrong in the one way nothing caught: a declaration's scene-owned bindings give its pipeline
-        // layout a set 0, but its declaration listed no shared set at all - so the framework had nothing to
-        // resolve for set 0, the pass bound a NULL descriptor set, and the only scenario that runs the cache
-        // reported `pDBindDescriptorSets(): pDescriptorSets[0] (VkDescriptorSet 0x0) is not a valid
-        // VkDescriptorSet`. The bindings describe the LAYOUT; `shared_sets` is what tells the framework which sets
-        // the owner has to FILL, and only the declaration can say that.
-        std::size_t const non_own_bindings = static_cast<std::size_t>(std::count_if(io.bindings.begin(), io.bindings.end(), [](pass_binding const& b) { return b.owner != set_owner::own; }));
-        if (non_own_bindings > 0 && io.shared_sets.empty()) {
-            return std::unexpected(who + ": " + std::to_string(non_own_bindings) + " of its bindings belong to a SHARED set, and the declaration names none - the framework would resolve nothing for them");
-        }
-        for (std::size_t i = 0; i < io.shared_sets.size(); ++i) {
-            shared_set const set = io.shared_sets[i];
-            if (own_count != 0 && set.family == io.own_set) {
-                return std::unexpected(who + ": set " + std::to_string(set.family) + " is declared as both its own and a shared set");
-            }
-            for (std::size_t j = i + 1; j < io.shared_sets.size(); ++j) {
-                if (io.shared_sets[j] == set) {
-                    return std::unexpected(who + ": shared set " + std::to_string(set.family) + " element " + std::to_string(set.element) + " is declared twice");
-                }
-            }
-        }
         return {};
-    }
-
-    /** @brief the number of descriptors of each kind one set declares - what a pool must be sized from */
-    struct descriptor_counts {
-        uint32_t sampled_image = 0;
-        uint32_t storage_image = 0;
-        uint32_t sampler = 0;
-        uint32_t uniform_buffer = 0;
-        uint32_t storage_buffer = 0;
-        uint32_t input_attachment = 0;
-        uint32_t acceleration_structure = 0;
-
-        [[nodiscard]] constexpr uint32_t total() const noexcept {
-            return sampled_image + storage_image + sampler + uniform_buffer + storage_buffer + input_attachment + acceleration_structure;
-        }
-    };
-
-    /// @brief count the descriptors one SET of a declaration needs, per kind
-    /// @ingroup vulkan_render_resource
-    [[nodiscard]] constexpr descriptor_counts descriptor_counts_for(pass_io const& io, uint32_t const set) noexcept {
-        descriptor_counts counts;
-        for (pass_binding const& b : io.bindings) {
-            if (b.set != set) {
-                continue;
-            }
-            switch (b.kind) {
-            case binding_kind::sampled_image:
-                counts.sampled_image += b.descriptor_count;
-                break;
-            case binding_kind::storage_image:
-                counts.storage_image += b.descriptor_count;
-                break;
-            case binding_kind::sampler:
-                counts.sampler += b.descriptor_count;
-                break;
-            case binding_kind::uniform_buffer:
-                counts.uniform_buffer += b.descriptor_count;
-                break;
-            case binding_kind::storage_buffer:
-                counts.storage_buffer += b.descriptor_count;
-                break;
-            case binding_kind::input_attachment:
-                counts.input_attachment += b.descriptor_count;
-                break;
-            case binding_kind::acceleration_structure:
-                counts.acceleration_structure += b.descriptor_count;
-                break;
-            }
-        }
-        return counts;
     }
 
     // =============================================================================================
@@ -848,19 +735,19 @@ export namespace vulkan::render_resource {
     /**
      * @brief the temporal resolve's I/O, as its shader declares it
      *
-     * This is the first declaration whose bindings live in set 0 with no shared set beside them: the four
-     * inputs (this frame's colour, the reprojected history, the motion vectors and the depth the
-     * disocclusion guard reads) are all per-swapchain-image and all this pass's. `stages` is FRAGMENT and has
-     * to be said: the generated layout's stage flags come from the declaration, and a resolve whose bindings
-     * were declared COMPUTE would be a layout the fragment stage cannot see - which is the drift this
-     * generator exists to make impossible, now in the other direction (the field is easy to forget when every
+     * This is the first declaration whose bindings are all the pass's own and all per swapchain image, with
+     * nothing shared beside them: the four inputs (this frame's colour, the reprojected history, the motion
+     * vectors and the depth the disocclusion guard reads) are all this pass's. `stages` is FRAGMENT and has
+     * to be said: the resolved stage flags come from the declaration, and a resolve whose bindings
+     * were declared COMPUTE would be a binding the fragment stage cannot see - which is the drift this
+     * declaration exists to make impossible, now in the other direction (the field is easy to forget when every
      * other declaration so far was a compute pass).
      */
     inline constexpr std::array<pass_binding, 4> taa_bindings = {{
-        {.set = 0, .binding = 0, .owner = set_owner::own, .kind = binding_kind::sampled_image, .resource = resource_id::scene_color, .access = binding_access::read, .sampler = sampler_hint::taa, .layout = image_layout::sampled, .stages = stage_flag::fragment},
-        {.set = 0, .binding = 1, .owner = set_owner::own, .kind = binding_kind::sampled_image, .resource = resource_id::taa_history, .access = binding_access::read, .sampler = sampler_hint::taa, .layout = image_layout::sampled, .stages = stage_flag::fragment},
-        {.set = 0, .binding = 2, .owner = set_owner::own, .kind = binding_kind::sampled_image, .resource = resource_id::velocity, .access = binding_access::read, .sampler = sampler_hint::taa, .layout = image_layout::sampled, .stages = stage_flag::fragment},
-        {.set = 0, .binding = 3, .owner = set_owner::own, .kind = binding_kind::sampled_image, .resource = resource_id::gbuffer_depth, .access = binding_access::read, .sampler = sampler_hint::taa, .layout = image_layout::sampled, .stages = stage_flag::fragment},
+        {.binding = 0, .owner = binding_owner::own, .kind = binding_kind::sampled_image, .resource = resource_id::scene_color, .access = binding_access::read, .sampler = sampler_hint::taa, .layout = image_layout::sampled, .stages = stage_flag::fragment},
+        {.binding = 1, .owner = binding_owner::own, .kind = binding_kind::sampled_image, .resource = resource_id::taa_history, .access = binding_access::read, .sampler = sampler_hint::taa, .layout = image_layout::sampled, .stages = stage_flag::fragment},
+        {.binding = 2, .owner = binding_owner::own, .kind = binding_kind::sampled_image, .resource = resource_id::velocity, .access = binding_access::read, .sampler = sampler_hint::taa, .layout = image_layout::sampled, .stages = stage_flag::fragment},
+        {.binding = 3, .owner = binding_owner::own, .kind = binding_kind::sampled_image, .resource = resource_id::gbuffer_depth, .access = binding_access::read, .sampler = sampler_hint::taa, .layout = image_layout::sampled, .stages = stage_flag::fragment},
     }};
 
     /// @brief the resolve RENDERS INTO the frame's HDR target, which is why it needs a target and not a binding
@@ -871,7 +758,6 @@ export namespace vulkan::render_resource {
     /// @ingroup vulkan_render_resource
     inline constexpr pass_io taa_io = {
         .name = "taa",
-        .own_set = 0,
         .bindings = taa_bindings,
         .targets = taa_targets,
         // eight floats: the history flag, the two blend weights, the texel size, and the projection's two
@@ -880,18 +766,17 @@ export namespace vulkan::render_resource {
     };
 
     // =============================================================================================
-    // 6. THE THIRD DECLARATION - the scene pass, which binds a whole set it does not own
+    // 6. THE THIRD DECLARATION - the scene pass, which owns no binding at all
     // =============================================================================================
 
     /**
-     * @brief the scene pass's I/O: five colour attachments, one depth attachment, and the shared scene set
+     * @brief the scene pass's I/O: five colour attachments, one depth attachment, and no binding of its own
      *
      * THIS IS THE FIRST DECLARATION WITH NO OWN BINDINGS AT ALL, and that is what the pass IS: it draws the
      * scene's primitives into the frame's surface targets. The material table, the texture array, the camera
-     * and light UBOs, the shadow map, the instance table and the top level structure all arrive through the
-     * SHARED scene set (set 0), whose layout and contents its owner decides - so this declaration names the SET
-     * and not its bindings (see `pass_io::shared_sets` for why that is the honest statement rather than a
-     * shortcut). The pass builds no set layout of its own, which is why `own_set` is unused here.
+     * and light UBOs, the shadow map, the instance table and the top level structure all reach its shaders
+     * through the frame's heap, whose contents its owners publish - so this declaration names no binding for
+     * any of them. Those are `binding_owner::shared` resources the pass only USES, not owns.
      *
      * THE TARGETS ARE THE FRAME'S SURFACE, in the order the rendering instance needs them: the three stored
      * G-buffer targets, the motion-vector target, the scene colour target the lighting stage adds on top of,
@@ -914,16 +799,11 @@ export namespace vulkan::render_resource {
         {.resource = resource_id::gbuffer_depth, .element = 0, .kind = target_kind::depth},
     }};
 
-    /// @brief set 0 is the shared scene set: the scene pass binds it and owns nothing of it
-    inline constexpr std::array<shared_set, 1> scene_shared_sets = {{{.family = 0}}};
-
     /// @brief the scene pass's declaration
     /// @ingroup vulkan_render_resource
     inline constexpr pass_io scene_io = {
         .name = "scene",
-        .own_set = 1, // unused: this pass has no own bindings (see the declaration's note)
         .bindings = {},
-        .shared_sets = scene_shared_sets,
         .targets = scene_targets,
         .push = std::nullopt,
     };
@@ -936,8 +816,8 @@ export namespace vulkan::render_resource {
      * composites over must survive. That decision is the pass's (it opens the instance), which is why the
      * declaration names the images and not the load ops (see render_target).
      *
-     * It binds the shared scene set like the scene pass does - a blended surface reads the same materials, the
-     * same camera and the same shadow map - so it declares the set by index and owns nothing.
+     * It reaches the same shared resources the scene pass does - a blended surface reads the same materials, the
+     * same camera and the same shadow map - so it declares no binding of its own either.
      */
     inline constexpr std::array<render_target, 2> transparent_targets = {{
         {.resource = resource_id::scene_color, .element = 0},
@@ -948,18 +828,14 @@ export namespace vulkan::render_resource {
     /// @ingroup vulkan_render_resource
     inline constexpr pass_io transparent_io = {
         .name = "transparent",
-        .own_set = 1, // unused: this pass has no own bindings either
         .bindings = {},
-        .shared_sets = scene_shared_sets,
         .targets = transparent_targets,
         .push = std::nullopt,
     };
 
     // =============================================================================================
-    // 6. THE SHARED SET PAIRS - the set indices a pass may bind without owning them
+    // 7. THE SHARED RESOURCES - what a full-screen compute pass reaches without owning a binding
     // =============================================================================================
-    /// @brief the shared scene set (0) and the shared G-buffer set (1), the pair a full-screen compute pass binds
-    inline constexpr std::array<shared_set, 2> scene_and_gbuffer_shared_sets = {{{.family = 0}, {.family = 1}}};
 
     /**
      * @brief the image the stochastic punctual lighting pass rewrites, and the only resource it names
@@ -977,18 +853,16 @@ export namespace vulkan::render_resource {
     /**
      * @brief the stochastic punctual lighting pass's declaration: a half-resolution compute dispatch
      *
-     * Two shared sets, no own binding, one image named through
-     * `barrier_images` - because its inputs (the camera, the light UBO, the cluster lists, the G-buffer
-     * surface) and its output (a half-resolution storage image) are all reached through those two sets.
+     * No own binding, one image named through `barrier_images` - because its inputs (the camera, the light UBO,
+     * the cluster lists, the G-buffer surface) and its output (a half-resolution storage image) all reach its
+     * shaders through the frame's heap.
      *
      * The push block is 96 bytes: the camera's inverse view-projection, the estimator's parameters (samples
      * per pixel, the minimum sample weight, the ray tmin, the frame counter) and the two origin-bias terms.
      */
     inline constexpr pass_io megalights_trace_io = {
         .name = "megalights_trace",
-        .own_set = 2, // unused: no own bindings (everything it reads and writes is in the shared sets)
         .bindings = {},
-        .shared_sets = scene_and_gbuffer_shared_sets, // the scene set (0) and the G-buffer set (1), the pair every full-screen compute pass binds
         .targets = {},
         .barrier_images = megalights_trace_barriers,
         .push = push_block{.offset = 0, .size = 96, .stages = stage_flag::compute},
@@ -999,9 +873,9 @@ export namespace vulkan::render_resource {
      *
      * FIVE: the three images of the stochastic chain plus the two G-buffer targets the resolve needs - the
      * velocity it reprojects with and the depth it rejects the history against. Those two are sampled as
-     * per-image views like the chain's own, so they ride in the set this pass writes per swapchain image
-     * instead of the frame's shared G-buffer set, and their transitions are this pass's to publish
-     * (`megalights_temporal_barriers` carries all five resources for that reason).
+     * per-image views like the chain's own, so they are OWN bindings of this pass rather than shared heap
+     * resources, and their transitions are this pass's to publish (`megalights_temporal_barriers` carries all
+     * five resources for that reason).
      *
      *   0: `ml_trace`   this frame's raw estimate (the temporal pass's input)
      *   1: `ml_history` last frame's accumulation, radiance in rgb and the frame count in alpha
@@ -1010,11 +884,11 @@ export namespace vulkan::render_resource {
      *   4: `ml_resolve` the accumulation this dispatch WRITES (a storage image)
      */
     inline constexpr std::array<pass_binding, 5> megalights_temporal_bindings = {{
-        {.set = 0, .binding = 0, .owner = set_owner::own, .kind = binding_kind::sampled_image, .resource = resource_id::ml_trace, .access = binding_access::read, .sampler = sampler_hint::gbuffer},
-        {.set = 0, .binding = 1, .owner = set_owner::own, .kind = binding_kind::sampled_image, .resource = resource_id::ml_history, .access = binding_access::read, .sampler = sampler_hint::gbuffer},
-        {.set = 0, .binding = 2, .owner = set_owner::own, .kind = binding_kind::sampled_image, .resource = resource_id::velocity, .access = binding_access::read, .sampler = sampler_hint::gbuffer},
-        {.set = 0, .binding = 3, .owner = set_owner::own, .kind = binding_kind::sampled_image, .resource = resource_id::gbuffer_depth, .access = binding_access::read, .sampler = sampler_hint::gbuffer},
-        {.set = 0, .binding = 4, .owner = set_owner::own, .kind = binding_kind::storage_image, .resource = resource_id::ml_resolve, .access = binding_access::write, .layout = image_layout::general},
+        {.binding = 0, .owner = binding_owner::own, .kind = binding_kind::sampled_image, .resource = resource_id::ml_trace, .access = binding_access::read, .sampler = sampler_hint::gbuffer},
+        {.binding = 1, .owner = binding_owner::own, .kind = binding_kind::sampled_image, .resource = resource_id::ml_history, .access = binding_access::read, .sampler = sampler_hint::gbuffer},
+        {.binding = 2, .owner = binding_owner::own, .kind = binding_kind::sampled_image, .resource = resource_id::velocity, .access = binding_access::read, .sampler = sampler_hint::gbuffer},
+        {.binding = 3, .owner = binding_owner::own, .kind = binding_kind::sampled_image, .resource = resource_id::gbuffer_depth, .access = binding_access::read, .sampler = sampler_hint::gbuffer},
+        {.binding = 4, .owner = binding_owner::own, .kind = binding_kind::storage_image, .resource = resource_id::ml_resolve, .access = binding_access::write, .layout = image_layout::general},
     }};
 
     /// @brief the images the temporal resolve moves, in the order its record() indexes them
@@ -1029,17 +903,15 @@ export namespace vulkan::render_resource {
     }};
 
     /**
-     * @brief the temporal resolve's declaration: a half-resolution compute dispatch over its own set
+     * @brief the temporal resolve's declaration: a half-resolution compute dispatch over its own bindings
      *
-     * ONE set, index 0, and NO shared sets: the five bindings above are everything its shader declares, so
-     * there is no second set to hand over and nothing for the frame to publish on its behalf. Its push block
-     * is the projection's linearization pair, the three accumulation bounds and the extents.
+     * The five bindings above are everything its shader declares, so it declares nothing shared and has
+     * nothing for the frame to publish on its behalf. Its push block is the projection's linearization pair,
+     * the three accumulation bounds and the extents.
      */
     inline constexpr pass_io megalights_temporal_io = {
         .name = "megalights_temporal",
-        .own_set = 0,
         .bindings = megalights_temporal_bindings,
-        .shared_sets = {},
         .targets = {},
         .barrier_images = megalights_temporal_barriers,
         .push = push_block{.offset = 0, .size = 32, .stages = stage_flag::compute},
@@ -1059,18 +931,17 @@ export namespace vulkan::render_resource {
     }};
 
     /**
-     * @brief the ray-traced sun shadow pass's declaration: a full-resolution compute dispatch over two shared sets
+     * @brief the ray-traced sun shadow pass's declaration: a full-resolution compute dispatch, sharing everything
      *
-     * The traced-compute shape, with the frame's resolution instead of half: it binds the shared scene set
-     * (the camera, the light UBO, the top level structure at binding 16) and the shared G-buffer set (the surface
-     * each ray starts from), owns no descriptor at all, and names the one image it rewrites through
-     * `barrier_images`. Its push block is the camera's inverse view-projection and four ray-offset terms.
+     * The traced-compute shape, with the frame's resolution instead of half: its shaders reach the frame's
+     * shared resources (the camera, the light UBO, the top level structure at binding 16, the G-buffer surface
+     * each ray starts from) through the heap, it owns no descriptor at all, and it names the one image it
+     * rewrites through `barrier_images`. Its push block is the camera's inverse view-projection and four
+     * ray-offset terms.
      */
     inline constexpr pass_io rt_shadow_io = {
         .name = "rt_shadow",
-        .own_set = 2, // unused: no own bindings (everything it reads is in the shared sets)
         .bindings = {},
-        .shared_sets = scene_and_gbuffer_shared_sets, // the same two: the scene set (0) and the G-buffer set (1)
         .targets = {},
         .barrier_images = rt_shadow_barriers,
         .push = push_block{.offset = 0, .size = 80, .stages = stage_flag::compute},
@@ -1079,11 +950,12 @@ export namespace vulkan::render_resource {
     /**
      * @brief the two buffers the clustered-light sort writes, and the ONLY resources it has to name
      *
-     * They are bindings 11 and 12 of the SHARED scene set - so this pass binds them as part of that set and
-     * declares no binding of its own - but a pass's writes are not visible to the fragment stages reading them
-     * later in the same submission without a BUFFER memory barrier, and only the writer can place it. That is
-     * what `pass_io::barrier_buffers` exists for (see `barrier_buffer`), and this declaration is why the field
-     * was added: before it, a pass could name an image it moves and had no way to name a buffer it moves.
+     * They are bindings 11 and 12 of the frame's shared scene resources - so this pass reaches them through the
+     * heap and declares no binding of its own - but a pass's writes are not visible to the fragment stages
+     * reading them later in the same submission without a BUFFER memory barrier, and only the writer can place
+     * it. That is what `pass_io::barrier_buffers` exists for (see `barrier_buffer`), and this declaration is why
+     * the field was added: before it, a pass could name an image it moves and had no way to name a buffer it
+     * moves.
      *
      * Both are per FRAME SLOT (the slot's count and index arrays), which the host resolves from the frame.
      */
@@ -1092,31 +964,23 @@ export namespace vulkan::render_resource {
         {.resource = resource_id::cluster_indices, .element = 0},
     }};
 
-    /// @brief set 0 is the shared scene set: the camera, the light UBO and the two cluster buffers it writes
-    inline constexpr std::array<shared_set, 1> cluster_shared_sets = {{{.family = 0}}};
-
     /**
      * @brief the clustered-light sort's declaration: a one-dimensional compute dispatch over the cluster grid
      *
      * It has no push block at all (the shader reads the light UBO and writes the cluster buffers through the
-     * scene set's own bindings), no own binding, no target and no image to transition - the whole declaration is
-     * "the shared scene set, and the two buffers I write". Its dispatch size is neither the frame's nor half of
+     * frame's shared resources), no own binding, no target and no image to transition - the whole declaration is
+     * "the two buffers I write". Its dispatch size is neither the frame's nor half of
      * it: it is `tiles_x * tiles_y * slices`, which is why its behaviour declares `extent_rule::none` and the
      * host hands the count over in the pass's frame instead.
      */
     inline constexpr pass_io cluster_io = {
         .name = "cluster",
-        .own_set = 1, // unused: no own bindings
         .bindings = {},
-        .shared_sets = cluster_shared_sets,
         .targets = {},
         .barrier_images = {},
         .barrier_buffers = cluster_barriers,
         .push = std::nullopt,
     };
-
-    /// @brief the deferred lighting stage's two shared sets: the scene set (0) and the G-buffer set (1)
-    inline constexpr std::array<shared_set, 2> deferred_shared_sets = {{{.family = 0}, {.family = 1}}};
 
     /// @brief the resource the deferred lighting stage RENDERS INTO, by declaration
     inline constexpr std::array<render_target, 1> deferred_targets = {{
@@ -1126,8 +990,8 @@ export namespace vulkan::render_resource {
     /**
      * @brief the deferred lighting stage's declaration: a fullscreen triangle that shades every pixel
      *
-     * Every binding it uses belongs to one of its TWO SHARED SETS (the scene set: the camera, the IBL, the light
-     * UBO, the shadow map; the G-buffer set: the three surface targets, the depth, the velocity), so it declares
+     * Every binding it uses is one of the frame's SHARED resources (the scene's camera, IBL, light
+     * UBO and shadow map; the G-buffer's three surface targets, depth and velocity), so it declares
      * no binding of its own - the shape a traced compute pass has, with one render target
      * instead of a compute dispatch.
      *
@@ -1143,9 +1007,7 @@ export namespace vulkan::render_resource {
      */
     inline constexpr pass_io deferred_io = {
         .name = "deferred",
-        .own_set = 2, // unused: no own bindings (every binding it uses lives in the two shared sets)
         .bindings = {},
-        .shared_sets = deferred_shared_sets,
         .targets = deferred_targets,
         .barrier_images = {},
         .barrier_buffers = {},
@@ -1156,27 +1018,14 @@ export namespace vulkan::render_resource {
     // THE POST CHAIN - the composite and the bloom chain's four levels
     // =============================================================================================
 
-    /// @brief the POST set the composite writes the LDR image through and FXAA reads it back from: family 2, its
-    ///        fifth set (element 4) - the one stage whose set is not a bloom level
-    inline constexpr std::array<shared_set, 1> post_composite_shared_sets = {{{.family = 2, .element = 4}}};
-
-    /// @brief each bloom level's OWN set of the post family: element == level (the set that reads the level before it)
-    inline constexpr std::array<std::array<shared_set, 1>, 4> post_bloom_shared_sets = {{
-        {{shared_set{.family = 2, .element = 0}}},
-        {{shared_set{.family = 2, .element = 1}}},
-        {{shared_set{.family = 2, .element = 2}}},
-        {{shared_set{.family = 2, .element = 3}}},
-    }};
-
     /// @brief the push block the whole post chain shares, in bytes; its shape is `vulkan.pass.post`'s
     inline constexpr uint32_t post_push_bytes = 28;
 
     /**
      * @brief the bloom chain's four levels, as ONE declaration per level
      *
-     * WHY FOUR DECLARATIONS AND NOT ONE PARAMETERIZED PASS: the framework hands a pass ONE descriptor set per
-     * shared owner (`resolved_io::shared`), and each of the four stages binds a DIFFERENT one of the post family's
-     * five sets (set `level` reads level `level - 1` as its input), so the LEVEL is the pass boundary. Each entry
+     * WHY FOUR DECLARATIONS AND NOT ONE PARAMETERIZED PASS: each of the four stages renders into a DIFFERENT
+     * element of the bloom family and reads the level before it, so the LEVEL is the pass boundary. Each entry
      * here is one pass's whole I/O:
      *
      *  * `targets` is the level it writes (element `level` of the `bloom` family, which the schema declares with
@@ -1205,33 +1054,25 @@ export namespace vulkan::render_resource {
 
     inline constexpr std::array<pass_io, 4> post_bloom_io = {{
         {.name = "post_bloom_0",
-         .own_set = 0, // unused: no own bindings (everything it reads is in the post set)
          .bindings = {},
-         .shared_sets = post_bloom_shared_sets[0],
          .targets = post_bloom_0_target,
          .barrier_images = {},
          .barrier_buffers = {},
          .push = push_block{.offset = 0, .size = post_push_bytes, .stages = stage_flag::fragment}},
         {.name = "post_bloom_1",
-         .own_set = 0,
          .bindings = {},
-         .shared_sets = post_bloom_shared_sets[1],
          .targets = post_bloom_1_target,
          .barrier_images = post_bloom_1_source,
          .barrier_buffers = {},
          .push = push_block{.offset = 0, .size = post_push_bytes, .stages = stage_flag::fragment}},
         {.name = "post_bloom_2",
-         .own_set = 0,
          .bindings = {},
-         .shared_sets = post_bloom_shared_sets[2],
          .targets = post_bloom_2_target,
          .barrier_images = post_bloom_2_source,
          .barrier_buffers = {},
          .push = push_block{.offset = 0, .size = post_push_bytes, .stages = stage_flag::fragment}},
         {.name = "post_bloom_3",
-         .own_set = 0,
          .bindings = {},
-         .shared_sets = post_bloom_shared_sets[3],
          .targets = post_bloom_3_target,
          .barrier_images = post_bloom_3_source,
          .barrier_buffers = {},
@@ -1257,9 +1098,7 @@ export namespace vulkan::render_resource {
      */
     inline constexpr pass_io post_composite_io = {
         .name = "post_composite",
-        .own_set = 0, // unused: no own bindings (everything it reads is in the post set)
         .bindings = {},
-        .shared_sets = post_composite_shared_sets,
         .targets = post_composite_targets,
         .barrier_images = {},
         .barrier_buffers = {},
@@ -1275,8 +1114,8 @@ export namespace vulkan::render_resource {
     /**
      * @brief the FXAA pass's declaration: the gamma-encoded LDR image -> the anti-aliased swapchain
      *
-     * It binds the SAME shared post set the composite does (set 4 of the family - the composite writes the LDR
-     * image through binding 5 and FXAA reads it back through it, which is why FXAA cannot be folded into
+     * It reads the SAME shared post resources the composite writes (the composite writes the LDR image through
+     * binding 5 and FXAA reads it back through it, which is why FXAA cannot be folded into
      * `post.frag`: a descriptor may not name the image the pipeline is rendering into, and that would be a
      * different statically-used binding set).
      *
@@ -1288,18 +1127,12 @@ export namespace vulkan::render_resource {
      */
     inline constexpr pass_io fxaa_io = {
         .name = "fxaa",
-        .own_set = 0, // unused: no own bindings (everything it reads is in the post set)
         .bindings = {},
-        .shared_sets = post_composite_shared_sets,
         .targets = fxaa_targets,
         .barrier_images = fxaa_barriers,
         .barrier_buffers = {},
         .push = push_block{.offset = 0, .size = post_push_bytes, .stages = stage_flag::fragment},
     };
-
-    /// @brief set 1 is the shared G-buffer set, whose LAYOUT the debug view's pass owns (it is the one that
-    ///        generates it) and whose per-image SETS the renderer writes (six consumers bind them)
-    inline constexpr std::array<shared_set, 1> gbuffer_debug_shared_sets = {{{.family = 1}}};
 
     /// @brief what the debug view RENDERS INTO: the HDR target, which is the image it actually writes - so unlike
     ///        the deferred stage's and the composite's, this declaration carries no deviation
@@ -1314,29 +1147,24 @@ export namespace vulkan::render_resource {
     /**
      * @brief the G-buffer debug view's declaration: the stored surface, one channel at a time, into the HDR target
      *
-     * Everything it READS is in the shared G-buffer set (the three targets, the depth, the velocity), so it declares
-     * no binding of its own - and the DEPTH is deliberately not among its barrier images: its old layout depends on
-     * whether the G-buffer instance rendered this frame, which is shared per-image bookkeeping the host owns (the
-     * same hand-back the deferred stage's frame carries as a callback). The velocity target IS declared, because the
-     * debug view runs INSTEAD of the lighting stage and is therefore the only stage that hands it to a sampler on
-     * those frames.
+     * Everything it READS is one of the frame's shared G-buffer resources (the three targets, the depth, the
+     * velocity), so it declares no binding of its own - and the DEPTH is deliberately not among its barrier
+     * images: its old layout depends on whether the G-buffer instance rendered this frame, which is shared
+     * per-image bookkeeping the host owns (the same hand-back the deferred stage's frame carries as a callback).
+     * The velocity target IS declared, because the debug view runs INSTEAD of the lighting stage and is therefore
+     * the only stage that hands it to a sampler on those frames.
      *
      * The push block is 16 bytes - the channel, the two projection terms the depth channel linearizes with, and the
      * motion gain - and all four values are the frame's (the renderer's knob and camera).
      */
     inline constexpr pass_io gbuffer_debug_io = {
         .name = "gbuffer-debug",
-        .own_set = 0, // unused: no own bindings (everything it reads is in the shared G-buffer set)
         .bindings = {},
-        .shared_sets = gbuffer_debug_shared_sets,
         .targets = gbuffer_debug_targets,
         .barrier_images = gbuffer_debug_barriers,
         .barrier_buffers = {},
         .push = push_block{.offset = 0, .size = 16, .stages = stage_flag::fragment},
     };
-    /// @brief set 0 is the shared scene set: the shadow pass binds it for the light UBO, the material table and the
-    ///        texture array its depth-only draw reads, through the same scene pipeline layout the leaves use
-    inline constexpr std::array<shared_set, 1> shadow_shared_sets = {{{.family = 0}}};
 
     /// @brief the layers the shadow pass renders into: a RUN of elements, one rendering instance per cascade
     ///
@@ -1365,9 +1193,7 @@ export namespace vulkan::render_resource {
      */
     inline constexpr pass_io shadow_io = {
         .name = "shadow",
-        .own_set = 0, // unused: no own bindings (the scene set carries everything the draw reads)
         .bindings = {},
-        .shared_sets = shadow_shared_sets,
         .targets = shadow_targets,
         .barrier_images = {},
         .barrier_buffers = {},
