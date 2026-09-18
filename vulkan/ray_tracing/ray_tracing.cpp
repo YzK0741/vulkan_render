@@ -365,6 +365,9 @@ namespace vulkan::ray_tracing {
             //     micro-triangle must skip the hit entirely, so this says the micromap is not being CONSULTED
             //     rather than that its content is wrong - the other 2-state value is opaque, and an all-opaque
             //     micromap would have reverted the any-hit's cut, which is not what happens either.
+            // BOTH WERE THEN FALSIFIED BY MEASUREMENT, one arm each and each byte-identical to the same arm with no
+            // micromap at all: dropping gl_RayFlagsTerminateOnFirstHitEXT (123.11 both ways, mean|d| = 0.0000) and
+            // adding gl_RayFlagsForceOpacityMicromap2StateEXT (mean|d| = 0.0000 again), validation silent in both.
             // What is left to try, in the order worth trying: gl_RayFlagsForceOpacityMicromap2StateEXT (the flag
             // the spec provides for exactly this mechanism); dropping gl_RayFlagsTerminateOnFirstHitEXT for one
             // arm, since a traversal that may stop at the first hit can take a path that never asks about opacity;
