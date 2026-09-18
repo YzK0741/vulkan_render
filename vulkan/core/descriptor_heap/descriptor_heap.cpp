@@ -1,7 +1,5 @@
 module; // the macro-using Vulkan header must not be imported into a module purview
 
-#include <cstdint>
-#include <span>
 #include <vulkan/vulkan.h>
 
 module vulkan.core.descriptor_heap;

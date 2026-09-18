@@ -1,7 +1,5 @@
 module; // the macro-using Vulkan header must not be imported into a module purview
 
-#include <cstdint>
-#include <span>
 #include <vulkan/vulkan.h>
 
 /**
@@ -32,6 +30,7 @@ module; // the macro-using Vulkan header must not be imported into a module purv
 
 export module vulkan.core.descriptor_heap;
 
+import vstd;
 import vulkan.core.vma;         // the allocator the heaps are allocated from
 import vulkan.core.vma.handles; // vk_buffer, which is what a heap buffer is
 
