@@ -847,6 +847,90 @@ namespace vulkan {
         this->scene_sets.update_all(this->vulkan_core, writes, write_count);
     }
 
+    void runtime::run_heap_probe(uint32_t const texture_slot) {
+        // ---- THE HEAP-NATIVE PROBE (see shaders/heap_probe.comp and docs/descriptor_heap_migration.md) ----
+        //
+        // The whole migration assumes four things about the native path, and this is where they stop being
+        // assumptions: a pipeline created with VK_PIPELINE_CREATE_2_DESCRIPTOR_HEAP_BIT_EXT and NO layout, a
+        // shader that declares its resources with `descriptor_heap` and indexes the grid by slot, a combined image
+        // sampler CONSTRUCTED at the use site from a sampler in the sampler heap, and its parameters delivered by
+        // vkCmdPushDataEXT. It runs in its own command buffer at scene setup, which is what makes it isolated -
+        // the mask bake looked isolated too and turned out to record into the frame's own buffer.
+        core& vk = this->vulkan_core;
+        // Slot 0 of the sampler heap is the texture sampler: the first of the six core::create_samplers makes, in
+        // the order shaders/heap_slots.glsl names (the contract test compares that order, and the host has no
+        // per-sampler constant because it keeps them as a list).
+        uint32_t const sampler_slot = static_cast<uint32_t>(core::heap_sampler_base);
+        std::span<unsigned char const> const spirv = this->registered_shader("heap_probe.comp.spv");
+        if (!vk.descriptor_heaps.ready() || vk.heap_grid_offset == VK_WHOLE_SIZE || spirv.empty()) {
+            return; // no heap, no grid or no shader: nothing to probe with, and no heap path to protect
+        }
+        auto const built = pipelines::build_heap_probe(vk.device, spirv);
+        if (!built.has_value()) {
+            utility::log("descriptor heap: the heap-native probe's pipeline was refused: {}", built.error());
+            return;
+        }
+
+        // The answer's buffer: 16 bytes, host-visible, and ADDRESSABLE because the push carries its address.
+        vk_buffer answer = vk.vma.create_buffer(nullptr, 16u, buffer_type::storage_coherent, VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT);
+        auto const* const answer_detail = answer.valid() ? vk.vma.get_buffer_detail(answer.handle()) : nullptr;
+        if (answer_detail == nullptr || answer_detail->allocation_info.pMappedData == nullptr) {
+            utility::log("descriptor heap: the heap-native probe could not allocate its answer buffer");
+            return;
+        }
+        VkBufferDeviceAddressInfo const address_info = {.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .pNext = nullptr, .buffer = answer_detail->buffer};
+        uint64_t const answer_address = vkGetBufferDeviceAddress(vk.device, &address_info);
+
+        VkCommandPoolCreateInfo const pool_info = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO, .pNext = nullptr, .flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT, .queueFamilyIndex = vk.graphics_family_index};
+        VkCommandPool pool = VK_NULL_HANDLE;
+        vkCreateCommandPool(vk.device, &pool_info, nullptr, &pool);
+        VkCommandBufferAllocateInfo const allocate = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, .pNext = nullptr, .commandPool = pool, .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = 1};
+        VkCommandBuffer command_buffer = VK_NULL_HANDLE;
+        vkAllocateCommandBuffers(vk.device, &allocate, &command_buffer);
+        VkCommandBufferBeginInfo const begin = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, .pNext = nullptr, .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT, .pInheritanceInfo = nullptr};
+        vkBeginCommandBuffer(command_buffer, &begin);
+        // The heaps first: they are command-buffer state, and this buffer holds nothing else.
+        vk.descriptor_heaps.record_bind(command_buffer);
+        vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, built->trace->get_pipeline());
+        // The parameters, THROUGH PUSH DATA: there is no pipeline layout to push constants to, which is the flag's
+        // requirement and the reason this function exists.
+        std::array<uint32_t, 4> const push = {
+            static_cast<uint32_t>(answer_address & 0xFFFFFFFFu),
+            static_cast<uint32_t>(answer_address >> 32u),
+            texture_slot,
+            sampler_slot, // the host's choice of sampler, not the shader's
+        };
+        [[maybe_unused]] bool const pushed = vk.descriptor_heaps.push_data(command_buffer, 0u, std::as_bytes(std::span(push)));
+        vkCmdDispatch(command_buffer, 1u, 1u, 1u);
+        vkEndCommandBuffer(command_buffer);
+
+        VkFenceCreateInfo const fence_info = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, .pNext = nullptr, .flags = 0};
+        VkFence fence = VK_NULL_HANDLE;
+        vkCreateFence(vk.device, &fence_info, nullptr, &fence);
+        VkSubmitInfo const submit = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                                     .pNext = nullptr,
+                                     .waitSemaphoreCount = 0,
+                                     .pWaitSemaphores = nullptr,
+                                     .pWaitDstStageMask = nullptr,
+                                     .commandBufferCount = 1,
+                                     .pCommandBuffers = &command_buffer,
+                                     .signalSemaphoreCount = 0,
+                                     .pSignalSemaphores = nullptr};
+        vkQueueSubmit(vk.graphics_queue, 1, &submit, fence);
+        vkWaitForFences(vk.device, 1, &fence, VK_TRUE, UINT64_MAX);
+
+        uint32_t const readback = *static_cast<uint32_t const*>(answer_detail->allocation_info.pMappedData);
+        utility::log("descriptor heap: the heap-native probe sampled grid slot {} through sampler slot {} and read back 0x{:08x} (red 0x{:04x}, alpha 0x{:04x}) - a layout-less, heap-flagged pipeline working",
+                     texture_slot,
+                     sampler_slot,
+                     readback,
+                     readback & 0xFFFFu,
+                     readback >> 16u);
+
+        vkDestroyFence(vk.device, fence, nullptr);
+        vkDestroyCommandPool(vk.device, pool, nullptr);
+    }
+
     void runtime::write_light_and_shadow_bindings() {
         if (!this->scene_sets.created()) {
             return;
@@ -1151,6 +1235,13 @@ namespace vulkan {
                     }
                 }
             }
+        }
+
+        // THE HEAP-NATIVE PROBE, ONCE, now that the bindless array is actually in the heap: it is the first thing
+        // in this renderer to read the heap instead of a descriptor set, and its answer goes to the log (see
+        // run_heap_probe). Texture slot 0 is the white placeholder, which is registered first and always exists.
+        if (heap_texture_descriptors != 0u) {
+            this->run_heap_probe(static_cast<uint32_t>(core::heap_slots::textures));
         }
 
         // material slots that fell back to white share element 0; write it once when used

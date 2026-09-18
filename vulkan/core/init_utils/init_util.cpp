@@ -92,6 +92,13 @@ void device_capabilities::query(VkPhysicalDevice const physical_device, uint32_t
                                                    : has_extension(VK_KHR_EXTENDED_FLAGS_EXTENSION_NAME) ? VK_KHR_EXTENDED_FLAGS_EXTENSION_NAME
                                                                                                          : nullptr;
     bool const descriptor_heap_extension = has_extension(VK_EXT_DESCRIPTOR_HEAP_EXTENSION_NAME) && descriptor_heap_dependency != nullptr;
+    // ... and the heap's SHADERS need one more extension and feature, which nothing declared until the
+    // heap-native probe did: GL_EXT_descriptor_heap compiles every `descriptor_heap` declaration to an UNTYPED
+    // POINTER (SPIR-V UntypedPointersKHR), and validation refuses such a module unless
+    // VK_KHR_shader_untyped_pointers is enabled AND its feature is on ("SPIR-V Capability UntypedPointersKHR was
+    // declared, but ... shaderUntypedPointers" - measured, on the probe's first run). It hangs off the heap's own
+    // link because a device without the heap has no heap shaders to compile.
+    bool const untyped_pointers_extension = descriptor_heap_extension && has_extension(VK_KHR_SHADER_UNTYPED_POINTERS_EXTENSION_NAME);
 
     // ---- Feature pNext chain: features_2 -> 1_1 -> 1_2 -> 1_3 -> 1_4 (truncated by api_version),
     //      then the extension features when the device has them. The TAIL is tracked rather than
@@ -131,7 +138,8 @@ void device_capabilities::query(VkPhysicalDevice const physical_device, uint32_t
     ray_query_features.pNext = ray_tracing_pipeline_extensions ? reinterpret_cast<VkBaseOutStructure*>(&ray_tracing_pipeline_features) : nullptr;
     ray_tracing_pipeline_features.pNext = ray_tracing_pipeline_extensions ? &ray_tracing_maintenance1_features : nullptr;
     ray_tracing_maintenance1_features.pNext = opacity_micromap_extension ? reinterpret_cast<VkBaseOutStructure*>(&opacity_micromap_features) : nullptr;
-    opacity_micromap_features.pNext = nullptr;
+    opacity_micromap_features.pNext = untyped_pointers_extension ? reinterpret_cast<VkBaseOutStructure*>(&untyped_pointers_features) : nullptr;
+    untyped_pointers_features.pNext = nullptr;
     vkGetPhysicalDeviceFeatures2(physical_device, &features_2);
 
     // Both feature bits have to be true for the two structs to be worth keeping in the chain: the
@@ -141,6 +149,8 @@ void device_capabilities::query(VkPhysicalDevice const physical_device, uint32_t
     ray_tracing_pipeline_available = ray_tracing_pipeline_extensions && ray_query_available && ray_tracing_pipeline_features.rayTracingPipeline == VK_TRUE;
     opacity_micromap_available = opacity_micromap_extension && ray_tracing_pipeline_available && opacity_micromap_features.micromap == VK_TRUE;
     descriptor_heap_available = descriptor_heap_extension && descriptor_heap_features.descriptorHeap == VK_TRUE;
+    untyped_pointers_available = untyped_pointers_extension && untyped_pointers_features.shaderUntypedPointers == VK_TRUE;
+    this->untyped_pointers_dependency = untyped_pointers_available ? VK_KHR_SHADER_UNTYPED_POINTERS_EXTENSION_NAME : nullptr;
     this->descriptor_heap_dependency = descriptor_heap_available ? descriptor_heap_dependency : nullptr; // the member, set from the local of the same name
     // Unlink every struct whose feature came back false: the extension may be advertised by a device
     // that does not actually support it, and an enabled-but-unsupported struct is a device-creation error.
@@ -158,6 +168,9 @@ void device_capabilities::query(VkPhysicalDevice const physical_device, uint32_t
         // The heap is the FIRST link, so dropping it has to hand the tail to whatever it was pointing at -
         // setting the tail to null here would silently take the ray-tracing chain with it.
         static_cast<VkBaseOutStructure*>(feature_tail)->pNext = ray_query_available ? reinterpret_cast<VkBaseOutStructure*>(&acceleration_structure_features) : nullptr;
+    }
+    if (!untyped_pointers_available) {
+        opacity_micromap_features.pNext = nullptr; // the untyped-pointers link is the LAST one, so this cuts only it
     }
 
     // ---- Property pNext chain: properties_2 -> driver -> subgroup -> descriptor indexing -> maintenance4

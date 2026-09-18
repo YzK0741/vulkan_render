@@ -432,6 +432,12 @@ namespace vulkan {
             // this device has and made the heap unavailable when it has neither, so this cannot push a name the
             // device does not support.
             creation_info.extensions.push_back(capabilities.descriptor_heap_dependency);
+            // ... and the heap's shaders' own dependency, without which no `descriptor_heap` declaration can be
+            // turned into a shader module at all (see the capability layer): the extension whose SPIR-V declares
+            // untyped pointers.
+            if (capabilities.untyped_pointers_dependency != nullptr) {
+                creation_info.extensions.push_back(capabilities.untyped_pointers_dependency);
+            }
             creation_info.extensions.push_back(VK_EXT_DESCRIPTOR_HEAP_EXTENSION_NAME);
         }
 

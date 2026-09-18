@@ -535,6 +535,18 @@ namespace vulkan {
         /// the bytes of a shader the app registered, by file name (empty when it did not)
         [[nodiscard]] std::span<unsigned char const> registered_shader(std::string_view name) const noexcept;
         /**
+         * @brief run the HEAP-NATIVE probe once (see shaders/heap_probe.comp): the first pipeline in this renderer
+         *        with NO layout at all, its parameters through vkCmdPushDataEXT, reading a texture from the resource
+         *        heap through a sampler from the sampler heap
+         * @param texture_slot the ABSOLUTE grid slot of the texture to sample (heap_slots::textures + an index)
+         * @note it is a member rather than a free helper for the ordinary reason - it needs the device, the
+         *       registered shaders and the heap - and it is called ONCE, at scene setup, in a command buffer of its
+         *       own: that is what makes it isolated. The answer is a line in the log, because the question it exists
+         *       to answer ("does the native path work here?") cannot be answered by a picture until the whole frame
+         *       is converted.
+         */
+        void run_heap_probe(uint32_t texture_slot);
+        /**
          * @brief the ONE create-time context every pass is built with
          *
          * It was a block inside `create_passes()` plus a copy per job (the MASK bake, the compute-skinning job) -

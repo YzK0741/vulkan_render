@@ -298,6 +298,16 @@ namespace chores {
             load_shader(shaders_dir, "compute_skin.comp.spv", compute_skin_code);
             runtime.register_shader("compute_skin.comp.spv", compute_skin_code);
 
+            // The HEAP-NATIVE PROBE (shaders/heap_probe.comp): registered like the jobs above, and for a purpose
+            // of the same kind - it is not part of any frame, it runs once at scene setup in a command buffer of
+            // its own (runtime::run_heap_probe) and its answer is a log line. It exists because the migration's
+            // four assumptions about the native path (a heap-flagged pipeline with NO layout, `descriptor_heap`
+            // declarations, a sampler taken from the sampler heap, parameters through vkCmdPushDataEXT) cannot be
+            // tested by a picture until the whole frame is converted.
+            std::vector<unsigned char> heap_probe_code;
+            load_shader(shaders_dir, "heap_probe.comp.spv", heap_probe_code);
+            runtime.register_shader("heap_probe.comp.spv", heap_probe_code);
+
             // ... and now that every pass's and every job's shaders are registered, run the create steps.
             // This is the ONE call that builds what the passes and the jobs own (their set layouts, pipeline
             // layouts, pipelines and their own descriptor sets), and it happens here rather than inside each

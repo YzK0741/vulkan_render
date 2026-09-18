@@ -135,6 +135,20 @@ export struct device_capabilities {
      *       for combined image samplers whose sampler part lives in the resource heap.
      */
     VkPhysicalDeviceDescriptorHeapFeaturesEXT descriptor_heap_features = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_HEAP_FEATURES_EXT};
+    /**
+     * @brief the feature the heap's SHADERS need, and the extension name that provides it
+     *
+     * @note A `descriptor_heap` declaration compiles to an UNTYPED POINTER (SPIR-V UntypedPointersKHR), so a
+     *       module declaring one is refused unless VK_KHR_shader_untyped_pointers is enabled and this feature is
+     *       on: "SPIR-V Capability UntypedPointersKHR was declared, but ... shaderUntypedPointers" - measured, by
+     *       the heap-native probe (shaders/heap_probe.comp), which was the first shader in this renderer to
+     *       declare one. The name is kept beside the heap's own dependency for the same reason that one is: the
+     *       device-creation list must not re-derive it.
+     */
+    VkPhysicalDeviceShaderUntypedPointersFeaturesKHR untyped_pointers_features = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_UNTYPED_POINTERS_FEATURES_KHR};
+    bool untyped_pointers_available = false;
+    /// the extension NAME to enable, or nullptr when the feature is not available (see descriptor_heap_dependency)
+    char const* untyped_pointers_dependency = nullptr;
     VkPhysicalDeviceDescriptorHeapPropertiesEXT descriptor_heap_properties = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_HEAP_PROPERTIES_EXT};
     /**
      * @brief which extension satisfies the heap's own dependency, or nullptr when neither is present

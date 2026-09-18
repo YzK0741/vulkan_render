@@ -666,6 +666,10 @@ set(VR_SHADER_INCLUDES
     # ibl_specular.glsl is included by shading.glsl, so it belongs here for the same reason the three above
     # do: editing it alone must not leave stale SPIR-V behind.
     "${VR_SHADER_SRC_DIR}/ibl_specular.glsl"
+    # heap_slots.glsl is the SLOT GRID's shader-side source of truth (core.cppm is the host's): a shader that
+    # includes it and is not rebuilt after it changes would index the heap by stale numbers, which validation
+    # cannot see. The C++ side is compared against it by a test (see test_render_resources).
+    "${VR_SHADER_SRC_DIR}/heap_slots.glsl"
 )
 set(VR_SHADER_SOURCES
     pbr.vert pbr.frag unlit.frag gbuffer.frag gbuffer_debug.frag deferred.frag taa.frag
@@ -675,6 +679,9 @@ set(VR_SHADER_SOURCES
     rt_shadow.rgen rt_shadow.rchit rt_shadow.rmiss rt_shadow.rahit
     mask_bake.comp
     compute_skin.comp
+    # the heap-native probe: not part of any frame, run once at setup in a command buffer of its own (see
+    # runtime::run_heap_probe and docs/descriptor_heap_migration.md)
+    heap_probe.comp
     shadow.vert shadow.frag post.vert post.frag fxaa.frag
 )
 set(VR_SHADER_OUTPUTS "")

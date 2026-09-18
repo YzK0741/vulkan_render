@@ -122,6 +122,18 @@ namespace vulkan::pipelines {
     /// that came out of `vulkan.core` (where it was built against the core's own scene pipeline layout).
     export std::expected<compute_pipeline_owned, std::string> build_cluster(VkDevice device, VkDescriptorSetLayout scene_layout, std::span<unsigned char const> compute_shader_code);
 
+    /**
+     * @brief the HEAP-NATIVE probe's pipeline: the first one in this renderer created the heap way
+     * @param device the logical device
+     * @param compute_shader_code the probe's SPIR-V (see shaders/heap_probe.comp)
+     * @return the pipeline, or the reason it could not be created
+     * @note NO SET LAYOUT AND NO PIPELINE LAYOUT, which is not a simplification but the flag's requirement:
+     *       "the pipeline layout must be NULL and shader resources will be sourced from a descriptor heap". The
+     *       probe's parameters therefore reach the shader through vkCmdPushDataEXT (see descriptor_heap::push_data)
+     *       and not through vkCmdPushConstants, which needs a layout to push to.
+     */
+    export std::expected<compute_pipeline_owned, std::string> build_heap_probe(VkDevice device, std::span<unsigned char const> compute_shader_code);
+
     /// what build_resolve_pipeline() creates: the pipeline layout and the resolve pipeline. The SET layout comes IN
     /// as a parameter now - it is generated from the denoiser's own DECLARATION (see
     /// its own DECLARATION), which is what stops the bindings and the family's descriptor pool count from
@@ -663,6 +675,41 @@ namespace vulkan::pipelines {
             return fail("cluster: vkCreateComputePipelines failed");
         }
         out.trace = vk_pipeline(pipeline, out.pipeline_layout, device);
+        return out;
+    }
+
+    std::expected<compute_pipeline_owned, std::string> build_heap_probe(VkDevice const device, std::span<unsigned char const> const compute_shader_code) {
+        using fail = std::unexpected<std::string>;
+        compute_pipeline_owned out;
+
+        std::optional<vk_shader_module> const module = make_shader_module(compute_shader_code, device);
+        if (!module.has_value()) {
+            return fail("heap probe: compute shader module creation failed");
+        }
+        VkPipelineShaderStageCreateInfo stage_info = {};
+        stage_info.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stage_info.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+        stage_info.module = **module;
+        stage_info.pName = "main";
+
+        // The heap flag is a flags2 bit (0x1000000000, past the 32-bit `flags` field), so it arrives through
+        // VkPipelineCreateFlags2CreateInfo - and it REQUIRES layout = VK_NULL_HANDLE, which is the whole point:
+        // with the flag set the pipeline layout is not read at all, and the shader's resources come from the heap.
+        VkPipelineCreateFlags2CreateInfo pipeline_flags = {};
+        pipeline_flags.sType = VK_STRUCTURE_TYPE_PIPELINE_CREATE_FLAGS_2_CREATE_INFO;
+        pipeline_flags.flags = VK_PIPELINE_CREATE_2_DESCRIPTOR_HEAP_BIT_EXT;
+
+        VkComputePipelineCreateInfo pipeline_info = {};
+        pipeline_info.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+        pipeline_info.pNext = &pipeline_flags;
+        pipeline_info.stage = stage_info;
+        pipeline_info.layout = VK_NULL_HANDLE;
+
+        VkPipeline pipeline = VK_NULL_HANDLE;
+        if (vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &pipeline) != VK_SUCCESS) {
+            return fail("heap probe: vkCreateComputePipelines failed");
+        }
+        out.trace = vk_pipeline(pipeline, VK_NULL_HANDLE, device);
         return out;
     }
 
