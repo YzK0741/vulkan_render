@@ -261,6 +261,60 @@ The measurement edit was reverted (it left the pipeline flagged with a non-null 
 error by 11311); what is kept is the knowledge, because it means objective item (3) - "graphics, compute and
 ray-tracing" - has no hidden exception to design around.
 
+## The conversion's work list, counted
+
+Everything below is a pointer, not a plan: each line is a site that has to change, and the counts are what make
+the size of the remaining commit visible. Line numbers are as of the commit that added this section.
+
+**Push sites that must switch to `vkCmdPushDataEXT` (15).** The layout argument disappears with the layout, and
+the bytes are the same ones the shader's `layout(push_constant)` block already declares, so this is a one-line
+change per site:
+
+| file | lines |
+| --- | --- |
+| `vulkan/runtime.cpp` | 2299 (the shadow cascade index) |
+| `vulkan/primitive/primitive.cpp` | 26, 78, 116 |
+| `vulkan/pass/mask_bake.cpp` | 128 |
+| `vulkan/pass/compute_skin.cpp` | 143 |
+| `vulkan/pass/fxaa.cpp` | 175 |
+| `vulkan/pass/gbuffer_debug.cpp` | 158 |
+| `vulkan/pass/deferred.cpp` | 173 |
+| `vulkan/pass/rt_shadow.cpp` | 204 |
+| `vulkan/pass/megalights_trace.cpp` | 152 |
+| `vulkan/pass/megalights_temporal.cpp` | 217 |
+| `vulkan/pass/post.cpp` | 244, 356 |
+| `vulkan/pass/taa.cpp` | 237 |
+
+**Pipeline layouts that must become null, with the heap flag replacing them (13).**
+`vulkan/pipelines/pipelines.cppm` creates one per builder (lines 240, 337, 378, 417, 462, 640, 737, 810, 960,
+1001, 1070); `vulkan/core/core.cpp` creates the shared `scene_pipeline_layout` (1542) - which is RETAINED but
+never handed to a converted pipeline, because a set layout is still what the not-yet-converted passes name; and
+the compute pipelines are created at lines 437, 482, 674, 709 (the probe, already flagged), 757, 980, plus the
+ray-tracing one at ~907.
+
+**Graphics pipelines.** `vulkan/core/pipeline/pipeline.cpp:206` is the single `vkCreateGraphicsPipelines` in the
+renderer (the `make_pipeline` in `core.pipeline`, which the G-buffer, post and debug passes all go through), and
+`vulkan/core/core.cpp`'s G-buffer builder is the other one - so "every graphics pipeline" is really two
+functions plus whatever `make_pipeline`'s callers pass.
+
+**Shaders (17 files).** The inventory table above lists every `layout(set, binding)` in the repository; each
+declaration becomes a `descriptor_heap` array, each fetch over a combined image sampler becomes
+`sampler2D(heap_textures[slot], heap_samplers[sampler_slot])` at the use site, and each stage that reads a
+per-frame or per-generation array needs the index for it - which, with no layout, arrives through push data and
+therefore has to be ADDED to that stage's push block (the one piece of the conversion that changes a shader's
+interface rather than its declarations).
+
+**Deletions, once the frame is heap-only.** Every `vkCmdBindDescriptorSets`, the set layouts and their pools,
+`scene_sets`/`gbuffer_family`/`post_family`, `write_rt_structure_binding`'s set write, the mapping shim
+(`scene_heap_layout`, `scene_heap_stage_mapping`, `set_scene_heap_layout`, `build_cluster`'s `map_from_heap`
+flag, `push_heap_frame_slot`) - and `descriptor_heap::make_mapping`, which nothing else uses.
+
+**What is already proven, and therefore not in doubt.** The grid is reserved and covered (every slot the header
+names is written by host code, checked by a test); the heaps are bound by `record_bind`; the native path works
+with validation silent (the probe); the flag is expressible on compute and on ray-tracing pipelines and implies
+a null layout and push data (probe + three VUIDs); and the frame-atomicity rule that makes this one commit is
+measured at the top of this file.
+
 ## The POC that died - and the method lesson it left (the questions above are now answered)
 
 The plan was to prove the heap-native shader path on the MASK BAKE, which looks ideal: it reads exactly two
