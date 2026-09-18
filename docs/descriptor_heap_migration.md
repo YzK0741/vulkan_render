@@ -315,6 +315,45 @@ with validation silent (the probe); the flag is expressible on compute and on ra
 a null layout and push data (probe + three VUIDs); and the frame-atomicity rule that makes this one commit is
 measured at the top of this file.
 
+## Where this stands after the last round of work
+
+Everything below is MEASURED, and the log lines are quoted rather than paraphrased because a heap write has no
+picture to show for itself until the shaders read the heap.
+
+```
+descriptor heap: slot grid at 1048576 (1024 slots x 64 B; textures 0 materials 512 tlas 703 camera 514 ...)
+descriptor heap: 6 shared samplers written to the sampler grid at 65536
+descriptor heap: 2 per-frame descriptor(s) written for grid slots 16898..16899     (camera, clusters, motion,
+descriptor heap: 2 per-frame descriptor(s) written for grid slots 16902..16903      skin, morph and the
+descriptor heap: 2 per-frame descriptor(s) written for grid slots 16904..16905      instance table all report)
+descriptor heap: 2 per-frame descriptor(s) written for grid slots 16908..16909
+descriptor heap: 2 per-frame descriptor(s) written for grid slots 16910..16911
+descriptor heap: 2 per-frame descriptor(s) written for grid slots 16912..16913
+descriptor heap: material table written (address 0x..., 16384 records, offset 1081344)
+descriptor heap: the heap-native probe sampled grid slot 16384 through sampler slot 2048 ... the material
+                 table's DEFAULT record read 0xffff (its white base colour is 0xffff)
+descriptor heap: the heap-native GRAPHICS probe rendered grid slot 16896 ... read back rgba 255,255,255,255
+descriptor heap: the heap-native GRAPHICS probe rendered grid slot 16897 ... read back rgba 0,0,0,255
+```
+
+- Item (1) - every descriptor written - is DONE and guarded: the grid is reserved at a fixed 1 MiB with a 64 B
+  stride, the sampler heap has its own 64 KiB base, every array the shader header names has a host write site (a
+  test fails if one appears without), and the writes above are the evidence for the categories. The IMAGE side is
+  written where each image is created - the G-buffer targets and depth, the motion vectors, the scene colour and
+  TAA's history, the ray-traced visibility (as both a sampled and a storage descriptor), the megalights trace,
+  resolve and history, the post chain's HDR and display targets, the bloom levels, the shadow map and the three
+  IBL images - and the absence of any `did not reach grid slot` line is the evidence that those writes succeeded.
+- The MECHANISM of items (2), (3) and (4) is proven end to end: a heap-flagged, layout-less, push-data-fed
+  pipeline reads the right value out of the right grid slot, for compute AND for graphics, and a deliberately
+  wrong slot reads a different value. Ray tracing takes the flag too (three VUIDs say how).
+- What REMAINS is the frame-wide conversion itself - the counted work list above (15 push sites, 13 pipeline
+  layouts, 2 graphics creation functions, 17 shaders, then the deletions). It is one commit because a frame whose
+  stages do not all read the heap renders nothing, which is measured at the top of this file.
+- Acceptance, against the criteria as written: BUILD=0, 8/8 tests, gate 9/9 `changed: 0` and validation silent
+  all hold at every commit; the wrong-slot negative proof holds AT THE MECHANISM LEVEL (the two probe lines
+  above); what cannot be claimed is the same pair of facts for a CONVERTED frame, because the frame has not been
+  converted - the reference frames still match trivially, since every pass still reads its descriptor set.
+
 ## The POC that died - and the method lesson it left (the questions above are now answered)
 
 The plan was to prove the heap-native shader path on the MASK BAKE, which looks ideal: it reads exactly two
