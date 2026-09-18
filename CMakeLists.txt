@@ -120,6 +120,7 @@ target_sources(vulkancorekit
         vulkan/core/core.cppm
         vulkan/core/filter/filters.cppm
         vulkan/core/vma/vma.cppm
+        vulkan/core/descriptor_heap/descriptor_heap.cppm
         vulkan/core/vma/handles/vma_handles.cppm
         vulkan/core/handles/handles.cppm
         vulkan/core/init_utils/init_utils.cppm
@@ -165,6 +166,7 @@ target_sources(vulkancorekit
         vulkan/core/core.cpp
         vulkan/core/filter/filters.cpp
         vulkan/core/vma/vma.cpp
+        vulkan/core/descriptor_heap/descriptor_heap.cpp
         vulkan/core/handles/handles.cpp
         vulkan/core/init_utils/init_util.cpp
         vulkan/init_utils/init_utils.cpp
