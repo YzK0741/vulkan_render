@@ -777,13 +777,26 @@ namespace vulkan {
                     gbuffer_formats[target],
                     VK_IMAGE_ASPECT_COLOR_BIT,
                     device);
+
+                // ... AND THE HEAP'S COPY OF THE SAME IMAGE, at the grid array a heap-native shader will name: the
+                // descriptor is a view CREATE INFO rather than a view, so it is built from the same image, format
+                // and aspect the line above used, and nothing has to be kept around for it. The three surface
+                // targets are the first three entries of gbuffer_formats (see make_gbuffer_pipeline's format list:
+                // albedo, normal, material), which is what the grid's three arrays are named after.
+                if (this->descriptor_heaps.ready() && this->heap_grid_offset != VK_WHOLE_SIZE) {
+                    uint32_t const heap_slot = target == 0u ? heap_slots::gbuffer_albedo : (target == 1u ? heap_slots::gbuffer_normal : heap_slots::gbuffer_material);
+                    VkImageViewCreateInfo const heap_view = make_image_view_info(target_images[i], gbuffer_formats[target], VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_ASPECT_COLOR_BIT, VK_REMAINING_MIP_LEVELS, VK_REMAINING_ARRAY_LAYERS);
+                    if (!this->descriptor_heaps.write_image(static_cast<VkDeviceSize>(heap_slot + static_cast<uint32_t>(i)) * heap_slot_stride, heap_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE)) {
+                        utility::log("descriptor heap: the gbuffer target {} for image {} did not reach grid slot {}", target, i, heap_slot + static_cast<uint32_t>(i));
+                    }
+                }
             }
         }
 
         // Motion vectors + the TAA working image (the scene color the resolve reads): same extent and
         // lifetime as the G-buffer targets, single-sampled, written as attachments and sampled
         // afterwards.
-        auto const create_sampled_target = [this](std::vector<VkImage>& images, std::vector<VkDeviceMemory>& memories, std::vector<VkImageView>& views, VkFormat const format) {
+        auto const create_sampled_target = [this](std::vector<VkImage>& images, std::vector<VkDeviceMemory>& memories, std::vector<VkImageView>& views, VkFormat const format, uint32_t const heap_slot_base) {
             images.resize(swap_chain_image_views.size());
             memories.resize(swap_chain_image_views.size());
             views.resize(swap_chain_image_views.size());
@@ -798,10 +811,19 @@ namespace vulkan {
                     images[i],
                     memories[i]);
                 views[i] = create_image_view(images[i], format, VK_IMAGE_ASPECT_COLOR_BIT, device);
+                // the heap's copy, from the same format and aspect (see the G-buffer block above)
+                if (this->descriptor_heaps.ready() && this->heap_grid_offset != VK_WHOLE_SIZE) {
+                    VkImageViewCreateInfo const heap_view = make_image_view_info(images[i], format, VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_ASPECT_COLOR_BIT, VK_REMAINING_MIP_LEVELS, VK_REMAINING_ARRAY_LAYERS);
+                    if (!this->descriptor_heaps.write_image(static_cast<VkDeviceSize>(heap_slot_base + static_cast<uint32_t>(i)) * heap_slot_stride, heap_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE)) {
+                        utility::log("descriptor heap: the sampled target for image {} did not reach grid slot {}", i, heap_slot_base + static_cast<uint32_t>(i));
+                    }
+                }
             }
         };
-        create_sampled_target(velocity_images, velocity_image_memories, velocity_image_views, gbuffer_velocity_format);
-        create_sampled_target(scene_color_images, scene_color_image_memories, scene_color_image_views, hdr_format);
+        // The slot each one takes is the grid array named for what READS it: the motion vectors, and the scene
+        // colour - which is TAA's `current_color` input, i.e. exactly what heap_slots::taa_current is named after.
+        create_sampled_target(velocity_images, velocity_image_memories, velocity_image_views, gbuffer_velocity_format, heap_slots::gbuffer_velocity);
+        create_sampled_target(scene_color_images, scene_color_image_memories, scene_color_image_views, hdr_format, heap_slots::taa_current);
 
         // The resolved-history image only needs TRANSFER_DST (the runtime copies the resolved frame
         // into it) and SAMPLED (the next frame's resolve reads it).
