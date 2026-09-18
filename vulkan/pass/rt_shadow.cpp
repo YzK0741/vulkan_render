@@ -181,6 +181,12 @@ namespace vulkan::pass {
         // not this pass ran (see the off path in the frame loop).
         VkImageMemoryBarrier2 to_general = vulkan::undefined_to_general_transition;
         to_general.image = visibility;
+        // THE PRODUCER IS A RAY-TRACING STAGE, NOT A DISPATCH. The shared constants name COMPUTE_SHADER because
+        // every other writer of this image was one; a barrier whose masks do not cover the stage that actually
+        // ran leaves the writes unsynchronized, and the lighting stage then samples an image the trace has not
+        // necessarily finished writing (measured: half the model lost its sun, deterministically, while a
+        // constant write - which no ordering can make wrong - came out right).
+        to_general.dstStageMask = VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR;
         VkDependencyInfo const general_dependency = make_image_dependency_info(1, &to_general);
         vkCmdPipelineBarrier2(io.cmd, &general_dependency);
 
@@ -201,6 +207,7 @@ namespace vulkan::pass {
 
         VkImageMemoryBarrier2 to_sampling = vulkan::general_to_sampling_transition;
         to_sampling.image = visibility;
+        to_sampling.srcStageMask = VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR; // the trace is the writer (see above)
         VkDependencyInfo const sampling_dependency = make_image_dependency_info(1, &to_sampling);
         vkCmdPipelineBarrier2(io.cmd, &sampling_dependency);
 

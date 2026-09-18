@@ -28,7 +28,20 @@
  *  - it is NOT a mirrored write (comparing the frame against vertically, horizontally and 180-degree flipped
  *    references: as-is is by far the closest);
  *  - the hit shader's distance, written out as the visibility, shows ~20% of model pixels hit at t ~ 0 (a
- *    self-hit) and the rest at t ~ 1-4, i.e. the traversal finds geometry the query does not.
+ *    self-hit) and the rest at t ~ 1-4, i.e. the traversal finds geometry the query does not;
+ *  - THE PIPELINE'S PLUMBING IS PROVEN GOOD, which is what makes the difference a TRAVERSAL one: a ray query
+ *    run INSIDE this pass's raygen (instead of the trace) reproduces the compute build's ray-query frame to
+ *    mean|d| = 0.0001 - the SBT, the entry points, the descriptors, the barriers and the lighting stage's read
+ *    are all exercised by that and are all right. Two traversals of the SAME ray, built from the same origin,
+ *    tmin, direction and tmax in one invocation, disagree on ~46% of the model (46.5% of its pixels land in
+ *    the 'blocked' cluster against 46.3% in the 'lit' one).
+ *
+ * So the next experiment is to encode the QUERY's hit distance and the TRACE's hit distance for the same pixel
+ * and compare them: a trace that reports plausible distances where the query reports a miss means the two are
+ * traversing different things (the structure the raygen's descriptor names is the same binding, so the
+ * difference would have to be in how the traversal reads its arguments), while nonsense distances would point
+ * at the SBT/arguments instead. (A first hypothesis - the barriers naming COMPUTE_SHADER while the writer is
+ * now the ray-tracing stage - was fixed here and changed NOTHING: the frame stayed byte-identical.)
  *
  * The SBT itself is fine (group 0 raygen / 1 miss / 2 hit, the instance's SBT record offset is 0, one geometry
  * per BLAS, `VK_GEOMETRY_OPAQUE_BIT_KHR` set, mask 0xFF, facing-cull disabled), and validation is clean. So the
