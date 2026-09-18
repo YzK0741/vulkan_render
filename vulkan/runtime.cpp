@@ -317,7 +317,11 @@ namespace vulkan {
                                         vulkan::buffer_type::storage_coherent,
                                         "motion transform buffer",
                                         this->motion_buffers,
-                                        &this->motion_mapped);
+                                        &this->motion_mapped,
+                                        // THE HEAP'S REQUIREMENT: a descriptor written as a device ADDRESS range
+                                        // needs the buffer to be addressable (VUID-VkBufferDeviceAddressInfo-
+                                        // buffer-02601 says so, and validation did, the moment this write went in).
+                                        VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT);
         this->motion_previous.assign(vulkan::scene_motion_capacity, glm::mat4(1.0f));
 
         // Per-joint skin matrices (set 0 binding 9): one buffer PER FRAME SLOT (scene_skin_capacity
@@ -330,7 +334,8 @@ namespace vulkan {
                                         vulkan::buffer_type::storage_coherent,
                                         "skin matrix buffer",
                                         this->skin_buffers,
-                                        &this->skin_mapped);
+                                        &this->skin_mapped,
+                                        VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT); // the heap writes this one's address
 
         // Morph data (set 0 binding 10): one buffer PER FRAME SLOT (scene_morph_capacity floats
         // each, host-visible); the caller bakes per-primitive morph blocks (deltas + weights)
@@ -343,7 +348,8 @@ namespace vulkan {
                                         vulkan::buffer_type::storage_coherent,
                                         "morph data buffer",
                                         this->morph_buffers,
-                                        &this->morph_mapped);
+                                        &this->morph_mapped,
+                                        VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT); // the heap writes this one's address
 
         // Reserve table index 0 as the DEFAULT material (white textures + identity factors):
         // registrations that overflow the table degrade to it (see register_material). Done
@@ -615,6 +621,14 @@ namespace vulkan {
         write_heap_scene_buffer(this->vulkan_core, this->cluster_count_buffers, core::heap_slots::cluster_counts, static_cast<VkDeviceSize>(vulkan::max_cluster_count) * sizeof(uint32_t), VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
         write_heap_scene_buffer(this->vulkan_core, this->cluster_index_buffers, core::heap_slots::cluster_indices, static_cast<VkDeviceSize>(vulkan::max_cluster_count) * vulkan::cluster_light_capacity * sizeof(uint32_t), VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
         write_heap_scene_buffer(this->vulkan_core, this->camera_buffers, core::heap_slots::scene_camera, sizeof(camera_ubo), VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
+        // ... and the rest of the per-frame arrays, from the same place and with the SAME sizes the scene set
+        // writes them with (see ensure_scene_set's write_buffer_binding calls): motion (binding 13), skin (9) and
+        // morph (10), each a two-slot array whose slot is the frame's. Bound here rather than in the per-slot loop
+        // because a heap descriptor is an ADDRESS: the buffers are allocated once, so their addresses do not
+        // change per frame, and only the CONTENTS are rewritten (see the per-frame slot rule in runtime.cppm).
+        write_heap_scene_buffer(this->vulkan_core, this->motion_buffers, core::heap_slots::previous_transforms, static_cast<VkDeviceSize>(vulkan::scene_motion_capacity) * sizeof(glm::mat4), VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+        write_heap_scene_buffer(this->vulkan_core, this->skin_buffers, core::heap_slots::skin_matrices, static_cast<VkDeviceSize>(vulkan::scene_skin_capacity) * sizeof(glm::mat4), VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+        write_heap_scene_buffer(this->vulkan_core, this->morph_buffers, core::heap_slots::morph_data, static_cast<VkDeviceSize>(vulkan::scene_morph_capacity) * sizeof(float), VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
     }
 
     void runtime::ensure_scene_set() {
