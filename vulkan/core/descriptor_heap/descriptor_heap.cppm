@@ -26,6 +26,17 @@ module; // the macro-using Vulkan header must not be imported into a module purv
  * image sampler is expressed with an EMBEDDED SAMPLER in the resource heap
  * (VkDescriptorMappingSourceConstantOffsetEXT::pEmbeddedSampler, whose sampler part is taken from the reserved
  * sampler range) - which is why a heap binding must respect minSamplerHeapReservedRangeWithEmbedded.
+ *
+ * AND THE UNIT OF THAT MIGRATION IS THE FRAME, NOT THE PASS - measured, not assumed. Binding the heap is
+ * command-buffer state that takes over EVERY stage recorded after it: with the bind recorded at the start of the
+ * frame and every mapping switched off (so the heap held nothing any shader had asked for), all nine reference
+ * scenarios came back as the SAME frame - hash DC5F6D66428C26D8, mean 0.00 against the unlit reference's 88.1 -
+ * with validation SILENT, because a stage whose descriptors came from a set reads the heap instead once one is
+ * bound. Two further rules cost one gate run each and are not optional: a mapping is silently IGNORED unless the
+ * pipeline is created with VK_PIPELINE_CREATE_2_DESCRIPTOR_HEAP_BIT_EXT (a flags2 bit, so it arrives through
+ * VkPipelineCreateFlags2CreateInfo), and that flag REQUIRES a null VkPipelineLayout - the layout is precisely what
+ * the mapping replaces. So a renderer maps every stage of a frame or none of them: a half-migrated frame does not
+ * render a half-right picture, it renders nothing.
  */
 
 export module vulkan.core.descriptor_heap;
