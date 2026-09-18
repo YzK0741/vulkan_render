@@ -96,7 +96,11 @@ namespace vulkan::init_utils {
                                    buffer_type type,
                                    std::string_view what,
                                    vk_buffer& buffer,
-                                   void*& mapped);
+                                   void*& mapped,
+                                   /// extra usage bits to OR in. A buffer whose DESCRIPTOR goes on the descriptor heap
+                                   /// needs VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, because a heap descriptor for
+                                   /// a buffer is an address range (VUID-VkBufferDeviceAddressInfo-buffer-02601).
+                                   VkBufferUsageFlags extra_usage = 0);
 
     /**
      * @ingroup vulkan_init_utils_runtime
@@ -120,7 +124,9 @@ namespace vulkan::init_utils {
                                     buffer_type type,
                                     std::string_view what,
                                     std::vector<vk_buffer>& buffers,
-                                    std::vector<void*>* mapped = nullptr);
+                                    std::vector<void*>* mapped = nullptr,
+                                    /// see create_host_buffer above: the bits a heap-backed descriptor needs
+                                    VkBufferUsageFlags extra_usage = 0);
 
     /**
      * @ingroup vulkan_init_utils_runtime

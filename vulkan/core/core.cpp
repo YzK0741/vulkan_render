@@ -60,7 +60,14 @@ namespace vulkan {
         //      descriptors in it. A failure - no entry points, an allocation, an address that misses the required
         //      alignment - logs and leaves the renderer on descriptor sets, which is what the false return means.
         if (this->descriptor_heap_limits.max_resource_size != 0) {
-            if (!this->descriptor_heaps.init(this->vma, this->device, this->descriptor_heap_limits)) {
+            if (this->descriptor_heaps.init(this->vma, this->device, this->descriptor_heap_limits)) {
+                // THE LAYOUT, reserved once and published (see core.cppm): the runtime WRITES the contents, the
+                // pipeline builders build the mappings, and both read these two numbers rather than computing their
+                // own - the one way this design has of being wrong without anything saying so.
+                this->heap_texture_array_offset = this->descriptor_heaps.reserve(scene_texture_capacity, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE);
+                this->heap_material_table_offset = this->descriptor_heaps.reserve(1u, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+                utility::log("descriptor heap: layout reserved (texture array at {}, material table at {})", this->heap_texture_array_offset, this->heap_material_table_offset);
+            } else {
                 utility::log("descriptor heap: not created, so descriptor sets stay the binding model");
             }
         }

@@ -438,6 +438,17 @@ namespace vulkan {
         /// the heap's limits, copied out of the capability query (see core::init_device_and_queue) because the
         /// heap itself is created in the constructor, after vma.init() - the capabilities are not in scope there
         heap_limits descriptor_heap_limits = {};
+        /**
+         * @brief the reserved heap blocks, in bytes, or VK_WHOLE_SIZE when the heap is not in use
+         *
+         * @note THE LAYOUT IS OWNED HERE, and that is not tidiness: the heap's contents are written by the RUNTIME
+         *       (it is what knows the textures and the material table) while the MAPPINGS that point shaders at
+         *       them are built by the pipeline builders. Both have to use the same number, and a mismatch - a write
+         *       at one offset, a mapping at another - is invisible to validation and shows up only as a wrong
+         *       picture. So the blocks are reserved once, here, and published.
+         */
+        VkDeviceSize heap_texture_array_offset = VK_WHOLE_SIZE;
+        VkDeviceSize heap_material_table_offset = VK_WHOLE_SIZE;
 
         // ---- frame synchronization (timeline semaphores; see create_sync_objects) ----
         // vkAcquireNextImageKHR and vkQueuePresentKHR both require BINARY semaphores:

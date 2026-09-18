@@ -132,6 +132,7 @@ namespace vulkan {
         this->sampler_address_ = 0;
         this->resource_size_ = 0;
         this->sampler_size_ = 0;
+        this->next_free_ = 0;
     }
 
     bool descriptor_heap::write_descriptors(VkDeviceSize const descriptors_offset, std::span<VkResourceDescriptorInfoEXT const> const infos) noexcept {
@@ -226,6 +227,7 @@ namespace vulkan {
                                        uint32_t const binding_count,
                                        uint32_t const heap_offset,
                                        uint32_t const array_stride,
+                                       VkSpirvResourceTypeFlagsEXT const resource_mask,
                                        VkSamplerCreateInfo const* const embedded_sampler) const noexcept {
         if (!this->ready()) {
             return false;
@@ -236,10 +238,12 @@ namespace vulkan {
         mapping.descriptorSet = set;
         mapping.firstBinding = first_binding;
         mapping.bindingCount = binding_count;
-        // The resource mask says which shader resource KINDS the range covers; leaving it at 0 would mean "all",
-        // and the valid usage only forbids two mappings from overlapping in BOTH range and mask, so the precise
-        // mask is what lets a later step map a different kind over the same range without a conflict.
-        mapping.resourceMask = VK_SPIRV_RESOURCE_TYPE_SAMPLED_IMAGE_BIT_EXT | VK_SPIRV_RESOURCE_TYPE_SAMPLER_BIT_EXT;
+        // The resource mask names the SHADER RESOURCE KINDS the range covers. It is the caller's because only the
+        // caller knows what its shader declares there: a `sampler2D` binding is a combined sampled image, while a
+        // `readonly buffer` is a read-only storage buffer - and the valid usage only forbids two mappings from
+        // overlapping in BOTH range and mask, so the precise mask is what lets a later step map another kind over
+        // the same range without a conflict.
+        mapping.resourceMask = resource_mask;
         mapping.source = VK_DESCRIPTOR_MAPPING_SOURCE_HEAP_WITH_CONSTANT_OFFSET_EXT;
         mapping.sourceData.constantOffset.heapOffset = heap_offset;
         mapping.sourceData.constantOffset.heapArrayStride = array_stride;
@@ -249,5 +253,20 @@ namespace vulkan {
         mapping.sourceData.constantOffset.samplerHeapOffset = 0;
         mapping.sourceData.constantOffset.samplerHeapArrayStride = 0;
         return true;
+    }
+
+    VkDeviceSize descriptor_heap::reserve(uint32_t const count, VkDescriptorType const type) noexcept {
+        if (!this->ready() || count == 0) {
+            return VK_WHOLE_SIZE;
+        }
+        VkDeviceSize const stride = this->descriptor_stride(type);
+        VkDeviceSize const offset = this->next_free_ != 0 ? this->next_free_ : this->usable_offset();
+        VkDeviceSize const end = offset + stride * count;
+        if (end > this->resource_size_) {
+            utility::log("descriptor heap: a reservation of {} descriptors ({} B) does not fit the {} B resource heap", count, stride * count, this->resource_size_);
+            return VK_WHOLE_SIZE;
+        }
+        this->next_free_ = end;
+        return offset;
     }
 } // namespace vulkan

@@ -170,7 +170,19 @@ namespace vulkan {
                                         uint32_t binding_count,
                                         uint32_t heap_offset,
                                         uint32_t array_stride,
+                                        VkSpirvResourceTypeFlagsEXT resource_mask,
                                         VkSamplerCreateInfo const* embedded_sampler) const noexcept;
+
+        /**
+         * @brief reserve @p count descriptors of @p type in the resource heap and return their byte offset
+         * @return the offset, or VK_WHOLE_SIZE when the heap is not ready or the reservation does not fit
+         *
+         * @note THIS IS WHAT KEEPS THE LAYOUT AND THE MAPPINGS FROM DISAGREEING. A caller that computes an offset
+         *       by hand and a mapping built from another number is the silent failure this design has - the heap
+         *       reads memory that was never written, validation says nothing, and the picture is simply wrong. So
+         *       the offsets are RESERVED here, once, and both the write and the mapping use the reserved number.
+         */
+        [[nodiscard]] VkDeviceSize reserve(uint32_t count, VkDescriptorType type) noexcept;
 
         /// @brief the byte offset of descriptor @p index of the block that starts at @p block_offset
         [[nodiscard]] VkDeviceSize descriptor_offset(VkDeviceSize block_offset, uint32_t index, VkDescriptorType type) const noexcept {
@@ -202,6 +214,8 @@ namespace vulkan {
         VkDeviceAddress sampler_address_ = 0;
         VkDeviceSize resource_size_ = 0;
         VkDeviceSize sampler_size_ = 0;
+        /// the bump pointer for reserve(), which starts past the implementation's reserved window
+        VkDeviceSize next_free_ = 0;
         heap_limits limits_ = {};
         PFN_vkWriteResourceDescriptorsEXT write_descriptors_ = nullptr;
         PFN_vkCmdBindResourceHeapEXT bind_resource_heap = nullptr;

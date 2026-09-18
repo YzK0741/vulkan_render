@@ -264,7 +264,35 @@ namespace vulkan {
                                        vulkan::buffer_type::storage_coherent,
                                        "material table buffer",
                                        this->material_buffer,
-                                       this->material_mapped);
+                                       this->material_mapped,
+                                       // it goes on the descriptor heap, and a heap descriptor for a buffer is an
+                                       // ADDRESS RANGE - so this buffer needs a device address
+                                       VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT);
+
+        // ---- THE MATERIAL TABLE'S HEAP DESCRIPTOR, written ONCE here ----
+        //
+        // A storage buffer descriptor is just an address range, so putting one on the heap is the smallest complete
+        // test of the whole mechanism (write -> mapping -> bind) with nothing else in the way: no image view to
+        // create, no sampler, no embedded sampler. The buffer has a FIXED capacity and is created above, so its
+        // address is stable and one write covers it - which is why this is not a per-frame write. The block was
+        // reserved by core (heap_material_table_offset) rather than computed here: the mapping that points a shader
+        // at it is built by core too, and both have to use the same number.
+        if (this->vulkan_core.descriptor_heaps.ready() && this->vulkan_core.heap_material_table_offset != VK_WHOLE_SIZE) {
+            auto const* const detail = this->vulkan_core.vma.get_buffer_detail(this->material_buffer.handle());
+            if (detail != nullptr) {
+                VkBufferDeviceAddressInfo const address_info = {.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .pNext = nullptr, .buffer = detail->buffer};
+                VkDeviceAddress const address = vkGetBufferDeviceAddress(this->vulkan_core.device, &address_info);
+                bool const written = this->vulkan_core.descriptor_heaps.write_buffer(this->vulkan_core.heap_material_table_offset,
+                                                                                     address,
+                                                                                     static_cast<VkDeviceSize>(vulkan::material_capacity) * sizeof(material_record),
+                                                                                     VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+                utility::log("descriptor heap: material table {} (address 0x{:x}, {} records, offset {})",
+                             written ? "written" : "NOT written",
+                             address,
+                             vulkan::material_capacity,
+                             this->vulkan_core.heap_material_table_offset);
+            }
+        }
 
         // Per-instance transform buffer (set 0 binding 6): one mat4 per instance, host-visible;
         // filled by set_instanced_draw() for instanced stress draws (see pbr.vert)
@@ -934,7 +962,7 @@ namespace vulkan {
                                                              .format = slots[i].second,
                                                              .components = {VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY},
                                                              .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS}};
-                    VkDeviceSize const heap_offset = this->vulkan_core.descriptor_heaps.descriptor_offset(this->vulkan_core.descriptor_heaps.usable_offset(), index, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE);
+                    VkDeviceSize const heap_offset = this->vulkan_core.descriptor_heaps.descriptor_offset(this->vulkan_core.heap_texture_array_offset, index, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE);
                     if (this->vulkan_core.descriptor_heaps.write_image(heap_offset, heap_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)) {
                         ++heap_texture_descriptors;
                     } else {

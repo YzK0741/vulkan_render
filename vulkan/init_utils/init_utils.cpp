@@ -29,10 +29,11 @@ namespace vulkan::init_utils {
                             buffer_type const type,
                             std::string_view const what,
                             vk_buffer& buffer,
-                            void*& mapped) {
+                            void*& mapped,
+                            VkBufferUsageFlags const extra_usage) {
         // The raw pointer overload, not the span template: the template wants a non-const span (it
         // reinterpret_casts the data to `unsigned char*`), and every caller here has const bytes.
-        buffer = device.vma.create_buffer(reinterpret_cast<unsigned char const*>(initial.data()), initial.size_bytes(), type);
+        buffer = device.vma.create_buffer(reinterpret_cast<unsigned char const*>(initial.data()), initial.size_bytes(), type, extra_usage);
         if (!buffer.valid()) {
             utility::panic(std::source_location::current(), "failed to create {}", what);
         }
@@ -49,7 +50,8 @@ namespace vulkan::init_utils {
                              buffer_type const type,
                              std::string_view const what,
                              std::vector<vk_buffer>& buffers,
-                             std::vector<void*>* const mapped) {
+                             std::vector<void*>* const mapped,
+                             VkBufferUsageFlags const extra_usage) {
         buffers.reserve(buffers.size() + slots);
         if (mapped != nullptr) {
             mapped->reserve(mapped->size() + slots);
@@ -57,7 +59,7 @@ namespace vulkan::init_utils {
         for (uint32_t slot = 0; slot < slots; ++slot) {
             vk_buffer buffer = {};
             void* mapped_pointer = nullptr;
-            create_host_buffer(device, initial, type, what, buffer, mapped_pointer);
+            create_host_buffer(device, initial, type, what, buffer, mapped_pointer, extra_usage);
             buffers.push_back(std::move(buffer));
             if (mapped != nullptr) {
                 mapped->push_back(mapped_pointer);

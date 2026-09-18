@@ -89,5 +89,10 @@ namespace vulkan {
         float depth_bias_constant_factor = 0.0f,
         float depth_bias_slope_factor = 0.0f,
         float depth_bias_clamp = 0.0f,
-        std::span<VkPipelineColorBlendAttachmentState const> blend_attachments = {});
+        std::span<VkPipelineColorBlendAttachmentState const> blend_attachments = {},
+        // the descriptor-heap mapping for the FRAGMENT stage (VK_EXT_descriptor_heap attaches a mapping to
+        // VkPipelineShaderStageCreateInfo, so it is per stage): a mapping resolves `layout(set = N, binding = M)` in
+        // that shader to heap memory instead of a descriptor set, with no GLSL edit. Null leaves the stage on its
+        // descriptor sets, and the struct only has to live until this call returns.
+        VkShaderDescriptorSetAndBindingMappingInfoEXT const* fragment_mapping = nullptr);
 } // namespace vulkan
