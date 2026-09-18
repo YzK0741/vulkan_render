@@ -137,12 +137,19 @@ or the size the build sizes query reports - whichever the structures module alre
 same `rt_binding_written[frame_slot] != tlas` guard, at grid slot `heap_slots::tlas + frame_slot` - the two slots
 the TLAS has BECAUSE it is rebuilt every frame.
 
-THE SIZE IS ALREADY COMPUTED, in the module that builds the structures:
-`vulkan/acceleration_structure/acceleration_structure.cpp` sets `create.size = sizes.accelerationStructureSize`
-from `vkGetAccelerationStructureBuildSizesKHR` (two places, the single structure and the growable one). So the
-next step is a one-grep question - does that module publish the number it created the structure with? - and then
-the write above is three lines: the address query, the size, and `write_buffer` with
-`VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR`.
+THE SIZE IS COMPUTED IN THE RAY-TRACING MODULE, NOT THE ACCELERATION-STRUCTURE ONE - and that correction cost a
+build, so it is written down: the TLAS this renderer uses is built by **`ray_tracing::structure_set`**
+(`vulkan/ray_tracing/ray_tracing.cppm`, `build()`/`update()` in `ray_tracing.cpp`), whose public surface today is
+`handle(frame_slot)`, `instance_table(frame_slot)`, `casters()`, `attempted()`, `ready()`. The
+`acceleration_structure` module's `top_level_structure` also creates a top level structure with
+`create.size = sizes.accelerationStructureSize`, and that is the module the first version of this note pointed at;
+pointing there made the write compile against a class the runtime does not own (the error names the type:
+`no member named 'structure_size' in 'vulkan::ray_tracing::structure_set'`).
+
+So the next step is: publish the size from `structure_set` - it is known where the structure is created, next to
+`handle()` - and then the write in `runtime::build_rt_structures` is three lines: the address query, that size,
+and `write_buffer` with `VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR`, at grid slot `heap_slots::tlas +
+frame_slot`, inside the existing `rt_binding_written[frame_slot] != tlas` guard.
 
 ## What populating the IMAGE half needs (found by trying)
 
