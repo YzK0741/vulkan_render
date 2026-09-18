@@ -920,12 +920,14 @@ namespace vulkan {
         vkWaitForFences(vk.device, 1, &fence, VK_TRUE, UINT64_MAX);
 
         uint32_t const readback = *static_cast<uint32_t const*>(answer_detail->allocation_info.pMappedData);
-        utility::log("descriptor heap: the heap-native probe sampled grid slot {} through sampler slot {} and read back 0x{:08x} (red 0x{:04x}, alpha 0x{:04x}) - a layout-less, heap-flagged pipeline working",
+        uint32_t const material_readback = static_cast<uint32_t const*>(answer_detail->allocation_info.pMappedData)[1];
+        utility::log("descriptor heap: the heap-native probe sampled grid slot {} through sampler slot {} and read back 0x{:08x} (texture red 0x{:04x}, alpha 0x{:04x}); the material table's DEFAULT record read 0x{:04x} (its white base colour is 0xffff)",
                      texture_slot,
                      sampler_slot,
                      readback,
                      readback & 0xFFFFu,
-                     readback >> 16u);
+                     readback >> 16u,
+                     material_readback & 0xFFFFu);
 
         vkDestroyFence(vk.device, fence, nullptr);
         vkDestroyCommandPool(vk.device, pool, nullptr);
