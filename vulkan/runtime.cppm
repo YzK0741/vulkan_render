@@ -548,12 +548,15 @@ namespace vulkan {
         void run_heap_probe(uint32_t texture_slot);
         /**
          * @brief run the GRAPHICS half of the heap-native probe once (see shaders/heap_probe.vert/.frag)
+         * @param material_slot the ABSOLUTE grid slot of the material table the fragment stage reads; the caller
+         *        runs it once with the right slot and once with a deliberately WRONG one, because a probe that can
+         *        only say "fine" would pass every check
          * @note the same question as run_heap_probe for the pipeline kind the frame is mostly made of: a
          *       heap-flagged, layout-less GRAPHICS pipeline whose fragment stage reads the heap. It renders the
          *       default material's base colour into a 4x4 target cleared to black first - so a white pixel can only
          *       have come from the shader - and reads it back.
          */
-        void run_heap_graphics_probe();
+        void run_heap_graphics_probe(uint32_t material_slot);
         /**
          * @brief the ONE create-time context every pass is built with
          *

@@ -31,8 +31,15 @@ struct ProbeMaterial {
 };
 layout(descriptor_heap, descriptor_stride = heap_slot_stride) readonly buffer ProbeMaterials { ProbeMaterial materials[]; } heap_material_tables[];
 
+// The slot is a PARAMETER rather than a constant, and that is the point: the host pushes it, so the probe can be
+// run a second time with a deliberately WRONG slot - a probe that can only say "fine" would pass every check.
+// With no pipeline layout (the flag's requirement) this block arrives through vkCmdPushDataEXT.
+layout(push_constant) uniform HeapProbePush {
+    uint material_slot; // ABSOLUTE grid slot of the material table, e.g. heap_slots_materials
+} pc;
+
 void main() {
     // The uv is unused on purpose: the value is a constant of the heap's contents, not of the fragment's position,
     // so the whole 4x4 target must come back the same colour - which is what makes a single pixel a valid probe.
-    colour = vec4(heap_material_tables[heap_slots_materials].materials[0].base_color_factor.rgb, 1.0);
+    colour = vec4(heap_material_tables[pc.material_slot].materials[0].base_color_factor.rgb, 1.0);
 }

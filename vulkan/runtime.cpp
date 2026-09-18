@@ -933,7 +933,7 @@ namespace vulkan {
         vkDestroyCommandPool(vk.device, pool, nullptr);
     }
 
-    void runtime::run_heap_graphics_probe() {
+    void runtime::run_heap_graphics_probe(uint32_t const material_slot) {
         // ---- THE GRAPHICS HALF OF THE HEAP-NATIVE PROBE (see shaders/heap_probe.vert/.frag) ----
         //
         // The compute probe proved the mechanism for a compute pipeline; this is the same question for the kind
@@ -1016,6 +1016,11 @@ namespace vulkan {
                                            .pDepthAttachment = nullptr,
                                            .pStencilAttachment = nullptr};
         vkCmdBeginRendering(command_buffer, &rendering);
+        // The slot, THROUGH PUSH DATA: the pipeline has no layout (the flag requires that), so this is the only
+        // way a parameter reaches the fragment stage - and running the probe with a wrong value here is the
+        // negative proof (see the caller).
+        std::array<uint32_t, 4> const push = {material_slot, 0u, 0u, 0u};
+        [[maybe_unused]] bool const pushed = vk.descriptor_heaps.push_data(command_buffer, 0u, std::as_bytes(std::span(push)));
         vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, built->get_pipeline());
         vkCmdDraw(command_buffer, 3u, 1u, 0u, 0u); // the fullscreen triangle heap_probe.vert builds from gl_VertexIndex
         vkCmdEndRendering(command_buffer);
@@ -1058,7 +1063,8 @@ namespace vulkan {
         vkWaitForFences(vk.device, 1, &fence, VK_TRUE, UINT64_MAX);
 
         auto const* const pixel = static_cast<unsigned char const*>(readback_detail->allocation_info.pMappedData);
-        utility::log("descriptor heap: the heap-native GRAPHICS probe rendered the default material into a {}x{} target and read back rgba {},{},{},{} (its white base colour is 255,255,255,255) - a heap-flagged graphics pipeline with no layout working",
+        utility::log("descriptor heap: the heap-native GRAPHICS probe rendered grid slot {} into a {}x{} target and read back rgba {},{},{},{} (the default material's white base colour is 255,255,255,255, so the WRONG slot proves the index selects the descriptor)",
+                     material_slot,
                      pipelines::heap_probe_extent,
                      pipelines::heap_probe_extent,
                      pixel[0],
@@ -1382,10 +1388,12 @@ namespace vulkan {
         if (heap_texture_descriptors != 0u) {
             this->run_heap_probe(static_cast<uint32_t>(core::heap_slots::textures));
         }
-        // ... and its GRAPHICS half, once the material table is in the heap (which the line above needs too): it
-        // renders the default material's base colour through a fragment stage that reads the heap.
+        // ... and its GRAPHICS half, twice: once with the material table's REAL grid slot (which must come back
+        // white, the default material's base colour) and once with a deliberately WRONG one (which must not). The
+        // pair is the negative proof the mechanism needs - the same draw, the same shader, one different number.
         if (this->vulkan_core.descriptor_heaps.ready() && this->vulkan_core.heap_grid_offset != VK_WHOLE_SIZE) {
-            this->run_heap_graphics_probe();
+            this->run_heap_graphics_probe(static_cast<uint32_t>(core::heap_slots::materials));
+            this->run_heap_graphics_probe(static_cast<uint32_t>(core::heap_slots::materials) + 1u);
         }
 
         // material slots that fell back to white share element 0; write it once when used
