@@ -174,17 +174,28 @@ probes prove that a heap read and a heap draw both work, and no push is refused.
   a secondary gets them; the scene path is not missing them.
 
 **What that leaves, and it is now one sentence.** The PRIMARY's passes render (the red test proves it) and
-the SECONDARIES' content does not (the flat-green test proves it - and it holds on the shaded path too,
-where the log confirms the `scene` and `deferred` passes both resolved). Every shader, descriptor, index,
-push, viewport and capture question is measured away, so the fault is in how the scene segments are
-recorded or executed.
+the scene's draws do not - on the primary *or* in a secondary. Every shader, descriptor, index, push,
+viewport, discard and depth question is measured away, so the fault is in what the scene pass's instance
+does to its own output. The one link not yet examined is the **per-attachment blend state of the G-buffer
+pipeline** (the runtime builds it, with `make_color_blend_attachment_additive` on the HDR target and
+overwrite on the surface targets): zero blend factors would write black no matter what the fragment stage
+outputs, which is exactly what the forced flat-green albedo showed. Check `runtime`'s G-buffer pipeline
+creation (around `gbuffer_pipeline->viewport = full_viewport`) against its blend attachment list before
+touching anything else.
 
-**The next experiment is one edit and it splits that question in half:** in `scene_pass::record`, record
-the single segment's leaves **directly onto the primary** (`io.cmd`) instead of into
-`frame_.segments[0].buffer` and executing it. If the G-buffer fills, a secondary's content is not reaching
-the target and the fault is in `begin_segment`'s inheritance or in the execute; if it stays black, the
-segment's own content is wrong however it is recorded. Everything else in this document can wait for that
-answer.
+Also measured away this round, so do not re-run them:
+
+* **Recording a segment on the PRIMARY.** Removing `VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT`
+  and recording the leaves straight onto `io.cmd` leaves the frame black: the secondary path is *not* the
+  fault, and the fault is how the scene's own content reaches the target.
+* **The stored viewport.** Instrumenting `vk_pipeline::begin_pipeline` printed
+  `stored viewport 1080x960 at (0, 0), scissor 1080x960` - correct, and this is the value the scene path
+  relies on (`resync_viewport = false`).
+* **The MASK discard.** Disabling `surface.glsl`'s `discard` changed nothing.
+* **The depth clear.** `make_depth_attachment_info` clears depth to `1.0f` (`constant_init.cppm:327`), so
+  a `LESS`/`LESS_OR_EQUAL` compare cannot be rejecting every fragment.
+* **The draw path bailing.** No `unknown pipeline`/"draw skipped" line appears, and both `pbr` and `unlit`
+  pipelines are created and cached.
 
 **The measurement worth carrying forward:** the black frame's hash is `dc5f6d66428c26d8…` - byte for byte
 the hash this migration recorded earlier as "a half-migrated frame renders nothing". It is a *uniform*
