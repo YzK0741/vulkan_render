@@ -174,11 +174,17 @@ probes prove that a heap read and a heap draw both work, and no push is refused.
   a secondary gets them; the scene path is not missing them.
 
 **What that leaves, and it is now one sentence.** The PRIMARY's passes render (the red test proves it) and
-the SECONDARIES' content does not (the flat-green test proves it). Every shader, descriptor, index, push and
-viewport question is measured away, so the fault is in how the scene segments are recorded or executed -
-`scene_pass::begin_segment`'s inheritance, or the primary's `vkCmdExecuteCommands` around them - and the
-next probe should compare a *known-good* secondary (the shadow cascade's, or the transparent pass's) with a
-segment's, rather than touching the shading path again.
+the SECONDARIES' content does not (the flat-green test proves it - and it holds on the shaded path too,
+where the log confirms the `scene` and `deferred` passes both resolved). Every shader, descriptor, index,
+push, viewport and capture question is measured away, so the fault is in how the scene segments are
+recorded or executed.
+
+**The next experiment is one edit and it splits that question in half:** in `scene_pass::record`, record
+the single segment's leaves **directly onto the primary** (`io.cmd`) instead of into
+`frame_.segments[0].buffer` and executing it. If the G-buffer fills, a secondary's content is not reaching
+the target and the fault is in `begin_segment`'s inheritance or in the execute; if it stays black, the
+segment's own content is wrong however it is recorded. Everything else in this document can wait for that
+answer.
 
 **The measurement worth carrying forward:** the black frame's hash is `dc5f6d66428c26d8…` - byte for byte
 the hash this migration recorded earlier as "a half-migrated frame renders nothing". It is a *uniform*
