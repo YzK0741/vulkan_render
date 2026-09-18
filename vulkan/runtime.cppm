@@ -547,6 +547,14 @@ namespace vulkan {
          */
         void run_heap_probe(uint32_t texture_slot);
         /**
+         * @brief run the GRAPHICS half of the heap-native probe once (see shaders/heap_probe.vert/.frag)
+         * @note the same question as run_heap_probe for the pipeline kind the frame is mostly made of: a
+         *       heap-flagged, layout-less GRAPHICS pipeline whose fragment stage reads the heap. It renders the
+         *       default material's base colour into a 4x4 target cleared to black first - so a white pixel can only
+         *       have come from the shader - and reads it back.
+         */
+        void run_heap_graphics_probe();
+        /**
          * @brief the ONE create-time context every pass is built with
          *
          * It was a block inside `create_passes()` plus a copy per job (the MASK bake, the compute-skinning job) -
