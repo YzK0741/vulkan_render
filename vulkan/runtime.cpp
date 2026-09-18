@@ -303,7 +303,8 @@ namespace vulkan {
                                        vulkan::buffer_type::storage_coherent,
                                        "instance transform buffer",
                                        this->instance_buffer,
-                                       this->instance_mapped);
+                                       this->instance_mapped,
+                                       VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT); // the heap writes this one's address
 
         // Per-motion-slot previous world matrices (set 0 binding 13): ONE buffer per frame slot, like
         // the skin and morph buffers below, so a frame in flight never shares the buffer the next
@@ -561,6 +562,7 @@ namespace vulkan {
             if (!vk.descriptor_heaps.ready() || vk.heap_grid_offset == VK_WHOLE_SIZE) {
                 return;
             }
+            uint32_t written = 0;
             for (uint32_t slot = 0; slot < buffers.size(); ++slot) {
                 auto const* const detail = vk.vma.get_buffer_detail(buffers[slot].handle());
                 if (detail == nullptr) {
@@ -569,10 +571,17 @@ namespace vulkan {
                 VkBufferDeviceAddressInfo const info = {.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .pNext = nullptr, .buffer = detail->buffer};
                 VkDeviceAddress const address = vkGetBufferDeviceAddress(vk.device, &info);
                 VkDeviceSize const offset = heap_slot_offset(slot_base + slot);
-                if (!vk.descriptor_heaps.write_buffer(offset, address, size, type)) {
+                if (vk.descriptor_heaps.write_buffer(offset, address, size, type)) {
+                    ++written;
+                } else {
                     utility::log("descriptor heap: the per-frame buffer for grid slot {} (frame slot {}) did not fit at offset {}", slot_base, slot, offset);
                 }
             }
+            // SUCCESS IS LOGGED TOO, and that is not noise: a heap write has no picture to show for itself until
+            // the shaders read the heap, so "no failure line" and "the buffers were empty, so nothing was written"
+            // look exactly alike. This line is what tells them apart (it is the same reason the texture array and
+            // the material table each log their count).
+            utility::log("descriptor heap: {} per-frame descriptor(s) written for grid slots {}..{}", written, slot_base, slot_base + (buffers.empty() ? 0u : static_cast<uint32_t>(buffers.size()) - 1u));
         }
     } // namespace
 
@@ -629,6 +638,19 @@ namespace vulkan {
         write_heap_scene_buffer(this->vulkan_core, this->motion_buffers, core::heap_slots::previous_transforms, static_cast<VkDeviceSize>(vulkan::scene_motion_capacity) * sizeof(glm::mat4), VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
         write_heap_scene_buffer(this->vulkan_core, this->skin_buffers, core::heap_slots::skin_matrices, static_cast<VkDeviceSize>(vulkan::scene_skin_capacity) * sizeof(glm::mat4), VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
         write_heap_scene_buffer(this->vulkan_core, this->morph_buffers, core::heap_slots::morph_data, static_cast<VkDeviceSize>(vulkan::scene_morph_capacity) * sizeof(float), VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+        // THE INSTANCE TRANSFORM TABLE (set 0 binding 6) is the odd one: a SINGLE buffer rather than one per frame
+        // slot (see runtime.cppm's member), so it takes ONE grid slot instead of a two-slot array - which is what
+        // heap_slots::instance_transforms reserved. Written from the same size the scene set gives it.
+        if (this->vulkan_core.descriptor_heaps.ready() && this->vulkan_core.heap_grid_offset != VK_WHOLE_SIZE) {
+            auto const* const instance_table_detail = this->vulkan_core.vma.get_buffer_detail(this->instance_buffer.handle());
+            if (instance_table_detail != nullptr) {
+                VkBufferDeviceAddressInfo const instance_table_address_info = {.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .pNext = nullptr, .buffer = instance_table_detail->buffer};
+                VkDeviceAddress const instance_table_address = vkGetBufferDeviceAddress(this->vulkan_core.device, &instance_table_address_info);
+                if (!this->vulkan_core.descriptor_heaps.write_buffer(heap_slot_offset(core::heap_slots::instance_transforms), instance_table_address, static_cast<VkDeviceSize>(vulkan::instance_capacity) * sizeof(glm::mat4), VK_DESCRIPTOR_TYPE_STORAGE_BUFFER)) {
+                    utility::log("descriptor heap: the instance transform table did not reach grid slot {}", core::heap_slots::instance_transforms);
+                }
+            }
+        }
     }
 
     void runtime::ensure_scene_set() {
