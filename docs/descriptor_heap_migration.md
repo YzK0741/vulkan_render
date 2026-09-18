@@ -193,6 +193,44 @@ the picture break.
 The migration is still one frame-wide switch, for the reason at the top of this file: a frame whose stages do not
 all read the heap renders nothing at all.
 
+## The native path's two open questions, and the POC that died answering them
+
+The plan was to prove the heap-native shader path on the MASK BAKE, which looks ideal: it reads exactly two
+descriptors (the material table and the bindless texture array, both already on the grid), it is a job rather
+than a frame pass, and it only runs under `[render] rt_mask_bake`, which no gate scenario sets - so a mistake
+could not reach a reference frame. The conversion was written and COMPILED (glslc accepts it first try):
+
+```glsl
+#include "heap_slots.glsl"
+layout(descriptor_heap, descriptor_stride = heap_slot_stride) uniform texture2D heap_textures[];
+layout(descriptor_heap) uniform sampler heap_samplers[];
+layout(descriptor_heap, descriptor_stride = heap_slot_stride) readonly buffer MaskMaterials { MaskMaterial materials[]; } heap_material_tables[];
+...
+heap_material_tables[heap_slots_materials].materials[pc.material_index]          // ARRAY name = heap index,
+texture(sampler2D(heap_textures[heap_slots_textures + material.tex_indices.x],  // block member = record index
+                  heap_samplers[heap_sampler_texture]), uv)
+```
+
+It was REVERTED, because the probe cannot be isolated: `ray_tracing::structure_set` builds the structures in the
+FRAME's command buffer (`runtime::build_rt_structures`, whose gpu marks sit next to the frame's), and
+`runtime::structure_record_mask_bake` records the bake into that same command buffer. Binding the heap there is
+exactly the measured poison that makes every set-based stage in the frame read the heap - so the bake is only
+safe to convert *together with the whole frame*, which is the point this file opens with. A lesson about the
+method, not the mechanism: "off the gate's path" is not the same as "isolated".
+
+TWO QUESTIONS THE REAL CONVERSION MUST ANSWER, in this order:
+
+1. **Does a heap-native pipeline need `VK_PIPELINE_CREATE_2_DESCRIPTOR_HEAP_BIT_EXT` at all?** The flag's
+   validation message is about MAPPINGS being read instead of a layout; a native declaration references the heap
+   builtin directly. Test it by converting one stage with the flag OFF and a normal layout.
+2. **If the flag IS needed, the layout must be NULL** (measured, VUID above) - and then there are no PUSH
+   CONSTANTS, because those live in the pipeline layout. The indices this design planned to carry in push
+   constants would have to come from the heap instead (a per-frame-slot index block is already on the grid, and
+   which slot is read is itself the chicken-and-egg: it must be derivable from something the shader already
+   knows, or the slot's DESCRIPTOR must be rewritten per frame, which frames in flight forbid).
+
+That is the decision to make first, and it is a measurement away: one stage, either answer, both cheap.
+
 ## What populating the IMAGE half needs (found by trying)
 
 A heap image descriptor carries a **`VkImageViewCreateInfo`, not a view** - the driver creates the view inside
