@@ -105,9 +105,9 @@ const uint heap_sampler_gbuffer = heap_sampler_base + 2u;        // nearest, cla
 const uint heap_sampler_post_nearest = heap_sampler_base + 3u;   // nearest, clamp (the same sampler twice)
 const uint heap_sampler_taa = heap_sampler_base + 4u;            // linear mag / nearest min, clamp
 const uint heap_sampler_shadow = heap_sampler_base + 5u;         // depth compare, clamp
-// The runtime's OWN sampler for the IBL images (env, irradiance, LUT): it is not one of the six core creates, so
-// it is the seventh slot - the host writes it there once the heap exists (runtime::set_ibl's samplers).
-const uint heap_sampler_env = heap_sampler_base + 6u;
+// NO SEVENTH SAMPLER. The IBL images (env, irradiance, LUT) are sampled through `heap_sampler_texture`, the one
+// with LINEAR filtering and the full mip chain; a `heap_sampler_env` name lived here and pointed at a slot the
+// host never writes (core writes exactly the six above), which is what the grid contract test caught.
 
 // THE SLOTS A CONVERTED STAGE ACTUALLY INDEXES. They are MACROS rather than constants because the index they add
 // is a push-constant lane, i.e. not a compile-time value - this keeps the ~forty use sites unchanged (they read

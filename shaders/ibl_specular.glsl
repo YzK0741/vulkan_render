@@ -23,13 +23,18 @@
 
 /// @brief the prefiltered chain's mip level for a roughness: the level count is QUERIED from the
 ///        sampler rather than hardcoded, so it always matches whatever `env_mip_count` the CPU baked
+/// @note the sampler is `heap_sampler_texture` - the one with LINEAR filtering and the full mip chain, which
+///       is what a prefiltered lookup needs. There used to be a seventh `heap_sampler_env` name here, and the
+///       host writes exactly six samplers: the env reads were reaching an UNWRITTEN slot, which the grid
+///       contract test now fails on (see tests/test_render_resources.cpp). A cube map's addressing mode is
+///       ignored at face edges, so the texture sampler's repeat costs nothing here.
 float ibl_specular_lod(float roughness) {
-    return roughness * float(max(textureQueryLevels(samplerCube(env_texture[heap_env_slot], heap_samplers[heap_sampler_env])) - 1, 0));
+    return roughness * float(max(textureQueryLevels(samplerCube(env_texture[heap_env_slot], heap_samplers[heap_sampler_texture])) - 1, 0));
 }
 
 /// @brief one sample of the prefiltered environment: the radiance arriving from @p reflection
 vec3 ibl_specular_sample(vec3 reflection, float lod) {
-    return textureLod(samplerCube(env_texture[heap_env_slot], heap_samplers[heap_sampler_env]), reflection, lod).rgb;
+    return textureLod(samplerCube(env_texture[heap_env_slot], heap_samplers[heap_sampler_texture]), reflection, lod).rgb;
 }
 
 /// @brief Prefiltered GGX environment radiance for a reflection ray, at the mip that matches
