@@ -110,3 +110,26 @@ Push *data* (`vkCmdPushDataEXT`) cannot carry these: it only feeds mapping sourc
 `BUILD=0`, 8/8 tests, gate 9/9 `changed: 0` (frame byte-identical, `mean|d| ~0.029`), validation silent, and a
 deliberate **wrong-index** push as the negative proof (the picture must break, which is what proves the shaders
 read the heap).
+
+## The grid as it stands (measured at startup)
+
+```
+descriptor heap: available (VK_EXT_descriptor_heap, revision 1)
+SUCCESS: descriptor heap created (resource 1088 KiB at ..., sampler 128 KiB at ...;
+         strides buffer 16 B, image 32 B, sampler 32 B)
+descriptor heap: the reserved window ends at 96768 B, so the grid's 1 MiB base is 1048576 B away
+descriptor heap: slot grid at 1048576 (1024 slots x 64 B; textures 0 materials 512 tlas 513
+                 camera 514 light 516 clusters 518/520 gbuffer 551 env 532 lut 534)
+```
+
+- The resource grid's base is **1 MiB** and its stride **64 B**; the slot numbers (relative to that base) are
+  the constants in `shaders/heap_slots.glsl` and `core::heap_slots`. 703 of the 1024 slots are named.
+- The SAMPLER heap is a second grid at a **64 KiB** base with the device's 32 B stride: the API caps that heap
+  at 128 KiB, so it cannot use the resource grid's 1 MiB. Refused unless the device's reserved window fits
+  below the base and its sampler stride is 32 B.
+- **The heap sizes are derived from the layout, not guessed.** They were 256 KiB and 64 KiB, and both were
+  wrong in ways only the log showed: 256 KiB could not fit the 1 MiB base ("a reservation of 951808 B does not
+  fit the 262144 B resource heap", after which the grid landed on the reserved window at 96768 B and was
+  refused), and 64 KiB of sampler heap is *exactly* the reserved window the embedded-sampler path requires,
+  i.e. no usable sampler space at all. They are 1088 KiB and 128 KiB now.
+- Still inert: nothing reads the grid, so the frame is unchanged (gate 9/9, `changed: 0`).
