@@ -934,7 +934,7 @@ namespace vulkan {
                                                              .format = slots[i].second,
                                                              .components = {VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY},
                                                              .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS}};
-                    VkDeviceSize const heap_offset = this->vulkan_core.descriptor_heaps.descriptor_offset(0u, index, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE);
+                    VkDeviceSize const heap_offset = this->vulkan_core.descriptor_heaps.descriptor_offset(this->vulkan_core.descriptor_heaps.usable_offset(), index, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE);
                     if (this->vulkan_core.descriptor_heaps.write_image(heap_offset, heap_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)) {
                         ++heap_texture_descriptors;
                     } else {

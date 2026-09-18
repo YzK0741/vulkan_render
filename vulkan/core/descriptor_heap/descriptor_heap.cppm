@@ -177,6 +177,21 @@ namespace vulkan {
             return block_offset + static_cast<VkDeviceSize>(index) * this->descriptor_stride(type);
         }
 
+        /**
+         * @brief where a caller may START placing its own descriptors: past the implementation's reserved window
+         *
+         * @note THIS IS NOT OPTIONAL BOOKKEEPING. minResourceHeapReservedRange is memory the implementation reserves
+         *       for itself (the embedded-sampler machinery lives in it), and descriptors written INSIDE it are not
+         *       read back as written - which is not a validation error, it is a wrong picture. The first version of
+         *       this renderer's texture array was written at offset 0 and every one of the nine reference frames
+         *       changed, with validation silent; the mapping's heapOffset and the write offset both come from here
+         *       for that reason, and they must stay the same number.
+         */
+        [[nodiscard]] VkDeviceSize usable_offset() const noexcept {
+            VkDeviceSize const alignment = this->limits_.resource_alignment != 0 ? this->limits_.resource_alignment : 1u;
+            return ((this->limits_.resource_reserved + alignment - 1u) / alignment) * alignment;
+        }
+
     private:
         VkDevice device = VK_NULL_HANDLE;
         vk_buffer resource_heap_ = {};
