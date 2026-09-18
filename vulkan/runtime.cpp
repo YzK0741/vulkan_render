@@ -2606,20 +2606,12 @@ namespace vulkan {
     // scene casts shadows). Pure bind/push/draw commands - the caller owns the barriers and
     // the depth-only rendering instance around it. Recorded inline today; stage 2 records the
     // same content into a per-slot secondary command buffer for parallel pass recording.
-    void runtime::record_shadow_content(VkCommandBuffer const command_buffer, VkPipeline const pipeline, VkPipelineLayout const pipeline_layout) const {
+    void runtime::record_shadow_content(VkCommandBuffer const command_buffer, VkPipeline const pipeline, [[maybe_unused]] VkPipelineLayout const pipeline_layout) const {
         core const& vk = this->vulkan_core;
-        uint32_t const frame_slot = static_cast<uint32_t>(vk.current_frame);
-        if (this->scene_sets.created()) {
-            VkDescriptorSet const scene_set_handle = this->scene_sets.set(static_cast<uint32_t>(frame_slot));
-            vkCmdBindDescriptorSets(command_buffer,
-                                    VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                    pipeline_layout,
-                                    0,
-                                    1,
-                                    &scene_set_handle,
-                                    0,
-                                    nullptr);
-        }
+        // NO SET IS BOUND (see the heap bind in begin_recording): the light matrices, the camera and the shadow map
+        // are heap slots, and the shadow stage's push block carries the two indices that pick this frame's
+        // generation. A secondary records its own state, and the heap bind is made on the buffer it records into.
+        [[maybe_unused]] uint32_t const frame_slot = static_cast<uint32_t>(vk.current_frame);
         // depth bias is dynamic state on the shadow pipeline: record the live-tunable values
         // (gui-adjustable) before the depth-only draw
         vkCmdSetDepthBias(command_buffer, this->shadow_depth_bias_constant, this->shadow_depth_bias_clamp, this->shadow_depth_bias_slope);

@@ -220,8 +220,8 @@ namespace vulkan::pass {
         VkRenderingInfo const rendering_info = make_rendering_info(0, {{0, 0}, io.extent}, true, &color_attachment, nullptr);
         vkCmdBeginRendering(io.cmd, &rendering_info);
         vkCmdSetCullMode(io.cmd, VK_CULL_MODE_NONE);
-        VkDescriptorSet const draw_set = set;
-        vkCmdBindDescriptorSets(io.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, io.pipeline_layout, 0, 1, &draw_set, 0, nullptr);
+        // No set to bind: the history and the surface are heap slots, one pair per swapchain image, and the frame
+        // bound the heaps for this command buffer (see begin_recording).
         // THE PUSH BLOCK IS THE PASS'S OWN (S3): every lane of it is a fact this pass has - its two blend
         // weights, the texel size of the extent it was resolved at, the projection's two depth terms (which
         // arrive as frame CONSTANTS, the channel that exists for exactly this) and the history flag it maintains

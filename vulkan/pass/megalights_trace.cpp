@@ -140,9 +140,8 @@ namespace vulkan::pass {
         VkDependencyInfo const first_use = make_image_dependency_info(1, &to_general);
         vkCmdPipelineBarrier2(io.cmd, &first_use);
 
-        // Two sets, then the pipeline: the shared scene set and the shared G-buffer set, the order the tracer uses.
-        std::array<VkDescriptorSet, 2> const sets = {io.shared.scene, io.shared.gbuffer};
-        vkCmdBindDescriptorSets(io.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, io.pipeline_layout, 0, static_cast<uint32_t>(sets.size()), sets.data(), 0, nullptr);
+        // The pipeline, and no sets: the tracer's inputs are heap slots (the scene's buffers, the G-buffer images
+        // per swapchain image, its own storage images), which the frame bound on this command buffer.
 
         push_constants push = {};
         push.inv_view_proj = io.constants.inv_view_proj;

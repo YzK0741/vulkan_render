@@ -158,9 +158,9 @@ namespace vulkan::pass {
         VkRenderingAttachmentInfo const color_attachment = make_load_color_attachment_info(target_view);
         VkRenderingInfo const rendering_info = make_rendering_info(0, {{0, 0}, io.extent}, true, &color_attachment, nullptr);
         vkCmdBeginRendering(io.cmd, &rendering_info);
+        // No set to bind: the stored targets and the G-buffer depth are heap slots, and the frame bound the heaps
+        // on this command buffer (see begin_recording); the pass's push block carries the two indices.
         vkCmdSetCullMode(io.cmd, VK_CULL_MODE_NONE); // the synthetic triangle has no facing to cull
-        std::array<VkDescriptorSet, 2> const sets = {io.shared.scene, io.shared.gbuffer};
-        vkCmdBindDescriptorSets(io.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, io.pipeline_layout, 0, static_cast<uint32_t>(sets.size()), sets.data(), 0, nullptr);
         // THE PUSH BLOCK IS THE PASS'S OWN (S3): its shape was always the pass's (`push_constants`, `static_assert`ed
         // against the declaration), and its VALUES are now the pass's too - the SSAO parameters and the flat-render
         // flag it owns, the frame's inverse view-projection from `resolved_io::constants`, and the frame's answer to

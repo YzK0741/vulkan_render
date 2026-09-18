@@ -35,30 +35,21 @@ gate-checked branch and losing twenty-five rounds of it.
 
 ## What remains
 
-### (a) Eight descriptor binds, which are now invalid
+### (a) Descriptor binds - DONE
 
-No pipeline has a layout, so a bound set has nothing to be compatible with. Each deletion also has to
-remove the variable the bind consumed, or `-Werror` turns the leftover into a build failure
-(`-Wunused-variable`).
+`vkCmdBindDescriptorSets` now appears **zero** times in `vulkan/`. Every bind is gone: the scene pass's
+per-segment bind and the transparent pass's per-secondary one (each of which existed because a secondary
+inherits no state from its primary - the heap bind has the same property, and the runtime makes it when
+it records the buffer), plus the sets in `fxaa`, `gbuffer_debug`, `cluster`, `deferred`, `post` (both
+record paths), `taa`, `megalights_trace`, `megalights_temporal`, `rt_shadow` and the shadow content in
+`runtime.cpp`. `scene_pass::record_segment` lost its `scene_set` parameter with them, which is why its
+call sites and its declaration in `scene.cppm` changed too, and `runtime::record_shadow_content` lost
+its only use of `pipeline_layout` (now `[[maybe_unused]]`, because the callback signature it must match
+belongs to the shadow pass).
 
-**Already deleted** (this is the scene pass's own draw path, so it was the first batch): the scene
-set in `scene.cpp` and `transparent.cpp`, and the sets in `fxaa.cpp`, `gbuffer_debug.cpp` and
-`cluster.cpp`. `scene_pass::record_segment` lost its `scene_set` parameter with them, which is why its
-call sites and its declaration in `scene.cppm` changed too.
-
-| file:line | what it binds |
-| --- | --- |
-| `vulkan/pass/deferred.cpp:163` | scene + G-buffer sets (`sets`, a two-element array) |
-| `vulkan/pass/post.cpp:243` and `:355` | the post set (two record paths) |
-| `vulkan/pass/taa.cpp:224` | its own set (`draw_set`) |
-| `vulkan/pass/megalights_trace.cpp:145` | scene + G-buffer sets |
-| `vulkan/pass/megalights_temporal.cpp:211` | its own set (`set`, from `family_.set(...)`) |
-| `vulkan/pass/rt_shadow.cpp:195` | scene + G-buffer sets |
-| `vulkan/runtime.cpp:2614` | the scene set in the shadow content (multiline, `scene_set_handle`) |
-
-The guards that gate on them (`io.pipeline_layout == VK_NULL_HANDLE`, `env.layout != VK_NULL_HANDLE`)
-still *pass*, because the runtime still hands out `scene_pipeline_layout` - so nothing here is caught
-by an early return, and nothing here is dead code either.
+Note that the guards which gate on these binds (`io.pipeline_layout == VK_NULL_HANDLE`,
+`env.layout != VK_NULL_HANDLE`) still *pass*, because the runtime still hands out
+`scene_pipeline_layout` - so none of this was caught by an early return, and none of it was dead code.
 
 ### (b) The post chain's source slot
 

@@ -208,7 +208,8 @@ namespace vulkan::pass {
         VkDependencyInfo const dependency = make_image_dependency_info(count, barriers.data());
         vkCmdPipelineBarrier2(io.cmd, &dependency);
 
-        vkCmdBindDescriptorSets(io.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, io.pipeline_layout, 0, 1, &set, 0, nullptr);
+        // No set is bound: the history and the accumulation images are heap slots (one per swapchain image), and
+        // the frame bound the heaps for this command buffer.
 
         push_constants push = {};
         push.params = glm::vec4(io.constants.proj[2][2], io.constants.proj[3][2], this->max_frames_, this->depth_tolerance_);

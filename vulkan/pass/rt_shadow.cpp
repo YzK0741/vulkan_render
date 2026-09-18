@@ -191,8 +191,9 @@ namespace vulkan::pass {
         VkDependencyInfo const general_dependency = make_image_dependency_info(1, &to_general);
         vkCmdPipelineBarrier2(io.cmd, &general_dependency);
 
-        std::array<VkDescriptorSet, 2> const sets = {io.shared.scene, io.shared.gbuffer};
-        vkCmdBindDescriptorSets(io.cmd, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, io.pipeline_layout, 0, static_cast<uint32_t>(sets.size()), sets.data(), 0, nullptr);
+        // No sets to bind (see the heap bind in begin_recording): the tracer's scene buffers, its G-buffer images
+        // and the acceleration structure are heap slots the shader names, and the frame's indices arrive in its
+        // push block.
 
         // THE PUSH BLOCK IS THE PASS'S OWN NOW (S3): the renderer used to compose it and hand it over as raw
         // bytes, which was the last thing it knew about this pass's frame. What it carries is this frame's
