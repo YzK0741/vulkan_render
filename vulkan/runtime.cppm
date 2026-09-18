@@ -219,6 +219,10 @@ namespace vulkan {
         // other. instance_cursor resets to 0 whenever instanced primitives are cleared (they are
         // the only writers).
         vk_buffer instance_buffer = {};
+        /// Buffers a PASS asked for through `pass_context::create_upload_buffer` (the ray-traced shadow's shader
+        /// binding table is the first): the owner keeps them for the generation, because the pass gets a handle
+        /// and a device address, not an allocation it could free.
+        std::vector<vk_buffer> pass_upload_buffers = {};
         void* instance_mapped = nullptr;
         uint32_t instance_cursor = 0;
         // previous-frame world matrices (scene set binding 13): ONE buffer per frame slot, host

@@ -268,9 +268,15 @@ namespace chores {
             // pipeline layout and compute pipeline from it (see vulkan.pass.rt_shadow), and a pass created
             // before its shader exists builds nothing and says so. Optional, and the builder refuses on a device
             // without ray queries: without it the cascaded shadow maps keep running.
-            std::vector<unsigned char> rt_shadow_code;
-            load_shader(shaders_dir, "rt_shadow.comp.spv", rt_shadow_code);
-            runtime.register_shader("rt_shadow.comp.spv", rt_shadow_code);
+            std::vector<unsigned char> rt_shadow_raygen_code;
+            load_shader(shaders_dir, "rt_shadow.rgen.spv", rt_shadow_raygen_code);
+            runtime.register_shader("rt_shadow.rgen.spv", rt_shadow_raygen_code);
+            std::vector<unsigned char> rt_shadow_closest_hit_code;
+            load_shader(shaders_dir, "rt_shadow.rchit.spv", rt_shadow_closest_hit_code);
+            runtime.register_shader("rt_shadow.rchit.spv", rt_shadow_closest_hit_code);
+            std::vector<unsigned char> rt_shadow_miss_code;
+            load_shader(shaders_dir, "rt_shadow.rmiss.spv", rt_shadow_miss_code);
+            runtime.register_shader("rt_shadow.rmiss.spv", rt_shadow_miss_code);
 
 
             // The alphaMode MASK bake (shaders/mask_bake.comp) and the compute skinning job

@@ -1123,7 +1123,7 @@ namespace vulkan {
     void core::init_scene_layouts() noexcept {
         // ---- 1. Fixed flat descriptor set layout (see the convention docs in core.cppm) ----
         std::array<VkDescriptorSetLayoutBinding, 17> bindings = {};
-        bindings[0] = {.binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT, .pImmutableSamplers = nullptr};
+        bindings[0] = {.binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR | VK_SHADER_STAGE_MISS_BIT_KHR, .pImmutableSamplers = nullptr};
         // 1, 2, 4 and 5 carry COMPUTE as well as FRAGMENT: the traced GI pass needs the bindless texture
         // array, the prefiltered environment and the BRDF LUT (its IBL) and the material table (the
         // material of the surface a ray hit) once it shades a hit itself instead of sampling the screen.
@@ -1139,7 +1139,7 @@ namespace vulkan {
         bindings[6] = {.binding = 6, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_VERTEX_BIT, .pImmutableSamplers = nullptr};
         // light UBO: directional sun (light-space view-proj + direction) + BRDF model ids +
         // the punctual-light count/array (read by shadow.vert and pbr.frag)
-        bindings[7] = {.binding = 7, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT, .pImmutableSamplers = nullptr};
+        bindings[7] = {.binding = 7, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR | VK_SHADER_STAGE_MISS_BIT_KHR, .pImmutableSamplers = nullptr};
         // shadow map depth texture: LINEAR min/mag with compareEnable = VK_TRUE, so one
         // sampler2DArrayShadow texture() tap already returns the lit fraction of its own 2x2 texel
         // footprint - the hardware does the comparison (shading.glsl averages a 3x3 grid of taps)
@@ -1163,9 +1163,11 @@ namespace vulkan {
         // stage reads its own entry to hand the fragment stage a previous world position, which is
         // what gives a moving OBJECT a motion vector. Vertex-only - nothing else reads it.
         bindings[13] = {.binding = 13, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_VERTEX_BIT, .pImmutableSamplers = nullptr};
-        // Ray-traced sun visibility (see shaders/rt_shadow.comp): 14 is the image the deferred lighting
-        // stage samples, 15 the SAME image as the storage view the compute pass writes, and 16 the top
-        // level structure the ray is traced against.
+        // Ray-traced sun visibility (see shaders/rt_shadow.rgen): 14 is the image the deferred lighting stage
+        // samples, 15 the SAME image as the storage view the tracing stage writes, and 16 the top level
+        // structure the ray is traced against. THE THREE TRACING STAGES are named on 0, 7, 15 and 16 below
+        // because a ray-tracing pipeline's raygen declares them - and a binding a shader statically uses has to
+        // name that shader's stage in the layout, which is the rule the COMPUTE stages here follow too.
         //
         // 14/15 are unconditionally legal (a sampler and a storage image need no extension) and are
         // always written: the images exist on every device, and a frame with ray-traced shadows off just
@@ -1178,10 +1180,10 @@ namespace vulkan {
         // Nothing that does not trace rays declares the binding, so a shorter layout is invisible to
         // them.
         bindings[14] = {.binding = 14, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT, .pImmutableSamplers = nullptr};
-        bindings[15] = {.binding = 15, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT, .pImmutableSamplers = nullptr};
+        bindings[15] = {.binding = 15, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR | VK_SHADER_STAGE_MISS_BIT_KHR, .pImmutableSamplers = nullptr};
         uint32_t binding_count = 16;
         if (this->ray_query_available) {
-            bindings[16] = {.binding = 16, .descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT, .pImmutableSamplers = nullptr};
+            bindings[16] = {.binding = 16, .descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR | VK_SHADER_STAGE_MISS_BIT_KHR, .pImmutableSamplers = nullptr};
             binding_count = 17;
         }
 

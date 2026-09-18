@@ -83,8 +83,12 @@ export namespace vulkan::pass {
         [[nodiscard]] VkPipelineLayout pipeline_layout() const noexcept override;
 
     private:
-        static constexpr std::string_view shader_name = "rt_shadow.comp.spv";
-        static constexpr uint32_t group_size = 8; // `rt_shadow.comp`'s local_size_x/y
+        // THREE stages, and the sbt order the builder created them in: raygen, miss, hit. The regions below
+        // follow that order, which is why the builder returns the group count with the pipeline.
+        static constexpr std::string_view raygen_name = "rt_shadow.rgen.spv";
+        static constexpr std::string_view closest_hit_name = "rt_shadow.rchit.spv";
+        static constexpr std::string_view miss_name = "rt_shadow.rmiss.spv";
+        static constexpr uint32_t group_size = 8; // unused by a traceRays launch (the launch dims ARE the extent)
         /// the one declared barrier image, by the position the declaration gives it
         static constexpr uint32_t barrier_visibility = 0;
         static_assert(barrier_visibility + 1 == render_resource::rt_shadow_barriers.size(),
@@ -92,7 +96,7 @@ export namespace vulkan::pass {
 
         static constexpr std::array<std::string_view, 1> pipeline_names = {"rt_shadow"};
         inline static constexpr vulkan::pass::behaviour behaviour_ = {
-            .kind = behaviour_kind::compute,
+            .kind = behaviour_kind::ray_tracing,
             .group_size_x = group_size,
             .group_size_y = group_size,
             .group_size_z = 1,
@@ -106,6 +110,19 @@ export namespace vulkan::pass {
         VkDevice device_ = VK_NULL_HANDLE;
         VkPipelineLayout pipeline_layout_ = VK_NULL_HANDLE;
         std::optional<vk_pipeline> pipeline_ = std::nullopt;
+        // The shader binding table's three regions, filled at create time from the pipeline's group handles. The
+        // BUFFER is the owner's (see pass_context::create_upload_buffer); what the pass keeps is where each
+        // region starts, which is the per-pipeline part.
+        /// the traceRays entry point, loaded through vkGetDeviceProcAddr at create time (an extension command
+        /// is not exported by the loader's import library - see the acceleration-structure module's note)
+        PFN_vkCmdTraceRaysKHR trace_rays_ = nullptr;
+        VkStridedDeviceAddressRegionKHR raygen_region_ = {};
+        VkStridedDeviceAddressRegionKHR miss_region_ = {};
+        VkStridedDeviceAddressRegionKHR hit_region_ = {};
+        /// The callable region, which this pipeline has no shaders for - and which must still be a VALID
+        /// pointer to an all-zero region: `vkCmdTraceRaysKHR` dereferences it, so passing nullptr is a
+        /// validation error and (measured) a driver access violation rather than "no callables".
+        VkStridedDeviceAddressRegionKHR callable_region_ = {};
         /// whether the "tracing WxH rays per frame" line has been logged (it used to be the runtime's flag)
         bool logged_ = false;
     };

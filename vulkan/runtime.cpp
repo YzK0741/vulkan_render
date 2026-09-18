@@ -2674,6 +2674,31 @@ namespace vulkan {
             // ... and the SCENE pipeline layout, which the shadow pass builds its pipeline against (its draw is a subset of the scene's and its per-cascade push goes through the same layout): .shader above is the shape, one callback per thing a pass cannot own.
             .shared_pipeline_layout = [](void* owner) { return static_cast<runtime*>(owner)->vulkan_core.scene_pipeline_layout; },
             .shader = [](void* owner, std::string_view const name) { return static_cast<runtime*>(owner)->registered_shader(name); },
+            // The SBT numbers a tracing pass builds its table against, straight from the capability query (see
+            // device_capabilities): zeroed here on a device that has no ray-tracing pipeline.
+            .ray_tracing_properties = this->vulkan_core.ray_tracing_pipeline_properties,
+            // ... and the owner's buffer factory: the pass gets a handle and a device address, the runtime keeps
+            // the allocation for the generation (see `pass_upload_buffers`).
+            .create_upload_buffer =
+                [](void* owner, void const* data, uint64_t const bytes, VkBufferUsageFlags const usage, VkDeviceAddress* const out_address) -> VkBuffer {
+                runtime* const self = static_cast<runtime*>(owner);
+                vk_buffer buffer = self->vulkan_core.vma.create_buffer(static_cast<unsigned char const*>(data), bytes, buffer_type::storage_coherent,
+                                                                       usage | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT);
+                if (!buffer.valid()) {
+                    return VK_NULL_HANDLE;
+                }
+                auto const* const detail = self->vulkan_core.vma.get_buffer_detail(buffer.handle());
+                if (detail == nullptr) {
+                    return VK_NULL_HANDLE;
+                }
+                VkBufferDeviceAddressInfo const address_info = {.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .pNext = nullptr, .buffer = detail->buffer};
+                if (out_address != nullptr) {
+                    *out_address = vkGetBufferDeviceAddress(self->vulkan_core.device, &address_info);
+                }
+                VkBuffer const handle = detail->buffer;
+                self->pass_upload_buffers.push_back(std::move(buffer));
+                return handle;
+            },
             // The surface's format: a SESSION-STABLE device fact a pipeline that renders into the swapchain must
             // be created with (see pass_context). The post chain needs it today; the graphics passes being
             // extracted need it tomorrow.
@@ -3337,7 +3362,12 @@ namespace vulkan {
             vkCmdSetViewport(io.cmd, 0, 1, &viewport);
             vkCmdSetScissor(io.cmd, 0, 1, &scissor);
         }
-        VkPipelineBindPoint const bind_point = behaviour.kind == pass::behaviour_kind::compute ? VK_PIPELINE_BIND_POINT_COMPUTE : VK_PIPELINE_BIND_POINT_GRAPHICS;
+        // THREE bind points, one per way a pass's work reaches the command buffer: a compute dispatch, a
+        // traceRays launch (a ray-tracing pipeline bound to the compute point is invalid, so the pass's own
+        // kind is what says which), and the graphics kinds, which all mean the same thing here.
+        VkPipelineBindPoint const bind_point = behaviour.kind == pass::behaviour_kind::compute       ? VK_PIPELINE_BIND_POINT_COMPUTE
+                                               : behaviour.kind == pass::behaviour_kind::ray_tracing ? VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR
+                                                                                                     : VK_PIPELINE_BIND_POINT_GRAPHICS;
         for (VkPipeline const pipeline : io.pipelines) {
             if (pipeline != VK_NULL_HANDLE) {
                 vkCmdBindPipeline(io.cmd, bind_point, pipeline);

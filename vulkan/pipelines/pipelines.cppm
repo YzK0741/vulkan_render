@@ -100,7 +100,7 @@ namespace vulkan::pipelines {
     /// the ray-traced sun shadow: the same two set layouts the traced compute passes use (the scene set carries the
     /// camera, the light UBO and - when the device has ray tracing - the top level structure; the
     /// G-buffer set carries the surface the ray starts from)
-    export std::expected<compute_pipeline_owned, std::string> build_rt_shadow(VkDevice device, VkDescriptorSetLayout scene_layout, VkDescriptorSetLayout gbuffer_layout, uint32_t push_constant_size, std::span<unsigned char const> compute_shader_code);
+    export std::expected<compute_pipeline_owned, std::string> build_two_set_compute(VkDevice device, VkDescriptorSetLayout scene_layout, VkDescriptorSetLayout gbuffer_layout, uint32_t push_constant_size, std::span<unsigned char const> compute_shader_code);
     /// the stochastic punctual lighting trace (shaders/megalights_trace.comp): the same two set layouts again,
     /// with the estimator's own push block - see docs/megalights.md
     export std::expected<compute_pipeline_owned, std::string> build_megalights_trace(VkDevice device, VkDescriptorSetLayout scene_layout, VkDescriptorSetLayout gbuffer_layout, uint32_t push_constant_size,
@@ -281,7 +281,10 @@ namespace vulkan::pipelines {
             // debug view are fragment stages, while the lighting chain's resolve is a COMPUTE stage that
             // reads the stored surface (albedo, normal and depth) directly. A binding a shader does not
             // statically use needs no descriptor, but one it DOES use has to name the stage here.
-            bindings[b].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT;
+            // FRAGMENT, COMPUTE *and the three ray-tracing stages*: the shadow pass traces through a
+            // ray-tracing pipeline whose raygen samples this set, and a binding a shader statically uses has to
+            // name that shader's stage here (see the scene set layout's note).
+            bindings[b].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR | VK_SHADER_STAGE_MISS_BIT_KHR;
             bindings[b].pImmutableSamplers = nullptr;
         }
         VkDescriptorSetLayoutCreateInfo layout_info = {};
@@ -514,11 +517,12 @@ namespace vulkan::pipelines {
         return out;
     }
 
-    // The ray-traced sun shadow: a COMPUTE pipeline over the same two set layouts the traced compute passes use,
-    // because its inputs are in the same places (the camera block and the light UBO in the scene set,
-    // the stored surface in the G-buffer set) plus the top level structure, which lives in the scene set
-    // as binding 16 when the device has ray tracing. Nothing new is created here beyond the layout.
-    std::expected<compute_pipeline_owned, std::string> build_rt_shadow(VkDevice device, VkDescriptorSetLayout const scene_layout, VkDescriptorSetLayout const gbuffer_layout, uint32_t const push_constant_size, std::span<unsigned char const> const compute_shader_code) {
+    // The SHARED two-set compute builder: the shape several traced passes have in common - the camera block and
+    // the light UBO in the scene set (plus the top level structure at binding 16 when the device has ray
+    // tracing), the stored surface in the G-buffer set - so the caller's only variable is the push block size.
+    // (Its old name, build_rt_shadow, is gone with the ray-query shadow pass: the shadow traces through a real
+    // ray-tracing PIPELINE now, which is a different builder below.)
+    std::expected<compute_pipeline_owned, std::string> build_two_set_compute(VkDevice device, VkDescriptorSetLayout const scene_layout, VkDescriptorSetLayout const gbuffer_layout, uint32_t const push_constant_size, std::span<unsigned char const> const compute_shader_code) {
         using fail = std::unexpected<std::string>;
         compute_pipeline_owned out;
 
@@ -560,6 +564,141 @@ namespace vulkan::pipelines {
         out.trace = vk_pipeline(pipeline, out.pipeline_layout, device);
         return out;
     }
+    /**
+     * @brief what the ray-tracing shadow pipeline builder returns
+     *
+     * `group_count` is the number of shader groups the pipeline created, in the order the SBT must follow
+     * (raygen, miss, hit): the shader binding table itself is the CALLER's, because the group handles it is
+     * filled with are per-pipeline data and its regions have to outlive this call.
+     */
+    export struct ray_tracing_pipeline_owned {
+        VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
+        std::optional<vk_pipeline> pipeline;
+        uint32_t group_count = 0;
+    };
+
+    /**
+     * @brief the ray-traced sun shadow's PIPELINE: one raygen, one miss and one triangles hit group
+     *
+     * WHY A PIPELINE AND NOT AN INLINE RAY QUERY, which is what this pass used to run: a ray query has no
+     * any-hit stage, so an alphaMode MASK surface is SOLID to the ray. A traced ray can run an any-hit shader
+     * for exactly that test, and it can consult an opacity micromap, which is the hardware form of the same
+     * question (per-microtriangle opacity, with the any-hit shader as the fallback for its 'unknown' states).
+     * Both of those live in the hit group this creates.
+     *
+     * Recursion depth is 1: the shadow ray answers a yes/no question and the traversal terminates on the first
+     * hit (`gl_RayFlagsTerminateOnFirstHitEXT` in the raygen), so there is nothing for a second level to do.
+     */
+    export std::expected<ray_tracing_pipeline_owned, std::string> build_rt_shadow_ray_tracing(VkDevice device, VkDescriptorSetLayout scene_layout, VkDescriptorSetLayout gbuffer_layout,
+                                                                                              uint32_t push_constant_size, std::span<unsigned char const> raygen_code,
+                                                                                              std::span<unsigned char const> closest_hit_code, std::span<unsigned char const> miss_code) {
+        using fail = std::unexpected<std::string>;
+        ray_tracing_pipeline_owned out;
+
+        VkPushConstantRange push_range = {};
+        push_range.stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR | VK_SHADER_STAGE_MISS_BIT_KHR;
+        push_range.offset = 0;
+        push_range.size = push_constant_size;
+
+        std::array<VkDescriptorSetLayout, 2> const set_layouts = {scene_layout, gbuffer_layout};
+        VkPipelineLayoutCreateInfo pipeline_layout_info = {};
+        pipeline_layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        pipeline_layout_info.setLayoutCount = static_cast<uint32_t>(set_layouts.size());
+        pipeline_layout_info.pSetLayouts = set_layouts.data();
+        pipeline_layout_info.pushConstantRangeCount = 1;
+        pipeline_layout_info.pPushConstantRanges = &push_range;
+        if (vkCreatePipelineLayout(device, &pipeline_layout_info, nullptr, &out.pipeline_layout) != VK_SUCCESS) {
+            return fail("rt shadow: pipeline layout creation failed");
+        }
+
+        std::optional<vk_shader_module> const raygen = make_shader_module(raygen_code, device);
+        std::optional<vk_shader_module> const closest_hit = make_shader_module(closest_hit_code, device);
+        std::optional<vk_shader_module> const miss = make_shader_module(miss_code, device);
+        if (!raygen.has_value() || !closest_hit.has_value() || !miss.has_value()) {
+            return fail("rt shadow: shader module creation failed");
+        }
+
+        VkPipelineShaderStageCreateInfo const raygen_stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                                                              .pNext = nullptr,
+                                                              .flags = 0,
+                                                              .stage = VK_SHADER_STAGE_RAYGEN_BIT_KHR,
+                                                              .module = **raygen,
+                                                              .pName = "main",
+                                                              .pSpecializationInfo = nullptr};
+        VkPipelineShaderStageCreateInfo const closest_hit_stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                                                                   .pNext = nullptr,
+                                                                   .flags = 0,
+                                                                   .stage = VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR,
+                                                                   .module = **closest_hit,
+                                                                   .pName = "main",
+                                                                   .pSpecializationInfo = nullptr};
+        VkPipelineShaderStageCreateInfo const miss_stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                                                            .pNext = nullptr,
+                                                            .flags = 0,
+                                                            .stage = VK_SHADER_STAGE_MISS_BIT_KHR,
+                                                            .module = **miss,
+                                                            .pName = "main",
+                                                            .pSpecializationInfo = nullptr};
+        std::array<VkPipelineShaderStageCreateInfo, 3> const stages = {raygen_stage, miss_stage, closest_hit_stage};
+
+        // THE GROUP ORDER IS THE SBT'S ORDER: group 0 is the raygen, group 1 the miss shader, group 2 the hit
+        // group. The caller's regions follow exactly this order, which is why the count is returned with them.
+        VkRayTracingShaderGroupCreateInfoKHR const raygen_group = {.sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR,
+                                                                   .pNext = nullptr,
+                                                                   .type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR,
+                                                                   .generalShader = 0,
+                                                                   .closestHitShader = VK_SHADER_UNUSED_KHR,
+                                                                   .anyHitShader = VK_SHADER_UNUSED_KHR,
+                                                                   .intersectionShader = VK_SHADER_UNUSED_KHR,
+                                                                   .pShaderGroupCaptureReplayHandle = nullptr};
+        VkRayTracingShaderGroupCreateInfoKHR const miss_group = {.sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR,
+                                                                 .pNext = nullptr,
+                                                                 .type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR,
+                                                                 .generalShader = 1,
+                                                                 .closestHitShader = VK_SHADER_UNUSED_KHR,
+                                                                 .anyHitShader = VK_SHADER_UNUSED_KHR,
+                                                                 .intersectionShader = VK_SHADER_UNUSED_KHR,
+                                                                 .pShaderGroupCaptureReplayHandle = nullptr};
+        VkRayTracingShaderGroupCreateInfoKHR const hit_group = {.sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR,
+                                                                .pNext = nullptr,
+                                                                .type = VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR,
+                                                                .generalShader = VK_SHADER_UNUSED_KHR,
+                                                                .closestHitShader = 2,
+                                                                .anyHitShader = VK_SHADER_UNUSED_KHR,
+                                                                .intersectionShader = VK_SHADER_UNUSED_KHR,
+                                                                .pShaderGroupCaptureReplayHandle = nullptr};
+        std::array<VkRayTracingShaderGroupCreateInfoKHR, 3> const groups = {raygen_group, miss_group, hit_group};
+
+        VkRayTracingPipelineCreateInfoKHR const pipeline_info = {.sType = VK_STRUCTURE_TYPE_RAY_TRACING_PIPELINE_CREATE_INFO_KHR,
+                                                                 .pNext = nullptr,
+                                                                 .flags = 0,
+                                                                 .stageCount = static_cast<uint32_t>(stages.size()),
+                                                                 .pStages = stages.data(),
+                                                                 .groupCount = static_cast<uint32_t>(groups.size()),
+                                                                 .pGroups = groups.data(),
+                                                                 .maxPipelineRayRecursionDepth = 1,
+                                                                 .pLibraryInfo = nullptr,
+                                                                 .pLibraryInterface = nullptr,
+                                                                 .pDynamicState = nullptr,
+                                                                 .layout = out.pipeline_layout,
+                                                                 .basePipelineHandle = VK_NULL_HANDLE,
+                                                                 .basePipelineIndex = -1};
+        // THE EXTENSION ENTRY POINT COMES FROM THE DEVICE, not from the link line: `vulkan-1`'s import library
+        // does not export an extension command (the acceleration-structure module loads its five the same way),
+        // so a direct call is an undefined symbol at link time rather than a missing feature at runtime.
+        auto const create_ray_tracing = reinterpret_cast<PFN_vkCreateRayTracingPipelinesKHR>(vkGetDeviceProcAddr(device, "vkCreateRayTracingPipelinesKHR"));
+        if (create_ray_tracing == nullptr) {
+            return fail("rt shadow: the device did not publish vkCreateRayTracingPipelinesKHR");
+        }
+        VkPipeline pipeline = VK_NULL_HANDLE;
+        if (create_ray_tracing(device, VK_NULL_HANDLE, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &pipeline) != VK_SUCCESS) {
+            return fail("rt shadow: vkCreateRayTracingPipelinesKHR failed");
+        }
+        out.pipeline = vk_pipeline(pipeline, out.pipeline_layout, device);
+        out.group_count = static_cast<uint32_t>(groups.size());
+        return out;
+    }
+
     // The stochastic punctual lighting trace (shaders/megalights_trace.comp): the same two set layouts and the
     // same compute-pipeline shape as the passes above, with a push block of its own. It FORWARDS to the ray-traced
     // shadow's builder rather than repeating twenty lines of Vulkan, and it exists as its own name because a
@@ -567,14 +706,14 @@ namespace vulkan::pipelines {
     // same shape - which is exactly the kind of coupling a name is for.
     std::expected<compute_pipeline_owned, std::string> build_megalights_trace(VkDevice device, VkDescriptorSetLayout const scene_layout, VkDescriptorSetLayout const gbuffer_layout, uint32_t const push_constant_size,
                                                                               std::span<unsigned char const> const compute_shader_code) {
-        return build_rt_shadow(device, scene_layout, gbuffer_layout, push_constant_size, compute_shader_code);
+        return build_two_set_compute(device, scene_layout, gbuffer_layout, push_constant_size, compute_shader_code);
     }
     // ... and the chain's temporal resolve: the same two-layout shape, with the shared G-buffer set FIRST
     // because that is index 0 in its declaration (its own bindings are set 1) - the order of the arguments IS
     // the set numbering, which is why this forwarder takes them in that order rather than reusing the one above.
     std::expected<compute_pipeline_owned, std::string> build_megalights_temporal(VkDevice device, VkDescriptorSetLayout const gbuffer_layout, VkDescriptorSetLayout const pass_set_layout, uint32_t const push_constant_size,
                                                                                  std::span<unsigned char const> const compute_shader_code) {
-        return build_rt_shadow(device, gbuffer_layout, pass_set_layout, push_constant_size, compute_shader_code);
+        return build_two_set_compute(device, gbuffer_layout, pass_set_layout, push_constant_size, compute_shader_code);
     }
     // The GI spatial filter: the same two set layouts the tracer binds (the shared scene set and the
     // G-buffer set, which carries the normal, the depth, the accumulated image it reads and the

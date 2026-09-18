@@ -18,6 +18,7 @@ module;
 #include <cstring>
 #include <span>
 #include <string>
+#include <vector>
 #include <vulkan/vulkan.h>
 
 module vulkan.pass.rt_shadow;
@@ -78,9 +79,14 @@ namespace vulkan::pass {
         if (this->pipeline_.has_value()) {
             return; // already built for this device
         }
-        std::span<unsigned char const> const spirv = context.shader != nullptr ? context.shader(context.owner, shader_name) : std::span<unsigned char const>{};
-        if (spirv.empty()) {
-            utility::log("ray-traced shadows unavailable: the owner has no {}", shader_name);
+        auto const fetch = [&context](std::string_view const name) {
+            return context.shader != nullptr ? context.shader(context.owner, name) : std::span<unsigned char const>{};
+        };
+        std::span<unsigned char const> const raygen = fetch(raygen_name);
+        std::span<unsigned char const> const closest_hit = fetch(closest_hit_name);
+        std::span<unsigned char const> const miss = fetch(miss_name);
+        if (raygen.empty() || closest_hit.empty() || miss.empty()) {
+            utility::log("ray-traced shadows unavailable: the owner has not registered all of {}, {} and {}", raygen_name, closest_hit_name, miss_name);
             return;
         }
         // The two set layouts come from the CONTEXT: this pass binds the shared scene set and the shared G-buffer
@@ -91,14 +97,59 @@ namespace vulkan::pass {
             utility::log("ray-traced shadows unavailable: the owner has no layout for the shared sets this pass binds");
             return;
         }
-        auto built = pipelines::build_rt_shadow(context.device, scene_layout, gbuffer_layout, static_cast<uint32_t>(sizeof(push_constants)), spirv);
+        auto built = pipelines::build_rt_shadow_ray_tracing(context.device, scene_layout, gbuffer_layout, static_cast<uint32_t>(sizeof(push_constants)), raygen, closest_hit, miss);
         if (!built) {
             utility::log("ray-traced shadows unavailable: {}", built.error());
             this->release_owned();
             return;
         }
         this->pipeline_layout_ = built->pipeline_layout;
-        this->pipeline_ = std::move(built->trace);
+        this->pipeline_ = std::move(*built->pipeline);
+
+        // ---- THE SHADER BINDING TABLE, the half of a ray-tracing pipeline that belongs to its CALLER: the
+        //      group handles are per-pipeline data, and the STRIDE is a property of the device rather than a
+        //      constant. Here a handle is 32 bytes while a region's address must be 64-byte aligned, so using the
+        //      handle size as the stride is exactly the first-attempt VUID this pass would otherwise hit. ----
+        auto const get_group_handles = reinterpret_cast<PFN_vkGetRayTracingShaderGroupHandlesKHR>(vkGetDeviceProcAddr(context.device, "vkGetRayTracingShaderGroupHandlesKHR"));
+        this->trace_rays_ = reinterpret_cast<PFN_vkCmdTraceRaysKHR>(vkGetDeviceProcAddr(context.device, "vkCmdTraceRaysKHR"));
+        if (get_group_handles == nullptr || this->trace_rays_ == nullptr) {
+            utility::log("ray-traced shadows unavailable: the device did not publish the traceRays entry points");
+            this->release_owned();
+            return;
+        }
+        uint32_t const handle_size = context.ray_tracing_properties.shaderGroupHandleSize;
+        uint32_t const handle_alignment = context.ray_tracing_properties.shaderGroupHandleAlignment;
+        uint32_t const base_alignment = context.ray_tracing_properties.shaderGroupBaseAlignment;
+        if (handle_size == 0 || handle_alignment == 0 || base_alignment == 0 || context.create_upload_buffer == nullptr) {
+            utility::log("ray-traced shadows unavailable: this device published no shader binding table numbers to build one against");
+            this->release_owned();
+            return;
+        }
+        uint32_t const region_size = ((handle_size + base_alignment - 1u) / base_alignment) * base_alignment;
+        uint32_t const group_count = built->group_count;
+        std::vector<unsigned char> handles(static_cast<size_t>(group_count) * handle_size);
+        if (get_group_handles(context.device, this->pipeline_->get_pipeline(), 0, group_count, handles.size(), handles.data()) != VK_SUCCESS) {
+            utility::log("ray-traced shadows unavailable: the shader group handles could not be read back");
+            this->release_owned();
+            return;
+        }
+        // One REGION per group, each starting on a base-aligned offset and holding exactly one record: the order
+        // is the builder's (raygen, miss, hit), so `handles[group]` lands in region `group`.
+        std::vector<unsigned char> table(static_cast<size_t>(group_count) * region_size, 0);
+        for (uint32_t group = 0; group < group_count; ++group) {
+            std::memcpy(table.data() + static_cast<size_t>(group) * region_size, handles.data() + static_cast<size_t>(group) * handle_size, handle_size);
+        }
+        VkDeviceAddress address = 0;
+        VkBuffer const table_buffer = context.create_upload_buffer(context.owner, table.data(), static_cast<uint64_t>(table.size()), VK_BUFFER_USAGE_SHADER_BINDING_TABLE_BIT_KHR, &address);
+        if (table_buffer == VK_NULL_HANDLE || address == 0) {
+            utility::log("ray-traced shadows unavailable: the shader binding table buffer could not be created");
+            this->release_owned();
+            return;
+        }
+        auto const region = [region_size](VkDeviceAddress const at) { return VkStridedDeviceAddressRegionKHR{.deviceAddress = at, .stride = region_size, .size = region_size}; };
+        this->raygen_region_ = region(address);
+        this->miss_region_ = region(address + region_size);
+        this->hit_region_ = region(address + 2u * region_size);
         // The line the runtime used to log when it built this pipeline: a pass that says what it built is what
         // makes a missing one visible in the startup log rather than in a frame that looks merely shadowless.
         utility::log("SUCCESS: ray-traced sun shadow pipeline created (one ray per pixel, terminated on first hit)");
@@ -115,6 +166,7 @@ namespace vulkan::pass {
         if (!this->pipeline_.has_value() || io.barrier_images.size() < render_resource::rt_shadow_barriers.size() ||
             io.pipelines.empty() || io.pipelines[0] == VK_NULL_HANDLE || io.pipeline_layout == VK_NULL_HANDLE ||
             io.shared.scene == VK_NULL_HANDLE || io.shared.gbuffer == VK_NULL_HANDLE ||
+            this->hit_region_.deviceAddress == 0 ||
             io.extent.width == 0 || io.extent.height == 0) {
             return; // the runner resolves all of this or skips the pass (see frame_pass::resolve)
         }
@@ -133,7 +185,7 @@ namespace vulkan::pass {
         vkCmdPipelineBarrier2(io.cmd, &general_dependency);
 
         std::array<VkDescriptorSet, 2> const sets = {io.shared.scene, io.shared.gbuffer};
-        vkCmdBindDescriptorSets(io.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, io.pipeline_layout, 0, static_cast<uint32_t>(sets.size()), sets.data(), 0, nullptr);
+        vkCmdBindDescriptorSets(io.cmd, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, io.pipeline_layout, 0, static_cast<uint32_t>(sets.size()), sets.data(), 0, nullptr);
 
         // THE PUSH BLOCK IS THE PASS'S OWN NOW (S3): the renderer used to compose it and hand it over as raw
         // bytes, which was the last thing it knew about this pass's frame. What it carries is this frame's
@@ -142,8 +194,10 @@ namespace vulkan::pass {
         // therefore the struct's defaults rather than values anybody has to pass in.
         push_constants push = {};
         push.inv_view_proj = io.constants.inv_view_proj;
-        vkCmdPushConstants(io.cmd, io.pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
-        vkCmdDispatch(io.cmd, (io.extent.width + group_size - 1u) / group_size, (io.extent.height + group_size - 1u) / group_size, 1);
+        vkCmdPushConstants(io.cmd, io.pipeline_layout, VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR | VK_SHADER_STAGE_MISS_BIT_KHR, 0, sizeof(push), &push);
+        // THE LAUNCH DIMS ARE THE EXTENT: one invocation per pixel of the visibility image, which is what the
+        // compute form got from its dispatch and its bounds check.
+        this->trace_rays_(io.cmd, &this->raygen_region_, &this->miss_region_, &this->hit_region_, &this->callable_region_, io.extent.width, io.extent.height, 1);
 
         VkImageMemoryBarrier2 to_sampling = vulkan::general_to_sampling_transition;
         to_sampling.image = visibility;
@@ -152,7 +206,7 @@ namespace vulkan::pass {
 
         if (!this->logged_) {
             this->logged_ = true;
-            utility::log("ray-traced shadows: tracing {}x{} rays per frame (one per pixel, terminated on the first hit)", io.extent.width, io.extent.height);
+            utility::log("ray-traced shadows: tracing {}x{} rays per frame through the ray-tracing pipeline (one per pixel, terminated on the first hit)", io.extent.width, io.extent.height);
         }
     }
 

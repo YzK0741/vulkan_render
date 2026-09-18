@@ -79,10 +79,12 @@ export namespace vulkan::pass {
 
     /// @brief the shape of the work: what the runner must do AROUND the pass, not what the pass computes
     enum class behaviour_kind : uint8_t {
-        compute,    // a dispatch: the pass records it, the extent and the workgroup size are declared
-        fullscreen, // one fullscreen triangle per target
-        graphics,   // a draw per piece of scene content (a leaf, a light, a caster)
-        instanced,  // one draw per instance - the shadow cascades' shape
+        compute,     // a dispatch: the pass records it, the extent and the workgroup size are declared
+        ray_tracing, // a vkCmdTraceRaysKHR: the pass records it, the launch dims ARE the declared extent, and
+                     // the runner's half is the same bind - only the bind POINT differs (see record_stage)
+        fullscreen,  // one fullscreen triangle per target
+        graphics,    // a draw per piece of scene content (a leaf, a light, a caster)
+        instanced,   // one draw per instance - the shadow cascades' shape
         // THE THREE GRAPHICS KINDS ALL MEAN THE SAME THING TO THE RUNNER, and that is the point this layer
         // reached: the PASS opens the rendering instance over the targets it declared (the load op and the
         // clear value are its knowledge, not the runner's), and the runner's half is the part a pass cannot
@@ -448,6 +450,25 @@ export namespace vulkan::pass {
          * this framework.
          */
         std::span<unsigned char const> (*shader)(void* owner, std::string_view name) = nullptr;
+        /**
+         * The three numbers a SHADER BINDING TABLE is built against: the handle size, the base alignment of a
+         * region's device address and the alignment of a handle inside a region (see
+         * `VkPhysicalDeviceRayTracingPipelinePropertiesKHR`). Zeroed on a device without the ray-tracing
+         * pipeline, which is also the answer to "build no table".
+         *
+         * WHY THE CONTEXT CARRIES IT: a pass that traces through a pipeline fills its own SBT, and the stride is
+         * NOT the handle size on a device whose handle alignment is larger - a fact the pass cannot query (it has
+         * no physical device) and must not guess.
+         */
+        VkPhysicalDeviceRayTracingPipelinePropertiesKHR ray_tracing_properties = {};
+        /**
+         * A small buffer the OWNER creates, uploads and keeps alive: what a pass needs when it must hand the
+         * device a device ADDRESS rather than a binding (the shader binding table above is the first case).
+         *
+         * The owner keeps ownership because the memory has to come from its allocator and live with the
+         * generation; the pass gets the handle and the address and nothing to destroy.
+         */
+        VkBuffer (*create_upload_buffer)(void* owner, void const* data, uint64_t bytes, VkBufferUsageFlags usage, VkDeviceAddress* out_address) = nullptr;
         /**
          * The SURFACE's format, which is a session-stable device fact rather than a frame's.
          *

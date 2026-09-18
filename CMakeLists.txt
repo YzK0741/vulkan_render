@@ -667,7 +667,7 @@ set(VR_SHADER_SOURCES
     light_cluster.comp
     megalights_trace.comp
     megalights_temporal.comp
-    rt_shadow.comp
+    rt_shadow.rgen rt_shadow.rchit rt_shadow.rmiss
     mask_bake.comp
     compute_skin.comp
     shadow.vert shadow.frag post.vert post.frag fxaa.frag
