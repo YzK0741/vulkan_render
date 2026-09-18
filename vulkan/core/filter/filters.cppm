@@ -97,7 +97,6 @@ export namespace vulkan {
 
         // ---- safe factory operations ----
         [[nodiscard]] vk_command_buffer make_command_buffer() const;
-        [[nodiscard]] vk_descriptor_set make_descriptor_set(VkDescriptorSetLayout layout) const;
         [[nodiscard]] std::optional<vk_shader_module> make_shader_module(std::span<unsigned char> shader) const noexcept;
         [[nodiscard]] vk_image_view make_image_view(VkImage image, VkFormat format, VkImageViewType type) const;
         [[nodiscard]] vk_sampler make_sampler(VkSamplerAddressMode address_mode, float max_lod) const;
@@ -158,9 +157,6 @@ export namespace vulkan {
         /// @brief the surface's current extent (a pass that bakes it into an object recreates it in
         ///        `on_swapchain_recreated`, which is what that hook is for)
         [[nodiscard]] VkExtent2D swap_chain_extent() const noexcept;
-
-        /// @brief a descriptor set from the core's pool, for a layout the owner handed over
-        [[nodiscard]] vk_descriptor_set make_descriptor_set(VkDescriptorSetLayout layout) const;
 
         /**
          * @brief the allocator, for a pass that must create its own buffer or image

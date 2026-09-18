@@ -13,14 +13,11 @@
  * a UI with no load op of its own, so it has to be drawn INSIDE whichever instance writes the final image - and
  * that is this one whenever it runs (the composite carries it otherwise; see its frame's `after_draw`).
  *
- * WHAT IT OWNS: its own PIPELINE LAYOUT (created around the SET layout the owner hands it, because a pipeline's
- * layout is what its binds and pushes go through and a pass may not borrow another pass's) and its pipeline - the
- * frame's LDR image transition, the clear instance over the swapchain, the push block's mode lane and the draw are
- * its recording. WHAT IT DOES NOT OWN: the post set layout (the POST CHAIN's, owned by the composite, which is why
- * this pass asks for it through `pass_context::shared_set_layout(2)`), the descriptor set (the post family's set 4,
- * which the host writes) and the push block's SHAPE (vulkan.pass.post's `post_push_constants` - FXAA is mode 3 of
- * the same shader's block, so the struct is imported rather than copied: a second copy of those thirteen lanes is
- * a second thing that can drift).
+ * WHAT IT OWNS: its pipeline - the frame's LDR image transition, the clear instance over the swapchain, the push
+ * block's mode lane and the draw are its recording. WHAT IT DOES NOT OWN: the push block's SHAPE (vulkan.pass.post's
+ * `post_push_constants` - FXAA is mode 3 of the same shader's block, so the struct is imported rather than copied: a
+ * second copy of those thirteen lanes is a second thing that can drift) and the LDR image it reads, which is a heap
+ * slot the shader names itself.
  *
  * IT IS ALSO THE PASS THAT MADE `vk_pipeline::begin_pipeline` unnecessary for the post chain: the runner binds the
  * pipeline from `behaviour::pipelines` and sets the viewport from the declaration's extent, so the pass sets only
@@ -89,9 +86,6 @@ export namespace vulkan::pass {
         }
         /// @brief the pipeline the runner binds before this pass records
         [[nodiscard]] VkPipeline pipeline() const noexcept override;
-        /// @brief the layout that pipeline binds its set and takes its push block through (the pass's OWN, built
-        ///        around the post set layout its owner hands it)
-        [[nodiscard]] VkPipelineLayout pipeline_layout() const noexcept override;
 
         /// @brief install the host's overlay hook (this pass is the frame's last writer whenever it runs)
         void set_overlay(draw_callback overlay) noexcept;
@@ -116,7 +110,6 @@ export namespace vulkan::pass {
         void release_owned() noexcept;
 
         VkDevice device_ = VK_NULL_HANDLE;
-        VkPipelineLayout pipeline_layout_ = VK_NULL_HANDLE;
         std::optional<vk_pipeline> pipeline_ = std::nullopt;
         /// the surface's format, cached at create: the push block's `encode_gamma` lane follows from it, and a
         /// session-stable device fact is exactly what a create step may keep (see the composite, which does the

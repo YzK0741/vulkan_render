@@ -5,19 +5,18 @@
  * @brief The eleventh real pass: the deferred lighting stage, which shades every pixel from the G-buffer.
  * @defgroup vulkan_pass_deferred Deferred Lighting Pass
  *
- * WHAT IT OWNS: its pipeline layout and its pipeline (built at create time from the two shared set layouts its
- * owner hands over and from its own shader, with the ADDITIVE blend the stage needs), the frame's recording - the
- * scene-colour dependency barrier, the LOAD instance over the frame's scene target, the two shared sets, the push
- * block and the draw - and its own frame data (the callback that performs the two per-image input transitions).
+ * WHAT IT OWNS: its pipeline (built at create time from its own shader, with the ADDITIVE blend the stage needs),
+ * the frame's recording - the scene-colour dependency barrier, the LOAD instance over the frame's scene target,
+ * the push block and the draw - and its own frame data (the callback that performs the two per-image input
+ * transitions).
  *
  * THE TARGET IS THE FRAME'S, NOT THE DECLARATION'S: the host resolves `scene_color` while the TAA resolve is on and
  * `hdr` when it is off (the accessor the renderer always used), because those two paths light different images. A
  * `render_target` names one resource today, so the declaration names the TAA path's and the resolver hands over the
  * frame's; the deviation is recorded in `render_resource::deferred_io`.
  *
- * WHAT IT DOES NOT OWN: the descriptor families. The scene set and the G-buffer set are shared resources whose
- * OWNERS write them, so this pass receives them resolved and binds them - and a frame with no G-buffer set does not
- * come here at all: that fallback is the renderer's, because "the owner has no set" is a failure of its pool.
+ * WHAT IT DOES NOT OWN: the images it reads. The stored surface and the G-buffer depth are heap slots the shader
+ * names itself, and a frame the shader cannot address is not a frame this pass has anything to do with.
  */
 
 module;
@@ -106,7 +105,6 @@ export namespace vulkan::pass {
         }
         /// @brief the pipeline the runner binds before this pass records
         [[nodiscard]] VkPipeline pipeline() const noexcept override;
-        [[nodiscard]] VkPipelineLayout pipeline_layout() const noexcept override;
 
         /**
          * @brief the SSAO parameters, which are THIS pass's: the values only it reads
@@ -150,7 +148,6 @@ export namespace vulkan::pass {
         void release_owned() noexcept;
 
         VkDevice device_ = VK_NULL_HANDLE;
-        VkPipelineLayout pipeline_layout_ = VK_NULL_HANDLE;
         std::optional<vk_pipeline> pipeline_ = std::nullopt;
         /// the SSAO parameters (see set_ssao): the defaults are the renderer's own historical ones
         bool ssao_enabled_ = true;

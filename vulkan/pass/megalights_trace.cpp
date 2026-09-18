@@ -32,10 +32,6 @@ namespace vulkan::pass {
 
     void megalights_trace_pass::release_owned() noexcept {
         this->pipeline_.reset();
-        if (this->pipeline_layout_ != VK_NULL_HANDLE && this->device_ != VK_NULL_HANDLE) {
-            vkDestroyPipelineLayout(this->device_, this->pipeline_layout_, nullptr);
-            this->pipeline_layout_ = VK_NULL_HANDLE;
-        }
     }
 
     render_resource::pass_io const& megalights_trace_pass::io() const noexcept {
@@ -59,10 +55,6 @@ namespace vulkan::pass {
 
     VkPipeline megalights_trace_pass::pipeline() const noexcept {
         return this->pipeline_.has_value() ? this->pipeline_->get_pipeline() : VK_NULL_HANDLE;
-    }
-
-    VkPipelineLayout megalights_trace_pass::pipeline_layout() const noexcept {
-        return this->pipeline_layout_;
     }
 
     void megalights_trace_pass::set_light_angle(float const radians) noexcept {
@@ -105,26 +97,18 @@ namespace vulkan::pass {
             utility::log("stochastic punctual lighting disabled: the owner has no {}", shader_name);
             return;
         }
-        VkDescriptorSetLayout const scene_layout = context.shared_set_layout != nullptr ? context.shared_set_layout(context.owner, 0) : VK_NULL_HANDLE;
-        VkDescriptorSetLayout const gbuffer_layout = context.shared_set_layout != nullptr ? context.shared_set_layout(context.owner, 1) : VK_NULL_HANDLE;
-        if (scene_layout == VK_NULL_HANDLE || gbuffer_layout == VK_NULL_HANDLE) {
-            utility::log("stochastic punctual lighting disabled: the owner has no layout for the shared sets this pass binds");
-            return;
-        }
-        auto built = pipelines::build_megalights_trace(context.device, scene_layout, gbuffer_layout, render_resource::megalights_trace_io.push->size, spirv);
+        auto built = pipelines::build_megalights_trace(context.device, spirv);
         if (!built) {
             utility::log("stochastic punctual lighting disabled: {}", built.error());
             this->release_owned();
             return;
         }
-        this->pipeline_layout_ = built->pipeline_layout;
         this->pipeline_ = std::move(built->trace);
         utility::log("SUCCESS: stochastic punctual lighting pipeline created (sampled lights with ray-traced visibility)");
     }
 
     void megalights_trace_pass::record(resolved_io const& io) {
-        if (!this->pipeline_.has_value() || io.barrier_images.size() < render_resource::megalights_trace_barriers.size() || io.extent.width == 0 || io.extent.height == 0 ||
-            io.pipeline_layout == VK_NULL_HANDLE || io.shared.scene == VK_NULL_HANDLE || io.shared.gbuffer == VK_NULL_HANDLE) {
+        if (!this->pipeline_.has_value() || io.barrier_images.size() < render_resource::megalights_trace_barriers.size() || io.extent.width == 0 || io.extent.height == 0) {
             return; // the runner resolves all of this or skips the pass (the declaration's own gates are the table's)
         }
         VkImage const output = io.barrier_images[barrier_output].image;

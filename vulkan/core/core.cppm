@@ -400,13 +400,8 @@ namespace vulkan {
 
         VkCommandPool command_pool = {};
 
-        VkDescriptorPool descriptor_pool = VK_NULL_HANDLE;
         /** @brief create the shared samplers above: device-level, reference-counted by nobody, destroyed with core */
 
-        // shared scene layouts (see the scene_texture_capacity / scene_push_constant_size docs above);
-        // all pipelines are created against scene_pipeline_layout, so one descriptor set works for all
-        VkDescriptorSetLayout scene_descriptor_set_layout = VK_NULL_HANDLE;
-        VkPipelineLayout scene_pipeline_layout = VK_NULL_HANDLE;
         // ---- the SHARED samplers, created once with the device (see create_samplers) ----
         //
         // THEY LIVE HERE because a sampler is a device-level object with no per-frame state and no owner among the
@@ -681,7 +676,6 @@ namespace vulkan {
          * @note not const: registers the pool's destruction on this core (like create_command_pool)
          */
         VkCommandPool make_command_pool();
-        vk_descriptor_set make_descriptor_set(VkDescriptorSetLayout layout) const;
 
         std::optional<vk_shader_module> make_shader_module(std::span<unsigned char> shader) const noexcept;
 
@@ -897,9 +891,7 @@ namespace vulkan {
         void create_depth_resources() noexcept;
         void create_color_resources();
         void create_command_pool() noexcept;
-        void create_descriptor_pool() noexcept;
         void create_samplers();
-        void init_scene_layouts() noexcept;
         void create_sync_objects();
         void create_timestamp_query_pool() noexcept;
     };

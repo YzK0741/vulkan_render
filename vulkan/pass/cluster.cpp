@@ -30,10 +30,6 @@ namespace vulkan::pass {
 
     void cluster_pass::release_owned() noexcept {
         this->pipeline_.reset();
-        if (this->pipeline_layout_ != VK_NULL_HANDLE && this->device_ != VK_NULL_HANDLE) {
-            vkDestroyPipelineLayout(this->device_, this->pipeline_layout_, nullptr);
-            this->pipeline_layout_ = VK_NULL_HANDLE;
-        }
     }
 
     render_resource::pass_io const& cluster_pass::io() const noexcept {
@@ -56,10 +52,6 @@ namespace vulkan::pass {
 
     VkPipeline cluster_pass::pipeline() const noexcept {
         return this->pipeline_.has_value() ? this->pipeline_->get_pipeline() : VK_NULL_HANDLE;
-    }
-
-    VkPipelineLayout cluster_pass::pipeline_layout() const noexcept {
-        return this->pipeline_layout_;
     }
 
     void cluster_pass::set_frame(cluster_frame const& frame) noexcept {
@@ -96,7 +88,6 @@ namespace vulkan::pass {
             this->release_owned();
             return;
         }
-        this->pipeline_layout_ = built->pipeline_layout;
         this->pipeline_ = std::move(built->trace);
         utility::log("SUCCESS: clustered light pipeline created (the frame's punctual lights are binned per cluster)");
     }
@@ -107,8 +98,8 @@ namespace vulkan::pass {
     }
 
     void cluster_pass::record(resolved_io const& io) {
-        if (!this->pipeline_.has_value() || io.pipelines.empty() || io.pipelines[0] == VK_NULL_HANDLE || io.pipeline_layout == VK_NULL_HANDLE ||
-            io.shared.scene == VK_NULL_HANDLE || io.barrier_buffers.size() < render_resource::cluster_barriers.size() || this->frame_.cluster_count == 0) {
+        if (!this->pipeline_.has_value() || io.pipelines.empty() || io.pipelines[0] == VK_NULL_HANDLE ||
+            io.barrier_buffers.size() < render_resource::cluster_barriers.size() || this->frame_.cluster_count == 0) {
             return; // the runner resolves all of this or skips the pass (see runtime::resolve_cluster_pass)
         }
         VkBuffer const counts = io.barrier_buffers[barrier_counts].buffer;

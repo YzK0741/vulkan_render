@@ -6,8 +6,8 @@
  * @defgroup vulkan_pass Frame Pass Framework
  *
  * THE PROBLEM THIS REMOVES, measured rather than asserted. Adding one render pass to this renderer today costs,
- * at the time: a push-constant struct, a pipeline, a pipeline layout, a
- * descriptor family, a `make_*`, an `ensure_*`, a `record_*`, a `gpu_mark_id` enumerator and its call, a
+ * at the time: a push-constant struct, a pipeline, a
+ * `gpu_mark_id` enumerator and its call, a
  * `render_features` field, two feature strings, a viewport-resync line, a flag reset in the constructor AND in
  * `on_swapchain_recreated`, and a destroy in the destructor. This module is the shape that replaces that list
  * with "declare the I/O, implement record, name it in a stage".
@@ -44,7 +44,6 @@ export module vulkan.pass;
 
 import vulkan.render_resource;
 import vulkan.render_resource.shared;
-import vulkan.core.handles; // vk_descriptor_set: the RAII set `pass_context::descriptor_set` hands over
 
 export import vulkan.frame_constants; // the per-frame constants a pass reads (see resolved_io::constants)
 
@@ -126,8 +125,8 @@ export namespace vulkan::pass {
          *
          * NAMES RATHER THAN A BUILD REQUEST, decided deliberately: `vulkan.runtime` already owns the pipelines
          * and already keys them by name (`make_pipeline` / `set_default_pipeline` / `get_pipeline`), so a pass
-         * naming what it needs is the existing mechanism rather than a new one - and it keeps the 787 lines of
-         * `vulkan.pipelines` where they are, with the pipeline layouts still built there. The host resolves the
+         * naming what it needs is the existing mechanism rather than a new one - and it keeps `vulkan.pipelines`
+         * where it is, with the heap-native pipelines built there. The host resolves the
          * names into `resolved_io::pipelines`, in this order, so `pipelines[i]` is the i-th name here.
          */
         std::span<std::string_view const> pipelines = {};
@@ -169,21 +168,8 @@ export namespace vulkan::pass {
     };
 
     /**
-     * @brief the SHARED sets, as they are: a pass that declared usage of one may bind it directly
-     *
-     * Three owners exist today (the scene set, the G-buffer set, the post set) and they are shared by
-     * construction - the G-buffer set alone carries the stored surface and the stochastic chain's images, and
-     * the post pass's depth and normal. A pass DECLARES that it uses a shared binding (`set_owner`) and this
-     * is the set behind it; who actually binds it is the host's business, and the runtime already binds the
-     * scene set before a draw.
+     * @brief how many own bindings one pass may resolve (the most any pass declares today)
      */
-    struct shared_sets {
-        VkDescriptorSet scene = VK_NULL_HANDLE;
-        VkDescriptorSet gbuffer = VK_NULL_HANDLE;
-        VkDescriptorSet post = VK_NULL_HANDLE;
-    };
-
-    /// @brief how many own bindings one pass may resolve (the most any pass declares today)
     inline constexpr uint32_t max_own_bindings = 16;
     /// @brief how many pipelines one pass may name (the post chain's five are the most today)
     inline constexpr uint32_t max_pass_pipelines = 8;
@@ -233,18 +219,12 @@ export namespace vulkan::pass {
          * has for swapchain image @c image (each span is `frame.image_count` long, or empty where the host filled
          * nothing).
          *
-         * WHY A PASS NEEDS THIS, measured rather than anticipated: a pass that owns a per-image descriptor family
-         * has to write EACH IMAGE's views into THAT IMAGE's set - `image_set_family::ensure` hands its write
-         * callback an image index for exactly that reason - and `own` only carries the CURRENT frame's handles.
-         * The host-written families reach into the core for this (`vulkan_core.gi_images[i]` and friends); a pass
-         * cannot - the failure mode this guards against is a descriptor pointing at another image, in another layout.
-         *
-         * The FIRST entry is also what a per-generation fingerprint wants: `own_per_image[k][0]` is stable for as
-         * long as the target generation lives, while `own[k].view` changes with every frame's image.
+         * WHY A PASS NEEDS THIS, measured rather than anticipated: a pass that owns per-image state has to name
+         * EACH IMAGE's views while it records - and `own` only carries the CURRENT frame's handles. The host
+         * reaches into the core for this (`vulkan_core.gi_images[i]` and friends); a pass
+         * cannot - the failure mode this guards against is reaching an image that belongs to another generation.
          */
         std::array<std::span<VkImageView const>, max_own_bindings> own_per_image = {};
-        VkDescriptorSet own_set = VK_NULL_HANDLE;
-        shared_sets shared = {};
         /**
          * @brief HOW A PASS SENDS ITS PUSH BLOCK NOW THAT NO PIPELINE HAS A LAYOUT
          *
@@ -253,8 +233,7 @@ export namespace vulkan::pass {
          * That leaves `vkCmdPushConstants` with nothing to push to - so a pass sends its block through
          * `vkCmdPushDataEXT`, which the shader reads exactly as it always read push constants (the extension says
          * so, and the heap-native probe does it). The framework holds an OWNER AND A CALLBACK rather than the heap
-         * itself: the heap is the core's, a pass talks to the HOST, and `shared_set_layout` is the same shape for
-         * the same reason.
+         * itself: the heap is the core's and a pass talks to the HOST.
          *
          * A stage's block now also carries the two heap indices (frame slot, swapchain image - and, for the post
          * chain, its source slot), which the host fills in before sending it. See vulkan/pass/pass.cppm's siblings
@@ -319,17 +298,6 @@ export namespace vulkan::pass {
         /// in the order `behaviour::pipelines` names them, one entry per name
         std::span<VkPipeline const> pipelines = {};
         /**
-         * The layout of the pipelines this pass names - ONE, not one per pipeline, because that is what this
-         * renderer's passes have: a pass builds one `VkPipelineLayout` and every pipeline it records with
-         * (post's five, TAA's two, the lighting chain's five) is created from it.
-         *
-         * WHY A PASS NEEDS IT AT ALL, which the first real pass made unavoidable: a pass that records its own
-         * dispatches pushes its own constants and binds its own sets, and both calls take the layout. The
-         * alternative - the host pushing on the pass's behalf - would mean the host knowing every pass's push
-         * block, which is the same fact in two places.
-         */
-        VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
-        /**
          * The push block the HOST composed for this pass this frame, as raw bytes.
          *
          * Raw, because the framework has no pass's type and will not learn one: the declaration's `push`
@@ -366,14 +334,11 @@ export namespace vulkan::pass {
     // =============================================================================================
 
     /**
-     * @brief a pipeline a pass owns, together with the layout it was created against
-     * @note the two travel as ONE fact because a pipeline is never usable without its layout: the runner binds the
-     *       pipeline and the pass binds its sets and pushes its constants through the layout, so a lookup that
-     *       answered only the handle would leave every caller to find the other half somewhere else
+     * @brief a pipeline a pass owns
+     * @note the frame resolves a `behaviour::pipelines` NAME to one of these, and the runner binds what it finds
      */
     struct owned_pipeline {
         VkPipeline pipeline = VK_NULL_HANDLE;
-        VkPipelineLayout layout = VK_NULL_HANDLE;
     };
 
     /**
@@ -400,21 +365,11 @@ export namespace vulkan::pass {
         /// into what it is given and stores no device state between frames
         VkCommandBuffer cmd = VK_NULL_HANDLE;
         /**
-         * The set the declaration named, BY FAMILY AND ELEMENT: `descriptor_set(owner, family, element,
-         * image_index)`.
-         *
-         * The same vocabulary `pass_context::shared_set_layout` uses at create time, one lifetime later: the
-         * declaration says "family 2, element 4" and the owner is the one that knows what occupies it this frame.
-         * The ELEMENT is what makes a family that holds one set PER STAGE expressible - the post chain's five -
-         * and only the owner can interpret it, which is the same rule `behaviour::extent_of_element` follows.
+         * The extent of a resource element the behaviour named (`extent_rule::resource`), or {0,0} for an
+         * element the owner does not have - only the owner knows its own images' sizes
          */
-        VkDescriptorSet (*descriptor_set)(void* owner, uint32_t family, uint32_t element, uint32_t image_index) = nullptr;
-        /// the extent of a resource element the behaviour named (`extent_rule::resource`), or {0,0} for an
-        /// element the owner does not have - only the owner knows its own images' sizes
         VkExtent2D (*extent_of)(void* owner, render_resource::resource_id id, uint32_t element) = nullptr;
-        /// the pipeline a `behaviour::pipelines` NAME refers to, WITH its layout, or all-null when the owner has
-        /// none. The layout is part of the answer (see owned_pipeline): a chain's stages may share one pipeline,
-        /// and whoever resolves the name must hand over both halves together.
+        /// the pipeline a `behaviour::pipelines` NAME refers to, or all-null when the owner has none
         owned_pipeline (*pipeline)(void* owner, std::string_view name) = nullptr;
         /// what every lookup above is called with
         void* owner = nullptr;
@@ -440,8 +395,7 @@ export namespace vulkan::pass {
      *
      * WHAT IS IN IT, and what is deliberately not: the device; the renderer's five samplers, which a
      * declaration CHOOSES between by `sampler_hint` (a pass never names a `VkSampler` of its own, or the five
-     * would become six); the layout that occupies a shared set, asked BY SET INDEX - the same vocabulary the
-     * declaration already uses; and a pass's own shader bytes, asked by name. NOT here: no instance, no
+     * would become six); and a pass's own shader bytes, asked by name. NOT here: no instance, no
      * physical device, no allocator, no queue, no command pool, and no frame. `vulkan.core` remains the only
      * thing that creates an IMAGE, so a pass cannot take over an image family through this struct.
      */
@@ -449,33 +403,6 @@ export namespace vulkan::pass {
         /// the device a pass builds its own objects on (the owner fills this from the filtered core view)
         VkDevice device = VK_NULL_HANDLE;
         render_resource::shared::sampler_set samplers = {};
-        /**
-         * The layout that occupies SHARED set @p set, or `VK_NULL_HANDLE` when the owner has none there.
-         *
-         * A pass does not own the shared set layouts (the scene set's is `vulkan.core`'s), and it cannot build
-         * its own pipeline layout without them - the pipeline layout is created from the set layouts its
-         * pipeline binds, in order. Asking by SET INDEX rather than by name is what makes this the same
-         * vocabulary as the declaration, which already says which set each of its bindings lives in.
-         */
-        VkDescriptorSetLayout (*shared_set_layout)(void* owner, uint32_t set) = nullptr;
-        /**
-         * The PIPELINE LAYOUT a pass must build its own pipeline against when that layout belongs to a SHARED
-         * object rather than to the pass - or `VK_NULL_HANDLE` when the owner has none to offer.
-         *
-         * WHY THIS IS A SECOND CALLBACK rather than a corner of the one above: a set layout and a pipeline layout
-         * are different objects, and the shadow pass is the case that proves it. Its pipeline is created against
-         * the SCENE pipeline layout (`vulkan.core`'s, which the scene leaves also push through), its draw is a
-         * subset of the scene's, and its per-cascade push goes through that same layout at
-         * `scene_cascade_push_offset` - so a pass that owns the pipeline without owning that layout has nowhere to
-         * put its push constants. Building its own layout from the set layout instead would be a SECOND layout
-         * object whose push ranges are the pass's guess, and the frames would depend on the guess matching the
-         * scene's.
-         *
-         * NO INDEX, unlike `shared_set_layout`: there is one shared pipeline layout in this renderer today, and an
-         * index would be a vocabulary with a single entry (the same reason `behaviour::extent_of` names a resource
-         * rather than a slot).
-         */
-        VkPipelineLayout (*shared_pipeline_layout)(void* owner) = nullptr;
         /**
          * The SPIR-V of one of this pass's shaders, by the name it declares; empty when the owner does not
          * have it.
@@ -531,10 +458,10 @@ export namespace vulkan::pass {
          * One of THIS pass's declared resources, at CREATE time: the handles its own resources are, or all-null
          * when the owner has none.
          *
-         * WHY A PASS NEEDS IT, measured: a pass that owns a descriptor set built over a resource the RENDERER
+         * WHY A PASS NEEDS IT, measured: a pass that reads a resource the RENDERER
          * holds - the alphaMode MASK bake's material table and bindless texture array, the compute-skinning
-         * job's per-slot matrix buffers - had no way to name it, so the runtime built those sets on the pass's
-         * behalf through a bespoke entry point per job. This is the channel that replaces them, and it speaks the
+         * job's per-slot matrix buffers - had no way to name it, so the runtime built those resources on the
+         * pass's behalf through a bespoke entry point per job. This is the channel that replaces them, and it speaks the
          * DECLARATION's vocabulary (`resource_id` + element) rather than a new one, so an owner can refuse an id
          * the pass never declared.
          *
@@ -547,21 +474,11 @@ export namespace vulkan::pass {
          */
         resolved_binding (*resource)(void* owner, render_resource::resource_id id, uint32_t element) = nullptr;
         /**
-         * A descriptor set from the OWNER's pool, for a layout the owner handed over through
-         * `shared_set_layout`.
-         *
-         * The pool is the core's, so a pass cannot allocate one of these itself without a pool of its own; a pass
-         * that owns a PER-IMAGE family does not need this call at all (it builds the family with
-         * `bindings::image_set_family`, which owns its pool and retires it correctly - see vulkan.bindings). This
-         * is for the one-off set: a job that writes a single set from a shared layout and keeps it.
-         */
-        vk_descriptor_set (*descriptor_set)(void* owner, VkDescriptorSetLayout layout) = nullptr;
-        /**
          * How many frames the owner has in flight - the number of per-frame-slot resources it will publish.
          *
-         * A pass with per-slot state (the compute-skinning job's one set per slot) knows how many slots to ask
-         * for only from the owner, and the alternative - looping until a slot answers with nothing - makes "the
-         * owner has three slots" and "this owner forgot to publish the fourth" the same statement.
+         * A pass with per-slot state knows how many slots to ask for only from the owner, and the alternative -
+         * looping until a slot answers with nothing - makes "the owner has three slots" and "this owner forgot
+         * to publish the fourth" the same statement.
          */
         uint32_t frames_in_flight = 0;
         /// what the lookups above are called with (the renderer passes itself)
@@ -713,7 +630,7 @@ export namespace vulkan::pass {
         [[nodiscard]] virtual behaviour const& behaviour() const noexcept = 0;
         /// @brief the feature that gates it ([render] keys); empty means "always"
         [[nodiscard]] virtual std::string_view feature() const noexcept = 0;
-        /// @brief build what this pass owns (its set layout, its descriptor family, its pipeline) from
+        /// @brief build what this pass owns (its pipeline, its per-generation state) from
         ///        @p context; once per device generation
         virtual void create(pass_context const& context) = 0;
         /// @brief the swapchain was rebuilt, so every per-image resource this pass held is stale
@@ -731,7 +648,7 @@ export namespace vulkan::pass {
          * A PASS OVERRIDES IT when its FRAME decides something the DECLARATION cannot express, and the override
          * starts by calling `resolve_declaration(*this, context, out)` so the declaration's half stays shared:
          * the composite writing the LDR image when FXAA runs (one `render_target` names one resource), the
-         * debug view's channel, a pass that owns its own descriptor family. What an override must NOT do is
+         * debug view's channel, a pass whose target comes from the frame's table. What an override must NOT do is
          * reach for a resource the declaration does not name - the context's lookups all take the declaration's
          * own keys for exactly that reason. ("The shadow pass handing over one target per cascade" used to be on
          * this list: it is a RUN of elements now, which the declaration CAN express - see
@@ -780,15 +697,11 @@ export namespace vulkan::pass {
         [[nodiscard]] virtual VkPipeline pipeline() const noexcept {
             return VK_NULL_HANDLE;
         }
-        /// @brief the layout that pipeline was created against (what the pass pushes its constants through)
-        [[nodiscard]] virtual VkPipelineLayout pipeline_layout() const noexcept {
-            return VK_NULL_HANDLE;
-        }
         /**
          * @brief a pipeline this pass owns under the NAME another pass's `behaviour::pipelines` declares
          *
          * WHY THIS EXISTS: a chain's stages can SHARE one pipeline. The post chain's four bloom levels record with
-         * the composite's R16F variant - one set layout and one pipeline layout serve all five stages, so a copy
+         * the composite's R16F variant - one pipeline serves all five stages, so a copy
          * per level would be five identical pipelines and five chances to disagree about the push block (the post
          * header records that decision). The declaration already carries the name a pass records with
          * (`behaviour::pipelines`); what it cannot carry is WHOSE object that name is, so the OWNER resolves it and
@@ -811,7 +724,8 @@ export namespace vulkan::pass {
          *
          * THE DEFAULT IS TRUE, deliberately: a pass that builds nothing of its own (the scene and transparent passes
          * record with the renderer's pipeline) is not "unready", it has nothing to be unready ABOUT. A pass that
-         * builds a pipeline, a set layout or a family overrides this with its own answer.
+         * builds a pipeline, or that keeps per-image state it could fail to build, overrides this with its own
+         * answer.
          */
         [[nodiscard]] virtual bool ready() const noexcept {
             return true;
@@ -820,10 +734,10 @@ export namespace vulkan::pass {
          * @brief record into the frame, with the resources the declaration asked for already resolved
          *
          * NOT const, and this is a correction the first real pass forced rather than a convenience: a pass
-         * that owns a descriptor family must be able to ensure it, and ensuring is what re-points the family
-         * when the swapchain's views changed. The guarantee that layer actually needs is the one this keeps:
+         * that owns per-generation state has to be able to repair it while recording. The guarantee that layer
+         * actually needs is the one this keeps:
          * a pass holds no device state BETWEEN frames and is handed everything it needs to record - the
-         * command buffer, its own sets, the shared ones, the pipelines, the extent and the push block. What
+         * command buffer, its own bindings, the pipelines, the extent and the push block. What
          * it must not do is reach for anything the run did not resolve, and that is enforced by what
          * `resolved_io` carries.
          */
@@ -848,8 +762,8 @@ export namespace vulkan::pass {
     struct stage {
         std::string_view name = {};
         /// MUTABLE pointers: a pass stores what it owns into itself through `create` and
-        /// `on_swapchain_recreated`, and `record` is non-const because a pass that owns a descriptor family
-        /// ensures it there (see `frame_pass::record`).
+        /// `on_swapchain_recreated`, and `record` is non-const because a pass that keeps per-generation state
+        /// repairs it there (see `frame_pass::record`).
         std::span<frame_pass*> passes = {};
         bool marks = true; // a stage nested inside another's instance may not want its own pair
     };
@@ -906,7 +820,7 @@ export namespace vulkan::pass {
      *  1. an INACTIVE pass is not resolved and not recorded at all - several passes document exactly that
      *     ("where any requirement is missing the pass is not even recorded"), and it is what makes a feature
      *     that is off byte-identical rather than merely invisible;
-     *  2. `resolve` may still fail for a frame (a descriptor family could not be had), and that is skipped
+     *  2. `resolve` may still fail for a frame (a declared resource the frame does not have), and that is skipped
      *     WITHOUT recording, because a pass recorded with unresolved handles is worse than a pass not running;
      *  3. the behaviour's mechanical part happens BEFORE `record()`, never inside it, which is what makes the
      *     viewport resync unforgettable;
@@ -949,11 +863,10 @@ export namespace vulkan::pass {
     /**
      * @brief tell every pass in the stage that the swapchain was rebuilt
      *
-     * THIS FUNCTION REMOVES A KNOWN HAZARD BY CONSTRUCTION. The manual reset list in `on_swapchain_recreated`
-     * retires four of the six `image_set_family` instances this renderer owns; the other two survive only
-     * because `ensure()` re-detects changed views. A pass that owns a family and does not get this call keeps
-     * stale descriptors, so the runner makes the call instead of the runtime remembering - and
-     * `run_report::recreated` counts what it did.
+     * THIS FUNCTION REMOVES A KNOWN HAZARD BY CONSTRUCTION. A pass that keeps per-generation state (the TAA
+     * resolve's per-image history flags are the one left) has to forget it when the swapchain is rebuilt, and a
+     * hand-kept reset list in `on_swapchain_recreated` is exactly the kind of fact that gets forgotten, so the
+     * runner makes the call instead of the runtime remembering - and `run_report::recreated` counts what it did.
      */
     [[nodiscard]] inline run_report recreate_stage(stage const& st, pass_host const& host) {
         run_report report;
@@ -1210,16 +1123,6 @@ export namespace vulkan::pass {
                 return false; // the frame cannot bind a pipeline the pass declared: do not record it
             }
             out.pipeline_storage[i] = found.pipeline;
-            // THE LAYOUT COMES WITH IT, and the FIRST name's is the one the pass records through - a pass that
-            // binds one set and pushes one block needs one layout, which is what this renderer's passes have
-            // (see resolved_io::pipeline_layout). A name whose owner cannot say which layout it was built against
-            // fails the resolution rather than recording a pass that would silently skip itself.
-            if (i == 0) {
-                out.pipeline_layout = found.layout;
-                if (out.pipeline_layout == VK_NULL_HANDLE) {
-                    return false;
-                }
-            }
         }
         out.pipelines = std::span<VkPipeline const>(out.pipeline_storage.data(), names.size());
         return true;
@@ -1238,12 +1141,11 @@ export namespace vulkan::pass {
      *    target claiming a RUN of elements (`render_target::count`) expands to one slot PER ELEMENT, and the run
      *    ENDS EARLY when the frame has fewer elements than the declaration allows (the shadow map's layers are the
      *    cascade knob's, so `targets` is as long as the frame's own answer);
-     *  - a SHARED set is asked for BY THE INDEX the declaration names - the pass binds it, its owner fills it;
      *  - a PIPELINE is asked for BY THE NAME `behaviour::pipelines` declares;
      *  - the EXTENT comes from the behaviour's rule (resolve_extent).
      *
-     * WHAT IT DELIBERATELY LEAVES ALONE: `own_set` (a pass that owns a descriptor family fills that itself in its
-     * own override), `own_per_image` (the per-image channel a pass that owns a per-image family writes) and `push` (a push block's values are the pass's own parameters and this frame's
+     * WHAT IT DELIBERATELY LEAVES ALONE: `own_per_image` (the per-image channel a pass that owns per-image
+     * state reads) and `push` (a push block's values are the pass's own parameters and this frame's
      * constants, so the pass composes it).
      *
      * @param pass the pass whose declaration is being resolved
@@ -1258,8 +1160,7 @@ export namespace vulkan::pass {
         }
         out.frame = context.frame;
         out.cmd = context.cmd;
-        out.own_set = VK_NULL_HANDLE; // a pass that owns its set fills it in its own resolve
-        out.push = {};                // ... and a push block is composed by the pass that pushes it
+        out.push = {}; // a push block is composed by the pass that pushes it
 
         // ---- the pass's own bindings, indexed by their own binding number ----
         uint32_t own_count = 0;
@@ -1280,10 +1181,10 @@ export namespace vulkan::pass {
         }
         out.own = std::span<resolved_binding const>(out.own_storage.data(), own_count);
         // THE PER-IMAGE CHANNEL: for an own binding whose resource is per SWAPCHAIN IMAGE, every image's view -
-        // what a pass that owns a per-image descriptor family writes into each image's set (see
+        // what a pass that works per image reads to reach the generation's other images (see
         // resolved_io::own_per_image), and the only channel through which a pass can name a generation's views
-        // without the renderer building its sets for it. Empty for every other binding, which is the shape the
-        // one consumer (the GI temporal resolve) reads: it checks each span's length before indexing it.
+        // without the renderer publishing them itself. Empty for every other binding, which is the shape the
+        // consumer reads: it checks each span's length before indexing it.
         for (render_resource::pass_binding const& binding : declaration.bindings) {
             if (binding.owner != render_resource::set_owner::own || binding.binding >= out.own_per_image.size()) {
                 continue;
@@ -1351,33 +1252,10 @@ export namespace vulkan::pass {
         }
         out.barrier_buffers = std::span<resolved_binding const>(out.barrier_buffer_storage.data(), declaration.barrier_buffers.size());
 
-        // ---- the shared sets, by the family and element the declaration names ----
-        for (render_resource::shared_set const entry : declaration.shared_sets) {
-            VkDescriptorSet const descriptor_set =
-                context.descriptor_set == nullptr ? VK_NULL_HANDLE : context.descriptor_set(context.owner, entry.family, entry.element, context.frame.image_index);
-            if (descriptor_set == VK_NULL_HANDLE) {
-                return false; // a declared set the owner cannot fill: a pass that binds a whole set cannot run without it
-            }
-            switch (entry.family) {
-            case 0:
-                out.shared.scene = descriptor_set;
-                break;
-            case 1:
-                out.shared.gbuffer = descriptor_set;
-                break;
-            case 2:
-                out.shared.post = descriptor_set;
-                break;
-            default:
-                return false; // a set family this framework has no field for: the declaration and the owner disagree
-            }
-        }
-
         // ---- the pipelines: the pass's OWN first, then the names the behaviour declares ----
         if (pass.pipeline() != VK_NULL_HANDLE) {
             out.pipeline_storage[0] = pass.pipeline();
             out.pipelines = std::span<VkPipeline const>(out.pipeline_storage.data(), 1);
-            out.pipeline_layout = pass.pipeline_layout();
         } else if (!declaration_pipelines_ok(pass, context, out)) {
             return false;
         }

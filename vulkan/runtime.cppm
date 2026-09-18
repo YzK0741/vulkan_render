@@ -25,7 +25,6 @@ module;
 export module vulkan.runtime;
 
 import vulkan.profiling;
-import vulkan.bindings;               // the per-image descriptor-set families (the G-buffer debug view's for now)
 import vulkan.pass;                   // the pass framework: the host the runner talks to, and the stage runner
 import vulkan.pass.taa;               // the second, and the first GRAPHICS one
 import vulkan.pass.scene;             // the third: the scene itself, whose work is DATA rather than a declaration
@@ -33,7 +32,7 @@ import vulkan.pass.transparent;       // the fourth: the blended geometry, over 
 import vulkan.pass.rt_shadow;         // the ninth, and the only pass that traces outside the chain: the ray-traced shadow
 import vulkan.pass.mask_bake;         // ... and the one-shot MASK bake, which is a JOB rather than a frame pass
 import vulkan.pass.compute_skin;      // ... and the compute-skinning job, which is a job for the same reason
-import vulkan.pass.gbuffer_debug;     // the fifteenth: the G-buffer debug view (and the G-buffer set layout's owner)
+import vulkan.pass.gbuffer_debug;     // the fifteenth: the G-buffer debug view
 import vulkan.pass.shadow;            // the sixteenth: the directional shadow map, one depth-only cascade per layer
 import vulkan.pass.chain;             // the chain container: what holds a run of passes and its ORDER
 import vulkan.render_resource.shared; // the five samplers a pass's declaration chooses between
@@ -171,7 +170,7 @@ namespace vulkan {
         // set while the window is iconified; the restore transition recreates the swapchain
         bool was_minimized = false;
 
-        // ---- shared scene resources (single flat descriptor set, see core::init_scene_layouts) ----
+        // ---- shared scene resources (the heap's per-frame-slot slots; see core::heap_slots) ----
         // camera UBO: one buffer per frame slot, updated once per frame, shared by every primitive
         std::vector<vk_buffer> camera_buffers = {};
         std::vector<void*> camera_mapped = {};
@@ -249,13 +248,9 @@ namespace vulkan {
         // material_push_constants::morph_* fields
         std::vector<vk_buffer> morph_buffers = {};
         std::vector<void*> morph_mapped = {};
-        // per-slot scene descriptor sets: all pipelines share the scene layout, so every frame
-        // slot gets one set from it. A set's per-slot bindings (0 camera / 7 light / 8 shadow /
-        // 9 skin / 10 morph) always point at that slot's own resources and never change, so an
-        // in-flight frame can never observe the next frame's descriptors (no update-after-bind
-        // race).
-        // one set per frame slot: created lazily, never re-pointed between frames (see vulkan.bindings)
-        bindings::scene_bindings scene_sets;
+        // per-slot scene resources: ONE buffer per frame slot, like the camera UBO - each slot's shader reads
+        // its own, so a frame being rendered never shares the buffer the next frame rewrites. The shaders reach
+        // them through the descriptor heap's per-slot grid slots (see core::heap_slots).
         // the frame slot paced by the last successful pace_and_acquire();
         // per-frame host writes (set_skin_matrices / morph_scratch) target this slot's buffers
         uint32_t active_slot = 0;
@@ -355,13 +350,8 @@ namespace vulkan {
         // takes effect once the needed pipelines exist, so the flags can be set before setup ends.
         bool gbuffer_debug = false;
         // which channel the debug view shows (see gbuffer_debug.frag / set_gbuffer_channel)
-        // The debug view's sets, one per swapchain image, allocated from a pool this family owns and
-        // retires itself (see vulkan.bindings: the pool lifetime rule is only about the pools).
-        bindings::image_set_family gbuffer_family;
-        // The per-image descriptor-set families (bindings::image_set_family) own their pools, including
-        // the ones a later swapchain generation replaced: a pool may not be destroyed while a recorded
-        // command buffer still references its sets (VUID-vkDestroyDescriptorPool-descriptorPool-00303),
-        // which is what used to make every window resize a validation error here.
+        // The G-buffer images are heap slots now: publish_frame_resources writes each image's grid slot once
+        // per frame, and there is no family, pool or set left to keep here.
 
         struct gbuffer_debug_push_constants {
             float channel = 1.0f; // 0 albedo, 1 normal, 2 roughness, 3 metallic, 4 ao, 5 id, 6 depth, 7 flags, 8 motion
@@ -383,8 +373,8 @@ namespace vulkan {
         // decides the order they are built and destroyed in, and this class keeps no reference to any of them - its
         // twelve stage arrays hold `frame_pass*` found BY DECLARATION NAME, which is the whole tie.
         //
-        // WHAT EACH PASS OWNS is its own GPU objects - its pipeline layout, its pipeline, its set layout, its
-        // per-image descriptor family, its barrier batches - so what is left in this class is the RENDERER's:
+        // WHAT EACH PASS OWNS is its own GPU objects - its pipeline, its barrier batches, its per-generation
+        // state - so what is left in this class is the RENDERER's:
         // the knobs, the frame counters, the push block's VALUES, the two jobs, and the frame state a pass cannot
         // know.
         /**
@@ -456,10 +446,6 @@ namespace vulkan {
         // the projection's z-row (a product with the view matrix does not carry those terms) and
         // rebuilds the sub-frustum corners from it.
         glm::mat4 current_proj_unjittered = glm::mat4(1.0f);
-        void ensure_gbuffer_descriptors();
-        /// @brief resolve the G-buffer debug view's frame: the HDR target it writes, the four images it moves to a
-        ///        sampled layout, the G-buffer family's set and the push block's values
-        /// @return false when this frame cannot run it (no pipeline, or no G-buffer descriptor set)
         /// @brief the two per-image pieces of bookkeeping the debug view's frame carries (the depth's hand-back and
         ///        the motion-vector flag's clearing): the pass's header says why they are not the pass's
         /// @brief the frame's answer when the debug view did NOT record: clear the HDR target, so the frame the post
@@ -467,14 +453,14 @@ namespace vulkan {
         void clear_hdr_for_missing_gbuffer_set(VkCommandBuffer command_buffer);
         /// @brief resolve the deferred lighting pass's frame: the two shared sets, the frame's scene target,
         ///        the pass's own 88-byte push block and the extent its declaration's rule produces
-        /// @return false when this frame cannot run it (no target generation, no G-buffer set, no pipeline)
-        /// @brief the two per-image input transitions the lighting stage's descriptor declares (the three
+        /// @return false when this frame cannot run it (no target generation, no pipeline)
+        /// @brief the two per-image input transitions the lighting stage's push block names (the three
         ///        stored targets and the G-buffer depth): their "was it written this frame" flags belong to the
         ///        pass that WROTE those images, so the pass cannot own them and the frame carries the callback
         /// @brief the frame's answer when the lighting pass did NOT record: clear the scene colour target, so
         ///        the frame the post chain samples is defined instead of half-written
-        /// @note this is the renderer's and not the pass's because its cause - the G-buffer DESCRIPTOR FAMILY
-        ///       having no set for this image - is a failure of a pool this class owns; the pass never sees it
+        /// @note this is the renderer's and not the pass's because its cause - no lighting pipeline this frame -
+        ///       is a startup failure of a pipeline this class created; the pass never sees it
         void clear_scene_color_for_missing_gbuffer(VkCommandBuffer command_buffer);
 
         // ---- temporal anti-aliasing (M3, deferred path only) ----
@@ -484,8 +470,8 @@ namespace vulkan {
         // core::scene_color and the resolve writes the HDR target, so the whole post chain keeps
         // reading exactly what it read before TAA existed. A copy of the resolved frame becomes the
         // next frame's history (no ping-pong, hence no per-frame descriptor rewrites).
-        // The TAA resolve is a PASS (vulkan.pass.taa): it owns its set layout, pipeline layout, pipeline and
-        // descriptor family, so all that is left here is the pass member and the stage the runner is handed.
+        // The TAA resolve is a PASS (vulkan.pass.taa): it owns its pipeline and its per-image history flags, so
+        // all that is left here is the pass member and the stage the runner is handed.
         // Per swapchain image: whether that image has a GI history yet. First frame after startup or
         // after a resize there is none, and the resolve then uses the current trace alone.
         // The shaders the app has loaded, by file name, for the passes that build their own pipelines. The APP
@@ -569,29 +555,14 @@ namespace vulkan {
          * @brief publish the resources a PASS may name, in the declaration layer's own vocabulary
          *
          * Called once, before the passes are created: it is the renderer's half of the pass filter's registry
-         * (`register_resource`), and it is what lets a job write its own descriptor set from its own declaration
-         * instead of the renderer doing it through an entry point per pass. Everything published here is
-         * SESSION-STABLE by the filter's contract - created once, contents rewritten - so a pass may bind it
-         * into a set it writes at create time.
+         * (`register_resource`), and it is what lets a job name a resource the renderer holds (the material
+         * table, the bindless texture array, the per-slot skin matrices) instead of the renderer doing it through
+         * an entry point per pass. Everything published here is
+         * SESSION-STABLE by the filter's contract - created once, contents rewritten.
          */
         void publish_pass_resources();
         /// the samplers a declaration chooses between, in one place (see pass_context::samplers)
         [[nodiscard]] render_resource::shared::sampler_set shared_samplers() const noexcept;
-        /**
-         * The POST set's layout, created once by THIS renderer and used for two things: the pipeline layouts the post
-         * chain's passes need (handed to them through `pass_context::shared_set_layout(owner, 2)`) and the post
-         * family the renderer writes. It is lazily created on the first ask, which is the passes' create step.
-         *
-         * THE LAYOUT IS THE RENDERER'S BECAUSE THE SETS ARE: those nine bindings describe how THIS code fills the
-         * post sets (the HDR target, the four bloom levels, the LDR image, the filtered GI, the G-buffer's depth and
-         * normal), so owning it here is what stops "the composite's layout" from being a second copy of that fact.
-         */
-        VkDescriptorSetLayout post_set_layout_ = VK_NULL_HANDLE;
-        /// @brief the G-BUFFER set's layout, on the same terms as the post one above: the renderer writes every
-        ///        G-buffer set (the stored surface, the direct-radiance image and the stochastic chain's own trace
-        ///        and resolve), so the layout is its own and the passes that bind the set ask for
-        ///        it through `pass_context::shared_set_layout(owner, 1)`
-        VkDescriptorSetLayout gbuffer_set_layout_ = VK_NULL_HANDLE;
         /// @brief whether the LIGHTING STAGE is in the flat render mode this frame, published by the chain's owner
         bool scene_unlit_ = false;
         /**
@@ -610,7 +581,7 @@ namespace vulkan {
          *
          * Called once per frame before the first stage records: a per-swapchain-image view is a generation
          * object, an alias like `scene_color` is decided per frame (TAA or HDR), and the lazily created shadow
-         * map only exists once a scene set does - so "this frame's resources" is the only honest publication
+         * map only exists once the scene's resources do - so "this frame's resources" is the only honest publication
          * time. See `pass::resource_table` for why the table exists at all.
          */
         void publish_frame_resources();
@@ -731,35 +702,33 @@ namespace vulkan {
         // hands the motion-vector target to a sampler (see ensure_velocity_sampled).
         std::vector<bool> velocity_written = {};
         /**
-         * Per frame slot: the acceleration structure handle that slot's scene set was last WRITTEN with.
+         * Per frame slot: the acceleration structure handle whose heap slot was last WRITTEN.
          *
-         * WHY IT EXISTS, and it is a validation error rather than tidiness: the scene set's binding 16 is a
-         * descriptor this renderer rewrote EVERY frame (the structure phase rebuilds the top level structure
-         * per frame), and a descriptor set must not be updated while a command buffer that bound it is still
-         * pending (`VUID-vkUpdateDescriptorSets-None-03047` - the same rule this file's
-         * `on_swapchain_recreated` documents for the per-image families). With two frames in flight the other
-         * slot's frame is routinely still running, so the write invalidated it: measured, 151 validation
-         * errors in a frame - the first one naming this set, the rest the cascade of calls on a command buffer
+         * WHY IT EXISTS, and it is a validation error rather than tidiness: the top level structure is rebuilt
+         * every frame, and its heap descriptor is rewritten here - so a frame still in flight may be reading the
+         * slot the write lands in. With two frames in flight the other slot's frame is routinely still running,
+         * which is what made the write invalidate it: measured, 151 validation errors in a frame - the first one
+         * naming that command buffer, the rest the cascade of calls on a buffer
          * the layer had already invalidated - and they appeared only when the frame rate was low enough for a
          * frame to still be in flight (which is why turning the demo lights on was what surfaced them).
          *
-         * The guard is exact rather than a heuristic: the handle is what the descriptor HAS to name, so
-         * rewriting it with the same value is a no-op that costs an illegal update, and rewriting it with a
+         * The guard is exact rather than a heuristic: the handle is what the heap slot HAS to carry, so
+         * rewriting it with the same value is a no-op that costs a needless write, and rewriting it with a
          * different one is required. A structure REBUILT into a different buffer still writes here, which is
-         * the rare case the project's other families also accept.
+         * the rare case the project's other per-generation writes also accept.
          */
         std::vector<VkAccelerationStructureKHR> rt_binding_written = {};
 
         /** @brief the swapchain was rebuilt: drop everything that pointed at the old generation
-         *         (the debug overlay's backend + the G-buffer descriptor sets, whose views are gone) */
+         *         (the debug overlay's backend, whose views are gone) */
         void on_swapchain_recreated();
 
         // ---- post-processing: HDR scene target -> exposure + ACES + gamma -> swapchain ----
         // THE CHAIN'S GPU MATERIAL, THE PUSH BLOCK'S SHAPE AND THE FXAA PIPELINE ARE ALL PASSES' NOW
-        // (vulkan.pass.post, vulkan.pass.fxaa): the composite owns the set layout, the pipeline layout and the two
-        // pipelines the chain records with, the push block's type lives with the passes that push it (this class
-        // fills a VALUE of it per frame, in the resolvers), and FXAA's pipeline is its own pass's. What is left here
-        // is the two samplers the descriptor sets use and the values themselves.
+        // (vulkan.pass.post, vulkan.pass.fxaa): the composite owns the chain's two pipelines, the push block's
+        // type lives with the passes that push it (this class fills a VALUE of it per frame, in the resolvers),
+        // and FXAA's pipeline is its own pass's. What is left here is the two samplers the pass context hands over
+        // and the values themselves.
         // FXAA state: enabled + the two knobs the shader takes (see pass::post_push_constants)
         bool fxaa_on = false;
         float fxaa_subpixel = 0.75f;
@@ -770,10 +739,8 @@ namespace vulkan {
         // see). Everything else in the post chain wants the linear one above.
         // Whether the composite upsamples the GI bilaterally or with the plain bilinear fetch (see
         // pass::post_push_constants::gi_upsample). On by default; false exists for measurement.
-        // The post chain's sets: five per swapchain image (prefilter, three downsample inputs and the
-        // composite), the only family whose rebind depends on three fingerprints. It is also the last
-        // one to leave the runtime - with it, no pool is left in this class to retire by hand.
-        bindings::image_set_family post_family;
+        // The post chain's sets are gone with every other set in this renderer: the composite, the bloom levels
+        // and FXAA read their images through the frame's heap.
         // per-stage render toggle: whether the shadow pass actually records this frame. Shadow off
         // skips the depth pass (the shadow map is cleared to fully-lit so the main pass samples "no
         // shadow"). Defaults on.
@@ -872,7 +839,7 @@ namespace vulkan {
         float shadow_depth_bias_clamp = 0.0f;
 
         // ---- clustered light culling (M5) ----
-        // THE PASS (vulkan.pass.cluster) owns the pipeline, its layout, the shared scene set's bind AND the two
+        // THE PASS (vulkan.pass.cluster) owns the pipeline AND the two
         // buffer barriers its own writes need; the renderer keeps the grid's dimensions (they come from the
         // swapchain extent) and hands the cluster count over in the pass's frame. Optional: without the shader
         // (or with clustering off) shade_surface() falls back to the brute-force loop, which is exactly what the
@@ -1095,22 +1062,17 @@ namespace vulkan {
          * real but does not need the list to express it (`vulkan_core` is declared above everything).
          */
         ray_tracing::structure_set structures{this->vulkan_core};
-        // The alphaMode MASK bake (see shaders/mask_bake.comp): ONE JOB OBJECT owns its pipeline layout, its
-        // pipeline and the set it writes (vulkan.pass.mask_bake_job), because it is not a frame pass at all -
+        // The alphaMode MASK bake (see shaders/mask_bake.comp): ONE JOB OBJECT owns its pipeline
+        // (vulkan.pass.mask_bake_job), because it is not a frame pass at all -
         // it runs once, inside the same command buffer as the bottom level builds it feeds, and its input is
         // the caster list this renderer is walking at that moment. It is OFF by default and the shipped shadow
         // does not need it: the ray-tracing pipeline's any-hit stage cuts a MASK surface per hit
         // (shaders/rt_shadow.rahit). Absent on a device without ray queries, where masked geometry is solid to a
         // ray - but so is everything else, since nothing traces there at all.
         //
-        // The set is the reason it OWNS one instead of using a scene set: it is created from the SCENE layout
-        // so its two bindings have the shapes the scene set gives them, and written ONCE - never the per-slot
-        // scene set. That is not tidiness: the bake runs before any pass of the frame, and the frame WRITES the
-        // scene set's binding 16 (the top level structure) later in the same command buffer, so a set updated
-        // while a recording command buffer holds it invalidates that buffer. Measured before this was split
-        // out: 62 validation errors per run, every command after the update reported against a command buffer
-        // "now in an invalid state". Only the two bindings the bake reads are written; the rest of the layout
-        // stays unwritten, which is legal because this job's shader does not statically use them.
+        // The bake reads the material table and the bindless texture array from the HEAP (the slots the shader
+        // names itself), which is why it owns no set of its own: written where the material table and the texture
+        // array are, and read by the dispatch without a bind.
         // THE TWO JOBS ARE THE EXCEPTION THIS FILE STILL HAS, and the reason is a TYPE, not a policy: neither is
         // a `frame_pass` (see their headers - one runs once inside the structure-build command buffer, the other
         // per frame from a caster list), so a chain cannot hold them. Everything else follows the same rule they
@@ -1132,7 +1094,7 @@ namespace vulkan {
         // section). The pass below writes the same vertices the vertex shader computes into the buffer the
         // structure is built from, once per frame, and the structure is REFITTED rather than rebuilt
         // because only the bytes change.
-        // The job owns the pipeline layout, the pipeline and the per-slot sets (vulkan.pass.compute_skin_job);
+        // The job owns its pipeline (vulkan.pass.compute_skin_job);
         // what stays here is the POLICY - the knob, the skinned caster list, the buffers each caster is skinned
         // into, and the refit bookkeeping - plus the request list it hands over, kept as a member so a frame
         // does not allocate while recording. A member for the same measured reason as the MASK bake above.
@@ -1142,11 +1104,11 @@ namespace vulkan {
         // whether a traced shadow now follows the pose, and because a device without ray queries has no
         // structures for it to feed.
         bool rt_skin_bake = false;
-        // The ray-traced sun shadow pass (see shaders/rt_shadow.comp): its pipeline, its pipeline layout, its
+        // The ray-traced sun shadow pass (see shaders/rt_shadow.comp): its pipeline,
         // push block's shape and its one-shot log line are the PASS's now (vulkan.pass.rt_shadow), and its
         // member and stage are declared next to the other passes above. The renderer keeps two facts about it:
         // WHERE it sits (after the G-buffer pass, before the lighting stage - see the frame loop) and the
-        // transition the lighting stage's descriptor needs on a frame where the pass does not run.
+        // transition the lighting stage's heap slot needs on a frame where the pass does not run.
         /**
          * @brief WHAT THE STRUCTURE PHASE NEEDS FROM THIS RENDERER, as one value (see ray_tracing::build_inputs)
          *
@@ -1185,8 +1147,8 @@ namespace vulkan {
         static void fill_heap_bind(void* owner, VkBindHeapInfoEXT& resource, VkBindHeapInfoEXT& sampler);
         static bool structure_skin_ready(void* owner) noexcept;
         static bool structure_record_skin(void* owner, VkCommandBuffer command_buffer, std::span<ray_tracing::caster_level const> casters);
-        /** @brief point a scene set's binding 16 (the structure) and binding 17 (its instance table) at @p tlas's slot */
-        void write_rt_structure_binding(VkDescriptorSet set, VkAccelerationStructureKHR tlas, uint32_t frame_slot);
+        /** @brief write the structure's and its instance table's heap slots for @p frame_slot */
+        void write_rt_structure_binding(VkAccelerationStructureKHR tlas, uint32_t frame_slot);
         // scene center handed to enable_shadows. The fit falls back to center +- scene_radius when a
         // shadow caster has no world AABB of its own AND is not an instanced draw whose instance
         // matrices we can read (see instanced_world_aabb).
@@ -1223,8 +1185,8 @@ namespace vulkan {
          * THE PASS FILTER (vulkan.core.filters): the view a pass's create step is handed, which is how the
          * renderer stops knowing what each pass needs. It shares the device (`core_owner`) and carries the
          * resources this runtime publishes for its passes to name - the material table, the bindless texture
-         * array, the per-slot skin matrices - so a pass can write its own descriptor set from its own
-         * declaration instead of the renderer doing it through a bespoke entry point per pass. Declared here,
+         * array, the per-slot skin matrices - instead of the renderer doing it through a bespoke entry point per
+         * pass. Declared here,
          * after `core_owner`, so it is released before the device.
          */
         pass_filter pass_resources;
@@ -1333,11 +1295,9 @@ namespace vulkan {
         // nothing changes, and the log has no trace to explain it. Each message is emitted at most
         // once per session, keyed by the feature name.
         std::vector<std::string> warned_features = {};
-        void ensure_scene_set();                                                              // lazily create one scene set per frame slot and write all bindings
-        void write_ibl_bindings() const;                                                      // (re)write bindings 2-4 on every scene set with the current IBL views / placeholders
-        void write_light_and_shadow_bindings();                                               // (re)write binding 7 (light UBO) + binding 8 (shadow map) on every scene set
-        void update_all_scene_sets(VkWriteDescriptorSet const* writes, uint32_t write_count); // apply one batch of writes to every slot's scene set
-        material_id register_material(primitive_create_info const& info);                     // upload textures into the array, append a material_record, return its index
+        void ensure_scene_set();                                          // (lazily) create the shadow map and the clustered-light buffers, and write their heap slots
+        void write_light_and_shadow_bindings();                           // write the light UBO and the shadow map into each frame slot's heap block
+        material_id register_material(primitive_create_info const& info); // upload textures into the array, append a material_record, return its index
 
     public:
         /**
@@ -1735,10 +1695,10 @@ namespace vulkan {
         /// @brief record ONE cascade's content into its secondary: the begin (with the depth-only inheritance), the
         ///        cascade index's push, the scene set, the live bias state and every caster - the frame's callback
         /// @return whether the secondary was recorded (a failed begin must not be executed)
-        static bool record_shadow_cascade(void* owner, VkCommandBuffer secondary, uint32_t cascade_index, VkPipeline pipeline, VkPipelineLayout pipeline_layout);
+        static bool record_shadow_cascade(void* owner, VkCommandBuffer secondary, uint32_t cascade_index, VkPipeline pipeline);
         /// @brief the frame loop's scheduler, handed to the pass so one task per cascade records a secondary
         static void run_shadow_tasks(void* owner, std::span<std::function<void()>> tasks);
-        void record_shadow_content(VkCommandBuffer command_buffer, VkPipeline pipeline, VkPipelineLayout pipeline_layout) const;
+        void record_shadow_content(VkCommandBuffer command_buffer, VkPipeline pipeline) const;
 
         /**
          * @ingroup vulkan_runtime
@@ -1861,8 +1821,6 @@ namespace vulkan {
          *        them. It used to be all of that in one 209-line body, whose real problem was not its length but
          *        that a change to any one of them had to be located inside the other two. */
         [[nodiscard]] bool record_post_process(VkCommandBuffer command_buffer);
-        /** @brief (re)bind the post descriptor sets to the current per-image HDR targets */
-        void ensure_post_descriptors();
         /**
          * @brief close the geometry instance and record the scene-side stages that follow it
          *        (deferred lighting, the TAA resolve, the G-buffer debug view), each with its own
@@ -1959,7 +1917,7 @@ namespace vulkan {
          * @ingroup vulkan_runtime
          * @brief create a named pipeline from raw SPIR-V and cache it in the runtime. The first
          *        pipeline created becomes the runtime's DEFAULT pipeline (implicitly); primitives
-         *        with default semantics draw with it. Every pipeline shares the scene set layout,
+         *        with default semantics draw with it. Every pipeline is heap-native and layout-less,
          *        so any number of them can coexist in one scene (leaves choose by name).
          * @param pipeline_name the pipeline's name (used by primitives to request it, and by
          *        render_environment to bind it); must be unique
@@ -1983,19 +1941,6 @@ namespace vulkan {
          * @param pipeline_name a pipeline previously created via make_pipeline()
          */
         void set_default_pipeline(std::string_view pipeline_name);
-
-        /**
-         * @ingroup vulkan_runtime
-         * @brief create the two samplers the post chain's descriptor sets use (linear for everything, NEAREST
-         *        for the composite's GI upsample, which taps depth and normal at exact texel centres)
-         * @return success, or an error message on failure
-         * @note THIS IS THE WHOLE OF WHAT `make_post_pipeline` DID THAT IS STILL THE RENDERER'S. The post set
-         *       layout, the pipeline layout and the chain's two pipelines belong to the post composite PASS
-         *       (`vulkan.pass.post`) and are built by its create step; the samplers stay here because they
-         *       belong to the descriptor SETS, which this class still writes (post_family). It must be called
-         *       before create_passes(): the pass context hands every pass the five samplers a declaration may
-         *       choose between, and a null one in a set is a validation error rather than a skipped fetch.
-         */
 
         /**
          * @ingroup vulkan_runtime
@@ -2277,8 +2222,8 @@ namespace vulkan {
          * @ingroup vulkan_runtime
          * @brief run every wired pass's CREATE step: what a pass owns, built from its own declaration
          * @return nothing; a pass that cannot build what it records with logs why and stays inactive
-         * @note Idempotent (a pass is created once per device generation), and it must run after the shared
-         *       set layouts exist, because a pass's pipeline layout is built against them. Until it runs, the
+         * @note Idempotent (a pass is created once per device generation), and it must run after the samplers
+         *       the pass context hands over exist. Until it runs, the
          *       passes that own a pipeline are inactive and the frame records exactly what it did before they
          *       existed - which is why a startup failure here is a log line and not a broken frame.
          */
@@ -2329,13 +2274,11 @@ namespace vulkan {
 
         /**
          * @ingroup vulkan_runtime
-         * @brief create the samplers the G-buffer set's own declarations choose between (the G-buffer's NEAREST
-         *        one and the post chain's LINEAR one, which the renderer's set writes)
+         * @brief create the samplers the declarations choose between (the G-buffer's NEAREST one and the post
+         *        chain's LINEAR one are two of the five the heap carries)
          * @return success, or an error message on failure
-         * @note THIS IS THE WHOLE OF WHAT `make_gbuffer_debug_pipeline` DID THAT IS STILL THE RENDERER'S: the
-         *       set layout, its pipeline layout and the view pipeline are the debug view's PASS's now. The
-         *       samplers stay here because they belong to the descriptor sets this class writes, and they must
-         *       exist before create_passes() - the pass context hands every pass the five a declaration may pick.
+         * @note the samplers must exist before create_passes(): the pass context hands every pass the five a
+         *       declaration may pick, and the sampler heap is where a shader finds them.
          */
         /** @brief how many jitter positions the Halton(2,3) TAA sequence cycles through */
         static constexpr uint32_t taa_jitter_count = 8;
@@ -2359,13 +2302,11 @@ namespace vulkan {
          * element, a pipeline name. One function, because every pass is handed the same thing.
          */
         [[nodiscard]] pass::resolve_context make_resolve_context() noexcept;
-        /** @brief the descriptor set that occupies shared set FAMILY @p family, ELEMENT @p element, this frame */
-        [[nodiscard]] VkDescriptorSet resolve_shared_set(uint32_t family, uint32_t element, uint32_t image_index);
         /** @brief the extent of a declared resource element (the bloom levels, the probe grid) - the rule that
          *         used to live in `pass_extent`, now shared with the framework's resolver */
         [[nodiscard]] VkExtent2D resolve_resource_extent(render_resource::resource_id id, uint32_t element) const noexcept;
         /**
-         * @brief the pipeline (and its layout) a `behaviour::pipelines` name refers to
+         * @brief the pipeline a `behaviour::pipelines` name refers to
          *
          * Two places are asked, in this order: this renderer's own registry (the pipelines the APP registered), and
          * then the CHAIN'S passes, each by name - because a chain's stages may share one pipeline (the post
@@ -2451,10 +2392,10 @@ namespace vulkan {
          * @ingroup vulkan_runtime
          * @brief set the shadow map's edge length in texels ([render] shadow_map_size)
          * @param size requested edge length; clamped to 256..8192 and rounded to a power of two
-         * @note STARTUP-ONLY, like set_shadow_cascades: the layered image, its per-layer views, the
-         *       descriptor, the depth pass's rendering instance and the shadow pipeline's viewport
+         * @note STARTUP-ONLY, like set_shadow_cascades: the layered image, its per-layer views, its
+         *       heap slot, the depth pass's rendering instance and the shadow pipeline's viewport
          *       are all created from it, so it must be called before the scene import (the resources
-         *       are created lazily by the first scene set). A later call is ignored with a log line
+         *       are created lazily by the first primitive that asks for the scene). A later call is ignored with a log line
          *       rather than silently taking effect on the next resize.</note>
          */
         void set_shadow_map_size(uint32_t size) noexcept;
@@ -2730,14 +2671,14 @@ namespace vulkan {
         /**
          * @ingroup vulkan_runtime
          * @brief upload the scene-wide IBL resources (prefiltered env / irradiance / BRDF LUT)
-         *        into the shared scene set; call it before creating models that use IBL
+         *        into the frame's heap; call it before creating models that use IBL
          * @param info precomputed split-sum IBL bytes (see vulkan::generate_* helpers)
          * @note the images are uploaded once and shared by every primitive (they used to be
          *       duplicated per primitive)
          * @note call before the first frame, or only while the runtime is idle (no frame in
-         *       flight): this rewrites bindings 2-4 on every scene set, and the scene sets are
-         *       no longer update-after-bind - updating a set an in-flight frame may read is a
-         *       spec violation. Mid-loop IBL swaps need wait_idle() first.
+         *       flight): the heap slots for the three cubes are rewritten, and a frame in flight may be
+         *       reading them - a heap write has no update-after-bind notion to make that legal. Mid-loop
+         *       IBL swaps need wait_idle() first.
          */
         void set_ibl(ibl_input const& info);
 
@@ -2793,9 +2734,9 @@ namespace vulkan {
          *       (the frame record phase runs update_world before drawing, so primitive::set_world writes
          *       the same matrix into push.model as before)
          * @note call before the first frame, or only while the runtime is idle (no frame in
-         *       flight): registering a material appends binding-1 texture entries to every scene
-         *       set, and the scene sets are no longer update-after-bind - updating a set an
-         *       in-flight frame may read is a spec violation. Mid-loop creation needs wait_idle()
+         *       flight): registering a material appends texture entries to the heap's bindless array, and a
+         *       write landing where an in-flight frame may be reading is a hazard the heap has no
+         *       update-after-bind rule to make legal. Mid-loop creation needs wait_idle()
          *       first.
          */
         primitive* make_primitive(std::string_view pipeline_name, primitive_create_info const& info);
@@ -2841,9 +2782,9 @@ namespace vulkan {
          *        (e.g. -scene_center + sink); children inherit it through update_world
          * @return counts of imported primitives and materials
          * @note call before the first frame, or only while the runtime is idle (no frame in
-         *       flight): importing registers materials, which appends binding-1 texture entries
-         *       to every scene set, and the scene sets are no longer update-after-bind -
-         *       updating a set an in-flight frame may read is a spec violation. Mid-loop imports
+         *       flight): importing registers materials, which appends texture entries to the heap's
+         *       bindless array, and a write landing where an in-flight frame may be reading is a
+         *       hazard the heap has no update-after-bind rule to make legal. Mid-loop imports
          *       need wait_idle() first.
          */
         template <class NI, class DI>

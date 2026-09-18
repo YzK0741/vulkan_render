@@ -81,7 +81,6 @@ export namespace vulkan::pass {
             return this->pipeline_ready();
         }
         [[nodiscard]] VkPipeline pipeline() const noexcept override;
-        [[nodiscard]] VkPipelineLayout pipeline_layout() const noexcept override;
 
         /// @brief build this pass's frame from the published facts (see frame_pass::prepare_frame)
         void prepare_frame(frame_facts const& facts) noexcept override;
@@ -113,7 +112,6 @@ export namespace vulkan::pass {
         void release_owned() noexcept;
 
         VkDevice device_ = VK_NULL_HANDLE;
-        VkPipelineLayout pipeline_layout_ = VK_NULL_HANDLE;
         std::optional<vk_pipeline> pipeline_ = std::nullopt;
         cluster_frame frame_ = {};
     };

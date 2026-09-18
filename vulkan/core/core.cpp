@@ -43,9 +43,7 @@ namespace vulkan {
         color_format = swap_chain_image_format;
         create_render_targets(); // the scene's render targets: the post-process pass input
         create_command_pool();
-        create_descriptor_pool();
         create_samplers(); // the shared samplers a declaration picks by hint
-        init_scene_layouts();
         create_sync_objects();
         create_timestamp_query_pool(); // GPU pass timings (a no-op on devices that cannot timestamp)
 
@@ -1350,211 +1348,6 @@ namespace vulkan {
         vkBindImageMemory(device, image, image_memory, 0);
     }
 
-    void core::create_descriptor_pool() noexcept {
-        std::vector<VkDescriptorPoolSize> pool_sizes;
-        // Uniform buffers: one camera UBO + one light UBO binding per scene set
-        pool_sizes.push_back({VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 128});
-        // Combined image samplers: the texture array (scene_texture_capacity per scene set)
-        // dominates; plus the IBL bindings and the shadow map per set
-        pool_sizes.push_back({VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 8 * scene_texture_capacity});
-        // Material table + instance transform storage buffers: two per scene set
-        pool_sizes.push_back({VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 128});
-        // Storage images: the scene set's binding 15 (the storage view of the ray-traced visibility
-        // image binding 14 samples, written by shaders/rt_shadow.comp) and the G-buffer set's bindings 6
-        // and 8 (the raw GI trace a compute pass writes, and the filtered GI the composite reads - see
-        // the write_sets lambda in runtime.cpp). Acceleration structures: the scene set's binding 16, the
-        // top level structure every traced pass queries, declared only on a device with ray queries.
-        //
-        // BOTH types have to be declared HERE even though every one of those bindings is
-        // unconditionally written: a pool hands out only the types it was created with, and the
-        // validation layer names them on EVERY run - first "binding 15 was created with
-        // VK_DESCRIPTOR_TYPE_STORAGE_IMAGE but VkDescriptorPool ... was not created with any
-        // VkDescriptorPoolSize::type with VK_DESCRIPTOR_TYPE_STORAGE_IMAGE", then, once that one was
-        // satisfied, the same for binding 16 and VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR. It never
-        // failed here because the driver tolerates it, but the spec does not, and an implementation that
-        // returned VK_ERROR_OUT_OF_POOL_MEMORY for it would fail the ALLOCATION rather than the frame. It
-        // also went unnoticed because the render-check harness greps the log for VUID-/[ERROR] and not
-        // [WARNING]; that pattern includes [WARNING] now (see scripts/windows/check_render.ps1).
-        //
-        // Over-provisioned like the entries above rather than computed: maxSets bounds the real total,
-        // and running out is a hard failure rather than a frame that renders slightly wrong.
-        pool_sizes.push_back({VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 128});
-        pool_sizes.push_back({VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 128});
-
-        VkDescriptorPoolCreateInfo info = {};
-        info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-        // UPDATE_AFTER_BIND IS REQUIRED HERE, and the claim this comment used to make - that the scene sets are
-        // "static per frame slot" - is exactly what the top level structure's binding breaks: the structure phase
-        // REBUILDS the structure every frame (its instance list is frame data), so binding 16 is rewritten while
-        // the OTHER frame slot's command buffer is routinely still pending. Without the flag and the matching
-        // layout/binding flags the validation layer invalidates that command buffer
-        // (`VUID-vkUpdateDescriptorSets-None-03047`): measured, one root error followed by every later call on
-        // that buffer failing - 151 of them in a frame, and they appear only when a frame is still in flight,
-        // which is why a low frame rate (the demo lights) was what surfaced it. The remaining bindings stay
-        // written-once (textures/IBL/materials/instances/light are set before the render loop starts) and the
-        // texture array keeps PARTIALLY_BOUND so unwritten entries stay valid.
-        info.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
-        info.maxSets = 64;
-        info.poolSizeCount = static_cast<uint32_t>(pool_sizes.size());
-        info.pPoolSizes = pool_sizes.data();
-        if (vkCreateDescriptorPool(this->device, &info, nullptr, &this->descriptor_pool) != 0) {
-            utility::panic("failed in creating descriptor pool");
-        }
-        register_cleanup([this] {
-            if (descriptor_pool != VK_NULL_HANDLE) {
-                vkDestroyDescriptorPool(this->device, this->descriptor_pool, nullptr);
-            }
-        });
-    }
-
-    void core::init_scene_layouts() noexcept {
-        // ---- 1. Fixed flat descriptor set layout (see the convention docs in core.cppm) ----
-        std::array<VkDescriptorSetLayoutBinding, 18> bindings = {};
-        bindings[0] = {.binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR | VK_SHADER_STAGE_MISS_BIT_KHR, .pImmutableSamplers = nullptr};
-        // 1, 2, 4 and 5 carry COMPUTE as well as FRAGMENT: the traced GI pass needs the bindless texture
-        // array, the prefiltered environment and the BRDF LUT (its IBL) and the material table (the
-        // material of the surface a ray hit) once it shades a hit itself instead of sampling the screen.
-        bindings[1] = {.binding = 1, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = scene_texture_capacity, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_ANY_HIT_BIT_KHR, .pImmutableSamplers = nullptr};
-        bindings[2] = {.binding = 2, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT, .pImmutableSamplers = nullptr};
-        // COMPUTE as well as FRAGMENT: the traced GI pass samples the irradiance map directly (its off-screen
-        // fallback), and a binding a shader statically uses has to name that shader's stage here.
-        bindings[3] = {.binding = 3, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT, .pImmutableSamplers = nullptr};
-        bindings[4] = {.binding = 4, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT, .pImmutableSamplers = nullptr};
-        // material table: per-material texture indices + factors (see material_record in vulkan/scene_tree/scene_tree.cppm).
-        // ANY_HIT as well as FRAGMENT/COMPUTE: the ray-traced shadow's any-hit stage reads the alpha cutoff and the
-        // base colour factor's alpha from here to decide whether a triangle is really there (see rt_shadow.rahit).
-        bindings[5] = {.binding = 5, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_ANY_HIT_BIT_KHR, .pImmutableSamplers = nullptr};
-        // per-instance world transforms for instanced draws (mat4 per instance, read in pbr.vert)
-        bindings[6] = {.binding = 6, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_VERTEX_BIT, .pImmutableSamplers = nullptr};
-        // light UBO: directional sun (light-space view-proj + direction) + BRDF model ids +
-        // the punctual-light count/array (read by shadow.vert and pbr.frag)
-        bindings[7] = {.binding = 7, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR | VK_SHADER_STAGE_MISS_BIT_KHR, .pImmutableSamplers = nullptr};
-        // shadow map depth texture: LINEAR min/mag with compareEnable = VK_TRUE, so one
-        // sampler2DArrayShadow texture() tap already returns the lit fraction of its own 2x2 texel
-        // footprint - the hardware does the comparison (shading.glsl averages a 3x3 grid of taps)
-        bindings[8] = {.binding = 8, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT, .pImmutableSamplers = nullptr};
-        // per-joint skin matrices (mat4 per joint; indices 0-3 are the identity block for
-        // unskinned draws; read in pbr.vert / shadow.vert, filled per frame by set_skin_matrices).
-        // COMPUTE as well as VERTEX: the compute skinning pass (shaders/compute_skin.comp) reads the same
-        // table to deform the vertices the acceleration structure is refitted against - it declares this
-        // binding itself rather than including surface.glsl, but the binding and the layout are one and
-        // the same, because a shader can only use a binding from a stage its layout names.
-        bindings[9] = {.binding = 9, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_COMPUTE_BIT, .pImmutableSamplers = nullptr};
-        // morph data (floats): per-morphable-primitive delta + weight blocks; written by the
-        // caller through the runtime's morph scratch memory (set once + per frame for weights)
-        bindings[10] = {.binding = 10, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_VERTEX_BIT, .pImmutableSamplers = nullptr};
-        // clustered light culling (M5): the per-cluster light count and the fixed-capacity index
-        // rows. Written by the cluster COMPUTE pass, read by the fragment stage - hence both stages
-        // in the flags (a binding is only usable from a stage that declares it here).
-        bindings[11] = {.binding = 11, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT, .pImmutableSamplers = nullptr};
-        bindings[12] = {.binding = 12, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT, .pImmutableSamplers = nullptr};
-        // previous-frame world matrices, one per motion slot (see scene_motion_capacity): the vertex
-        // stage reads its own entry to hand the fragment stage a previous world position, which is
-        // what gives a moving OBJECT a motion vector. Vertex-only - nothing else reads it.
-        bindings[13] = {.binding = 13, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_VERTEX_BIT, .pImmutableSamplers = nullptr};
-        // Ray-traced sun visibility (see shaders/rt_shadow.rgen): 14 is the image the deferred lighting stage
-        // samples, 15 the SAME image as the storage view the tracing stage writes, and 16 the top level
-        // structure the ray is traced against. THE THREE TRACING STAGES are named on 0, 7, 15 and 16 below
-        // because a ray-tracing pipeline's raygen declares them - and a binding a shader statically uses has to
-        // name that shader's stage in the layout, which is the rule the COMPUTE stages here follow too.
-        //
-        // 14/15 are unconditionally legal (a sampler and a storage image need no extension) and are
-        // always written: the images exist on every device, and a frame with ray-traced shadows off just
-        // leaves them in the layout the descriptors declare (see the off path in record_scene_tail) -
-        // wrapping the layout in "does this device have ray tracing" would put the branch in every
-        // consumer of the scene set to save two bindings.
-        //
-        // 16 is an ACCELERATION STRUCTURE binding, which requires the extension to be ENABLED: it is
-        // declared only when the device has it, because a layout that declares it is invalid otherwise.
-        // Nothing that does not trace rays declares the binding, so a shorter layout is invisible to
-        // them.
-        bindings[14] = {.binding = 14, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT, .pImmutableSamplers = nullptr};
-        bindings[15] = {.binding = 15, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR | VK_SHADER_STAGE_MISS_BIT_KHR, .pImmutableSamplers = nullptr};
-        uint32_t binding_count = 16;
-        if (this->ray_query_available) {
-            bindings[16] = {.binding = 16, .descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR | VK_SHADER_STAGE_MISS_BIT_KHR, .pImmutableSamplers = nullptr};
-            // 17: THE INSTANCE TABLE the traversal's hits resolve through - one instance_record per instance
-            // (the vertex and index buffer addresses, the object -> world matrix, the vertex stride, the index
-            // type and the material index). Every structure build fills it, and until the alphaMode MASK cut
-            // NOTHING READ IT, which is why it is bound here rather than with the structures: the any-hit stage
-            // is its first consumer. It rides binding 16's condition because a device without a top level
-            // structure has no instance records either, and it carries the same mid-flight flags below for the
-            // same reason - the buffer it names is per frame slot and rebuilt with the structures.
-            bindings[17] = {.binding = 17, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_ANY_HIT_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, .pImmutableSamplers = nullptr};
-            binding_count = 18;
-        }
-
-        std::array<VkDescriptorBindingFlags, 18> binding_flags = {};
-        // texture array: only written entries are valid, appended before the render loop starts;
-        // non-uniform indexing itself is a device feature, not a layout flag
-        binding_flags[1] = VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT;
-        // binding 16 is the ONE descriptor this renderer rewrites mid-flight (see the pool's comment): the
-        // structure's handle changes as the structure is rebuilt per frame, so the write cannot be avoided -
-        // only made legal. UPDATE_UNUSED_WHILE_PENDING is the second half of the pair: the frames that do not
-        // trace rays never read it, so a write during their submission is safe by construction. The flag is set
-        // only where the binding exists (a device without ray queries has no binding 16, and `flags_info`'s
-        // bindingCount follows `binding_count`).
-        if (this->ray_query_available) {
-            binding_flags[16] = VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT | VK_DESCRIPTOR_BINDING_UPDATE_UNUSED_WHILE_PENDING_BIT;
-            binding_flags[17] = binding_flags[16]; // the instance table is per frame slot and rewritten with the structures
-        }
-
-        VkDescriptorSetLayoutBindingFlagsCreateInfo flags_info = {};
-        flags_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
-        flags_info.bindingCount = binding_count; // must match the layout: a device without ray tracing has no binding 16
-        flags_info.pBindingFlags = binding_flags.data();
-
-        VkDescriptorSetLayoutCreateInfo layout_info = {};
-        layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        layout_info.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
-        // The layout flag pairs with the pool flag AND with binding 16's own flag: a set layout carrying
-        // UPDATE_AFTER_BIND_POOL has to be allocated from a pool created with UPDATE_AFTER_BIND (both are set),
-        // and the flag is what makes the mid-flight rewrite of binding 16 legal.
-        layout_info.bindingCount = binding_count;
-        layout_info.pBindings = bindings.data();
-        layout_info.pNext = &flags_info;
-        if (vkCreateDescriptorSetLayout(this->device, &layout_info, nullptr, &this->scene_descriptor_set_layout) != VK_SUCCESS) {
-            utility::panic("failed to create scene descriptor set layout");
-        }
-
-        // ---- 2. Fixed pipeline layout: the scene set + the agreed push constant block ----
-        // ONE range: the 96-byte per-primitive material block plus the pass-wide cascade index that
-        // follows it (see core::scene_cascade_push_offset). One range rather than two because GLSL
-        // allows a single push_constant block per stage: shadow.vert declares one block whose last
-        // member is the cascade index, and that block has to fit inside a matching range. Shaders that
-        // only need the material fields (pbr.vert/frag) still declare their 96-byte block, which is
-        // contained in this one.
-        VkPushConstantRange push_range = {};
-        // VERTEX|FRAGMENT only - NOT compute: the cluster compute shader declares no push_constant
-        // block, and every stage listed here must also be passed by each vkCmdPushConstants that
-        // touches the range (VUID-vkCmdPushConstants-offset-01796), which the graphics pushes do not.
-        push_range.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
-        push_range.offset = 0;
-        push_range.size = scene_push_constant_size + scene_cascade_push_size;
-        static_assert(scene_push_constant_size + scene_cascade_push_size <= 128, "the shared push constant range must fit the 128 bytes every Vulkan implementation guarantees");
-
-        VkPipelineLayoutCreateInfo pipeline_layout_info = {};
-        pipeline_layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-        pipeline_layout_info.setLayoutCount = 1;
-        pipeline_layout_info.pSetLayouts = &this->scene_descriptor_set_layout;
-        pipeline_layout_info.pushConstantRangeCount = 1;
-        pipeline_layout_info.pPushConstantRanges = &push_range;
-        if (vkCreatePipelineLayout(this->device, &pipeline_layout_info, nullptr, &this->scene_pipeline_layout) != VK_SUCCESS) {
-            utility::panic("failed to create scene pipeline layout");
-        }
-
-        register_cleanup([this] {
-            if (this->scene_pipeline_layout != VK_NULL_HANDLE) {
-                vkDestroyPipelineLayout(this->device, this->scene_pipeline_layout, nullptr);
-                this->scene_pipeline_layout = VK_NULL_HANDLE;
-            }
-            if (this->scene_descriptor_set_layout != VK_NULL_HANDLE) {
-                vkDestroyDescriptorSetLayout(this->device, this->scene_descriptor_set_layout, nullptr);
-                this->scene_descriptor_set_layout = VK_NULL_HANDLE;
-            }
-        });
-    }
-
     void core::create_sync_objects() {
         // Per frame slot: one BINARY image-available semaphore (vkAcquireNextImageKHR requires
         // binary) + one TIMELINE semaphore that replaces the old per-slot fences and counts
@@ -1725,10 +1518,6 @@ namespace vulkan {
             }
         });
         return pool;
-    }
-
-    vk_descriptor_set core::make_descriptor_set(VkDescriptorSetLayout const layout) const { // NOLINT(*-misplaced-const)
-        return ::vulkan::make_descriptor_set(this->device, this->descriptor_pool, layout);
     }
 
     vk_image_view core::make_image_view(VkImage const image, VkFormat const format, VkImageViewType const type) const {
@@ -2122,7 +1911,6 @@ namespace vulkan {
         };
         auto result = vulkan::make_pipeline(
             this->device,
-            this->scene_pipeline_layout,
             std::span<VkFormat const>(formats),
             this->depth_format,
             vertex_shader_code,
@@ -2158,7 +1946,6 @@ namespace vulkan {
         float const depth_bias_clamp) const {
         auto result = vulkan::make_pipeline(
             this->device,
-            this->scene_pipeline_layout,
             VK_FORMAT_UNDEFINED, // no color attachment
             depth_format,
             vertex_shader_code,

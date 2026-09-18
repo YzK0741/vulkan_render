@@ -26,15 +26,7 @@ namespace vulkan::pass {
     }
 
     void gbuffer_debug_pass::release_owned() noexcept {
-        // The order they were made: the set layout first, the pipeline layout FROM it, the pipeline from that.
         this->pipeline_.reset();
-        if (this->pipeline_layout_ != VK_NULL_HANDLE && this->device_ != VK_NULL_HANDLE) {
-            vkDestroyPipelineLayout(this->device_, this->pipeline_layout_, nullptr);
-            this->pipeline_layout_ = VK_NULL_HANDLE;
-        }
-        // THE SET LAYOUT IS NOT DESTROYED HERE: it is the OWNER's (the runtime creates it from the same sixteen
-        // bindings and uses it for the family it writes - see make_gbuffer_set_layout), so this pass holds a view.
-        this->set_layout_ = VK_NULL_HANDLE;
     }
 
     render_resource::pass_io const& gbuffer_debug_pass::io() const noexcept {
@@ -69,23 +61,13 @@ namespace vulkan::pass {
             utility::log("gbuffer debug view disabled: the owner has no {} or {}", vertex_shader_name, fragment_shader_name);
             return;
         }
-        // THE G-BUFFER SET LAYOUT COMES FROM THE CONTEXT, not from this pass: its sixteen bindings describe how the
-        // OWNER writes the sets (the stored surface, the chain's images, the probe volumes, the lobe's outputs,
-        // the reflection's accumulation), so the owner creates it and this pass builds a pipeline layout around it
-        // (see make_gbuffer_set_layout and pass_context::shared_set_layout).
-        VkDescriptorSetLayout const gbuffer_layout = context.shared_set_layout != nullptr ? context.shared_set_layout(context.owner, 1) : VK_NULL_HANDLE;
-        if (gbuffer_layout == VK_NULL_HANDLE) {
-            utility::log("gbuffer debug view disabled: the owner has no G-buffer set layout");
-            return;
-        }
-        auto built = pipelines::build_gbuffer_debug(context.device, gbuffer_layout, static_cast<uint32_t>(sizeof(push_constants)), vertex_spirv, fragment_spirv);
+        // The debug view reads the stored surface through the frame's heap, so the pipeline is all it builds.
+        auto built = pipelines::build_gbuffer_debug(context.device, vertex_spirv, fragment_spirv);
         if (!built) {
             utility::log("gbuffer debug view disabled: {}", built.error());
             this->release_owned();
             return;
         }
-        this->set_layout_ = built->set_layout;
-        this->pipeline_layout_ = built->pipeline_layout;
         this->pipeline_ = std::move(built->debug);
         utility::log("SUCCESS: gbuffer debug pipeline created (the stored surface, one channel at a time)");
     }
@@ -96,15 +78,11 @@ namespace vulkan::pass {
     }
 
     bool gbuffer_debug_pass::pipeline_ready() const noexcept {
-        return this->pipeline_.has_value() && this->set_layout_ != VK_NULL_HANDLE;
+        return this->pipeline_.has_value();
     }
 
     VkPipeline gbuffer_debug_pass::pipeline() const noexcept {
         return this->pipeline_.has_value() ? this->pipeline_->get_pipeline() : VK_NULL_HANDLE;
-    }
-
-    VkPipelineLayout gbuffer_debug_pass::pipeline_layout() const noexcept {
-        return this->pipeline_layout_;
     }
 
     void gbuffer_debug_pass::set_channel(int const channel) noexcept {
@@ -118,8 +96,8 @@ namespace vulkan::pass {
     }
 
     void gbuffer_debug_pass::record(resolved_io const& io) {
-        if (!this->pipeline_ready() || io.targets.empty() || io.pipelines.empty() || io.pipelines[0] == VK_NULL_HANDLE || io.pipeline_layout == VK_NULL_HANDLE ||
-            io.shared.gbuffer == VK_NULL_HANDLE || io.extent.width == 0 || io.extent.height == 0) {
+        if (!this->pipeline_ready() || io.targets.empty() || io.pipelines.empty() || io.pipelines[0] == VK_NULL_HANDLE ||
+            io.extent.width == 0 || io.extent.height == 0) {
             return; // the runner resolves all of this or skips the pass (see frame_pass::resolve)
         }
         VkImageView const target_view = io.targets[0].view;

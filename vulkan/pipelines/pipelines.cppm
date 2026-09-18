@@ -11,11 +11,13 @@
  * stateless, and EVERY ONE OF THEM NOW TAKES A `VkDevice` rather than the whole core: a device is what a
  * caller that owns one has (a pass's create step gets exactly that, see vulkan.pass::pass_context), and the
  * two builders that also need the surface's format - the composite and FXAA, which write the swapchain image -
- * are handed it as a parameter. That is the whole of what they used to reach into the core for. The caller
- * passes the set layouts the pass reuses and gets the created handles back. Ownership stays with whoever asked
- * for the build (the runtime today, a pass once its three-piece has moved), which keeps the members and the
- * call ORDER - the order matters because the set layout a pass needs is owned by the pass that creates it
- * (fxaa needs the post layout, deferred the G-buffer layout, and both say so in their error messages).
+ * are handed it as a parameter. That is the whole of what they used to reach into the core for. Ownership stays
+ * with whoever asked for the build (the runtime today, a pass once its three-piece has moved).
+ *
+ * NO BUILDER TAKES OR MAKES A PIPELINE LAYOUT: every stage is heap-native, so a pipeline is created with
+ * `layout = VK_NULL_HANDLE` and the descriptor-heap flag (see vulkan.core.pipeline), and the descriptors a stage
+ * reads come from the frame's bound heap rather than from a set. The set-layout plumbing the builders used to
+ * thread through is gone with it.
  *
  * The pipeline handles are std::optional because vk_pipeline is an RAII owner with no default
  * constructor, which is also how the runtime holds them.
@@ -35,91 +37,55 @@ export module vulkan.pipelines;
 
 import vulkan.core;
 import vulkan.core.pipeline; // vk_pipeline
-import vulkan.bindings;      // make_set_layout: a declaration generates the layout (see bindings.cppm)
 import vulkan.render_resource;
 
 namespace vulkan::pipelines {
-    /**
-     * @brief the POST set's layout, on its own
-     *
-     * SEPARATE FROM `build_post` BECAUSE THE LAYOUT IS NOT THE PASS'S: the nine bindings describe how the RENDERER
-     * writes the post sets (HDR, the four bloom levels, the LDR image, the filtered GI, the G-buffer's depth and
-     * normal), and the runtime owns that family - so it creates the layout, hands it to the passes that need a
-     * pipeline layout around it (`pass_context::shared_set_layout(owner, 2)`) and uses the same object for the
-     * family it writes. One layout, one owner.
-     */
-    export std::expected<VkDescriptorSetLayout, std::string> make_post_set_layout(VkDevice device);
-
-    /// what build_post() creates: the pipeline layout (around the post set layout it is handed) and the two composites
+    /// what build_post() creates: the chain's two composites
     export struct post_owned {
-        VkDescriptorSetLayout set_layout = VK_NULL_HANDLE; // the one it was handed, not one it made
-        VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
         std::optional<vk_pipeline> composite; // tonemap + bloom sum, writes the swapchain
         std::optional<vk_pipeline> hdr;       // the same pass writing an HDR target instead (FXAA on)
     };
 
-    /**
-     * @brief the G-BUFFER set's layout, on its own
-     *
-     * SEPARATE FROM `build_gbuffer_debug` FOR THE SAME REASON `make_post_set_layout` is separate from `build_post`:
-     * the sixteen bindings describe how the RENDERER writes the G-buffer sets (the stored surface, the chain's
-     * images, a removed pass's coefficient volumes, the lobe's two outputs and the reflection's accumulation), and
-     * the runtime owns that family - so the runtime creates the layout, hands it to every pass that binds the set
-     * (`pass_context::shared_set_layout(owner, 1)`) and uses the same object for the family it writes.
-     */
-    export std::expected<VkDescriptorSetLayout, std::string> make_gbuffer_set_layout(VkDevice device);
-
-    /// @brief what build_gbuffer_debug() creates: the pipeline layout and the debug view's pipeline
+    /// @brief what build_gbuffer_debug() creates: the debug view's pipeline
     export struct gbuffer_owned {
-        VkDescriptorSetLayout set_layout = VK_NULL_HANDLE; // the one it was handed, not one it made
-        VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
         std::optional<vk_pipeline> debug;
     };
 
-    /// what build_taa() creates: the pipeline layout and the resolve pipeline. The SET layout comes IN as a
-    /// parameter, because it is the PASS's (see vulkan.pass.taa) - this builder is handed the one the pass
-    /// generated from its declaration, which is why the caller must have run its create step first.
+    /// what build_taa() creates: the resolve pipeline
     export struct taa_owned {
-        VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
         std::optional<vk_pipeline> resolve;
     };
 
-    /// what a compute builder that owns its PIPELINE LAYOUT returns: that layout plus the COMPUTE pipeline,
-    /// and no set layout of its own - the sets it binds belong to the scene and the pass.
+    /// what a compute builder returns: the COMPUTE pipeline
     export struct compute_pipeline_owned {
-        VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
         std::optional<vk_pipeline> trace;
     };
 
-    export std::expected<post_owned, std::string> build_post(VkDevice device, VkDescriptorSetLayout post_set_layout, VkFormat swap_chain_format, uint32_t push_constant_size,
+    export std::expected<post_owned, std::string> build_post(VkDevice device, VkFormat swap_chain_format,
                                                              std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code);
-    export std::expected<gbuffer_owned, std::string> build_gbuffer_debug(VkDevice device, VkDescriptorSetLayout gbuffer_set_layout, uint32_t push_constant_size, std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code);
-    export std::expected<taa_owned, std::string> build_taa(VkDevice device, VkDescriptorSetLayout pass_set_layout, uint32_t push_constant_size, std::span<unsigned char const> vertex_shader_code,
+    export std::expected<gbuffer_owned, std::string> build_gbuffer_debug(VkDevice device, std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code);
+    export std::expected<taa_owned, std::string> build_taa(VkDevice device, std::span<unsigned char const> vertex_shader_code,
                                                            std::span<unsigned char const> fragment_shader_code);
 
-    /// the ray-traced sun shadow: the same two set layouts the traced compute passes use (the scene set carries the
-    /// camera, the light UBO and - when the device has ray tracing - the top level structure; the
-    /// G-buffer set carries the surface the ray starts from)
-    export std::expected<compute_pipeline_owned, std::string> build_two_set_compute(VkDevice device, VkDescriptorSetLayout scene_layout, VkDescriptorSetLayout gbuffer_layout, uint32_t push_constant_size, std::span<unsigned char const> compute_shader_code);
-    /// the stochastic punctual lighting trace (shaders/megalights_trace.comp): the same two set layouts again,
-    /// with the estimator's own push block - see docs/megalights.md
-    export std::expected<compute_pipeline_owned, std::string> build_megalights_trace(VkDevice device, VkDescriptorSetLayout scene_layout, VkDescriptorSetLayout gbuffer_layout, uint32_t push_constant_size,
+    /// the ray-traced sun shadow: a compute pipeline over the descriptors the frame's heap carries
+    export std::expected<compute_pipeline_owned, std::string> build_two_set_compute(VkDevice device, std::span<unsigned char const> compute_shader_code);
+    /// the stochastic punctual lighting trace (shaders/megalights_trace.comp)
+    export std::expected<compute_pipeline_owned, std::string> build_megalights_trace(VkDevice device,
                                                                                      std::span<unsigned char const> compute_shader_code);
-    /// the stochastic chain's temporal resolve (shaders/megalights_temporal.comp): two set layouts again - the
-    /// shared G-buffer set at index 0 and the pass's own at index 1 - with the accumulation's own push block
-    export std::expected<compute_pipeline_owned, std::string> build_megalights_temporal(VkDevice device, VkDescriptorSetLayout gbuffer_layout, VkDescriptorSetLayout pass_set_layout, uint32_t push_constant_size,
+    /// the stochastic chain's temporal resolve (shaders/megalights_temporal.comp)
+    export std::expected<compute_pipeline_owned, std::string> build_megalights_temporal(VkDevice device,
                                                                                         std::span<unsigned char const> compute_shader_code);
-    /// the mask bake: a compute pass over the shared scene set only (the material table and the texture
+    /// the mask bake: a compute pass over the material table and the texture array
     /// array), which collapses the triangles a material's alphaMode MASK cuts out and writes the expanded
     /// vertices a bottom level structure is then built from - see shaders/mask_bake.comp
-    export std::expected<compute_pipeline_owned, std::string> build_mask_bake(VkDevice device, VkDescriptorSetLayout scene_layout, uint32_t push_constant_size, std::span<unsigned char const> compute_shader_code);
-    /// the compute skinning pass: the same shape again, over the scene set's per-joint matrices - see
+    export std::expected<compute_pipeline_owned, std::string> build_mask_bake(VkDevice device, std::span<unsigned char const> compute_shader_code);
+    /// the compute skinning pass: the scene set's per-joint matrices - see
     /// shaders/compute_skin.comp
-    export std::expected<compute_pipeline_owned, std::string> build_compute_skin(VkDevice device, VkDescriptorSetLayout scene_layout, uint32_t push_constant_size, std::span<unsigned char const> compute_shader_code);
-    /// the clustered-light sort (shaders/light_cluster.comp): the shared scene set alone, and NO push constants
-    /// at all - the shader reads the light UBO and writes the two cluster buffers through that set's bindings
-    /// 11 and 12, which is why this builder takes no push size. It is the first compute pipeline in this module
-    /// that came out of `vulkan.core` (where it was built against the core's own scene pipeline layout).
+    export std::expected<compute_pipeline_owned, std::string> build_compute_skin(VkDevice device, std::span<unsigned char const> compute_shader_code);
+    /// the clustered-light sort (shaders/light_cluster.comp): heap-native, and NO push constants
+    /// at all - the shader reads the light UBO and writes the two cluster buffers through heap slots, which is
+    /// why this builder takes no push size. It is the first compute pipeline in this module
+    /// that came out of `vulkan.core`.
     export std::expected<compute_pipeline_owned, std::string> build_cluster(VkDevice device, std::span<unsigned char const> compute_shader_code);
 
     /**
@@ -150,112 +116,46 @@ namespace vulkan::pipelines {
      */
     export std::expected<vk_pipeline, std::string> build_heap_probe_graphics(VkDevice device, VkFormat colour_format, std::span<unsigned char const> vertex_code, std::span<unsigned char const> fragment_code);
 
-    /// what build_resolve_pipeline() creates: the pipeline layout and the resolve pipeline. The SET layout comes IN
-    /// as a parameter now - it is generated from the denoiser's own DECLARATION (see
-    /// its own DECLARATION), which is what stops the bindings and the family's descriptor pool count from
-    /// drifting apart: written by hand in two places once, the validation layer named the mismatch.
+    /// what build_resolve_pipeline() creates: the resolve pipeline
     export struct resolve_pipeline_owned {
-        VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
         std::optional<vk_pipeline> resolve;
     };
 
-    export std::expected<resolve_pipeline_owned, std::string> build_resolve_pipeline(VkDevice device, VkDescriptorSetLayout pass_set_layout, uint32_t push_constant_size,
+    export std::expected<resolve_pipeline_owned, std::string> build_resolve_pipeline(VkDevice device,
                                                                                      std::span<unsigned char const> compute_shader_code);
 
-    /// the passes that reuse a layout someone else owns, so theirs comes in as a parameter
-    export std::expected<vk_pipeline, std::string> build_fxaa(VkDevice device, VkFormat swap_chain_format, VkPipelineLayout post_pipeline_layout, std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code);
+    export std::expected<vk_pipeline, std::string> build_fxaa(VkDevice device, VkFormat swap_chain_format, std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code);
     /**
-     * @brief the SHADOW pass's depth-only pipeline, built against the layout the caller hands it
+     * @brief the SHADOW pass's depth-only pipeline
      *
-     * WHY IT TAKES A DEVICE AND A Layout rather than being `core::make_depth_pipeline`: that method is a member of
-     * the `core` object (it reads `this->device`, `this->scene_pipeline_layout` and the caller's depth format), and
-     * a PASS reaches neither - the device, the layout and the format all arrive through `pass_context`. The three
+     * WHY IT TAKES A DEVICE rather than being `core::make_depth_pipeline`: that method is a member of
+     * the `core` object (it reads `this->device`, and the caller's depth format), and
+     * a PASS reaches neither - the device and the format arrive through `pass_context`. The three
      * BIAS factors are parameters for the same reason the depth format is: they are the pipeline's, not the
      * device's, and the depth pass is the one pipeline in this renderer created with slope-scaled bias.
      */
-    export std::expected<vk_pipeline, std::string> build_shadow(VkDevice device, VkPipelineLayout pipeline_layout, VkFormat depth_format, float depth_bias_constant_factor, float depth_bias_slope_factor,
+    export std::expected<vk_pipeline, std::string> build_shadow(VkDevice device, VkFormat depth_format, float depth_bias_constant_factor, float depth_bias_slope_factor,
                                                                 float depth_bias_clamp, std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code);
-    /**
-     * @brief what the FXAA pass's own create step needs: ITS pipeline layout, created from the SET layout it is
-     *        handed, and the anti-aliasing pipeline
-     *
-     * WHY A SECOND ENTRY POINT rather than the one above: a pass may not reach another pass's pipeline layout, and
-     * the post chain's belongs to the composite. `build_taa` is the same shape (the pass's set layout comes in and
-     * the layout is created around it), and the descriptor SET is unaffected either way - it is the post family's
-     * set 4, allocated from the composite's layout, and two layouts created from identically-defined set layouts
-     * are compatible for that set.
-     */
+    /// @brief what the FXAA pass's own create step needs: the anti-aliasing pipeline
     export struct fxaa_owned {
-        VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
         std::optional<vk_pipeline> antialias;
     };
-    export std::expected<fxaa_owned, std::string> build_fxaa_owned(VkDevice device, VkFormat swap_chain_format, VkDescriptorSetLayout pass_set_layout, uint32_t push_constant_size,
+    export std::expected<fxaa_owned, std::string> build_fxaa_owned(VkDevice device, VkFormat swap_chain_format,
                                                                    std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code);
     export struct deferred_owned {
-        VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
         std::optional<vk_pipeline> lighting;
     };
 
     /// the additive blend state comes in as a parameter: the helper that builds it is a local of the
     /// runtime, next to the passes whose blend modes it describes
-    export std::expected<deferred_owned, std::string> build_deferred(VkDevice device, VkDescriptorSetLayout scene_layout, VkDescriptorSetLayout gbuffer_layout, uint32_t push_constant_size, std::span<VkPipelineColorBlendAttachmentState const> color_blend, std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code);
-    // post: the composite chain's owner. The set layout, its pipeline layout and the two fullscreen
-    // pipelines (one per color format the chain renders into) are created here; the sampler stays with
-    // the runtime, which owns the descriptor sets that use it. The caller passes the size of its push
-    // constant block because that structure is the runtime's (it must match post.frag).
-    std::expected<VkDescriptorSetLayout, std::string> make_post_set_layout(VkDevice const device) {
-        // binding 0 = the pass input (HDR for the prefilter, the previous bloom level for a
-        // downsample), bindings 1..4 = the four bloom levels, binding 5 = the gamma-encoded LDR image
-        // (the FXAA pass, which shares this layout), binding 6 = the screen-space GI image and 7/8 =
-        // the G-buffer depth and world normal, which only the composite reads - the depth and normal
-        // are there for its joint-bilateral upsample of the half-resolution GI, and a prefilter or
-        // downsample set points all three at views it does not care about.
-        std::array<VkDescriptorSetLayoutBinding, 9> bindings = {};
-        for (uint32_t b = 0; b < bindings.size(); ++b) {
-            bindings[b].binding = b;
-            bindings[b].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            bindings[b].descriptorCount = 1;
-            bindings[b].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-            bindings[b].pImmutableSamplers = nullptr;
-        }
-        VkDescriptorSetLayoutCreateInfo layout_info = {};
-        layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        layout_info.bindingCount = static_cast<uint32_t>(bindings.size());
-        layout_info.pBindings = bindings.data();
-        VkDescriptorSetLayout layout = VK_NULL_HANDLE;
-        if (vkCreateDescriptorSetLayout(device, &layout_info, nullptr, &layout) != VK_SUCCESS) {
-            return std::unexpected("post: descriptor set layout creation failed");
-        }
-        return layout;
-    }
-
-    std::expected<post_owned, std::string> build_post(VkDevice const device, VkDescriptorSetLayout const post_set_layout, VkFormat const swap_chain_format,
-                                                      uint32_t const push_constant_size, std::span<unsigned char const> const vertex_shader_code,
+    export std::expected<deferred_owned, std::string> build_deferred(VkDevice device, std::span<VkPipelineColorBlendAttachmentState const> color_blend, std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code);
+    // post: the composite chain's owner. The two fullscreen pipelines (one per color format the chain renders
+    // into) are created here.
+    std::expected<post_owned, std::string> build_post(VkDevice const device, VkFormat const swap_chain_format,
+                                                      std::span<unsigned char const> const vertex_shader_code,
                                                       std::span<unsigned char const> const fragment_shader_code) {
         using fail = std::unexpected<std::string>;
         post_owned out;
-
-        // THE LAYOUT IS HANDED IN, not made here: it belongs to whoever WRITES the sets (the runtime owns the post
-        // family - see make_post_set_layout).
-        if (post_set_layout == VK_NULL_HANDLE) {
-            return fail("post: the post set layout was not provided");
-        }
-        out.set_layout = post_set_layout;
-
-        VkPushConstantRange push_range = {};
-        push_range.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-        push_range.offset = 0;
-        push_range.size = push_constant_size;
-
-        VkPipelineLayoutCreateInfo pipeline_layout_info = {};
-        pipeline_layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-        pipeline_layout_info.setLayoutCount = 1;
-        pipeline_layout_info.pSetLayouts = &out.set_layout;
-        pipeline_layout_info.pushConstantRangeCount = 1;
-        pipeline_layout_info.pPushConstantRanges = &push_range;
-        if (vkCreatePipelineLayout(device, &pipeline_layout_info, nullptr, &out.pipeline_layout) != VK_SUCCESS) {
-            return fail("post: pipeline layout creation failed");
-        }
 
         // TWO variants, one per color format the chain renders into: the composite writes the
         // swapchain, the bright-pass prefilter and the downsample passes write the R16F bloom levels. A
@@ -263,7 +163,7 @@ namespace vulkan::pipelines {
         // was a validation error for the HDR passes.
         auto const make_post_variant = [&](VkFormat const color_format) -> std::expected<vk_pipeline, std::string> {
             auto pipeline_result = vulkan::make_pipeline(
-                device, out.pipeline_layout, color_format, VK_FORMAT_UNDEFINED, vertex_shader_code, fragment_shader_code, VK_SAMPLE_COUNT_1_BIT, false, true, 0.0f, 0.0f, 0.0f);
+                device, color_format, VK_FORMAT_UNDEFINED, vertex_shader_code, fragment_shader_code, VK_SAMPLE_COUNT_1_BIT, false, true, 0.0f, 0.0f, 0.0f);
             if (!pipeline_result) {
                 return std::unexpected(std::string(pipeline_result.error()));
             }
@@ -283,80 +183,16 @@ namespace vulkan::pipelines {
         out.hdr = std::move(hdr_pipeline).value();
         return out;
     }
-    // gbuffer debug: a pass that binds the G-buffer set, whose LAYOUT the runtime owns (see
-    // make_gbuffer_set_layout) because the runtime writes every one of its sets. The nearest sampler the debug view
-    // needs stays with the runtime, next to the descriptor sets that use it.
-    std::expected<VkDescriptorSetLayout, std::string> make_gbuffer_set_layout(VkDevice const device) {
-        // albedo, normal, material, depth, velocity: the four the debug view displays plus the
-        // motion-vector target. The deferred lighting stage binds this SAME layout as its set 1
-        // and its shader declares only the first four, which is legal - a binding a shader does
-        // not statically use does not need a descriptor written.
-        //
-        // 5 is the direct-radiance image the lighting stage samples at a hit; 6 and 7 are the STOCHASTIC
-        // PUNCTUAL LIGHTING chain (docs/megalights.md): 6 is the storage image its trace writes and 7 is the
-        // sampler the lighting stage adds the temporal resolve's output through - the two ends of one
-        // half-resolution signal. Together with albedo, normal, material, depth and velocity that is EIGHT
-        // bindings. A set that once carried sixteen is back to eight, which is why the
-        // lighting chain's pair sits at 6/7 rather than 16/17: a descriptor set layout's binding numbers need
-        // not be contiguous, but the owner writes them by index, so a gap is not free.
-        std::array<VkDescriptorSetLayoutBinding, 8> bindings = {};
-        for (uint32_t b = 0; b < bindings.size(); ++b) {
-            bindings[b].binding = b;
-            bindings[b].descriptorType = (b == 6u) ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            bindings[b].descriptorCount = 1;
-            // EVERY binding lists COMPUTE as well as FRAGMENT. The layout is shared by several consumers
-            // and only the shaders know which binding each of them uses: the lighting stage and the
-            // debug view are fragment stages, while the lighting chain's resolve is a COMPUTE stage that
-            // reads the stored surface (albedo, normal and depth) directly. A binding a shader does not
-            // statically use needs no descriptor, but one it DOES use has to name the stage here.
-            // FRAGMENT, COMPUTE *and the three ray-tracing stages*: the shadow pass traces through a
-            // ray-tracing pipeline whose raygen samples this set, and a binding a shader statically uses has to
-            // name that shader's stage here (see the scene set layout's note).
-            bindings[b].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR | VK_SHADER_STAGE_MISS_BIT_KHR;
-            bindings[b].pImmutableSamplers = nullptr;
-        }
-        VkDescriptorSetLayoutCreateInfo layout_info = {};
-        layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        layout_info.bindingCount = static_cast<uint32_t>(bindings.size());
-        layout_info.pBindings = bindings.data();
-        VkDescriptorSetLayout layout = VK_NULL_HANDLE;
-        if (vkCreateDescriptorSetLayout(device, &layout_info, nullptr, &layout) != VK_SUCCESS) {
-            return std::unexpected("gbuffer debug: descriptor set layout creation failed");
-        }
-        return layout;
-    }
 
-    std::expected<gbuffer_owned, std::string> build_gbuffer_debug(VkDevice const device, VkDescriptorSetLayout const gbuffer_set_layout, uint32_t const push_constant_size,
+    std::expected<gbuffer_owned, std::string> build_gbuffer_debug(VkDevice const device,
                                                                   std::span<unsigned char const> const vertex_shader_code,
                                                                   std::span<unsigned char const> const fragment_shader_code) {
         using fail = std::unexpected<std::string>;
         gbuffer_owned out;
 
-        // THE LAYOUT IS HANDED IN (see make_gbuffer_set_layout): its eighteen bindings are how the OWNER fills the
-        // sets this pass and the GI passes bind.
-        if (gbuffer_set_layout == VK_NULL_HANDLE) {
-            return fail("gbuffer debug: the G-buffer set layout was not provided");
-        }
-        out.set_layout = gbuffer_set_layout;
-
-        VkPushConstantRange push_range = {};
-        push_range.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-        push_range.offset = 0;
-        push_range.size = push_constant_size;
-
-        VkPipelineLayoutCreateInfo pipeline_layout_info = {};
-        pipeline_layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-        pipeline_layout_info.setLayoutCount = 1;
-        pipeline_layout_info.pSetLayouts = &out.set_layout;
-        pipeline_layout_info.pushConstantRangeCount = 1;
-        pipeline_layout_info.pPushConstantRanges = &push_range;
-        if (vkCreatePipelineLayout(device, &pipeline_layout_info, nullptr, &out.pipeline_layout) != VK_SUCCESS) {
-            return fail("gbuffer debug: pipeline layout creation failed");
-        }
-
         VkFormat const hdr_format_only = vulkan::hdr_format;
         auto pipeline_result = vulkan::make_pipeline(
-            device, out.pipeline_layout, hdr_format_only, VK_FORMAT_UNDEFINED, vertex_shader_code, fragment_shader_code, VK_SAMPLE_COUNT_1_BIT, false, true, 0.0f, 0.0f, 0.0f);
+            device, hdr_format_only, VK_FORMAT_UNDEFINED, vertex_shader_code, fragment_shader_code, VK_SAMPLE_COUNT_1_BIT, false, true, 0.0f, 0.0f, 0.0f);
         if (!pipeline_result) {
             return fail(std::string(pipeline_result.error()));
         }
@@ -366,38 +202,13 @@ namespace vulkan::pipelines {
     // taa: the resolve pass' owner. It writes the HDR target, so its rendering color format is hdr_format
     // (a span of one), and its sampler is the odd one out - linear magnification, nearest minification,
     // because the resolve upsamples the scene color but must not average neighbouring history texels.
-    std::expected<taa_owned, std::string> build_taa(VkDevice const device, VkDescriptorSetLayout const pass_set_layout, uint32_t const push_constant_size, std::span<unsigned char const> const vertex_shader_code, std::span<unsigned char const> const fragment_shader_code) {
+    std::expected<taa_owned, std::string> build_taa(VkDevice const device, std::span<unsigned char const> const vertex_shader_code, std::span<unsigned char const> const fragment_shader_code) {
         using fail = std::unexpected<std::string>;
         taa_owned out;
 
-        // THE SET LAYOUT IS THE PASS'S (see vulkan.pass.taa): four combined-image-sampler bindings generated
-        // from `render_resource::taa_io`, so the layout the fragment stage sees and the declaration cannot
-        // drift. The count is not cosmetic: it is also what the pass's descriptor family sizes its pool from,
-        // and the validation layer has already named that pair's failure once ("Trying to allocate 15 of
-        // VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER descriptors from VkDescriptorPool ..., but this pool only
-        // has a total of 12 descriptors for this type" - 3 images x 5 bindings against a pool built for 3 x 4).
-        if (pass_set_layout == VK_NULL_HANDLE) {
-            return fail("taa: the pass has no set layout yet (its create step must run first)");
-        }
-
-        VkPushConstantRange push_range = {};
-        push_range.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-        push_range.offset = 0;
-        push_range.size = push_constant_size;
-
-        VkPipelineLayoutCreateInfo pipeline_layout_info = {};
-        pipeline_layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-        pipeline_layout_info.setLayoutCount = 1;
-        pipeline_layout_info.pSetLayouts = &pass_set_layout;
-        pipeline_layout_info.pushConstantRangeCount = 1;
-        pipeline_layout_info.pPushConstantRanges = &push_range;
-        if (vkCreatePipelineLayout(device, &pipeline_layout_info, nullptr, &out.pipeline_layout) != VK_SUCCESS) {
-            return fail("taa: pipeline layout creation failed");
-        }
-
         std::array<VkFormat, 1> const color_formats = {vulkan::hdr_format};
         auto pipeline_result = vulkan::make_pipeline(
-            device, out.pipeline_layout, std::span<VkFormat const>(color_formats), VK_FORMAT_UNDEFINED, vertex_shader_code, fragment_shader_code, VK_SAMPLE_COUNT_1_BIT, false, 0.0f, 0.0f, 0.0f);
+            device, std::span<VkFormat const>(color_formats), VK_FORMAT_UNDEFINED, vertex_shader_code, fragment_shader_code, VK_SAMPLE_COUNT_1_BIT, false, 0.0f, 0.0f, 0.0f);
         if (!pipeline_result) {
             return fail(std::string(pipeline_result.error()));
         }
@@ -405,34 +216,14 @@ namespace vulkan::pipelines {
         return out;
     }
 
-    // A traced COMPUTE pipeline over TWO set layouts rather than one (the shared scene set and the
-    // G-buffer set) because that is where its inputs already are: the camera UBO, the stored surface and
-    // the images it writes. Creating a third layout for one pass would duplicate descriptor writes to gain
-    // nothing.
-
-    // The mask bake (see shaders/mask_bake.comp): a compute pipeline over the shared scene set ALONE, because
+    // The mask bake (see shaders/mask_bake.comp): a compute pipeline over the material heap slots ALONE, because
     // everything it needs is there - the material table for the alpha texture's index and the cutoff, and the
     // bindless texture array to sample it. It owns no set layout, like every traced compute pass, and it is the only compute
     // pass here whose output is not an image: it writes vertices into a buffer the acceleration structure is
     // then built from.
-    std::expected<compute_pipeline_owned, std::string> build_mask_bake(VkDevice device, VkDescriptorSetLayout const scene_layout, uint32_t const push_constant_size, std::span<unsigned char const> const compute_shader_code) {
+    std::expected<compute_pipeline_owned, std::string> build_mask_bake(VkDevice device, std::span<unsigned char const> const compute_shader_code) {
         using fail = std::unexpected<std::string>;
         compute_pipeline_owned out;
-
-        VkPushConstantRange push_range = {};
-        push_range.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-        push_range.offset = 0;
-        push_range.size = push_constant_size;
-
-        VkPipelineLayoutCreateInfo pipeline_layout_info = {};
-        pipeline_layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-        pipeline_layout_info.setLayoutCount = 1;
-        pipeline_layout_info.pSetLayouts = &scene_layout;
-        pipeline_layout_info.pushConstantRangeCount = 1;
-        pipeline_layout_info.pPushConstantRanges = &push_range;
-        if (vkCreatePipelineLayout(device, &pipeline_layout_info, nullptr, &out.pipeline_layout) != VK_SUCCESS) {
-            return fail("mask bake: pipeline layout creation failed");
-        }
 
         std::optional<vk_shader_module> const module = make_shader_module(compute_shader_code, device);
         if (!module.has_value()) {
@@ -465,31 +256,15 @@ namespace vulkan::pipelines {
         if (vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &pipeline) != VK_SUCCESS) {
             return fail("mask bake: vkCreateComputePipelines failed");
         }
-        out.trace = vk_pipeline(pipeline, out.pipeline_layout, device);
+        out.trace = vk_pipeline(pipeline, device);
         return out;
     }
 
     // The compute skinning pass (see shaders/compute_skin.comp): the same shape as the mask bake above and
-    // for the same reason - it reads only the shared scene set (here the per-joint matrices at binding 9)
-    // and owns no set layout of its own.
-    std::expected<compute_pipeline_owned, std::string> build_compute_skin(VkDevice device, VkDescriptorSetLayout const scene_layout, uint32_t const push_constant_size, std::span<unsigned char const> const compute_shader_code) {
+    // for the same reason - it reads only the per-joint matrices heap slot.
+    std::expected<compute_pipeline_owned, std::string> build_compute_skin(VkDevice device, std::span<unsigned char const> const compute_shader_code) {
         using fail = std::unexpected<std::string>;
         compute_pipeline_owned out;
-
-        VkPushConstantRange push_range = {};
-        push_range.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-        push_range.offset = 0;
-        push_range.size = push_constant_size;
-
-        VkPipelineLayoutCreateInfo pipeline_layout_info = {};
-        pipeline_layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-        pipeline_layout_info.setLayoutCount = 1;
-        pipeline_layout_info.pSetLayouts = &scene_layout;
-        pipeline_layout_info.pushConstantRangeCount = 1;
-        pipeline_layout_info.pPushConstantRanges = &push_range;
-        if (vkCreatePipelineLayout(device, &pipeline_layout_info, nullptr, &out.pipeline_layout) != VK_SUCCESS) {
-            return fail("compute skin: pipeline layout creation failed");
-        }
 
         std::optional<vk_shader_module> const module = make_shader_module(compute_shader_code, device);
         if (!module.has_value()) {
@@ -522,7 +297,7 @@ namespace vulkan::pipelines {
         if (vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &pipeline) != VK_SUCCESS) {
             return fail("compute skin: vkCreateComputePipelines failed");
         }
-        out.trace = vk_pipeline(pipeline, out.pipeline_layout, device);
+        out.trace = vk_pipeline(pipeline, device);
         return out;
     }
 
@@ -560,7 +335,7 @@ namespace vulkan::pipelines {
         if (vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &pipeline) != VK_SUCCESS) {
             return fail("cluster: vkCreateComputePipelines failed");
         }
-        out.trace = vk_pipeline(pipeline, out.pipeline_layout, device);
+        out.trace = vk_pipeline(pipeline, device);
         return out;
     }
 
@@ -595,7 +370,7 @@ namespace vulkan::pipelines {
         if (vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &pipeline) != VK_SUCCESS) {
             return fail("heap probe: vkCreateComputePipelines failed");
         }
-        out.trace = vk_pipeline(pipeline, VK_NULL_HANDLE, device);
+        out.trace = vk_pipeline(pipeline, device);
         return out;
     }
 
@@ -710,28 +485,12 @@ namespace vulkan::pipelines {
         if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &pipeline) != VK_SUCCESS) {
             return fail("heap probe (graphics): vkCreateGraphicsPipelines failed");
         }
-        return vk_pipeline(pipeline, VK_NULL_HANDLE, device);
+        return vk_pipeline(pipeline, device);
     }
 
-    std::expected<compute_pipeline_owned, std::string> build_two_set_compute(VkDevice device, VkDescriptorSetLayout const scene_layout, VkDescriptorSetLayout const gbuffer_layout, uint32_t const push_constant_size, std::span<unsigned char const> const compute_shader_code) {
+    std::expected<compute_pipeline_owned, std::string> build_two_set_compute(VkDevice device, std::span<unsigned char const> const compute_shader_code) {
         using fail = std::unexpected<std::string>;
         compute_pipeline_owned out;
-
-        VkPushConstantRange push_range = {};
-        push_range.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-        push_range.offset = 0;
-        push_range.size = push_constant_size;
-
-        std::array<VkDescriptorSetLayout, 2> const set_layouts = {scene_layout, gbuffer_layout};
-        VkPipelineLayoutCreateInfo pipeline_layout_info = {};
-        pipeline_layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-        pipeline_layout_info.setLayoutCount = static_cast<uint32_t>(set_layouts.size());
-        pipeline_layout_info.pSetLayouts = set_layouts.data();
-        pipeline_layout_info.pushConstantRangeCount = 1;
-        pipeline_layout_info.pPushConstantRanges = &push_range;
-        if (vkCreatePipelineLayout(device, &pipeline_layout_info, nullptr, &out.pipeline_layout) != VK_SUCCESS) {
-            return fail("rt shadow: pipeline layout creation failed");
-        }
 
         std::optional<vk_shader_module> const module = make_shader_module(compute_shader_code, device);
         if (!module.has_value()) {
@@ -764,7 +523,7 @@ namespace vulkan::pipelines {
         if (vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &pipeline) != VK_SUCCESS) {
             return fail("rt shadow: vkCreateComputePipelines failed");
         }
-        out.trace = vk_pipeline(pipeline, out.pipeline_layout, device);
+        out.trace = vk_pipeline(pipeline, device);
         return out;
     }
     /**
@@ -775,7 +534,6 @@ namespace vulkan::pipelines {
      * filled with are per-pipeline data and its regions have to outlive this call.
      */
     export struct ray_tracing_pipeline_owned {
-        VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
         std::optional<vk_pipeline> pipeline;
         uint32_t group_count = 0;
     };
@@ -792,31 +550,12 @@ namespace vulkan::pipelines {
      * Recursion depth is 1: the shadow ray answers a yes/no question and the traversal terminates on the first
      * hit (`gl_RayFlagsTerminateOnFirstHitEXT` in the raygen), so there is nothing for a second level to do.
      */
-    export std::expected<ray_tracing_pipeline_owned, std::string> build_rt_shadow_ray_tracing(VkDevice device, VkDescriptorSetLayout scene_layout, VkDescriptorSetLayout gbuffer_layout,
-                                                                                              uint32_t push_constant_size, std::span<unsigned char const> raygen_code,
+    export std::expected<ray_tracing_pipeline_owned, std::string> build_rt_shadow_ray_tracing(VkDevice device,
+                                                                                              std::span<unsigned char const> raygen_code,
                                                                                               std::span<unsigned char const> closest_hit_code, std::span<unsigned char const> miss_code,
                                                                                               std::span<unsigned char const> any_hit_code) {
         using fail = std::unexpected<std::string>;
         ray_tracing_pipeline_owned out;
-
-        VkPushConstantRange push_range = {};
-        // The any-hit stage is in this mask even before it reads a push constant: the range is what the SHADER
-        // may read, and an alpha test that needs the material's index or the scene's alpha cutoff finds it there
-        // rather than needing this layout rebuilt (a pipeline layout is not something to churn per feature).
-        push_range.stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR | VK_SHADER_STAGE_MISS_BIT_KHR | VK_SHADER_STAGE_ANY_HIT_BIT_KHR;
-        push_range.offset = 0;
-        push_range.size = push_constant_size;
-
-        std::array<VkDescriptorSetLayout, 2> const set_layouts = {scene_layout, gbuffer_layout};
-        VkPipelineLayoutCreateInfo pipeline_layout_info = {};
-        pipeline_layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-        pipeline_layout_info.setLayoutCount = static_cast<uint32_t>(set_layouts.size());
-        pipeline_layout_info.pSetLayouts = set_layouts.data();
-        pipeline_layout_info.pushConstantRangeCount = 1;
-        pipeline_layout_info.pPushConstantRanges = &push_range;
-        if (vkCreatePipelineLayout(device, &pipeline_layout_info, nullptr, &out.pipeline_layout) != VK_SUCCESS) {
-            return fail("rt shadow: pipeline layout creation failed");
-        }
 
         std::optional<vk_shader_module> const raygen = make_shader_module(raygen_code, device);
         std::optional<vk_shader_module> const closest_hit = make_shader_module(closest_hit_code, device);
@@ -919,59 +658,31 @@ namespace vulkan::pipelines {
         if (create_ray_tracing(device, VK_NULL_HANDLE, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &pipeline) != VK_SUCCESS) {
             return fail("rt shadow: vkCreateRayTracingPipelinesKHR failed");
         }
-        out.pipeline = vk_pipeline(pipeline, out.pipeline_layout, device);
+        out.pipeline = vk_pipeline(pipeline, device);
         out.group_count = static_cast<uint32_t>(groups.size());
         return out;
     }
 
-    // The stochastic punctual lighting trace (shaders/megalights_trace.comp): the same two set layouts and the
-    // same compute-pipeline shape as the passes above, with a push block of its own. It FORWARDS to the ray-traced
-    // shadow's builder rather than repeating twenty lines of Vulkan, and it exists as its own name because a
-    // caller reading `build_rt_shadow` inside this pass's create() would have to check that the two are still the
-    // same shape - which is exactly the kind of coupling a name is for.
-    std::expected<compute_pipeline_owned, std::string> build_megalights_trace(VkDevice device, VkDescriptorSetLayout const scene_layout, VkDescriptorSetLayout const gbuffer_layout, uint32_t const push_constant_size,
+    // The stochastic punctual lighting trace (shaders/megalights_trace.comp): the same compute-pipeline shape as
+    // the passes above, with a push block of its own. It FORWARDS to the builder above rather than repeating
+    // twenty lines of Vulkan, and it exists as its own name because a caller reading `build_two_set_compute`
+    // inside this pass's create() would have to check that the two are still the same shape - which is exactly
+    // the kind of coupling a name is for.
+    std::expected<compute_pipeline_owned, std::string> build_megalights_trace(VkDevice device,
                                                                               std::span<unsigned char const> const compute_shader_code) {
-        return build_two_set_compute(device, scene_layout, gbuffer_layout, push_constant_size, compute_shader_code);
+        return build_two_set_compute(device, compute_shader_code);
     }
-    // ... and the chain's temporal resolve: the same two-layout shape, with the shared G-buffer set FIRST
-    // because that is index 0 in its declaration (its own bindings are set 1) - the order of the arguments IS
-    // the set numbering, which is why this forwarder takes them in that order rather than reusing the one above.
-    std::expected<compute_pipeline_owned, std::string> build_megalights_temporal(VkDevice device, VkDescriptorSetLayout const gbuffer_layout, VkDescriptorSetLayout const pass_set_layout, uint32_t const push_constant_size,
+    // ... and the chain's temporal resolve: the same shape, with the accumulation's own push block.
+    std::expected<compute_pipeline_owned, std::string> build_megalights_temporal(VkDevice device,
                                                                                  std::span<unsigned char const> const compute_shader_code) {
-        return build_two_set_compute(device, gbuffer_layout, pass_set_layout, push_constant_size, compute_shader_code);
+        return build_two_set_compute(device, compute_shader_code);
     }
-    // The GI spatial filter: the same two set layouts the tracer binds (the shared scene set and the
-    // G-buffer set, which carries the normal, the depth, the accumulated image it reads and the
-    // filtered image it writes), so only the pipeline layout and the push block are new.
 
-    // The temporal resolve: its own set layout, because it groups things no other pass puts together
-    // (this frame's estimate, the accumulated history, the motion vectors and the depth). It binds no scene
-    // set: the push block carries the two projection terms its depth guard needs.
-    std::expected<resolve_pipeline_owned, std::string> build_resolve_pipeline(VkDevice const device, VkDescriptorSetLayout const pass_set_layout, uint32_t const push_constant_size, std::span<unsigned char const> const compute_shader_code) {
+    // The temporal resolve: its own pipeline, over the images the frame's heap carries. It reads no scene
+    // buffer: the push block carries the two projection terms its depth guard needs.
+    std::expected<resolve_pipeline_owned, std::string> build_resolve_pipeline(VkDevice const device, std::span<unsigned char const> const compute_shader_code) {
         using fail = std::unexpected<std::string>;
         resolve_pipeline_owned out;
-
-        // THE SET LAYOUT IS THE DECLARATION'S (generated by the caller with bindings::make_set_layout): one of
-        // its bindings is the storage image the resolve writes. Handing it in is what makes the LAYOUT and the
-        // family's pool count the same fact.
-        if (pass_set_layout == VK_NULL_HANDLE) {
-            return fail("temporal resolve: the declaration produced no set layout");
-        }
-
-        VkPushConstantRange push_range = {};
-        push_range.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-        push_range.offset = 0;
-        push_range.size = push_constant_size;
-
-        VkPipelineLayoutCreateInfo pipeline_layout_info = {};
-        pipeline_layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-        pipeline_layout_info.setLayoutCount = 1;
-        pipeline_layout_info.pSetLayouts = &pass_set_layout;
-        pipeline_layout_info.pushConstantRangeCount = 1;
-        pipeline_layout_info.pPushConstantRanges = &push_range;
-        if (vkCreatePipelineLayout(device, &pipeline_layout_info, nullptr, &out.pipeline_layout) != VK_SUCCESS) {
-            return fail("temporal resolve: pipeline layout creation failed");
-        }
 
         std::optional<vk_shader_module> const module = make_shader_module(compute_shader_code, device);
         if (!module.has_value()) {
@@ -1004,30 +715,16 @@ namespace vulkan::pipelines {
         if (vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &pipeline) != VK_SUCCESS) {
             return fail("temporal resolve: vkCreateComputePipelines failed");
         }
-        out.resolve = vk_pipeline(pipeline, out.pipeline_layout, device);
+        out.resolve = vk_pipeline(pipeline, device);
         return out;
     }
 
-    std::expected<deferred_owned, std::string> build_deferred(VkDevice device, VkDescriptorSetLayout const scene_layout, VkDescriptorSetLayout const gbuffer_layout, uint32_t const push_constant_size, std::span<VkPipelineColorBlendAttachmentState const> const color_blend, std::span<unsigned char const> const vertex_shader_code, std::span<unsigned char const> const fragment_shader_code) {
+    std::expected<deferred_owned, std::string> build_deferred(VkDevice device, std::span<VkPipelineColorBlendAttachmentState const> const color_blend, std::span<unsigned char const> const vertex_shader_code, std::span<unsigned char const> const fragment_shader_code) {
         using fail = std::unexpected<std::string>;
         deferred_owned out;
-        std::array<VkDescriptorSetLayout, 2> const set_layouts = {scene_layout, gbuffer_layout};
-        VkPushConstantRange push_range = {};
-        push_range.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-        push_range.offset = 0;
-        push_range.size = push_constant_size;
-        VkPipelineLayoutCreateInfo pipeline_layout_info = {};
-        pipeline_layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-        pipeline_layout_info.setLayoutCount = static_cast<uint32_t>(set_layouts.size());
-        pipeline_layout_info.pSetLayouts = set_layouts.data();
-        pipeline_layout_info.pushConstantRangeCount = 1;
-        pipeline_layout_info.pPushConstantRanges = &push_range;
-        if (vkCreatePipelineLayout(device, &pipeline_layout_info, nullptr, &out.pipeline_layout) != VK_SUCCESS) {
-            return fail("deferred: pipeline layout creation failed");
-        }
         std::array<VkFormat, 1> const color_formats = {vulkan::hdr_format};
         auto pipeline_result = vulkan::make_pipeline(
-            device, out.pipeline_layout, std::span<VkFormat const>(color_formats), VK_FORMAT_UNDEFINED, vertex_shader_code, fragment_shader_code, VK_SAMPLE_COUNT_1_BIT, false, 0.0f, 0.0f, 0.0f, color_blend);
+            device, std::span<VkFormat const>(color_formats), VK_FORMAT_UNDEFINED, vertex_shader_code, fragment_shader_code, VK_SAMPLE_COUNT_1_BIT, false, 0.0f, 0.0f, 0.0f, color_blend);
         if (!pipeline_result) {
             return fail(std::string(pipeline_result.error()));
         }
@@ -1035,17 +732,17 @@ namespace vulkan::pipelines {
         return out;
     }
 
-    std::expected<vk_pipeline, std::string> build_fxaa(VkDevice device, VkFormat const swap_chain_format, VkPipelineLayout const post_pipeline_layout, std::span<unsigned char const> const vertex_shader_code, std::span<unsigned char const> const fragment_shader_code) {
+    std::expected<vk_pipeline, std::string> build_fxaa(VkDevice device, VkFormat const swap_chain_format, std::span<unsigned char const> const vertex_shader_code, std::span<unsigned char const> const fragment_shader_code) {
         using fail = std::unexpected<std::string>;
         auto pipeline_result = vulkan::make_pipeline(
-            device, post_pipeline_layout, swap_chain_format, VK_FORMAT_UNDEFINED, vertex_shader_code, fragment_shader_code, VK_SAMPLE_COUNT_1_BIT, false, true, 0.0f, 0.0f, 0.0f);
+            device, swap_chain_format, VK_FORMAT_UNDEFINED, vertex_shader_code, fragment_shader_code, VK_SAMPLE_COUNT_1_BIT, false, true, 0.0f, 0.0f, 0.0f);
         if (!pipeline_result) {
             return fail(std::string(pipeline_result.error()));
         }
         return std::move(pipeline_result).value();
     }
 
-    std::expected<vk_pipeline, std::string> build_shadow(VkDevice const device, VkPipelineLayout const pipeline_layout, VkFormat const depth_format, float const depth_bias_constant_factor,
+    std::expected<vk_pipeline, std::string> build_shadow(VkDevice const device, VkFormat const depth_format, float const depth_bias_constant_factor,
                                                          float const depth_bias_slope_factor, float const depth_bias_clamp, std::span<unsigned char const> const vertex_shader_code,
                                                          std::span<unsigned char const> const fragment_shader_code) {
         using fail = std::unexpected<std::string>;
@@ -1053,7 +750,6 @@ namespace vulkan::pipelines {
         // (it removes acne on surfaces angled away from the light, in units of depth per depth-unit of slope - the
         // numbers are the pass's and the caller's, not this builder's).
         auto result = vulkan::make_pipeline(device,
-                                            pipeline_layout,
                                             VK_FORMAT_UNDEFINED,
                                             depth_format,
                                             vertex_shader_code,
@@ -1069,38 +765,15 @@ namespace vulkan::pipelines {
         }
         return std::move(result).value();
     }
-    std::expected<fxaa_owned, std::string> build_fxaa_owned(VkDevice const device, VkFormat const swap_chain_format, VkDescriptorSetLayout const pass_set_layout, uint32_t const push_constant_size,
+    std::expected<fxaa_owned, std::string> build_fxaa_owned(VkDevice const device, VkFormat const swap_chain_format,
                                                             std::span<unsigned char const> const vertex_shader_code, std::span<unsigned char const> const fragment_shader_code) {
         using fail = std::unexpected<std::string>;
         fxaa_owned out;
-        // The set layout is the POST CHAIN's, which the pass is handed by its owner (the composite pass owns it);
-        // what this creates around it is the pass's OWN pipeline layout, because a pipeline's layout is what its
-        // binds and pushes go through and a pass may not borrow another pass's.
-        if (pass_set_layout == VK_NULL_HANDLE) {
-            return fail("fxaa: the post set layout is missing (the composite pass's create step must run first)");
-        }
-
-        VkPushConstantRange push_range = {};
-        push_range.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-        push_range.offset = 0;
-        push_range.size = push_constant_size;
-
-        VkPipelineLayoutCreateInfo pipeline_layout_info = {};
-        pipeline_layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-        pipeline_layout_info.setLayoutCount = 1;
-        pipeline_layout_info.pSetLayouts = &pass_set_layout;
-        pipeline_layout_info.pushConstantRangeCount = 1;
-        pipeline_layout_info.pPushConstantRanges = &push_range;
-        if (vkCreatePipelineLayout(device, &pipeline_layout_info, nullptr, &out.pipeline_layout) != VK_SUCCESS) {
-            return fail("fxaa: pipeline layout creation failed");
-        }
 
         // The anti-aliasing pipeline renders into the SWAPCHAIN, so its declared colour format is the surface's.
         auto pipeline_result = vulkan::make_pipeline(
-            device, out.pipeline_layout, swap_chain_format, VK_FORMAT_UNDEFINED, vertex_shader_code, fragment_shader_code, VK_SAMPLE_COUNT_1_BIT, false, true, 0.0f, 0.0f, 0.0f);
+            device, swap_chain_format, VK_FORMAT_UNDEFINED, vertex_shader_code, fragment_shader_code, VK_SAMPLE_COUNT_1_BIT, false, true, 0.0f, 0.0f, 0.0f);
         if (!pipeline_result) {
-            vkDestroyPipelineLayout(device, out.pipeline_layout, nullptr);
-            out.pipeline_layout = VK_NULL_HANDLE;
             return fail(std::string(pipeline_result.error()));
         }
         out.antialias = std::move(pipeline_result).value();

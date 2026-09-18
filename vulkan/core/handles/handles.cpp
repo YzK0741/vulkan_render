@@ -86,73 +86,6 @@ namespace vulkan {
     }
 } // namespace vulkan
 
-// vk_descriptor_set
-namespace vulkan {
-    vk_descriptor_set::vk_descriptor_set(VkDescriptorSet const descriptor_set, VkDevice const device, VkDescriptorPool const descriptor_pool) noexcept { // NOLINT(*-misplaced-const)
-        this->descriptor_set = descriptor_set;
-        this->device = device;
-        this->descriptor_pool = descriptor_pool;
-    }
-
-    vk_descriptor_set::vk_descriptor_set(vk_descriptor_set&& other) noexcept {
-        this->descriptor_set = other.descriptor_set;
-        this->device = other.device;
-        this->descriptor_pool = other.descriptor_pool;
-        other.descriptor_set = VK_NULL_HANDLE;
-        other.device = VK_NULL_HANDLE;
-        other.descriptor_pool = VK_NULL_HANDLE;
-    }
-
-    vk_descriptor_set& vk_descriptor_set::operator=(vk_descriptor_set&& other) noexcept {
-        if (this == &other) {
-            return *this;
-        }
-        this->release();
-        this->descriptor_set = other.descriptor_set;
-        this->device = other.device;
-        this->descriptor_pool = other.descriptor_pool;
-        other.descriptor_set = VK_NULL_HANDLE;
-        other.device = VK_NULL_HANDLE;
-        other.descriptor_pool = VK_NULL_HANDLE;
-        return *this;
-    }
-
-    vk_descriptor_set::~vk_descriptor_set() noexcept {
-        this->release();
-    }
-
-    VkDescriptorSet const& vk_descriptor_set::get() const noexcept {
-        return this->descriptor_set;
-    }
-
-    VkDescriptorSet const& vk_descriptor_set::operator*() const noexcept {
-        return this->descriptor_set;
-    }
-
-    void vk_descriptor_set::release() noexcept {
-        if (this->descriptor_set != VK_NULL_HANDLE && this->device != VK_NULL_HANDLE && this->descriptor_pool != VK_NULL_HANDLE) {
-            vkFreeDescriptorSets(this->device, this->descriptor_pool, 1, &this->descriptor_set);
-        }
-        this->descriptor_set = VK_NULL_HANDLE;
-        this->device = VK_NULL_HANDLE;
-        this->descriptor_pool = VK_NULL_HANDLE;
-    }
-
-    vk_descriptor_set make_descriptor_set(VkDevice const device, VkDescriptorPool const descriptor_pool, VkDescriptorSetLayout layout) noexcept {
-        VkDescriptorSet descriptor_set = VK_NULL_HANDLE;
-        VkDescriptorSetAllocateInfo allocate_info = {
-            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-            .pNext = nullptr,
-            .descriptorPool = descriptor_pool,
-            .descriptorSetCount = 1,
-            .pSetLayouts = &layout,
-        };
-        vkAllocateDescriptorSets(device, &allocate_info, &descriptor_set);
-
-        return vk_descriptor_set(descriptor_set, device, descriptor_pool);
-    }
-} // namespace vulkan
-
 // vk_shader_module
 namespace vulkan {
     vk_shader_module::vk_shader_module(VkShaderModule shader_module, VkDevice const device) noexcept {
@@ -220,21 +153,18 @@ namespace vulkan {
 
 // vk_pipeline
 namespace vulkan {
-    vk_pipeline::vk_pipeline(VkPipeline const pipeline, VkPipelineLayout const pipeline_layout, VkDevice const device) noexcept { // NOLINT(*-misplaced-const)
+    vk_pipeline::vk_pipeline(VkPipeline const pipeline, VkDevice const device) noexcept { // NOLINT(*-misplaced-const)
         this->pipeline = pipeline;
-        this->pipeline_layout = pipeline_layout;
         this->device = device;
     }
 
     vk_pipeline::vk_pipeline(vk_pipeline&& other) noexcept {
         this->device = other.device;
         this->pipeline = other.pipeline;
-        this->pipeline_layout = other.pipeline_layout;
         this->viewport = other.viewport;
         this->scissor = other.scissor;
         other.device = VK_NULL_HANDLE;
         other.pipeline = VK_NULL_HANDLE;
-        other.pipeline_layout = VK_NULL_HANDLE;
     }
 
     vk_pipeline& vk_pipeline::operator=(vk_pipeline&& other) noexcept {
@@ -244,12 +174,10 @@ namespace vulkan {
         this->release();
         this->device = other.device;
         this->pipeline = other.pipeline;
-        this->pipeline_layout = other.pipeline_layout;
         this->viewport = other.viewport;
         this->scissor = other.scissor;
         other.device = VK_NULL_HANDLE;
         other.pipeline = VK_NULL_HANDLE;
-        other.pipeline_layout = VK_NULL_HANDLE;
         return *this;
     }
 
@@ -259,10 +187,6 @@ namespace vulkan {
 
     VkPipeline vk_pipeline::get_pipeline() const noexcept {
         return this->pipeline;
-    }
-
-    VkPipelineLayout vk_pipeline::get_pipeline_layout() const noexcept {
-        return pipeline_layout;
     }
 
     void vk_pipeline::begin_pipeline(VkCommandBuffer const command_buffer) const {
@@ -279,7 +203,6 @@ namespace vulkan {
         }
         this->device = VK_NULL_HANDLE;
         this->pipeline = VK_NULL_HANDLE;
-        this->pipeline_layout = VK_NULL_HANDLE;
     }
 
     // vk_image_view

@@ -38,15 +38,15 @@ namespace vulkan {
      *   pipeline for the shadow pass) - the fallback a default-semantics primitive wants
      * - bind: injected binding action; takes the pipeline name and records the real
      *   vkCmdBindPipeline (+ any per-bind dynamic state) on this session's command buffer
-     * - layout: the shared scene pipeline layout (every pipeline shares it; push constants
-     *   record against it, independent of which pipeline is bound)
+     * - push_owner / push_block: how a draw sends its push block, which travels as DATA
+     *   through vkCmdPushDataEXT because no heap-native pipeline has a layout
      * - bound: the pipeline name currently bound in this session (empty = nothing bound yet)
      * - two_sided: force two-sided rasterization on this session (the shadow pass; see below)
      *
      * A "default-semantics" primitive (normal / instanced / static draw) does:
      * @code
      * if (!env.in_default_pipeline()) { env.bind_default(); }
-     * // ... bind geometry, push constants via env.layout(), draw on env.command_buffer ...
+     * // ... bind geometry, push its block via env.push_block, draw on env.command_buffer ...
      * @endcode
      * A custom primitive stores its pipeline name and does:
      * @code

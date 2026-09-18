@@ -2,7 +2,7 @@
 // The framework's whole value is a CONTRACT: create once per generation, resolve per frame, skip an inactive
 // pass without resolving it, apply the behaviour before recording, mark once per stage, and tell every pass
 // when the swapchain was rebuilt. Each of those is something this renderer does by hand today, and does
-// inconsistently - the manual reset list misses two of six descriptor families, and the viewport resync is a
+// inconsistently - the manual reset list missed per-image descriptor families once, and the viewport resync is a
 // hand-kept pipeline list. So this test asserts the contract with a FAKE host: no device, no Vulkan call, and
 // every assertion is about what the runner DID, in what order, and what it deliberately did not do.
 #include "vk_test.h"
@@ -55,10 +55,7 @@ namespace {
     /// fake handles, so a resolved pass can be told apart from an unresolved one without a device
     /// (not `constexpr`: a handle comes from `reinterpret_cast`, which is not a constant expression)
     VkCommandBuffer const fake_cmd = reinterpret_cast<VkCommandBuffer>(0xC0);
-    VkDescriptorSet const fake_own_set = reinterpret_cast<VkDescriptorSet>(0x0F);
-    VkDescriptorSet const fake_scene = reinterpret_cast<VkDescriptorSet>(0x5E);
     VkDevice const fake_device = reinterpret_cast<VkDevice>(0xDD);
-    VkPipelineLayout const fake_layout = reinterpret_cast<VkPipelineLayout>(0x1A);
     VkSampler const fake_shadow_sampler = reinterpret_cast<VkSampler>(0x22);
     std::array<VkPipeline, 4> const fake_pipelines = {
         reinterpret_cast<VkPipeline>(0x1), reinterpret_cast<VkPipeline>(0x2), reinterpret_cast<VkPipeline>(0x3), reinterpret_cast<VkPipeline>(0x4)};
@@ -108,10 +105,7 @@ namespace {
         out.frame = state.frame;
         out.cmd = fake_cmd;
         out.own = state.own;
-        out.own_set = fake_own_set;
-        out.shared.scene = fake_scene;
         out.pipelines = std::span<VkPipeline const>(fake_pipelines.data(), behaviour.pipelines.size());
-        out.pipeline_layout = fake_layout;
         out.push = fake_push;
         // the declared render targets, resolved the way an own binding is: the view for the instance, the
         // image for a barrier
@@ -159,16 +153,6 @@ namespace {
     /// the create-time context: what a pass builds itself from, and the point of the split is that ANY owner can
     /// fill it - this fake one below needs no device, no runtime and no frame, which is exactly what the test
     /// asserts a pass may rely on
-    VkDescriptorSetLayout fake_shared_layout(void* /*owner*/, uint32_t const set) {
-        return set == 0u ? reinterpret_cast<VkDescriptorSetLayout>(0x0C) : VK_NULL_HANDLE;
-    }
-
-    /// the second shared lookup: a pass that owns a pipeline whose layout belongs to a SHARED object (the shadow
-    /// pass and the scene's layout) needs it at create time, and it is one callback with no index - see
-    /// pass_context::shared_pipeline_layout for why a set layout and a pipeline layout are not the same question
-    VkPipelineLayout fake_shared_pipeline_layout(void* /*owner*/) {
-        return reinterpret_cast<VkPipelineLayout>(0x1A);
-    }
     std::span<unsigned char const> fake_shader(void* /*owner*/, std::string_view const name) {
         static std::array<unsigned char, 3> const bytes = {0x03, 0x02, 0x23};
         return name == "fake.comp.spv" ? std::span<unsigned char const>(bytes) : std::span<unsigned char const>{};
@@ -178,8 +162,6 @@ namespace {
         return vp::pass_context{
             .device = fake_device,
             .samplers = {.shadow = fake_shadow_sampler},
-            .shared_set_layout = fake_shared_layout,
-            .shared_pipeline_layout = fake_shared_pipeline_layout,
             .shader = fake_shader,
             .swap_chain_image_format = VK_FORMAT_B8G8R8A8_SRGB,
             .depth_format = VK_FORMAT_D32_SFLOAT,
@@ -242,10 +224,7 @@ namespace {
         void record(vp::resolved_io const& io) override {
             state_->log.emplace_back(std::string("record:") + std::string(io_.name));
             last_cmd = io.cmd;
-            last_own_set = io.own_set;
-            last_scene_set = io.shared.scene;
             last_pipelines = io.pipelines.size();
-            last_pipeline_layout = io.pipeline_layout;
             last_push_size = io.push.size();
             last_extent = io.extent;
             last_image_index = io.frame.image_index;
@@ -260,10 +239,7 @@ namespace {
         }
 
         VkCommandBuffer last_cmd = VK_NULL_HANDLE;
-        VkDescriptorSet last_own_set = VK_NULL_HANDLE;
-        VkDescriptorSet last_scene_set = VK_NULL_HANDLE;
         std::size_t last_pipelines = 0;
-        VkPipelineLayout last_pipeline_layout = VK_NULL_HANDLE;
         std::size_t last_push_size = 0;
         VkExtent2D last_extent = {0, 0};
         uint32_t last_image_index = 0;
@@ -364,19 +340,15 @@ int main() {
         state.log.clear();
         run_report const given = record_stage(st, host);
         CHECK(given.recorded == 2);
-        CHECK(probe.last_cmd == fake_cmd);         // the command buffer is handed out per frame...
-        CHECK(probe.last_own_set == fake_own_set); // ... with the pass's own resolved descriptor set...
-        CHECK(probe.last_scene_set == fake_scene); // ... and the shared sets it declared usage of
-        CHECK(probe.last_image_index == 3);        // ... and both frame counters, kept apart
+        CHECK(probe.last_cmd == fake_cmd);  // the command buffer is handed out per frame...
+        CHECK(probe.last_image_index == 3); // ... and both frame counters, kept apart
         CHECK(probe.last_slot == 1);
         CHECK(probe.last_pipelines == 1);      // one declared name -> one resolved pipeline
         CHECK(tail.last_pipelines == 2);       // two names -> two, in the declared order
         CHECK(probe.last_extent.width == 640); // extent_rule::resource, with a fake host that hands the frame's
         CHECK(tail.last_extent.width == 320);  // extent_rule::half is half of it, applied by the resolver
-        // ... the layout those pipelines were built from (a pass that records its own dispatches pushes and
-        // binds through it), the host-composed push block as raw bytes, and the GENERATION's image count -
-        // which is what a pass sizes a per-image descriptor family from, and is not the image index
-        CHECK(probe.last_pipeline_layout == fake_layout);
+        // ... the host-composed push block as raw bytes, and the GENERATION's image count - which is what a pass
+        // sizes per-image state from, and is not the image index
         CHECK(probe.last_push_size == fake_push.size());
         CHECK(probe.last_image_count == 3);
         // ... and the images it RENDERS INTO, declared apart from the bindings because an attachment is bound
@@ -386,9 +358,9 @@ int main() {
         CHECK(tail.last_targets == 1);
         CHECK(tail.last_target_view == reinterpret_cast<VkImageView>(0x70));
         CHECK(tail.last_target_image == reinterpret_cast<VkImage>(0x80));
-        // ... and the PER-IMAGE VIEW LISTS reached the pass untouched: a pass that owns a per-image descriptor
-        // family writes each image's set from that image's own handles, which `own` (the current frame's) cannot
-        // supply - see resolved_io::own_per_image
+        // ... and the PER-IMAGE VIEW LISTS reached the pass untouched: a pass that owns per-image state reads
+        // each image's own handles from them, which `own` (the current frame's) cannot supply - see
+        // resolved_io::own_per_image
         CHECK(probe.last_per_image_length == 3); // one entry per swapchain image of the frame
         CHECK(probe.last_per_image_first != VK_NULL_HANDLE);
     }
@@ -418,13 +390,9 @@ int main() {
         // pass constructible outside this renderer
         CHECK(context.device == fake_device);
         CHECK(context.samplers.of(rr::sampler_hint::shadow) == fake_shadow_sampler);
-        CHECK(context.shared_set_layout(context.owner, 0) == reinterpret_cast<VkDescriptorSetLayout>(0x0C));
-        CHECK(context.shared_set_layout(context.owner, 1) == VK_NULL_HANDLE);
-        // ... and the SECOND lookup a pass that owns a pipeline still needs when the layout that pipeline must be
-        // created against belongs to a shared object (the scene's, for the shadow pass): one callback, no index,
-        // because there is one such layout in this renderer and an index would be a vocabulary with one entry
-        CHECK(context.shared_pipeline_layout != nullptr);
-        CHECK(context.shared_pipeline_layout(context.owner) == fake_layout);
+        // ... and it carries NO set layout and NO pipeline layout: every stage is heap-native, so a pass builds
+        // its pipeline with a null layout and reaches its descriptors through the frame's heap. The context is
+        // the create-time facts a pass cannot derive, and nothing that could bind a set.
         CHECK(context.shader(context.owner, "fake.comp.spv").size() == 3);
         CHECK(context.shader(context.owner, "missing.comp.spv").empty());
         // ... and the SURFACE's format, which a pipeline that renders into the swapchain must be created with:
@@ -684,7 +652,6 @@ int main() {
             rr::pass_io const* declaration = &rr::taa_io;
             vp::behaviour how = {.kind = vp::behaviour_kind::fullscreen, .extent = vp::extent_rule::full};
             VkPipeline owned_pipeline = VK_NULL_HANDLE;
-            VkPipelineLayout owned_layout = VK_NULL_HANDLE;
             [[nodiscard]] rr::pass_io const& io() const noexcept override {
                 return *this->declaration;
             }
@@ -694,14 +661,10 @@ int main() {
             [[nodiscard]] std::string_view feature() const noexcept override {
                 return {};
             }
-            // the twelve passes that build their OWN pipeline answer these two (their accessors already had
-            // exactly this signature), and the resolver must prefer them over a registry entry that happens to
-            // share a `behaviour::pipelines` name
+            // the passes that build their OWN pipeline answer this, and the resolver must prefer it over a
+            // registry entry that happens to share a `behaviour::pipelines` name
             [[nodiscard]] VkPipeline pipeline() const noexcept override {
                 return this->owned_pipeline;
-            }
-            [[nodiscard]] VkPipelineLayout pipeline_layout() const noexcept override {
-                return this->owned_layout;
             }
             void create(vp::pass_context const&) override {
             }
@@ -710,12 +673,10 @@ int main() {
             void record(vp::resolved_io const&) override {
             }
         };
-        /// the owner side of a resolve_context: a table plus the three lookups the framework declares
+        /// the owner side of a resolve_context: a table plus the lookups the framework declares
         struct resolver_owner {
             vp::resource_table table;
             VkExtent2D resource_extent = {7, 9};
-            VkDescriptorSet scene = reinterpret_cast<VkDescriptorSet>(0x5E);
-            VkDescriptorSet post = reinterpret_cast<VkDescriptorSet>(0x50);
             VkPipeline pipeline = reinterpret_cast<VkPipeline>(0x77);
             std::string_view unknown_pipeline = {};
         };
@@ -725,23 +686,13 @@ int main() {
             .resources = &owner.table,
             .frame = frame,
             .cmd = fake_cmd,
-            .descriptor_set =
-                [](void* o, uint32_t const family, uint32_t const element, uint32_t) -> VkDescriptorSet {
-                // the fake owner answers the scene set for family 0 and the POST set for family 2 element 4,
-                // which is the pair the vocabulary now distinguishes
-                if (family == 0) {
-                    return static_cast<resolver_owner*>(o)->scene;
-                }
-                return family == 2 && element == 4 ? static_cast<resolver_owner*>(o)->post : VK_NULL_HANDLE;
-            },
             .extent_of = [](void* o, rr::resource_id, uint32_t) { return static_cast<resolver_owner*>(o)->resource_extent; },
             .pipeline =
                 [](void* o, std::string_view const name) -> vp::owned_pipeline {
-                // the owner answers a NAME with a pipeline AND its layout: the two travel together because a
-                // pass binds its sets and pushes its constants through the layout
+                // the owner answers a NAME with a pipeline, or with nothing for a name it does not own
                 return name == static_cast<resolver_owner*>(o)->unknown_pipeline
                            ? vp::owned_pipeline{}
-                           : vp::owned_pipeline{.pipeline = static_cast<resolver_owner*>(o)->pipeline, .layout = fake_layout};
+                           : vp::owned_pipeline{.pipeline = static_cast<resolver_owner*>(o)->pipeline};
             },
             .owner = &owner,
         };
@@ -775,8 +726,7 @@ int main() {
         CHECK(io.targets.size() == 1);
         CHECK(io.targets[0].view == hdr_view);
         CHECK(io.extent.width == 64 && io.extent.height == 32); // the declaration's rule is `full`
-        CHECK(io.own_set == VK_NULL_HANDLE);                    // a pass that owns a set fills it in its own resolve
-        CHECK(io.push.empty());                                 // ... and composes its own push block
+        CHECK(io.push.empty());                                 // a pass composes its own push block
         CHECK(io.barrier_images.empty() && io.barrier_buffers.empty());
         // THE PER-IMAGE CHANNEL is empty here (these were published instance by instance), which is the shape the
         // one consumer reads: it checks each span's length before indexing it
@@ -837,47 +787,42 @@ int main() {
         // ... and a pass that BUILT its own pipeline is handed its own, never the same-named registry entry: that
         // is the whole reason the interface asks the pass first
         pass.owned_pipeline = reinterpret_cast<VkPipeline>(0x1234);
-        pass.owned_layout = fake_layout;
         CHECK(pass.resolve(context, io));
         CHECK(io.pipelines.size() == 1);
         CHECK(io.pipelines[0] == pass.owned_pipeline);
-        CHECK(io.pipeline_layout == fake_layout);
         pass.owned_pipeline = VK_NULL_HANDLE;
-        pass.owned_layout = VK_NULL_HANDLE;
 
-        // A DECLARED SHARED SET the owner cannot fill fails the pass: a pass binds a whole set, so recording with
-        // a null one is never right (the old resolvers each checked this by hand, and the rule is now one line)
+        // A DECLARED SHARED SET IS A DECLARATION FACT NOW, not a resolution one: the framework has no set to hand
+        // a pass (every stage reads its descriptors from the frame's heap), so a declaration that names one
+        // resolves exactly like one that names none - what the declaration still does is tell the VALIDATOR which
+        // sets a pass claims (the rule test_render_resources checks). The blocks below therefore assert the
+        // remaining promise: the declaration's shared-set entries - including the (family, element) pair the post
+        // chain names - do not change what the resolver hands over.
         constexpr std::array<rr::shared_set, 1> scene_only = {{{.family = 0}}};
         rr::pass_io const shared_only = {.name = "shared", .own_set = 1, .bindings = {}, .shared_sets = scene_only, .targets = {}, .push = std::nullopt};
         declared_pass shared_pass;
         shared_pass.declaration = &shared_only;
-        CHECK(shared_pass.resolve(context, io));
-        CHECK(io.shared.scene == owner.scene);
-        VkDescriptorSet const saved_scene = owner.scene;
-        owner.scene = VK_NULL_HANDLE;
-        CHECK(!shared_pass.resolve(context, io));
-        owner.scene = saved_scene;
+        vp::resolved_io shared_io = {};
+        CHECK(shared_pass.resolve(context, shared_io));
+        CHECK(shared_io.own.empty());                        // the declaration names no own binding
+        CHECK(shared_io.pipelines.empty());                  // ... and no pipeline
+        CHECK(shared_io.extent.width == frame.extent.width); // the extent rule is still applied
+        CHECK(shared_pass.resolve(context, shared_io));      // resolving twice is idempotent (a per-frame contract)
 
-        // ... AND THE FAMILY/ELEMENT PAIR, which is the vocabulary this slice added: the post chain binds ONE
-        // family whose five sets are one per STAGE, so "family 2" alone cannot say which - the ELEMENT does, and
-        // the owner is the one that maps it. Element 4 is the composite/FXAA set; the fake owner answers nothing
-        // else, so the wrong element fails exactly like an unfillable set.
+        // ... AND THE FAMILY/ELEMENT PAIR is the same statement one set over: the post chain binds ONE family whose
+        // five sets are one per STAGE, so "family 2" alone cannot say which - the ELEMENT does. That pair is
+        // carried by the declaration (and checked by the validator), and the resolver's answer does not depend on
+        // an owner being able to fill it.
         constexpr std::array<rr::shared_set, 1> post_composite_set = {{{.family = 2, .element = 4}}};
         constexpr std::array<rr::shared_set, 1> post_wrong_element = {{{.family = 2, .element = 3}}};
         rr::pass_io const post_only = {.name = "post", .own_set = 1, .bindings = {}, .shared_sets = post_composite_set, .targets = {}, .push = std::nullopt};
         rr::pass_io const post_other = {.name = "post-other", .own_set = 1, .bindings = {}, .shared_sets = post_wrong_element, .targets = {}, .push = std::nullopt};
         declared_pass post_pass;
-        // A FRESH resolved_io, because that is what the runner hands a pass per frame (`record_stage` value-
-        // initializes one): the resolver fills the families the declaration NAMES and leaves the others as the
-        // zero it was given, which is why the assertion below is about the runner's contract as much as the
-        // resolver's
         vp::resolved_io post_io = {};
         post_pass.declaration = &post_only;
         CHECK(post_pass.resolve(context, post_io));
-        CHECK(post_io.shared.post == owner.post);
-        CHECK(post_io.shared.scene == VK_NULL_HANDLE); // a family the declaration did not name stays as it was
         post_pass.declaration = &post_other;
-        CHECK(!post_pass.resolve(context, post_io)); // the owner has no such element: the pass does not run
+        CHECK(post_pass.resolve(context, post_io)); // the element is the owner's business, and the owner is the heap
 
         // A RUN OF ELEMENTS: ONE target entry claiming `count` consecutive elements resolves to ONE SLOT PER
         // ELEMENT - the shadow map's cascades are the case (`render_target::count`), and what makes it a

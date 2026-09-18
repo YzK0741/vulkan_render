@@ -32,18 +32,8 @@ namespace vulkan::pass {
     }
 
     void post_composite_pass::release_owned() noexcept {
-        // The order they were made: the set layout first, the pipeline layout FROM it, the two pipelines from
-        // that.
         this->composite_.reset();
         this->hdr_.reset();
-        if (this->pipeline_layout_ != VK_NULL_HANDLE && this->device_ != VK_NULL_HANDLE) {
-            vkDestroyPipelineLayout(this->device_, this->pipeline_layout_, nullptr);
-            this->pipeline_layout_ = VK_NULL_HANDLE;
-        }
-        // THE SET LAYOUT IS NOT DESTROYED HERE: it is the OWNER's (the runtime creates it from the same nine
-        // bindings and uses it for the family it writes - see make_post_set_layout), so this pass only holds a view
-        // of it and clears that view.
-        this->set_layout_ = VK_NULL_HANDLE;
     }
 
     render_resource::pass_io const& post_composite_pass::io() const noexcept {
@@ -71,7 +61,7 @@ namespace vulkan::pass {
             this->release_owned();
         }
         this->device_ = context.device;
-        if (this->set_layout_ != VK_NULL_HANDLE) {
+        if (this->composite_.has_value()) {
             return; // already built for this device
         }
         std::span<unsigned char const> const vertex_spirv = context.shader != nullptr ? context.shader(context.owner, vertex_shader_name) : std::span<unsigned char const>{};
@@ -80,25 +70,15 @@ namespace vulkan::pass {
             utility::log("post chain disabled: the owner has no {} or {}", vertex_shader_name, fragment_shader_name);
             return;
         }
-        // THE POST SET LAYOUT COMES FROM THE CONTEXT, not from this pass: the nine bindings describe how the
-        // OWNER writes the post sets (see `pass_context::shared_set_layout` and make_post_set_layout), and this
-        // pass only needs a pipeline layout built around them.
-        VkDescriptorSetLayout const post_layout = context.shared_set_layout != nullptr ? context.shared_set_layout(context.owner, 2) : VK_NULL_HANDLE;
-        if (post_layout == VK_NULL_HANDLE) {
-            utility::log("post chain disabled: the owner has no layout for the post set this pass binds");
-            return;
-        }
         // The SURFACE's format is one of the two pipelines' (the other renders into R16F bloom levels and into
         // the LDR image FXAA reads), and it is a session-stable device fact the context carries for exactly this
         // kind of reason (see pass_context::swap_chain_image_format).
-        auto built = pipelines::build_post(context.device, post_layout, context.swap_chain_image_format, static_cast<uint32_t>(sizeof(post_push_constants)), vertex_spirv, fragment_spirv);
+        auto built = pipelines::build_post(context.device, context.swap_chain_image_format, vertex_spirv, fragment_spirv);
         if (!built) {
             utility::log("post chain disabled: {}", built.error());
             this->release_owned();
             return;
         }
-        this->set_layout_ = built->set_layout;
-        this->pipeline_layout_ = built->pipeline_layout;
         this->composite_ = std::move(built->composite);
         this->hdr_ = std::move(built->hdr);
         // The surface's format is cached here because the `encode_gamma` lane is a consequence of it (see
@@ -115,7 +95,7 @@ namespace vulkan::pass {
     }
 
     bool post_composite_pass::pipeline_ready() const noexcept {
-        return this->composite_.has_value() && this->hdr_.has_value() && this->set_layout_ != VK_NULL_HANDLE;
+        return this->composite_.has_value() && this->hdr_.has_value();
     }
 
     VkPipeline post_composite_pass::pipeline() const noexcept {
@@ -124,10 +104,8 @@ namespace vulkan::pass {
 
     owned_pipeline post_composite_pass::named_pipeline(std::string_view const name) const noexcept {
         // THE ONE NAME THIS PASS PUBLISHES TO ITS SIBLINGS: the bloom levels' `post_hdr` (see the class note and
-        // frame_pass::named_pipeline). Its own name is answered by `pipeline()` above. The LAYOUT travels with the
-        // pipeline - the four levels bind their set and push the chain's block through it, and it is the one
-        // object all five stages were built against.
-        return name == bloom_pipeline_name ? owned_pipeline{.pipeline = this->hdr_pipeline(), .layout = this->pipeline_layout_} : owned_pipeline{};
+        // frame_pass::named_pipeline). Its own name is answered by `pipeline()` above.
+        return name == bloom_pipeline_name ? owned_pipeline{.pipeline = this->hdr_pipeline()} : owned_pipeline{};
     }
 
     VkPipeline post_composite_pass::composite_pipeline() const noexcept {
@@ -136,10 +114,6 @@ namespace vulkan::pass {
 
     VkPipeline post_composite_pass::hdr_pipeline() const noexcept {
         return this->hdr_.has_value() ? this->hdr_->get_pipeline() : VK_NULL_HANDLE;
-    }
-
-    VkPipelineLayout post_composite_pass::pipeline_layout() const noexcept {
-        return this->pipeline_layout_;
     }
 
     void post_composite_pass::set_frame(composite_frame const& frame) noexcept {
@@ -212,8 +186,8 @@ namespace vulkan::pass {
     }
 
     void post_composite_pass::record(resolved_io const& io) {
-        if (!this->pipeline_ready() || io.targets.empty() || io.pipelines.empty() || io.pipelines[0] == VK_NULL_HANDLE || io.pipeline_layout == VK_NULL_HANDLE ||
-            io.shared.post == VK_NULL_HANDLE || io.push.size() < sizeof(post_push_constants) || io.extent.width == 0 || io.extent.height == 0) {
+        if (!this->pipeline_ready() || io.targets.empty() || io.pipelines.empty() || io.pipelines[0] == VK_NULL_HANDLE ||
+            io.push.size() < sizeof(post_push_constants) || io.extent.width == 0 || io.extent.height == 0) {
             return; // the runner resolves all of this or skips the pass (see runtime::resolve_post_composite)
         }
         VkImage const target = io.targets[0].image;
@@ -308,7 +282,7 @@ namespace vulkan::pass {
     }
 
     void post_bloom_pass::record(resolved_io const& io) {
-        if (io.targets.empty() || io.pipelines.empty() || io.pipelines[0] == VK_NULL_HANDLE || io.pipeline_layout == VK_NULL_HANDLE || io.shared.post == VK_NULL_HANDLE ||
+        if (io.targets.empty() || io.pipelines.empty() || io.pipelines[0] == VK_NULL_HANDLE ||
             io.extent.width == 0 || io.extent.height == 0) {
             return; // the runner resolves all of this or skips the pass (see frame_pass::resolve)
         }

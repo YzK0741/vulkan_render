@@ -13,13 +13,10 @@
  * those vertices) and once per frame after (the structure is REFITTED, because only the bytes change). A frame
  * pass would have to pretend the first of those is a frame. What it shares with a pass is the ownership rule and
  * the construction path: `create` is handed the same `pass_context` a pass gets, and the job owns its pipeline
- * layout, its pipeline, the per-slot descriptor sets it writes and the ordering barrier its own write demands.
+ * and the ordering barrier its own write demands.
  *
- * THE SETS ARE PER FRAME SLOT, and that is load-bearing rather than tidy: binding 9 is the slot's own per-joint
- * matrix buffer (the animation writes the slot it paced), each set is written ONCE and never updated - a set
- * updated while a recording command buffer holds it invalidates that buffer, and this job runs before the frame
- * writes the scene set's binding 16. The renderer allocates them (the pool is the core's) and MOVES them in; the
- * job writes binding 9 from each slot's buffer and frees them with its own destructor.
+ * THE PER-JOINT MATRICES IT READS ARE A HEAP SLOT, not a descriptor set: the shader names the slot the frame's
+ * push block carries, so the job keeps no per-slot set and no pool.
  */
 
 module;
@@ -37,7 +34,7 @@ module;
 export module vulkan.pass.compute_skin;
 
 import vulkan.pass;
-import vulkan.core.handles; // vk_pipeline / vk_descriptor_set: the RAII owners of what this job builds
+import vulkan.core.handles; // vk_pipeline: the RAII owner of the pipeline this job builds
 
 export namespace vulkan::pass {
 
@@ -87,10 +84,8 @@ export namespace vulkan::pass {
         compute_skin_job& operator=(compute_skin_job&&) = delete;
 
         /**
-         * @brief build the pipeline and write the per-slot sets' binding 9
-         * @param context the same create-time context a pass gets - the job asks it for one `skin_matrices`
-         *        element per frame slot and for each set (the pool is the owner's), so nothing about the
-         *        renderer's buffers is handed in
+         * @brief build the pipeline
+         * @param context the same create-time context a pass gets
          */
         [[nodiscard]] std::expected<void, std::string> create(pass_context const& context);
         /**
@@ -105,9 +100,6 @@ export namespace vulkan::pass {
         [[nodiscard]] bool ready() const noexcept;
 
         [[nodiscard]] VkPipeline pipeline() const noexcept;
-        [[nodiscard]] VkPipelineLayout pipeline_layout() const noexcept;
-        /// @brief the set for a frame slot (what the job binds), or none
-        [[nodiscard]] VkDescriptorSet set(uint32_t slot) const noexcept;
 
     private:
         static constexpr std::string_view shader_name = "compute_skin.comp.spv";
@@ -115,9 +107,7 @@ export namespace vulkan::pass {
         void release_owned() noexcept;
 
         VkDevice device_ = VK_NULL_HANDLE;
-        VkPipelineLayout pipeline_layout_ = VK_NULL_HANDLE;
         std::optional<vk_pipeline> pipeline_ = std::nullopt;
-        std::vector<vk_descriptor_set> sets_ = {};
     };
 
 } // namespace vulkan::pass

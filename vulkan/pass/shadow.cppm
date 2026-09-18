@@ -11,17 +11,17 @@
  * as a CALLBACK (see shadow_frame::record_cascade) plus what is specific to this pass: the secondaries, the map's
  * edge and the task scheduler.
  *
- * WHAT IT OWNS: the depth-only pipeline (built at create time from `pass_context::depth_format`, the SCENE pipeline
- * layout the owner hands over - its draw is a subset of the scene's and its per-cascade push goes through the same
- * layout - and the three slope-scaled bias factors), and the per-cascade recording: the layer's transition to a
+ * WHAT IT OWNS: the depth-only pipeline (built at create time from `pass_context::depth_format` and the three
+ * slope-scaled bias factors), and the per-cascade recording: the layer's transition to a
  * depth attachment, the depth-only instance at the map's edge, the pre-recorded secondary's execution and the
  * instance's end.
  *
  * WHAT IT DOES NOT OWN, each a shared thing rather than an omission: the shadow map IMAGES and their pool (the
- * renderer creates them and the scene set binds them - a shared resource like the G-buffer family); the HAND-BACK
+ * renderer creates them and the scene shaders read them through the heap - a shared resource like the G-buffer
+ * family); the HAND-BACK
  * barrier (it covers every ALLOCATED layer, including the spare ones a shrank cascade count left behind, which only
  * the image's creator knows - the composite's HDR transition, one resource class over); the content itself (the
- * scene set, the live depth-bias state, the two-sided policy, the casters and the secondary's begin info are the
+ * live depth-bias state, the two-sided policy, the casters and the secondary's begin info are the
  * renderer's, which is why they arrive as one callback); and the task POOL (the frame loop's scheduler).
  */
 
@@ -60,12 +60,12 @@ export namespace vulkan::pass {
          * @brief record ONE cascade's content into its secondary, from a fresh begin to its end
          *
          * The implementation begins @p secondary with its own inheritance info and usage flags, sets the map-sized
-         * viewport and scissor, pushes @p cascade_index at the offset this pass's declaration names, binds the
-         * shared scene set and draws the frame's casters with @p pipeline - then ends the buffer.
+         * viewport and scissor, pushes @p cascade_index at the offset this pass's declaration names and draws the
+         * frame's casters with @p pipeline - then ends the buffer.
          */
         /// @return whether the secondary was recorded: a begin that FAILED must not be executed (that is a VUID
         ///         and can wedge the frame slot), so the answer travels back rather than being assumed
-        bool (*record_cascade)(void* owner, VkCommandBuffer secondary, uint32_t cascade_index, VkPipeline pipeline, VkPipelineLayout pipeline_layout) = nullptr;
+        bool (*record_cascade)(void* owner, VkCommandBuffer secondary, uint32_t cascade_index, VkPipeline pipeline) = nullptr;
         /// the frame loop's scheduler: one task per cascade, each recording into its own secondary
         void (*run_tasks)(void* owner, std::span<std::function<void()>> tasks) = nullptr;
         void* owner = nullptr;
@@ -104,8 +104,6 @@ export namespace vulkan::pass {
         }
         /// @brief the pipeline the runner binds before this pass records
         [[nodiscard]] VkPipeline pipeline() const noexcept override;
-        /// @brief the layout that pipeline takes its push block through (the SCENE's, which the owner hands over)
-        [[nodiscard]] VkPipelineLayout pipeline_layout() const noexcept override;
 
         void set_frame(shadow_frame const& frame) noexcept;
 
@@ -133,7 +131,6 @@ export namespace vulkan::pass {
         void release_owned() noexcept;
 
         VkDevice device_ = VK_NULL_HANDLE;
-        VkPipelineLayout pipeline_layout_ = VK_NULL_HANDLE;
         std::optional<vk_pipeline> pipeline_ = std::nullopt;
         shadow_frame frame_ = {};
     };

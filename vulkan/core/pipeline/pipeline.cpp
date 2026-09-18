@@ -32,7 +32,6 @@ namespace {
 namespace vulkan {
     std::expected<vk_pipeline, std::string_view> make_pipeline(
         VkDevice device,
-        VkPipelineLayout const pipeline_layout, // shared scene layout (fixed set 0 + push block); not owned
         VkFormat const color_format,
         VkFormat const depth_format,
         std::span<unsigned char const> const vertex_shader_code,
@@ -52,7 +51,6 @@ namespace vulkan {
         std::span<VkFormat const> const color_formats = has_color_attachment ? std::span<VkFormat const>(single_format) : std::span<VkFormat const>{};
         std::span<VkPipelineColorBlendAttachmentState const> const blend_attachments = has_color_attachment ? std::span<VkPipelineColorBlendAttachmentState const>(single_blend) : std::span<VkPipelineColorBlendAttachmentState const>{};
         return make_pipeline(device,
-                             pipeline_layout,
                              color_formats,
                              depth_format,
                              vertex_shader_code,
@@ -67,7 +65,6 @@ namespace vulkan {
 
     std::expected<vk_pipeline, std::string_view> make_pipeline( // NOLINT(*-function-cognitive-complexity)
         VkDevice device,
-        VkPipelineLayout const pipeline_layout, // shared scene layout (fixed set 0 + push block); not owned
         std::span<VkFormat const> const color_formats,
         VkFormat const depth_format,
         std::span<unsigned char const> const vertex_shader_code,
@@ -218,8 +215,7 @@ namespace vulkan {
         }
 
         // ---- 8. Success: transfer ownership to vk_pipeline; guard no longer cleans up ----
-        //      (the pipeline layout is shared and owned by core, not by the pipeline)
-        vk_pipeline result(guard.pipeline, pipeline_layout, device);
+        vk_pipeline result(guard.pipeline, device);
         guard.release();
         return result;
     }

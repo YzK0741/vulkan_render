@@ -29,10 +29,6 @@ namespace vulkan::pass {
 
     void deferred_pass::release_owned() noexcept {
         this->pipeline_.reset();
-        if (this->pipeline_layout_ != VK_NULL_HANDLE && this->device_ != VK_NULL_HANDLE) {
-            vkDestroyPipelineLayout(this->device_, this->pipeline_layout_, nullptr);
-            this->pipeline_layout_ = VK_NULL_HANDLE;
-        }
     }
 
     render_resource::pass_io const& deferred_pass::io() const noexcept {
@@ -53,10 +49,6 @@ namespace vulkan::pass {
 
     VkPipeline deferred_pass::pipeline() const noexcept {
         return this->pipeline_.has_value() ? this->pipeline_->get_pipeline() : VK_NULL_HANDLE;
-    }
-
-    VkPipelineLayout deferred_pass::pipeline_layout() const noexcept {
-        return this->pipeline_layout_;
     }
 
     void deferred_pass::set_frame(deferred_frame const& frame) noexcept {
@@ -87,24 +79,16 @@ namespace vulkan::pass {
             utility::log("deferred lighting disabled: the owner has no {} or {}", vertex_shader_name, fragment_shader_name);
             return;
         }
-        // The two set layouts come from the CONTEXT (the scene set's is the core's, the G-buffer set's is the
-        // renderer's) and the blend state is the stage's own: the attachment is LOADed and the lighting ADDS to the
-        // emissive the G-buffer pass wrote.
-        VkDescriptorSetLayout const scene_layout = context.shared_set_layout != nullptr ? context.shared_set_layout(context.owner, 0) : VK_NULL_HANDLE;
-        VkDescriptorSetLayout const gbuffer_layout = context.shared_set_layout != nullptr ? context.shared_set_layout(context.owner, 1) : VK_NULL_HANDLE;
-        if (scene_layout == VK_NULL_HANDLE || gbuffer_layout == VK_NULL_HANDLE) {
-            utility::log("deferred lighting disabled: the owner has no layout for the shared sets this pass binds");
-            return;
-        }
+        // The blend state is the stage's own: the attachment is LOADed and the lighting ADDS to the emissive the
+        // G-buffer pass wrote.
         std::array<VkPipelineColorBlendAttachmentState, 1> const blend = {make_color_blend_attachment_additive()};
-        auto built = pipelines::build_deferred(context.device, scene_layout, gbuffer_layout, static_cast<uint32_t>(sizeof(push_constants)),
+        auto built = pipelines::build_deferred(context.device,
                                                std::span<VkPipelineColorBlendAttachmentState const>(blend), vertex_spirv, fragment_spirv);
         if (!built) {
             utility::log("deferred lighting disabled: {}", built.error());
             this->release_owned();
             return;
         }
-        this->pipeline_layout_ = built->pipeline_layout;
         this->pipeline_ = std::move(built->lighting);
         utility::log("SUCCESS: deferred lighting pipeline created (shades the stored surface, additive over the emissive)");
     }
@@ -137,7 +121,7 @@ namespace vulkan::pass {
 
     void deferred_pass::record(resolved_io const& io) {
         if (!this->pipeline_.has_value() || io.targets.empty() || io.pipelines.empty() || io.pipelines[0] == VK_NULL_HANDLE ||
-            io.pipeline_layout == VK_NULL_HANDLE || io.shared.scene == VK_NULL_HANDLE || io.extent.width == 0 || io.extent.height == 0) {
+            io.extent.width == 0 || io.extent.height == 0) {
             return; // the runner resolves all of this or skips the pass (see frame_pass::resolve)
         }
         VkImage const target = io.targets[0].image;

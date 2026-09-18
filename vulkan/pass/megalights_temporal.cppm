@@ -6,15 +6,14 @@
  * @defgroup vulkan_pass_megalights_temporal Megalights Temporal Pass
  *
  * WHAT IT OWNS: the frame's recording (the barriers around its accumulation and the copy that becomes the
- * next frame's history), its OWN descriptor set - the three images of its own chain, written per image from
- * `resolved_io::own_per_image` - and the accumulation POLICY, which is the point of the pass: the frame count
+ * next frame's history) and the accumulation POLICY, which is the point of the pass: the frame count
  * and the depth tolerance are its own parameters, with the argument for each of them in
  * `shaders/megalights_temporal.comp` and in `docs/reference/megalights_stochastic_lighting.md` (section 4 is
  * Unreal's policy, which this is ported from).
  *
- * ITS SET IS ONE SET OF FIVE BINDINGS and no shared set: the three images of the chain, plus the G-buffer
- * velocity it reprojects with and the depth it rejects the history against - both per-image views, so they
- * ride in the same set the pass writes per swapchain image (see `megalights_temporal_io`'s note). Nothing
+ * THE IMAGES IT READS AND WRITES ARE HEAP SLOTS: the three images of the chain, the G-buffer velocity it
+ * reprojects with and the depth it rejects the history against are all named by the shader itself, with the
+ * swapchain image index its push block carries - so the pass binds no set and owns no family. Nothing
  * about the frame's ordering is delegated either: the two G-buffer transitions are its own barriers, which is
  * why this chain needs no second stage.
  */
@@ -34,9 +33,7 @@ export module vulkan.pass.megalights_temporal;
 
 import vulkan.pass;
 import vulkan.render_resource;
-import vulkan.render_resource.shared; // sampler_set: the handles bindings::write_set binds
-import vulkan.bindings;               // make_set_layout / write_set / image_set_family: this pass's own set
-import vulkan.core.handles;           // vk_pipeline: the RAII owner of the compute pipeline this pass builds
+import vulkan.core.handles; // vk_pipeline: the RAII owner of the compute pipeline this pass builds
 
 export namespace vulkan::pass {
 
@@ -114,9 +111,6 @@ export namespace vulkan::pass {
         [[nodiscard]] bool ready() const noexcept override;
         /// @brief the pipeline the runner binds before this pass records
         [[nodiscard]] VkPipeline pipeline() const noexcept override;
-        [[nodiscard]] VkPipelineLayout pipeline_layout() const noexcept override;
-        /// @brief the descriptor set layout generated from this pass's declaration (the runner writes with it)
-        [[nodiscard]] VkDescriptorSetLayout set_layout() const noexcept;
 
         /// @brief the compile-time bound on how many frames the running mean may average
         static constexpr float max_frames_limit = 64.0f;
@@ -146,12 +140,8 @@ export namespace vulkan::pass {
         float max_frames_ = 12.0f;
         float spatial_sigma_ = 1.5f;
         megalights_temporal_frame frame_ = {};
-        render_resource::shared::sampler_set samplers_ = {};
-        VkDescriptorSetLayout set_layout_ = VK_NULL_HANDLE;
         VkDevice device_ = VK_NULL_HANDLE;
-        VkPipelineLayout pipeline_layout_ = VK_NULL_HANDLE;
         std::optional<vk_pipeline> pipeline_ = std::nullopt;
-        bindings::image_set_family family_ = {};
     };
 
     static_assert(sizeof(megalights_temporal_pass::push_constants) == render_resource::megalights_temporal_io.push->size,

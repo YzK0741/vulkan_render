@@ -37,11 +37,11 @@
  * exists to remove.
  *
  * OWN SETS VERSUS SHARED ONES, which the first real declaration made unavoidable: a pass with a private
- * family still binds the shared scene set (a probe cell's ray needs the top level structure, the material
+ * family still binds the shared scene's resources (a probe cell's ray needs the top level structure, the material
  * table and the texture array to resolve and shade what it finds). Such a binding is declared here as USAGE -
- * which resource, which access - and `set_owner` says whose set it is; the set's LAYOUT and its descriptor
- * counts stay with that set's owner (`vulkan.bindings`' `scene_bindings`, and the G-buffer family in
- * `vulkan.runtime`), because a pass does not own them and must not be able to change them.
+ * which resource, which access - and `set_owner` says whose set it was; the declaration is the whole of what is
+ * left of that vocabulary, because every stage is heap-native now and reaches those resources through the frame's
+ * descriptor heap rather than through a set (see vulkan/core/descriptor_heap).
  */
 
 module;
@@ -479,13 +479,12 @@ export namespace vulkan::render_resource {
      * @brief one SHARED set a pass binds: the set FAMILY, and which element of that family
      *
      * WHY AN ELEMENT AND NOT JUST AN INDEX, measured rather than anticipated: the post chain binds ONE family
-     * whose five sets are one per STAGE - the four bloom levels and the composite/FXAA pair - so "set 2" does not
+     * whose five sets were one per STAGE - the four bloom levels and the composite/FXAA pair - so "set 2" does not
      * say which of them a pass binds, and six declarations could not be resolved from their own text because of
-     * it. The FAMILY is the index the framework and the owner already use (0 the scene set, 1 the G-buffer set, 2
-     * the post set in this renderer, which is also what `pass_context::shared_set_layout` is asked by), and the
-     * ELEMENT selects within it: 0 for a family that holds one set, and the stage's own index in a family that
-     * holds several. Only the OWNER can say what an element means - it is the one that created the sets - so this
-     * field is carried, exactly like `behaviour::extent_of_element` is.
+     * it. The FAMILY is the index the declaration vocabulary uses (0 the scene set, 1 the G-buffer set, 2
+     * the post set in this renderer), and the ELEMENT selects within it: 0 for a family that holds one set, and
+     * the stage's own index in a family that holds several. The sets themselves are gone (every stage reads the
+     * heap), so what survives is the DECLARATION's way of naming which family a binding belongs to.
      */
     struct shared_set {
         uint16_t family = 0;
@@ -965,8 +964,8 @@ export namespace vulkan::render_resource {
     /**
      * @brief the image the stochastic punctual lighting pass rewrites, and the only resource it names
      *
-     * It reaches the image through the SHARED G-buffer set (binding 6 to write, the storage one, and binding 7
-     * to hand the resolve's output over - see `pipelines::make_gbuffer_set_layout`), so this pass owns no
+     * It reaches the image through the heap (the raw estimate the trace writes and the resolved image the
+     * lighting stage adds are grid slots the shaders name), so this pass owns no
      * descriptor of its own and declares no binding: what it has to say is which image it moves, because only
      * the writer can place the transitions (UNDEFINED -> GENERAL to write it as a storage image, GENERAL ->
      * SHADER_READ to hand it to the lighting stage that adds it, both recorded by this pass).

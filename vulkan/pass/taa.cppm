@@ -11,11 +11,8 @@
  * itself (the load op is its knowledge, not the runner's), and the two things it must not be able to forget -
  * the pipeline being bound and the viewport being set - are done FOR it by the runner before `record`.
  *
- * WHAT IT OWNS: its set layout and the four per-swapchain-image inputs it names (this frame's colour, the
- * reprojected history, the motion vectors, the depth the disocclusion guard reads), its pipeline layout, its
- * pipeline, its per-image descriptor family, its push block's SHAPE, and the two pieces of state that say what
- * its history holds: whether each image has one, and which views identified the target generation its family
- * was built against.
+ * WHAT IT OWNS: its pipeline, its push block's SHAPE, and the two pieces of state that say what
+ * its history holds: whether each image has one, and whether the last resolve wrote it.
  *
  * WHAT IT DELIBERATELY DOES NOT OWN, and this is the second discovery this extraction produced: TWO LINES OF
  * ITS OWN SEQUENCE BELONG TO OTHER PASSES. The resolve transitions the G-buffer depth (a transition the
@@ -25,13 +22,9 @@
  * pass can only declare its OWN bindings - so they stay with the host, which is the one that knows the flags.
  * The order the host has to preserve is recorded at the call site.
  *
- * THE GENERATION FINGERPRINT is the one piece of this pass that is not a straight move. A per-image descriptor
- * family fingerprints "the thing my sets point at", and for a per-image resource the CURRENT image's view is
- * exactly the wrong fingerprint: it changes every frame, which would make the family rewrite every set every
- * frame - and rewriting a set a pending frame names is a validation error. The generation-level identity is
- * what the fingerprint needs, and the pass already receives the signal that invalidates it: the runner calls
- * `on_swapchain_recreated` for every pass in a stage (the contract that replaced the runtime's hand-kept reset
- * list). So the pass caches the first frame's views as its generation stamp and drops them when told.
+ * THE GENERATION RESET is the one piece of this pass that is not a straight move, and it is small now: the
+ * runner calls `on_swapchain_recreated` for every pass in a stage, and what this pass has to forget is which
+ * images hold a history - the images of the old generation are gone.
  */
 
 module;
@@ -48,8 +41,6 @@ export module vulkan.pass.taa;
 
 import vulkan.pass;
 import vulkan.render_resource;
-import vulkan.render_resource.shared;
-import vulkan.bindings;
 import vulkan.constant_init;
 import vulkan.core.handles; // vk_pipeline: the RAII owner of the pipeline this pass builds
 
@@ -106,14 +97,12 @@ export namespace vulkan::pass {
         }
         /// @brief the pipeline the runner binds before this pass records
         [[nodiscard]] VkPipeline pipeline() const noexcept override;
-        /// @brief the layout that pipeline binds its set and takes its push constants through
-        [[nodiscard]] VkPipelineLayout pipeline_layout() const noexcept override;
         /**
          * @brief whether the last record actually resolved and wrote a new history
          *
          * The renderer's `image_view_proj` bookkeeping - the matrix the NEXT frame's motion vectors are
-         * computed against - keys on this rather than on "the stage ran": a resolve that bailed out (no
-         * descriptor set) must not claim a history it did not write.
+         * computed against - keys on this rather than on "the stage ran": a resolve that bailed out must not
+         * claim a history it did not write.
          */
         [[nodiscard]] bool wrote_history() const noexcept;
         /**
@@ -148,16 +137,9 @@ export namespace vulkan::pass {
         void release_owned() noexcept;
 
         VkDevice device_ = VK_NULL_HANDLE;
-        render_resource::shared::sampler_set samplers_ = {};
-        VkDescriptorSetLayout set_layout_ = VK_NULL_HANDLE;
-        VkPipelineLayout pipeline_layout_ = VK_NULL_HANDLE;
         std::optional<vk_pipeline> pipeline_ = std::nullopt;
-        bindings::image_set_family family_ = {};
         /// one flag per swapchain image: whether that image's history holds a resolved frame
         std::vector<bool> history_valid_ = {};
-        /// the views that identified the target generation the family was built for, and whether they are set
-        std::array<VkImageView, own_binding_count> generation_views_ = {};
-        bool generation_views_valid_ = false;
         /// whether the last record wrote the history (see wrote_history)
         bool wrote_history_ = false;
         /// the two blend weights: this pass's own parameters (see set_blend), defaulted to the renderer's own

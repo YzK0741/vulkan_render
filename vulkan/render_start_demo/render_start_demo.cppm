@@ -33,7 +33,6 @@ module;
 export module vulkan.render_start_demo;
 
 import vulkan.runtime;
-import vulkan.bindings; // image_set_family: the reflection's per-image sets, which no declaration can describe
 import vulkan.constant_init;
 import vulkan.pass;
 import vulkan.pass.chain; // pass_chain: the chain the runtime owns its passes in, looked up by declaration name

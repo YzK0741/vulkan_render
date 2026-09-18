@@ -12,17 +12,12 @@
  * command buffer that builds the bottom level structures, and its input is the caster list the runtime is
  * walking at that moment. Pretending it were a frame pass would mean a feature gate that is true on exactly one
  * frame and a frame struct standing in for a build loop - two lies instead of one honest difference. What it
- * DOES share with a pass is the ownership rule this branch has been extracting: the pipeline layout, the
- * compute pipeline, the descriptor set and the recording are the JOB's, and the renderer keeps only the policy
- * (which casters, which buffers, when).
+ * DOES share with a pass is the ownership rule this branch has been extracting: the compute pipeline and the
+ * recording are the JOB's, and the renderer keeps only the policy (which casters, which buffers, when).
  *
- * WHY IT HAS NO DECLARATION in `render_resource` either: its set is allocated from the SCENE layout and only
- * two of that layout's bindings are written (the bindless texture array at 1 and the material table at 5), so a
- * declaration would claim a layout of its own that does not exist. The set is written ONCE at create and never
- * updated, and that is load-bearing: the frame updates the SCENE set's binding 16 later in the same command
- * buffer, and a set updated while a recording command buffer holds it invalidates that buffer (measured before
- * this was split out: 62 validation errors in one frame). The set is allocated by the renderer - the pool is
- * the core's - and MOVED into this job, which then owns it and frees it with its own destructor.
+ * WHY IT HAS NO DECLARATION in `render_resource` either: everything it reads is a heap slot (the bindless
+ * texture array and the material table), named by the shader itself, so a declaration would describe a layout
+ * this renderer never creates and the job never binds.
  */
 
 module;
@@ -39,7 +34,7 @@ module;
 export module vulkan.pass.mask_bake;
 
 import vulkan.pass;
-import vulkan.core.handles; // vk_pipeline / vk_descriptor_set: the RAII owners of what this job builds
+import vulkan.core.handles; // vk_pipeline: the RAII owner of the pipeline this job builds
 
 export namespace vulkan::pass {
 
@@ -81,25 +76,13 @@ export namespace vulkan::pass {
         uint32_t material_index = 0;
     };
 
-    /// @brief the two resources the bake's own set is written with, and the sampler the array is read through
-    ///
-    /// Kept as a named shape because the job's TWO bindings are a fact about the bake rather than about the
-    /// caller: `create` fills it from the resource channel, and a reader of the write below can see what the set
-    /// is made of without following two callback calls.
-    struct mask_bake_inputs {
-        VkBuffer material_table = VK_NULL_HANDLE;   // the scene layout's binding 5
-        VkImageView textures = VK_NULL_HANDLE;      // ... binding 1: the bindless texture array
-        VkSampler texture_sampler = VK_NULL_HANDLE; // the sampler the raster path uses for that array
-    };
     /**
-     * @brief the one-shot bake job: it owns its pipeline layout, its pipeline and its descriptor set
+     * @brief the one-shot bake job: it owns its pipeline
      *
-     * `create` is handed the same `pass_context` a pass gets and NOTHING else: it asks that context for the two
-     * bindings its set needs (`material_table` and `scene_textures`, through the resource channel) and for the
-     * set itself (from the owner's pool, through `descriptor_set`). That is the whole point of the channel - the
-     * renderer used to build this set on the job's behalf, through an entry point that existed only because a
-     * pass could not name a resource the renderer owns. `record` is one caster's dispatch. Everything the job
-     * owns is released in its destructor, so what the renderer holds is one member instead of four raw handles.
+     * `create` is handed the same `pass_context` a pass gets and NOTHING else: the material table and the
+     * bindless texture array are heap slots the shader names itself. `record` is one caster's dispatch.
+     * Everything the job owns is released in its destructor, so what the renderer holds is one member instead of
+     * four raw handles.
      */
     class mask_bake_job {
     public:
@@ -111,7 +94,7 @@ export namespace vulkan::pass {
         mask_bake_job(mask_bake_job&&) = default;
         mask_bake_job& operator=(mask_bake_job&&) = delete;
 
-        /// @brief build the pipeline and write the job's own set; an error message says what was missing
+        /// @brief build the pipeline; an error message says what was missing
         [[nodiscard]] std::expected<void, std::string> create(pass_context const& context);
         /**
          * @brief dispatch ONE caster's bake
@@ -128,7 +111,6 @@ export namespace vulkan::pass {
         [[nodiscard]] bool ready() const noexcept;
 
         [[nodiscard]] VkPipeline pipeline() const noexcept;
-        [[nodiscard]] VkPipelineLayout pipeline_layout() const noexcept;
 
     private:
         static constexpr std::string_view shader_name = "mask_bake.comp.spv";
@@ -136,10 +118,7 @@ export namespace vulkan::pass {
         void release_owned() noexcept;
 
         VkDevice device_ = VK_NULL_HANDLE;
-        VkPipelineLayout pipeline_layout_ = VK_NULL_HANDLE;
         std::optional<vk_pipeline> pipeline_ = std::nullopt;
-        /// the set this job owns, allocated from the SCENE layout and written once (see the file's header)
-        vk_descriptor_set set_ = {};
     };
 
     /// THE PUSH BLOCK'S SIZE IS PART OF THE SHADER'S CONTRACT, and it is the range the pipeline layout is

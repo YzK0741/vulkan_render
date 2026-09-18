@@ -36,10 +36,6 @@ namespace vulkan::pass {
 
     void rt_shadow_pass::release_owned() noexcept {
         this->pipeline_.reset();
-        if (this->pipeline_layout_ != VK_NULL_HANDLE && this->device_ != VK_NULL_HANDLE) {
-            vkDestroyPipelineLayout(this->device_, this->pipeline_layout_, nullptr);
-            this->pipeline_layout_ = VK_NULL_HANDLE;
-        }
     }
 
     render_resource::pass_io const& rt_shadow_pass::io() const noexcept {
@@ -64,10 +60,6 @@ namespace vulkan::pass {
         return this->pipeline_.has_value() ? this->pipeline_->get_pipeline() : VK_NULL_HANDLE;
     }
 
-    VkPipelineLayout rt_shadow_pass::pipeline_layout() const noexcept {
-        return this->pipeline_layout_;
-    }
-
     void rt_shadow_pass::create(pass_context const& context) {
         if (context.device == VK_NULL_HANDLE) {
             return;
@@ -90,21 +82,14 @@ namespace vulkan::pass {
             utility::log("ray-traced shadows unavailable: the owner has not registered all of {}, {}, {} and {}", raygen_name, closest_hit_name, miss_name, any_hit_name);
             return;
         }
-        // The two set layouts come from the CONTEXT: this pass binds the shared scene set and the shared G-buffer
-        // set and owns no layout of its own (see pass_context::shared_set_layout).
-        VkDescriptorSetLayout const scene_layout = context.shared_set_layout != nullptr ? context.shared_set_layout(context.owner, 0) : VK_NULL_HANDLE;
-        VkDescriptorSetLayout const gbuffer_layout = context.shared_set_layout != nullptr ? context.shared_set_layout(context.owner, 1) : VK_NULL_HANDLE;
-        if (scene_layout == VK_NULL_HANDLE || gbuffer_layout == VK_NULL_HANDLE) {
-            utility::log("ray-traced shadows unavailable: the owner has no layout for the shared sets this pass binds");
-            return;
-        }
-        auto built = pipelines::build_rt_shadow_ray_tracing(context.device, scene_layout, gbuffer_layout, static_cast<uint32_t>(sizeof(push_constants)), raygen, closest_hit, miss, any_hit);
+        // Everything this pass reads is a heap slot the shaders name themselves (the scene buffers, the
+        // G-buffer images, the acceleration structure), so the pipeline is all it builds.
+        auto built = pipelines::build_rt_shadow_ray_tracing(context.device, raygen, closest_hit, miss, any_hit);
         if (!built) {
             utility::log("ray-traced shadows unavailable: {}", built.error());
             this->release_owned();
             return;
         }
-        this->pipeline_layout_ = built->pipeline_layout;
         this->pipeline_ = std::move(*built->pipeline);
 
         // ---- THE SHADER BINDING TABLE, the half of a ray-tracing pipeline that belongs to its CALLER: the
@@ -165,8 +150,7 @@ namespace vulkan::pass {
 
     void rt_shadow_pass::record(resolved_io const& io) {
         if (!this->pipeline_.has_value() || io.barrier_images.size() < render_resource::rt_shadow_barriers.size() ||
-            io.pipelines.empty() || io.pipelines[0] == VK_NULL_HANDLE || io.pipeline_layout == VK_NULL_HANDLE ||
-            io.shared.scene == VK_NULL_HANDLE || io.shared.gbuffer == VK_NULL_HANDLE ||
+            io.pipelines.empty() || io.pipelines[0] == VK_NULL_HANDLE ||
             this->hit_region_.deviceAddress == 0 ||
             io.extent.width == 0 || io.extent.height == 0) {
             return; // the runner resolves all of this or skips the pass (see frame_pass::resolve)

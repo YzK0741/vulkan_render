@@ -27,12 +27,7 @@ namespace vulkan::pass {
     }
 
     void fxaa_pass::release_owned() noexcept {
-        // The order they were made: the pipeline layout first, the pipeline from it.
         this->pipeline_.reset();
-        if (this->pipeline_layout_ != VK_NULL_HANDLE && this->device_ != VK_NULL_HANDLE) {
-            vkDestroyPipelineLayout(this->device_, this->pipeline_layout_, nullptr);
-            this->pipeline_layout_ = VK_NULL_HANDLE;
-        }
     }
 
     render_resource::pass_io const& fxaa_pass::io() const noexcept {
@@ -68,22 +63,13 @@ namespace vulkan::pass {
             utility::log("fxaa disabled: the owner has no {} or {}", vertex_shader_name, fragment_shader_name);
             return;
         }
-        // THE POST SET LAYOUT, which this pass does not own (the composite does) and which the context answers by
-        // index: the same set the composite binds, because FXAA reads the image the composite wrote through it.
-        // The pipeline LAYOUT it gets back is the pass's own - see build_fxaa_owned for why that is not a copy of
-        // the chain's.
-        VkDescriptorSetLayout const post_layout = context.shared_set_layout != nullptr ? context.shared_set_layout(context.owner, 2) : VK_NULL_HANDLE;
-        if (post_layout == VK_NULL_HANDLE) {
-            utility::log("fxaa disabled: the owner has no layout for the post set it reads");
-            return;
-        }
-        auto built = pipelines::build_fxaa_owned(context.device, context.swap_chain_image_format, post_layout, static_cast<uint32_t>(sizeof(post_push_constants)), vertex_spirv, fragment_spirv);
+        // The surface's format is the pipeline's declared colour format (the filter writes the swapchain).
+        auto built = pipelines::build_fxaa_owned(context.device, context.swap_chain_image_format, vertex_spirv, fragment_spirv);
         if (!built) {
             utility::log("fxaa disabled: {}", built.error());
             this->release_owned();
             return;
         }
-        this->pipeline_layout_ = built->pipeline_layout;
         this->pipeline_ = std::move(built->antialias);
         this->swap_chain_format_ = context.swap_chain_image_format;
         utility::log("SUCCESS: fxaa pipeline created (LDR -> anti-aliased swapchain)");
@@ -95,15 +81,11 @@ namespace vulkan::pass {
     }
 
     bool fxaa_pass::pipeline_ready() const noexcept {
-        return this->pipeline_.has_value() && this->pipeline_layout_ != VK_NULL_HANDLE;
+        return this->pipeline_.has_value();
     }
 
     VkPipeline fxaa_pass::pipeline() const noexcept {
         return this->pipeline_.has_value() ? this->pipeline_->get_pipeline() : VK_NULL_HANDLE;
-    }
-
-    VkPipelineLayout fxaa_pass::pipeline_layout() const noexcept {
-        return this->pipeline_layout_;
     }
 
     void fxaa_pass::set_frame(fxaa_frame const& frame) noexcept {
@@ -121,8 +103,8 @@ namespace vulkan::pass {
     }
 
     void fxaa_pass::record(resolved_io const& io) {
-        if (!this->pipeline_ready() || io.targets.empty() || io.pipelines.empty() || io.pipelines[0] == VK_NULL_HANDLE || io.pipeline_layout == VK_NULL_HANDLE ||
-            io.shared.post == VK_NULL_HANDLE || io.extent.width == 0 || io.extent.height == 0) {
+        if (!this->pipeline_ready() || io.targets.empty() || io.pipelines.empty() || io.pipelines[0] == VK_NULL_HANDLE ||
+            io.extent.width == 0 || io.extent.height == 0) {
             return; // the runner resolves all of this or skips the pass (see frame_pass::resolve)
         }
         VkImage const target = io.targets[0].image;

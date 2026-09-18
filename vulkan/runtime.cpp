@@ -169,50 +169,17 @@ namespace vulkan {
 
         this->pipelines.clear();
 
-        // THE POST SET'S LAYOUT IS THE RENDERER'S NOW (see the member): it is the one object of the post chain that
-        // stays here, because it describes how THIS code fills the post sets - the passes hold a view of it and
-        // never destroy it. The DEVICE is still alive in this body: `core_owner` is the first member and is released
-        // last, which is the ordering that member's own comment records.
-        if (this->post_set_layout_ != VK_NULL_HANDLE) {
-            vkDestroyDescriptorSetLayout(this->vulkan_core.device, this->post_set_layout_, nullptr);
-            this->post_set_layout_ = VK_NULL_HANDLE;
-        }
-        // ... and the G-BUFFER set's layout, on the same terms: the renderer creates it (lazily, on the passes'
-        // first ask) and every pass that binds the set holds a view of it.
-        if (this->gbuffer_set_layout_ != VK_NULL_HANDLE) {
-            vkDestroyDescriptorSetLayout(this->vulkan_core.device, this->gbuffer_set_layout_, nullptr);
-            this->gbuffer_set_layout_ = VK_NULL_HANDLE;
-        }
-
-        // post-process objects: the FXAA pipeline and the two samplers are RAII members, and the post chain's set
-        // layout, pipeline layout and two pipelines are NOT here any more - they belong to the post composite PASS
-        // (vulkan.pass.post::release_owned), the same rule every extracted pass follows.
+        // post-process objects: the FXAA pipeline and the two samplers are RAII members, and the post chain's
+        // two pipelines belong to the post composite PASS (vulkan.pass.post::release_owned), the same rule
+        // every extracted pass follows.
         //
-        // The block that USED to be here is why this comment exists at all: an earlier edit collapsed it onto the
-        // comment line above it, which commented the destroy calls out and leaked them (validation: "VkDevice has
-        // 18 leaked objects ... VkPipelineLayout, VkDescriptorSetLayout"). The pool belongs to post_family now and
-        // those layouts to the pass, so what is left of the post chain in this destructor is nothing at all.
-        // ... and the G-buffer debug view's set layout and pipeline layout are NOT here any more: they are the
-        // PASS's (vulkan.pass.gbuffer_debug::release_owned), which built them - and which the deferred lighting
-        // stage now asks for the layout through shared_set_layout(1). The FAMILY's pool is still gbuffer_family's,
-        // whose destructor destroys it (and the generations it retired).
-        // ... and the deferred lighting stage's pipeline layout is NOT here any more: it is the PASS's
-        // (vulkan.pass.deferred::release_owned), built by the pass from the two shared set layouts its owner
-        // hands it at create time.
-        // ... and the GI tracer is NOT here any more: its pipeline layout and its pipeline are the PASS's (see
-        // this destructor at all now, and the only GI object still the renderer's is the denoiser's two
-        // descriptor FAMILIES (the diffuse and the reflection), which one declaration cannot describe.
-        // The bake's pipeline layout is NOT destroyed here: it is the JOB's (vulkan.pass.mask_bake_job), which
-        // releases its pipeline layout, its pipeline and its own descriptor set in its own destructor - the
-        // same rule the extracted passes follow. The compute-skinning job's layout, pipeline and per-slot sets
-        // left the same way (vulkan.pass.compute_skin_job), so this destructor no longer names either of the two
-        // traced-feature jobs.
-        // The traced-feature pipelines and layouts are NOT destroyed here any more: each belongs to the pass
-        // that built it, so this destructor names no handle for any of them. The TAA resolve's set layout, pipeline
-        // layout, pipeline AND descriptor family left the same way (vulkan.pass.taa), so nothing about it is
-        // torn down here either.
+        // NO SET LAYOUT, PIPELINE LAYOUT OR DESCRIPTOR POOL IS TORN DOWN HERE ANY MORE, and that is the whole
+        // point of the deletion this destructor records: every stage is heap-native, so there is nothing of that
+        // kind left in this class to destroy - no scene set layout (it was `core`'s), no post or G-buffer set
+        // layout (this class created them for the families it wrote), no pool and no per-image family. What
+        // remains of each extracted pass's GPU material is the PASS's, released by its own destructor.
 
-        // Shared scene resources: views/sets/samplers/buffers/images are RAII and free
+        // Shared scene resources: views/samplers/buffers/images are RAII and free
         // themselves as this runtime's members destruct (after this body; vulkan_core, which
         // owns the vma allocator, is declared first and destructs last, so every vk_buffer /
         // vk_image still has a live allocator when it releases).
@@ -355,8 +322,8 @@ namespace vulkan {
         // Reserve table index 0 as the DEFAULT material (white textures + identity factors):
         // registrations that overflow the table degrade to it (see register_material). Done
         // FIRST so it always lands at index 0 - the raw zeroed record at 0 would render black
-        // (all factors zero), not white. Safe here: no scene set exists yet, so the descriptor
-        // writes register_material builds are deferred (update_all_scene_sets no-ops).
+        // (all factors zero), not white. Safe here: the texture it uploads is registered on the
+        // heap as it arrives, exactly as a later material's is.
         {
             primitive_create_info const default_material = {};
             material_id const default_index = this->register_material(default_material);
@@ -637,197 +604,58 @@ namespace vulkan {
     }
 
     void runtime::ensure_scene_set() {
-        if (this->scene_sets.created()) {
+        if (!this->cluster_count_buffers.empty()) {
+            return; // the scene's heap slots are already written (the first primitive asked for them)
+        }
+        // THERE IS NO SCENE SET TO ENSURE ANY MORE - what this function still does is what the heap needs: the
+        // shadow map and the clustered-light buffers must exist before the heap slots that name them are written,
+        // and their creation is deferred to here so the app config that sets the cascade count has already run
+        // (see the constructor note).
+        this->ensure_shadow_resources();
+        this->ensure_cluster_buffers();
+        // binding 7 (light UBO, per-slot) is bound into each slot's heap block here, together with the shadow map's
+        // grid slot.
+        this->write_light_and_shadow_bindings();
+    }
+
+    void runtime::write_rt_structure_binding(VkAccelerationStructureKHR const tlas, uint32_t const frame_slot) {
+        // The top level structure is a HEAP slot now, and this is the one thing this function still does: a heap
+        // descriptor for an acceleration structure is an ADDRESS RANGE carrying the structure's device address
+        // (the heap's payload union has no AS member - see docs/descriptor_heap_migration.md), and it is
+        // per FRAME SLOT because the structure is rebuilt every frame - which is why heap_slots::tlas is a
+        // two-slot array. The size is the one the structure was created with (published through
+        // ray_tracing::structure_set): a heap range must carry a real size, a lesson this renderer already paid
+        // for on the material table.
+        if (!this->vulkan_core.descriptor_heaps.ready() || this->vulkan_core.heap_grid_offset == VK_WHOLE_SIZE || tlas == VK_NULL_HANDLE) {
             return;
         }
-        // the scene set binds the shadow map (binding 8) and the light UBO (binding 7), so those
-        // resources must exist before the writes below - and their creation is deferred to here so
-        // the app config that sets the cascade count has already run (see the constructor note)
-        this->ensure_shadow_resources();
-        // ... and the clustered-light buffers (M5) for the same reason: binding 11/12 must point at
-        // them before the writes. They are allocated for the maximum grid, so a resize never
-        // rebuilds them - only the active grid dims change per frame.
-        this->ensure_cluster_buffers();
-        // One scene descriptor set per frame slot: a slot's set always points at that slot's own
-        // camera / shadow / skin / morph resources, so an in-flight frame never observes the next
-        // frame's descriptors and no per-frame update-after-bind writes are needed at all.
-        this->scene_sets.create(this->vulkan_core, this->vulkan_core.scene_descriptor_set_layout);
-
-        auto const write_buffer_binding = [this](VkDescriptorSet const set, uint32_t const binding, VkBuffer const buffer, VkDeviceSize const size, VkDescriptorType const type) {
-            VkDescriptorBufferInfo const info{buffer, 0, size};
-            VkWriteDescriptorSet write = {};
-            write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            write.dstSet = set;
-            write.dstBinding = binding;
-            write.descriptorCount = 1;
-            write.descriptorType = type;
-            write.pBufferInfo = &info;
-            vkUpdateDescriptorSets(this->vulkan_core.device, 1, &write, 0, nullptr);
+        // RESOLVED PER DEVICE, not linked: the loader exports the core entry points and not this
+        // extension one (the link failed with `undefined symbol:
+        // vkGetAccelerationStructureDeviceAddressKHR`, which is the same reason the acceleration
+        // structure module loads its own entry points through vkGetDeviceProcAddr).
+        static PFN_vkGetAccelerationStructureDeviceAddressKHR const get_structure_address =
+            reinterpret_cast<PFN_vkGetAccelerationStructureDeviceAddressKHR>(vkGetDeviceProcAddr(this->vulkan_core.device, "vkGetAccelerationStructureDeviceAddressKHR"));
+        VkAccelerationStructureDeviceAddressInfoKHR const tlas_address_info = {
+            .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR,
+            .pNext = nullptr,
+            .accelerationStructure = tlas,
         };
-
-        for (int slot = 0; slot < vulkan::core::MAX_FRAMES_IN_FLIGHT; ++slot) {
-            VkDescriptorSet const set = this->scene_sets.set(static_cast<uint32_t>(slot));
-
-            // binding 0: THIS slot's camera UBO buffer
-            auto const* camera_detail = this->vulkan_core.vma.get_buffer_detail(this->camera_buffers[static_cast<std::size_t>(slot)].handle());
-            if (camera_detail == nullptr) {
-                utility::panic("failed to get camera ubo buffer detail");
-            }
-            write_buffer_binding(set, 0, camera_detail->buffer, sizeof(camera_ubo), VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
-
-            // binding 5: material table (shared, written once)
-            auto const* material_detail = this->vulkan_core.vma.get_buffer_detail(this->material_buffer.handle());
-            if (material_detail == nullptr) {
-                utility::panic("failed to get material table buffer detail");
-            }
-            write_buffer_binding(set, 5, material_detail->buffer, static_cast<VkDeviceSize>(vulkan::material_capacity) * sizeof(material_record), VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
-
-            // binding 6: per-instance transforms (shared, written by set_instanced_draw)
-            auto const* instance_detail = this->vulkan_core.vma.get_buffer_detail(this->instance_buffer.handle());
-            if (instance_detail == nullptr) {
-                utility::panic("failed to get instance transform buffer detail");
-            }
-            write_buffer_binding(set, 6, instance_detail->buffer, static_cast<VkDeviceSize>(vulkan::instance_capacity) * sizeof(glm::mat4), VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
-
-            // binding 13: THIS slot's previous world matrices (advanced once per frame)
-            auto const* motion_detail = this->vulkan_core.vma.get_buffer_detail(this->motion_buffers[static_cast<std::size_t>(slot)].handle());
-            if (motion_detail == nullptr) {
-                utility::panic("failed to get motion transform buffer detail");
-            }
-            write_buffer_binding(set, 13, motion_detail->buffer, static_cast<VkDeviceSize>(vulkan::scene_motion_capacity) * sizeof(glm::mat4), VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
-
-            // binding 9: THIS slot's skin matrix buffer
-            auto const* skin_detail = this->vulkan_core.vma.get_buffer_detail(this->skin_buffers[static_cast<std::size_t>(slot)].handle());
-            if (skin_detail == nullptr) {
-                utility::panic("failed to get skin matrix buffer detail");
-            }
-            write_buffer_binding(set, 9, skin_detail->buffer, static_cast<VkDeviceSize>(vulkan::scene_skin_capacity) * sizeof(glm::mat4), VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
-
-            // binding 10: THIS slot's morph data buffer
-            auto const* morph_detail = this->vulkan_core.vma.get_buffer_detail(this->morph_buffers[static_cast<std::size_t>(slot)].handle());
-            if (morph_detail == nullptr) {
-                utility::panic("failed to get morph data buffer detail");
-            }
-            write_buffer_binding(set, 10, morph_detail->buffer, static_cast<VkDeviceSize>(vulkan::scene_morph_capacity) * sizeof(float), VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
-
-            // bindings 11/12: THIS slot's clustered-light buffers (M5) - written by the cluster
-            // compute pass, read by the fragment stage
-            auto const* cluster_count_detail = this->vulkan_core.vma.get_buffer_detail(this->cluster_count_buffers[static_cast<std::size_t>(slot)].handle());
-            if (cluster_count_detail == nullptr) {
-                utility::panic("failed to get cluster count buffer detail");
-            }
-            write_buffer_binding(set, 11, cluster_count_detail->buffer, static_cast<VkDeviceSize>(vulkan::max_cluster_count) * sizeof(uint32_t), VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
-
-            auto const* cluster_index_detail = this->vulkan_core.vma.get_buffer_detail(this->cluster_index_buffers[static_cast<std::size_t>(slot)].handle());
-            if (cluster_index_detail == nullptr) {
-                utility::panic("failed to get cluster index buffer detail");
-            }
-            write_buffer_binding(set, 12, cluster_index_detail->buffer, static_cast<VkDeviceSize>(vulkan::max_cluster_count) * vulkan::cluster_light_capacity * sizeof(uint32_t), VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
-
-            // bindings 14/15: THIS slot's ray-traced sun visibility, as the sampler the lighting stage
-            // reads and as the storage image the compute pass writes. Two descriptors for one image on
-            // purpose: the layouts differ (SHADER_READ for the reader, GENERAL for the writer), and each
-            // is only ever used while the image really is in that layout (see record_scene_tail). Both
-            // are written unconditionally - the images exist on every device - so a device without ray
-            // tracing never has to know these bindings exist.
-            {
-                std::array<VkDescriptorImageInfo, 2> visibility_infos = {};
-                // LINEAR clamp, and deliberately NOT the shadow sampler: that one has compareEnable set
-                // (it is a sampler2DShadow sampler), and a compare sampler paired with a plain
-                // sampler2D read is not what the descriptor declares. post_sampler exists by the time any
-                // primitive is created (main.cpp loads the scene after setup_pipeline), which is what
-                // every caller of this function is.
-                visibility_infos[0].sampler = *this->vulkan_core.post_sampler;
-                visibility_infos[0].imageView = this->vulkan_core.rt_shadow_image_views[static_cast<std::size_t>(slot)];
-                visibility_infos[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-                visibility_infos[1].sampler = VK_NULL_HANDLE; // a storage image has no sampler
-                visibility_infos[1].imageView = this->vulkan_core.rt_shadow_image_views[static_cast<std::size_t>(slot)];
-                visibility_infos[1].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-                std::array<VkWriteDescriptorSet, 2> visibility_writes = {};
-                visibility_writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                visibility_writes[0].dstSet = set;
-                visibility_writes[0].dstBinding = 14;
-                visibility_writes[0].descriptorCount = 1;
-                visibility_writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-                visibility_writes[0].pImageInfo = &visibility_infos[0];
-                visibility_writes[1] = visibility_writes[0];
-                visibility_writes[1].dstBinding = 15;
-                visibility_writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-                visibility_writes[1].pImageInfo = &visibility_infos[1];
-                vkUpdateDescriptorSets(this->vulkan_core.device, static_cast<uint32_t>(visibility_writes.size()), visibility_writes.data(), 0, nullptr);
-            }
-            // binding 16: THIS slot's top level structure, but ONLY once one exists. A null
-            // acceleration-structure descriptor is not legal without the nullDescriptor feature
-            // (VUID-VkWriteDescriptorSetAccelerationStructureKHR-pAccelerations-03580), and the structure
-            // is created by the first frame that asks for ray-traced shadows - so the write happens there
-            // (the structure phase's `update`, see the frame loop) for the slot that just got one. Nothing reads
-            // the binding before that: the pass that uses it is gated on the same handle.
-            if (this->vulkan_core.ray_query_available && this->structures.ready()) {
-                VkAccelerationStructureKHR const tlas = this->structures.handle(static_cast<uint32_t>(slot));
-                if (tlas != VK_NULL_HANDLE) {
-                    this->write_rt_structure_binding(set, tlas, static_cast<uint32_t>(slot));
-                }
-            }
+        VkDeviceAddress const tlas_address = get_structure_address != nullptr ? get_structure_address(this->vulkan_core.device, &tlas_address_info) : 0;
+        if (!this->vulkan_core.descriptor_heaps.write_buffer(heap_slot_offset(core::heap_slots::tlas + frame_slot), tlas_address, this->structures.structure_size(frame_slot), VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR)) {
+            utility::log("descriptor heap: the top level structure did not reach grid slot {}", core::heap_slots::tlas + frame_slot);
         }
 
-        // binding 7 (light UBO, per-slot) + binding 8 (per-slot shadow map) and bindings 2-4 (IBL):
-        // written on every scene set below
-        this->write_light_and_shadow_bindings();
-        this->write_ibl_bindings();
-    }
-
-    void runtime::write_rt_structure_binding(VkDescriptorSet const set, VkAccelerationStructureKHR const tlas, uint32_t const frame_slot) {
-        VkWriteDescriptorSetAccelerationStructureKHR structure_info = {};
-        structure_info.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR;
-        structure_info.accelerationStructureCount = 1;
-        structure_info.pAccelerationStructures = &tlas;
-        VkWriteDescriptorSet write = {};
-        write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        write.pNext = &structure_info;
-        write.dstSet = set;
-        write.dstBinding = 16;
-        write.descriptorCount = 1;
-        write.descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
-
-        // binding 17 rides along, because it is the same event: the instance table is rebuilt WITH the
-        // structures, and the only reader is the pass gated on the handle written above. A null buffer is not a
-        // legal descriptor without the nullDescriptor feature (the same rule binding 16's comment states), so a
-        // slot whose table does not exist yet is left unwritten rather than written with nothing.
-        VkWriteDescriptorSet writes[2] = {write, {}};
-        uint32_t write_count = 1;
-        VkDescriptorBufferInfo table_info = {};
+        // ... AND THE INSTANCE TABLE, which is rebuilt WITH the structures and whose slot is the same event's: the
+        // descriptor is an address range at heap_slots::mask_instances + frame slot, and the capacity is the
+        // structures module's to know (instance_table_size).
         VkBuffer const instance_table = this->structures.instance_table(frame_slot);
         if (instance_table != VK_NULL_HANDLE) {
-            table_info.buffer = instance_table;
-            table_info.offset = 0;
-            table_info.range = VK_WHOLE_SIZE;
-            writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            writes[1].dstSet = set;
-            writes[1].dstBinding = 17;
-            writes[1].descriptorCount = 1;
-            writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-            writes[1].pBufferInfo = &table_info;
-            write_count = 2;
-
-            // THE INSTANCE TABLE GOES ONTO THE GRID TOO (binding 17), and this is the case where the two paths
-            // genuinely differ: the set above says VK_WHOLE_SIZE, which a heap range may NOT say - it needs a real
-            // size (VUID-VkDeviceAddressRangeKHR-address-11365, learned on the material table). The capacity is the
-            // structures module's to know, so it publishes it (instance_table_size), and the descriptor is an
-            // address range at heap_slots::mask_instances + frame slot - the slot named for what the shader reads.
-            if (this->vulkan_core.descriptor_heaps.ready() && this->vulkan_core.heap_grid_offset != VK_WHOLE_SIZE) {
-                VkBufferDeviceAddressInfo const table_address_info = {.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .pNext = nullptr, .buffer = instance_table};
-                VkDeviceAddress const table_address = vkGetBufferDeviceAddress(this->vulkan_core.device, &table_address_info);
-                if (!this->vulkan_core.descriptor_heaps.write_buffer(heap_slot_offset(core::heap_slots::mask_instances + frame_slot), table_address, this->structures.instance_table_size(frame_slot), VK_DESCRIPTOR_TYPE_STORAGE_BUFFER)) {
-                    utility::log("descriptor heap: the instance table did not reach grid slot {}", core::heap_slots::mask_instances + frame_slot);
-                }
+            VkBufferDeviceAddressInfo const table_address_info = {.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .pNext = nullptr, .buffer = instance_table};
+            VkDeviceAddress const table_address = vkGetBufferDeviceAddress(this->vulkan_core.device, &table_address_info);
+            if (!this->vulkan_core.descriptor_heaps.write_buffer(heap_slot_offset(core::heap_slots::mask_instances + frame_slot), table_address, this->structures.instance_table_size(frame_slot), VK_DESCRIPTOR_TYPE_STORAGE_BUFFER)) {
+                utility::log("descriptor heap: the instance table did not reach grid slot {}", core::heap_slots::mask_instances + frame_slot);
             }
         }
-        vkUpdateDescriptorSets(this->vulkan_core.device, write_count, writes, 0, nullptr);
-    }
-    void runtime::update_all_scene_sets(VkWriteDescriptorSet const* const writes, uint32_t const write_count) {
-        // the sets, the per-slot dstSet substitution and the "not created yet" case belong to the
-        // bindings, because a material registered before setup finished has nothing to write to
-        this->scene_sets.update_all(this->vulkan_core, writes, write_count);
     }
 
     void runtime::run_heap_probe(uint32_t const texture_slot) {
@@ -1060,114 +888,46 @@ namespace vulkan {
     }
 
     void runtime::write_light_and_shadow_bindings() {
-        if (!this->scene_sets.created()) {
-            return;
-        }
         // binding 7 (light UBO) + binding 8 (shadow map): BOTH point at THIS slot's own
         // resources (per-slot light buffers like the camera UBO, per-slot shadow images), so no
         // per-frame re-pointing is needed and an in-flight frame never shares a buffer the next
-        // frame rewrites.
+        // frame rewrites. Only the HEAP half is left: the two bindings are written into this slot's heap block
+        // (and the shadow map into its grid slot) rather than into a descriptor set.
         for (int slot = 0; slot < vulkan::core::MAX_FRAMES_IN_FLIGHT; ++slot) {
-            VkDescriptorSet const set = this->scene_sets.set(static_cast<uint32_t>(slot));
             auto const* light_detail = this->vulkan_core.vma.get_buffer_detail(this->light_buffers[static_cast<std::size_t>(slot)].handle());
             if (light_detail == nullptr) {
                 utility::panic("failed to get light ubo buffer detail");
             }
-            VkDescriptorBufferInfo const light_info{light_detail->buffer, 0, sizeof(light_ubo)};
             auto const* shadow_detail = this->vulkan_core.vma.get_image_detail(this->shadow_images[static_cast<std::size_t>(slot)].handle());
             if (shadow_detail == nullptr) {
                 utility::panic("failed to get shadow map image detail");
             }
-            VkDescriptorImageInfo const shadow_info{
-                .sampler = *this->vulkan_core.shadow_sampler,
-                .imageView = *this->shadow_array_views[static_cast<std::size_t>(slot)],
-                .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-            };
-
-            std::array<VkWriteDescriptorSet, 2> writes = {};
-            writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            writes[0].dstSet = set;
-            writes[0].dstBinding = 7;
-            writes[0].descriptorCount = 1;
-            writes[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-            writes[0].pBufferInfo = &light_info;
-            writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            writes[1].dstSet = set;
-            writes[1].dstBinding = 8;
-            writes[1].descriptorCount = 1;
-            writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            writes[1].pImageInfo = &shadow_info;
-            vkUpdateDescriptorSets(this->vulkan_core.device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
 
             // THE SHADOW MAP GOES ONTO THE GRID HERE, because an image binding cannot be written the way a buffer
-            // binding is (the comment below says why): its heap descriptor is a CREATE INFO, rebuilt from the same
-            // arguments core::make_depth_array_view uses - this slot's image, the depth format, a 2D-array view and
-            // the DEPTH aspect (a colour aspect here would be a validation error, not a wrong picture). Which slot
-            // it occupies is the frame's, matching shadow_images[slot].
+            // binding is: its heap descriptor is a CREATE INFO, rebuilt from the same arguments
+            // core::make_depth_array_view uses - this slot's image, the depth format, a 2D-array view and the DEPTH
+            // aspect (a colour aspect here would be a validation error, not a wrong picture). Which slot it
+            // occupies is the frame's, matching shadow_images[slot].
             if (!write_heap_grid_image(this->vulkan_core, core::heap_slots::shadow_map + static_cast<uint32_t>(slot), shadow_detail->image, this->vulkan_core.depth_format, VK_IMAGE_VIEW_TYPE_2D_ARRAY, VK_IMAGE_ASPECT_DEPTH_BIT)) {
                 utility::log("descriptor heap: the shadow map for frame slot {} did not reach grid slot {}", slot, core::heap_slots::shadow_map + static_cast<uint32_t>(slot));
             }
 
-            // ---- AND THE SAME DESCRIPTOR INTO THE HEAP'S BLOCK FOR THIS SLOT ----
+            // ---- AND THE LIGHT UBO, INTO THE HEAP'S BLOCK FOR THIS SLOT ----
             //
-            // This is the pattern every BUFFER binding of set 0 follows during the migration, and it is five lines
-            // because a heap descriptor for a buffer IS an address range: take the buffer's device address, write it
-            // at the binding's offset inside this slot's block (core reserved the block and computed the offsets), and
-            // nothing else changes - the descriptor set above keeps working, which is what lets the two paths be
-            // compared frame for frame. What does NOT work this way is an IMAGE binding: a heap image descriptor
+            // A heap descriptor for a buffer IS an address range: take the buffer's device address, write it at
+            // the binding's offset inside this slot's block (core reserved the block and computed the offsets), and
+            // nothing else changes. What does NOT work this way is an IMAGE binding: a heap image descriptor
             // carries a VkImageViewCreateInfo while a VkDescriptorImageInfo carries a view, not the image and range
-            // that create info is made of - so image bindings are written where those images are known (the texture
-            // array already is; the IBL, shadow and visibility images are not yet).
+            // that create info is made of - which is why the shadow map above is written where its image is known.
             if (this->vulkan_core.descriptor_heaps.ready() && this->vulkan_core.heap_grid_offset != VK_WHOLE_SIZE) {
-                VkBufferDeviceAddressInfo const address_info = {.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .pNext = nullptr, .buffer = light_info.buffer};
+                VkBufferDeviceAddressInfo const address_info = {.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .pNext = nullptr, .buffer = light_detail->buffer};
                 VkDeviceAddress const light_address = vkGetBufferDeviceAddress(this->vulkan_core.device, &address_info);
                 VkDeviceSize const heap_offset = heap_slot_offset(core::heap_slots::scene_light + slot);
-                if (!this->vulkan_core.descriptor_heaps.write_buffer(heap_offset, light_address, light_info.range, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER)) {
+                if (!this->vulkan_core.descriptor_heaps.write_buffer(heap_offset, light_address, sizeof(light_ubo), VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER)) {
                     utility::log("descriptor heap: the light UBO did not fit slot {}'s block at offset {}", slot, heap_offset);
                 }
             }
         }
-    }
-
-    void runtime::write_ibl_bindings() const {
-        if (!this->scene_sets.created()) {
-            return;
-        }
-        // The IBL bindings need nothing but plain handles - the three environment views, the
-        // environment sampler and the white placeholder - so they are written by the bindings; the
-        // buffer bindings below and in ensure_scene_set() stay here, because they need this runtime's
-        // buffer details and capacities.
-        //
-        // The view count is NOT guaranteed here: set_ibl() is what fills ibl_views, and it early-
-        // returns when env_size == 0 (the documented way to run without IBL), while this runs from
-        // ensure_scene_set() - i.e. as soon as the first primitive exists. So a caller that builds
-        // its scene before calling set_ibl() reaches this with the vector still empty, and indexing
-        // it would be an out-of-bounds read. An empty span makes write_ibl bind the white
-        // placeholder to all three slots instead, which is the state an unloaded IBL is meant to be
-        // in; set_ibl() rewrites the bindings once the environment is actually there.
-        std::array<VkImageView, 3> views = {};
-        bool const have_ibl_views = this->ibl_views.size() >= views.size() && *this->ibl_views[0] != VK_NULL_HANDLE && *this->ibl_views[1] != VK_NULL_HANDLE && *this->ibl_views[2] != VK_NULL_HANDLE;
-        if (have_ibl_views) {
-            for (std::size_t i = 0; i < views.size(); ++i) {
-                views[i] = *this->ibl_views[i]; // the wrappers unwrap to the raw VkImageView here
-            }
-        }
-        // The furnace verification mode: slots 0 and 1 - the prefiltered environment and the irradiance cube
-        // - point at the CONSTANT cube instead of the real environment, while slot 2 keeps its own BRDF LUT.
-        // The two are not interchangeable: the cube slots are samplerCube, and the 2D white placeholder this
-        // function falls back to for an unloaded IBL cannot be bound there at all - doing so is a viewType/Dim
-        // validation error, which is how this was found rather than assumed.
-        if (this->furnace && !this->vulkan_core.furnace_cube_views.empty() && this->vulkan_core.furnace_cube_views[0] != VK_NULL_HANDLE) {
-            views[0] = this->vulkan_core.furnace_cube_views[0];
-            views[1] = this->vulkan_core.furnace_cube_views[0];
-        }
-        std::span<VkImageView const> const view_span = have_ibl_views ? std::span<VkImageView const>(views) : std::span<VkImageView const>{};
-        // The fallback for the two CUBE slots has to BE a cube: the 2D white view below is the LUT
-        // slot's placeholder, and writing it into a samplerCube binding is the viewType/Dim validation
-        // error the comment above describes. The core's neutral 1x1x6 cube - initialized to white in
-        // begin_recording for both this and the furnace mode - is the type-correct fallback.
-        VkImageView const cube_placeholder = this->vulkan_core.furnace_cube_views.empty() ? VK_NULL_HANDLE : this->vulkan_core.furnace_cube_views[0];
-        this->scene_sets.write_ibl(this->vulkan_core, this->ibl_ready, view_span, *this->env_sampler, cube_placeholder, *this->owned_texture_views[0], *this->vulkan_core.texture_sampler);
     }
 
     void runtime::set_ibl(ibl_input const& info) {
@@ -1242,9 +1002,9 @@ namespace vulkan {
 
         this->env_sampler = this->vulkan_core.make_sampler(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, static_cast<float>(info.env_mip_count - 1));
         this->ibl_ready = true;
-
-        // if the scene set already exists, point bindings 2-4 at the real images
-        this->write_ibl_bindings();
+        // The three images above are already on the heap, written where their images are (see the
+        // write_heap_grid_image calls): a heap image descriptor is a CREATE INFO, so there is no separate
+        // "point the binding at it" step and nothing to rewrite here.
     }
 
     material_id runtime::register_material(primitive_create_info const& info) {
@@ -1263,19 +1023,11 @@ namespace vulkan {
         };
 
         std::array<uint32_t, 5> texture_indices = {};
-        // one write per slot is enough when the slot is freshly added; a reused slot (cache hit)
-        // was already written when it first appeared
-        std::array<VkDescriptorImageInfo, 5> image_infos = {};
-        std::array<VkWriteDescriptorSet, 5> writes = {};
-        uint32_t write_count = 0;
         uint32_t heap_texture_descriptors = 0; // how many went into the descriptor heap (see the log below)
-        bool white_needed = false;
-        VkSampler const sampler = *this->vulkan_core.texture_sampler;
         for (int i = 0; i < 5; ++i) {
             texture_input const& tex = *slots[i].first;
             if (!tex.valid || tex.data.empty()) {
                 texture_indices[i] = this->white_texture_index; // white fallback
-                white_needed = true;
                 continue;
             }
             // Content-addressed dedup: the loader hands every material its OWN byte copy of a
@@ -1305,7 +1057,6 @@ namespace vulkan {
                                  vulkan::scene_texture_capacity, this->white_texture_index);
                 }
                 texture_indices[i] = this->white_texture_index; // white fallback, like an invalid texture
-                white_needed = true;                            // (re)write the white element's descriptor once
                 continue;
             }
             vulkan::image_create_info image_info = {};
@@ -1321,16 +1072,6 @@ namespace vulkan {
             this->texture_array_views.push_back(*this->owned_texture_views.back());
             this->texture_slot_cache.emplace(key, index);
             texture_indices[i] = index;
-
-            image_infos[write_count] = {.sampler = sampler, .imageView = *this->owned_texture_views.back(), .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-            writes[write_count].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            writes[write_count].dstSet = this->scene_sets.set(0u); // dstSet is replaced per set by update_all_scene_sets
-            writes[write_count].dstBinding = 1;
-            writes[write_count].dstArrayElement = index;
-            writes[write_count].descriptorCount = 1;
-            writes[write_count].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            writes[write_count].pImageInfo = &image_infos[write_count];
-            ++write_count;
 
             // A texture is registered ONCE, at scene load, and never rewritten - which is why the texture array is
             // the first binding this renderer puts on the heap: there is no per-frame rewrite and therefore no
@@ -1379,41 +1120,6 @@ namespace vulkan {
             this->run_heap_graphics_probe(static_cast<uint32_t>(core::heap_slots::materials) + 1u);
         }
 
-        // material slots that fell back to white share element 0; write it once when used
-        if (white_needed) {
-            VkDescriptorImageInfo const white_info{
-                .sampler = sampler,
-                .imageView = this->texture_array_views[this->white_texture_index],
-                .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-            };
-            VkWriteDescriptorSet white_write = {};
-            white_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            white_write.dstSet = this->scene_sets.set(0u); // dstSet is replaced per set by update_all_scene_sets
-            white_write.dstBinding = 1;
-            white_write.dstArrayElement = this->white_texture_index;
-            white_write.descriptorCount = 1;
-            white_write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            white_write.pImageInfo = &white_info;
-            if (write_count < writes.size()) {
-                image_infos[write_count] = white_info;
-                writes[write_count] = white_write;
-                ++write_count;
-            } else {
-                std::array<VkWriteDescriptorSet, 6> all = {};
-                std::array<VkDescriptorImageInfo, 6> all_infos = {};
-                for (uint32_t w = 0; w < write_count; ++w) {
-                    all[w] = writes[w];
-                    all_infos[w] = image_infos[w];
-                }
-                all_infos[write_count] = white_info;
-                all[write_count] = white_write;
-                this->update_all_scene_sets(all.data(), write_count + 1);
-                write_count = 0; // already submitted
-            }
-        }
-        if (write_count > 0) {
-            this->update_all_scene_sets(writes.data(), write_count);
-        }
         // SAY WHAT WENT INTO THE HEAP, because the success path of a heap write is silent by nature (it returns
         // true and writes memory) and "no failure line" is not evidence that anything happened. This is the line a
         // reader checks to know the texture array really is on the heap; the mapping that points a shader stage at
@@ -1612,25 +1318,15 @@ namespace vulkan {
         //    frame can still be running - a freshly allocated set is referenced by nothing, so
         //    allocating instead of updating sidesteps that entirely.
         this->debug_overlay.on_swapchain_recreated();
-        // The debug view's family does all three: it forgets the views its sets were bound to and the
-        // sets themselves (so the next recorded frame allocates fresh ones) and retires its pool.
-        this->gbuffer_family.retire_all();
-        // The post chain's family forgets its sets and retires its pool (five sets per image, so the
-        // largest of the three); the next frame allocates fresh ones from a fresh pool.
-        this->post_family.retire_all();
-        // The TAA resolve's family is NOT retired here any more: the pass owns it, and the call below tells
-        // the pass (vulkan.pass.taa::on_swapchain_recreated retires its own family and forgets the
-        // generation it fingerprinted).
-        // ... and the REFLECTION's family is not here either: it is the chain owner's (it is built on the temporal
-        // pass's layout from the frame's table - see vulkan.render_start_demo), so the owner is told instead.
+        // NOTHING OF THIS CLASS IS RETIRED HERE ANY MORE: the G-buffer and post descriptor families it used to
+        // retire are gone with the sets (every stage reaches its images through the heap, whose slots name images
+        // rather than sets), so the only per-generation state left is the PASSES' - and they are told below.
         if (this->wiring_.recreated != nullptr) {
             this->wiring_.recreated(this->wiring_.owner);
         }
-        // AND THE PASSES ARE TOLD, by the runner rather than by this list. That is the hazard this layer was
-        // built to remove: the retires above are a hand-kept list and it covered four of the six families -
-        // two of the six survived only because `ensure` re-detects changed
-        // views. A pass that owns a family now cannot be missed here, because it is not this function that
-        // remembers: `recreate_stage` calls every pass in the stage, and a pass added to it is covered.
+        // AND THE PASSES ARE TOLD, by the runner rather than by a hand-kept list. That is the hazard this layer was
+        // built to remove: a pass that keeps per-generation state cannot be missed, because it is not this function
+        // that remembers - `recreate_stage` calls every pass in the stage, and a pass added to one is covered.
         {
             pass::stage const taa_stage = {.name = "taa", .passes = this->taa_stage, .marks = false};
             [[maybe_unused]] pass::run_report const taa_recreated = pass::recreate_stage(taa_stage, this->make_pass_host());
@@ -1799,10 +1495,9 @@ namespace vulkan {
             return frame_status::acquire_failed;
         }
 
-        // Write this frame's camera UBO into the paced slot's per-slot buffer. The scene
-        //    descriptor sets are static per slot (ensure_scene_set wired bindings 0/7/8/9/10 to
-        //    each slot's own camera/light/shadow/skin/morph resources), so one memcpy is the whole
-        //    camera update - no per-frame descriptor write exists anymore.
+        // Write this frame's camera UBO into the paced slot's per-slot buffer. The heap's
+        //    per-slot camera slot points at that slot's own buffer, so one memcpy is the whole
+        //    camera update - there is no per-frame descriptor write to make.
         this->current_aspect = static_cast<float>(vk.swap_chain_extent.width) / static_cast<float>(vk.swap_chain_extent.height);
         this->current_ubo = make_orbit_camera_ubo(this->camera.yaw, this->camera.pitch, this->camera.distance, this->camera.target, this->scene_radius, this->current_aspect);
         // Motion-vector support: the G-buffer computes its vectors from the UNJITTERED pair, and the
@@ -2263,43 +1958,16 @@ namespace vulkan {
                     this->rt_skin_bake = false;
                 }
             }
-            // The scene set's binding 16 follows the slot's structure, which is why this write is here and not in
-            // the pass that reads it: a null acceleration-structure descriptor is not legal without
-            // nullDescriptor, so the binding becomes valid the moment a structure for that slot does.
-            if (this->scene_sets.created()) {
-                // ONLY WHEN THE HANDLE CHANGES (see rt_binding_written): the unconditional write invalidated a
-                // frame that was still in flight, which the validation layer reports as "VkDescriptorSet ... was
-                // destroyed or updated without UPDATE_AFTER_BIND" followed by every later call on that command
-                // buffer failing.
-                VkAccelerationStructureKHR const tlas = this->structures.handle(frame_slot);
-                if (frame_slot < this->rt_binding_written.size() && this->rt_binding_written[frame_slot] != tlas) {
-                    this->write_rt_structure_binding(this->scene_sets.set(frame_slot), tlas, frame_slot);
-                    this->rt_binding_written[frame_slot] = tlas;
-                    // THE HEAP'S COPY, at the same moment and for the same reason: a heap descriptor for an
-                    // acceleration structure is an ADDRESS RANGE carrying the structure's device address (the
-                    // heap's payload union has no AS member - see docs/descriptor_heap_migration.md), and it is
-                    // per FRAME SLOT because the structure is rebuilt every frame - which is why heap_slots::tlas
-                    // is a two-slot array. The size is the one the structure was created with (published through
-                    // ray_tracing::structure_set): a heap range must carry a real size, a lesson this renderer
-                    // already paid for on the material table.
-                    if (this->vulkan_core.descriptor_heaps.ready() && this->vulkan_core.heap_grid_offset != VK_WHOLE_SIZE && tlas != VK_NULL_HANDLE) {
-                        // RESOLVED PER DEVICE, not linked: the loader exports the core entry points and not this
-                        // extension one (the link failed with `undefined symbol:
-                        // vkGetAccelerationStructureDeviceAddressKHR`, which is the same reason the acceleration
-                        // structure module loads its own entry points through vkGetDeviceProcAddr).
-                        static PFN_vkGetAccelerationStructureDeviceAddressKHR const get_structure_address =
-                            reinterpret_cast<PFN_vkGetAccelerationStructureDeviceAddressKHR>(vkGetDeviceProcAddr(this->vulkan_core.device, "vkGetAccelerationStructureDeviceAddressKHR"));
-                        VkAccelerationStructureDeviceAddressInfoKHR const tlas_address_info = {
-                            .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR,
-                            .pNext = nullptr,
-                            .accelerationStructure = tlas,
-                        };
-                        VkDeviceAddress const tlas_address = get_structure_address != nullptr ? get_structure_address(this->vulkan_core.device, &tlas_address_info) : 0;
-                        if (!this->vulkan_core.descriptor_heaps.write_buffer(heap_slot_offset(core::heap_slots::tlas + frame_slot), tlas_address, this->structures.structure_size(frame_slot), VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR)) {
-                            utility::log("descriptor heap: the top level structure did not reach grid slot {}", core::heap_slots::tlas + frame_slot);
-                        }
-                    }
-                }
+            // THE TOP LEVEL STRUCTURE'S HEAP SLOT follows the slot's structure, which is why this write is here and
+            // not in the pass that reads it: a heap range must carry a real size and the structure's device address,
+            // and both exist only once the structure for that slot does.
+            // ONLY WHEN THE HANDLE CHANGES (see rt_binding_written): the unconditional write invalidated a frame that
+            // was still in flight, which the validation layer reports as "VkDescriptorSet ... was destroyed or
+            // updated without UPDATE_AFTER_BIND" followed by every later call on that command buffer failing.
+            VkAccelerationStructureKHR const tlas = this->structures.handle(frame_slot);
+            if (frame_slot < this->rt_binding_written.size() && this->rt_binding_written[frame_slot] != tlas) {
+                this->write_rt_structure_binding(tlas, frame_slot);
+                this->rt_binding_written[frame_slot] = tlas;
             }
         }
         // GPU timing: the structures' builds end here. Written UNCONDITIONALLY, like every other mark -
@@ -2416,7 +2084,7 @@ namespace vulkan {
     // (`ensure_shadow_resources`). What is left here is what the pass genuinely cannot know: which secondaries to
     // record into, and what a caster's draw state is (the scene set, the live depth-bias state, the two-sided
     // policy, the secondary's own begin info) - so that arrives as a callback, and the map's edge with it.
-    bool runtime::record_shadow_cascade(void* const owner, VkCommandBuffer const secondary, uint32_t const cascade_index, VkPipeline const pipeline, VkPipelineLayout const pipeline_layout) {
+    bool runtime::record_shadow_cascade(void* const owner, VkCommandBuffer const secondary, uint32_t const cascade_index, VkPipeline const pipeline) {
         runtime* const self = static_cast<runtime*>(owner);
         core const& vk = self->vulkan_core;
         // The secondary inherits ONLY the depth attachment (no colour one): dynamic rendering 1.3, single-sampled,
@@ -2450,7 +2118,7 @@ namespace vulkan {
         // index's own offset - while the rest of the block is the material's, pushed per caster below. A
         // secondary records its own state (nothing is inherited from the primary), which is why it is set here.
         [[maybe_unused]] bool const pushed = vk.descriptor_heaps.push_data(secondary, render_resource::shadow_io.push->offset, std::as_bytes(std::span(&index, 1)));
-        self->record_shadow_content(secondary, pipeline, pipeline_layout);
+        self->record_shadow_content(secondary, pipeline);
         vkEndCommandBuffer(secondary);
         return true;
     }
@@ -2601,7 +2269,7 @@ namespace vulkan {
     // scene casts shadows). Pure bind/push/draw commands - the caller owns the barriers and
     // the depth-only rendering instance around it. Recorded inline today; stage 2 records the
     // same content into a per-slot secondary command buffer for parallel pass recording.
-    void runtime::record_shadow_content(VkCommandBuffer const command_buffer, VkPipeline const pipeline, [[maybe_unused]] VkPipelineLayout const pipeline_layout) const {
+    void runtime::record_shadow_content(VkCommandBuffer const command_buffer, VkPipeline const pipeline) const {
         core const& vk = this->vulkan_core;
         // NO SET IS BOUND (see the heap bind in begin_recording): the light matrices, the camera and the shadow map
         // are heap slots, and the shadow stage's push block carries the two indices that pick this frame's
@@ -2641,7 +2309,6 @@ namespace vulkan {
         env.set_cull_mode_fn = [](VkCommandBuffer const cb, VkCullModeFlags const mode) {
             vkCmdSetCullMode(cb, mode);
         };
-        env.layout = vk.scene_pipeline_layout;
         // The shadow session's endpoint (see render_environment::push_block). `this` is const here because the
         // method is; the endpoint only records into the command buffer, so the cast is a formality.
         env.push_owner = const_cast<runtime*>(this);
@@ -2662,110 +2329,16 @@ namespace vulkan {
     }
 
     // ---- post-processing: HDR scene target -> exposure + ACES + gamma -> swapchain ----
-    // The post chain's PIPELINES are not made here any more: the composite PASS owns them (vulkan.pass.post,
-    // built by `pipelines::build_post` inside its create step). What stays is the SAMPLERS, and they are the
-    // renderer's for the reason `build_post`'s own comment gives: they belong to the descriptor SETS, which this
-    // class still writes (post_family). They have to exist before `create_passes()`, because the pass context
-    // hands every pass the five samplers a declaration may choose between.
-    // THE FXAA PASS'S FRAME (vulkan.pass.fxaa). What the pass cannot know is which image it reads and which it
-    // writes (the LDR image the composite produced, and the swapchain), which variant of the post family's set is
-    // the one it reads that image through (set 4, the composite's), and the push block's values.
-    //
-    // NO OFF PATH IS NEEDED, and that is a difference from the bloom chain worth stating: a frame that cannot
-    // resolve this pass leaves the LDR image alone (nobody moves it, nobody samples it) and the swapchain holds
-    // what it held. The old recorder would have bound a null descriptor set in that case, which is worse.
+    // The post chain's PIPELINES are the composite PASS's (vulkan.pass.post, built by `pipelines::build_post`
+    // inside its create step), and its DESCRIPTOR SETS are gone with every other set in this renderer: the
+    // composite, the four bloom levels and FXAA read their images through the frame's heap (the HDR target, the
+    // bloom levels, the LDR image, the G-buffer depth and normal are all grid slots the shaders name themselves).
+    // The samplers stay here only because the pass context hands every pass the five a declaration may choose
+    // between (see core::create_samplers).
     // THE FXAA PASS'S RESOLVER IS GONE (S3): its target (the swapchain), the one image it transitions (the LDR
-    // image the composite wrote), the post set it binds and its extent all come from its own declaration against
-    // the frame's resource table, and its pipeline from the pass (it builds its own, against the post set layout
-    // the context answers). Its push block it composes itself out of the frame's settings and the surface's
-    // format, which it cached at create.
-    void runtime::ensure_post_descriptors() {
-        core& vk = this->vulkan_core;
-        if (!this->pass_ready("post_composite")) {
-            return;
-        }
-        std::size_t const image_count = vk.hdr_image_views.size();
-        if (image_count == 0 || vk.bloom_image_views[0].size() != image_count || vk.ldr_image_views.size() != image_count ||
-            vk.gbuffer_depth_image_views.size() != image_count ||
-            vk.gbuffer_image_views[1].size() != image_count) {
-            return;
-        }
-        // The family owns the rebinding rule, the pool sizing (five sets per image, six descriptors
-        // each) and the retirement (see vulkan.bindings); what stays here is what is specific to the
-        // post chain: six fingerprints - HDR, bloom, LDR, GI, depth and normal views - and how one
-        // image's five sets are written.
-        // The post chain's fingerprints, and there are FIVE of them now: HDR, the bloom levels, the LDR
-        // target, the G-buffer depth and its normal. The GI image that used to sit between the LDR and the depth
-        // went with the chain.
-        std::array<std::span<VkImageView const>, 5> const fingerprints = {
-            vk.hdr_image_views, vk.bloom_image_views[0], vk.ldr_image_views, vk.gbuffer_depth_image_views, vk.gbuffer_image_views[1]};
-        auto const write_sets = [this](uint32_t const image_index, std::span<VkDescriptorSet const> const sets) {
-            // every set gets all nine bindings; the unused ones point at the same view as binding 0
-            // (binding 5 is the LDR image, which only the FXAA pass reads, and 7/8 are the G-buffer
-            // depth and normal, which only the composite's GI upsample reads)
-            auto const write_set = [this](VkDescriptorSet const set, std::array<VkImageView, 9> const& views) {
-                std::array<VkDescriptorImageInfo, 9> image_infos = {};
-                for (uint32_t b = 0; b < image_infos.size(); ++b) {
-                    // The composite's GI upsample taps the depth and the normal AT texel centres, and
-                    // for those two an interpolated value is not a rounding error but a different
-                    // surface - so they get the nearest sampler and the edge test sees the stored
-                    // values. The GI image itself keeps the LINEAR one, for a reason that is about
-                    // measurement rather than quality: its texels are still read at centres (a centre
-                    // fetch of a linear sampler returns that texel), but the upsample's off switch is
-                    // the plain bilinear fetch, and that has to be the same fetch the chain used before
-                    // the upsample existed - with a nearest sampler it would be a much blurrier
-                    // comparison and the A/B would be measuring two differences at once.
-                    bool const nearest = b == 7u || b == 8u;
-                    image_infos[b].sampler = nearest ? *this->vulkan_core.post_nearest_sampler : *this->vulkan_core.post_sampler;
-                    image_infos[b].imageView = views[b];
-                    image_infos[b].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-                }
-                std::array<VkWriteDescriptorSet, 9> writes = {};
-                for (uint32_t b = 0; b < writes.size(); ++b) {
-                    writes[b].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                    writes[b].dstSet = set;
-                    writes[b].dstBinding = b;
-                    writes[b].descriptorCount = 1;
-                    writes[b].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-                    writes[b].pImageInfo = &image_infos[b];
-                }
-                vkUpdateDescriptorSets(this->vulkan_core.device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
-            };
-
-            VkImageView const hdr = this->vulkan_core.hdr_image_views[image_index];
-            VkImageView const ldr = this->vulkan_core.ldr_image_views[image_index];
-            // This set's binding 6, the traced indirect it used to sample, is an unused slot now: the lighting
-            // stage reads the stochastic chain's resolve from the shared G-buffer set instead.
-            VkImageView const depth = this->vulkan_core.gbuffer_depth_image_views[image_index];
-            // The GI image's binding is still DECLARED - the composite's shader is written against these nine
-            // numbers, and renumbering them is a change to that shader and to this layout at once - so it takes
-            // the same view as binding 0, which is what this set does for every binding no shader reads.
-            VkImageView const gi = hdr;
-            VkImageView const normal = this->vulkan_core.gbuffer_image_views[1][image_index];
-            std::array<VkImageView, 9> const hdr_set = {hdr, hdr, hdr, hdr, hdr, ldr, gi, depth, normal};
-            write_set(sets[0], hdr_set);
-
-            for (std::size_t level = 0; level < 3; ++level) {
-                VkImageView const input = this->vulkan_core.bloom_image_views[level][image_index];
-                std::array<VkImageView, 9> const level_set = {input, input, input, input, input, ldr, gi, depth, normal};
-                write_set(sets[1 + level], level_set);
-            }
-
-            std::array<VkImageView, 9> const composite_set = {hdr,
-                                                              this->vulkan_core.bloom_image_views[0][image_index],
-                                                              this->vulkan_core.bloom_image_views[1][image_index],
-                                                              this->vulkan_core.bloom_image_views[2][image_index],
-                                                              this->vulkan_core.bloom_image_views[3][image_index],
-                                                              ldr,
-                                                              gi,
-                                                              depth,
-                                                              normal};
-            write_set(sets[4], composite_set);
-        };
-        if (!this->post_family.ensure_all(vk.device, this->post_set_layout_, static_cast<uint32_t>(image_count), 5u, 9u, fingerprints, write_sets)) {
-            utility::log("runtime: post descriptor sets unavailable - post pass skipped");
-        }
-    }
+    // image the composite wrote) and its extent all come from its own declaration against the frame's resource
+    // table, and its pipeline from the pass. Its push block it composes itself out of the frame's settings and the
+    // surface's format, which it cached at create.
     // ---- G-buffer / deferred path (M1: the write pass + its debug view) ----
     // The G-buffer pass is the forward opaque pass with a different fragment stage: same vertex
     // stage, same primitives, same scene set, same instancing/skinning/morphing. What changes is
@@ -2781,15 +2354,14 @@ namespace vulkan {
     }
 
     // THE DEFERRED LIGHTING PASS'S FRAME (vulkan.pass.deferred). The pass owns the barrier, the two per-image
-    // input transitions, the LOAD instance, the two binds, the push and the draw; what the host resolves is the
-    // FRAME - which image is lit, which two sets are bound (the shared scene set's frame slot and the G-buffer
-    // set's swapchain image) and the values the push carries - plus deciding that this frame cannot run at all.
+    // input transitions, the LOAD instance, the push and the draw; what the host resolves is the
+    // FRAME - which image is lit and the values the push carries - plus deciding that this frame cannot run at all.
     //
     // It was `record_lighting_pass`'s prologue, unchanged, including the order of the two checks: the pipeline
-    // first, then the G-buffer set. The second one is why this returns false instead of recording something, and
-    // the caller is what clears the target in that case (the fallback is about the renderer's own pool).
+    // first, then the frame's target. The second one is why this returns false instead of recording something, and
+    // the caller is what clears the target in that case.
     // THE DEFERRED LIGHTING STAGE'S RESOLVER AND ITS `ensure_inputs` CALLBACK ARE GONE (S3). Its declaration
-    // resolves generically - the shared scene set (0), the shared G-buffer set (1), its own pipeline and a
+    // resolves generically - its own pipeline and a
     // full-frame extent - and its TARGET is the frame's alias `scene_color`, which the per-frame resource table
     // answers (the TAA input while the resolve runs, the HDR image otherwise). Its push block it composes itself
     // out of its own SSAO parameters, the frame's inverse view-projection and the frame's answer to what the traced
@@ -2798,12 +2370,13 @@ namespace vulkan {
     // the same move the ray-traced shadow stage's identical pair made, and the same command-stream position.
 
     void runtime::clear_scene_color_for_missing_gbuffer(VkCommandBuffer const command_buffer) {
-        // The deferred lighting pass did not record because the G-buffer family had no descriptor set for this
-        // image (its pool could not give one). The pass cannot do this itself - it never sees the family's pool,
-        // and "the owner has no set" is a failure of the owner's pool - so the frame's answer lives here: clear
+        // The deferred lighting pass did not record - its pipeline is missing (a startup failure), or its target
+        // is not in this frame's resource table. The pass cannot do this itself, because a pass records nothing
+        // when its declaration does not resolve - so the frame's answer lives here: clear
         // the target so the frame is DEFINED (the post chain samples it) instead of leaving whatever the
         // background/emissive wrote mixed with garbage, and say so once per frame, because a silent black frame
-        // is worse than a log line.
+        // is worse than a log line. (The log line's wording is historical: the missing thing used to be a
+        // descriptor set, and the frame's answer to a missing one was this same clear.)
         core const& vk = this->vulkan_core;
         uint32_t const index = this->current_image_index;
         if (index >= vk.scene_color_images.size()) {
@@ -2822,7 +2395,7 @@ namespace vulkan {
     }
 
     // The G-buffer declarations' SAMPLERS: what is left of make_gbuffer_debug_pipeline in the renderer, because the
-    // set layout, its pipeline layout and the view pipeline are the debug view's PASS's now. They have to exist
+    // view pipeline is the debug view's PASS's now. They have to exist
     // before create_passes(), since the pass context hands every pass the five a declaration may choose between.
     // The deferred path's transparent pass. Everything about its position is load-bearing:
     //  - after the lighting stage, because a blended surface composites over SHADED pixels, and the
@@ -2905,8 +2478,8 @@ namespace vulkan {
         return turned_on;
     }
 
-    // The TAA resolve's factory is gone: `vulkan.pass.taa` builds its own set layout, pipeline layout and
-    // pipeline in its create step, from its own declaration and its own shaders (the app registers those).
+    // The TAA resolve's factory is gone: `vulkan.pass.taa` builds its own pipeline and owns its per-image
+    // history flags in its create step, from its own declaration and its own shaders (the app registers those).
 
     bool runtime::ensure_gbuffer_depth_sampled(VkCommandBuffer const command_buffer, uint32_t const image_index) {
         // Nothing to do when no G-buffer instance ran for this image: the depth is already in the
@@ -2978,80 +2551,12 @@ namespace vulkan {
     // (which pass owns the channel and its clamp), and nothing in this file read it - the demo sets it on the pass
     // it found by declaration name.
 
-    void runtime::ensure_gbuffer_descriptors() {
-        core& vk = this->vulkan_core;
-        if (!this->pass_ready("gbuffer-debug")) {
-            return;
-        }
-        std::size_t const image_count = vk.gbuffer_image_views[0].size();
-        if (image_count == 0 || vk.gbuffer_depth_image_views.size() != image_count || vk.hdr_image_views.size() != image_count ||
-            vk.gbuffer_image_views[1].size() != image_count) {
-            return;
-        }
-        // The family owns the rebinding rule now (see vulkan.bindings): the sets stay allocated, their
-        // contents are rewritten only when the targets below change, and a pool replaced by a later
-        // generation is retired rather than destroyed, because recorded frame command buffers still
-        // name its sets. on_swapchain_recreated() retires the family, which is what forces the rewrite.
-        // The signature is ALSO this family's descriptors-per-set (it sizes the pool - see vulkan.bindings),
-        // so it has to list every binding the layout declares, not just the ones that can move together.
-        std::array<VkImageView, 8> const signature = {
-            vk.gbuffer_image_views[0][0],
-            vk.gbuffer_image_views[1][0],
-            vk.gbuffer_image_views[2][0],
-            vk.gbuffer_depth_image_views[0],
-            vk.velocity_image_views[0],
-            vk.hdr_image_views[0],
-            // 6 and 7: the stochastic punctual lighting chain. 6 is the storage image the TRACE writes; 7 is
-            // the sampler the lighting stage adds the TEMPORAL RESOLVE's output through (the resolve's own
-            // output is written as a storage image through that pass's own set, so this set only reads it).
-            vk.ml_image_views[0],
-            vk.ml_resolve_image_views[0]};
-        // One set per image with one descriptor per binding: the three stored targets, the depth, the
-        // motion-vector target, the direct-radiance image, the stochastic chain's raw estimate and the
-        // resolved image the lighting stage adds - the same eight the signature above fingerprints.
-        // image_count is the generation's, signature is only the fingerprint of image 0 above - the two
-        // are different things and the family needs both (see vulkan.bindings).
-        auto const write_sets = [this](uint32_t const image_index, std::span<VkDescriptorSet const> const sets) {
-            std::array<VkDescriptorImageInfo, 8> image_infos = {};
-            std::array<VkImageView, 8> const views = {
-                this->vulkan_core.gbuffer_image_views[0][image_index],
-                this->vulkan_core.gbuffer_image_views[1][image_index],
-                this->vulkan_core.gbuffer_image_views[2][image_index],
-                this->vulkan_core.gbuffer_depth_image_views[image_index],
-                this->vulkan_core.velocity_image_views[image_index],
-                this->vulkan_core.hdr_image_views[image_index],         // 5: direct radiance, what a hit returns
-                this->vulkan_core.ml_image_views[image_index],          // 6: the lighting chain's raw estimate
-                this->vulkan_core.ml_resolve_image_views[image_index]}; // 7: the accumulated lighting the stage adds
-            std::array<VkWriteDescriptorSet, 8> writes = {};
-            for (uint32_t b = 0; b < views.size(); ++b) {
-                // 6 is STORAGE (the lighting chain's compute pass writes it) and therefore has no sampler and
-                // lives in GENERAL; the rest are sampled and SHADER_READ.
-                bool const storage = b == 6u;
-                // EVERY sampled binding takes the G-buffer's NEAREST sampler: these views are the stored
-                // surface and the two images the stochastic lighting chain hands over per texel.
-                image_infos[b].sampler = storage ? VK_NULL_HANDLE : *this->vulkan_core.gbuffer_sampler;
-                image_infos[b].imageView = views[b];
-                image_infos[b].imageLayout = storage ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-                writes[b].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                writes[b].dstSet = sets[0];
-                writes[b].dstBinding = b;
-                writes[b].descriptorCount = 1;
-                writes[b].descriptorType = storage ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-                writes[b].pImageInfo = &image_infos[b];
-            }
-            vkUpdateDescriptorSets(this->vulkan_core.device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
-        };
-        if (!this->gbuffer_family.ensure(vk.device, this->gbuffer_set_layout_, static_cast<uint32_t>(image_count), 1u, static_cast<uint32_t>(signature.size()), signature, write_sets)) {
-            utility::log("runtime: gbuffer debug descriptor sets unavailable - debug view skipped");
-        }
-    }
-
-    // WHAT IS NOT HERE ANY MORE: no per-pass resolver. The two "S3" migrations this space used to record in
-    // detail were the traced-GI tracer's and its temporal resolve's, and both passes are gone - what they left
-    // behind is the rule every pass follows now: a pass resolves its OWN declaration (its images, its shared
-    // sets, its own bindings, its pipeline, the extent rule), and its push block is composed by the PASS from
-    // `io.constants` plus its own parameters. A frame fact is likewise the frame's (`make_frame_facts`) rather
-    // than the renderer's copy of a pass's state.
+    // WHAT IS NOT HERE ANY MORE: no per-pass resolver, and no G-buffer descriptor family either. The G-buffer
+    // images are HEAP slots now (publish_frame_resources writes each image's grid slot once per frame), and the
+    // rule every pass follows is the one this space records: a pass resolves its OWN declaration (its own bindings,
+    // its pipeline, the extent rule), and its push block is composed by the PASS from `io.constants` plus its own
+    // parameters. A frame fact is likewise the frame's (`make_frame_facts`) rather than the renderer's copy of a
+    // pass's state.
 
     bool runtime::megalights_active() const noexcept {
         // deferred lighting stage has to know whether to skip its raster punctual loop, and it has to give the
@@ -3183,47 +2688,6 @@ namespace vulkan {
         return pass::pass_context{
             .device = this->vulkan_core.device,
             .samplers = this->shared_samplers(),
-            .shared_set_layout = [](void* owner, uint32_t const set) {
-                // THREE shared sets now, and each one is there because a pass needs a layout it does not own:
-                // 0 = the scene set (the scene pass, the lighting stage and the ray-traced shadow bind it),
-                // 1 = the G-buffer set (the same four, plus the debug view) and 2 = the POST set (the composite,
-                // the bloom chain and the FXAA pass). A pass asking for any other index gets "none", which makes
-                // it build nothing and say so.
-                runtime* const self = static_cast<runtime*>(owner);
-                if (set == 0u) {
-                    return self->vulkan_core.scene_descriptor_set_layout;
-                }
-                if (set == 1u) {
-                    // The G-BUFFER set's layout is the renderer's for the same reason the post one is: it writes
-                    // every set (see the member). Everything that binds the set - the debug view, the lighting
-                    // stage and the stochastic chain - gets it from here.
-                    if (self->gbuffer_set_layout_ == VK_NULL_HANDLE) {
-            auto created = pipelines::make_gbuffer_set_layout(self->vulkan_core.device);
-            if (!created) {
-            utility::log("runtime: the G-buffer set layout could not be created - the deferred path is off");
-            return VkDescriptorSetLayout{VK_NULL_HANDLE};
-            }
-            self->gbuffer_set_layout_ = *created;
-                    }
-                    return self->gbuffer_set_layout_;
-                }
-                if (set != 2u) {
-                    return VkDescriptorSetLayout{VK_NULL_HANDLE};
-                }
-                // THE POST SET'S LAYOUT IS THE RENDERER'S (see the member): created on this first ask - the passes'
-                // create step - and reused for the family the renderer writes below, so the pipeline layouts the
-                // passes build and the sets this code fills cannot be two different layouts.
-                if (self->post_set_layout_ == VK_NULL_HANDLE) {
-                    auto created = pipelines::make_post_set_layout(self->vulkan_core.device);
-                    if (!created) {
-            utility::log("runtime: the post set layout could not be created - the post chain is off");
-            return VkDescriptorSetLayout{VK_NULL_HANDLE};
-                    }
-                    self->post_set_layout_ = *created;
-                }
-                return self->post_set_layout_; },
-            // ... and the SCENE pipeline layout, which the shadow pass builds its pipeline against (its draw is a subset of the scene's and its per-cascade push goes through the same layout): .shader above is the shape, one callback per thing a pass cannot own.
-            .shared_pipeline_layout = [](void* owner) { return static_cast<runtime*>(owner)->vulkan_core.scene_pipeline_layout; },
             .shader = [](void* owner, std::string_view const name) { return static_cast<runtime*>(owner)->registered_shader(name); },
             // The SBT numbers a tracing pass builds its table against, straight from the capability query (see
             // device_capabilities): zeroed here on a device that has no ray-tracing pipeline.
@@ -3257,18 +2721,16 @@ namespace vulkan {
             // ... and the DEPTH format, which the shadow pass`s pipeline needs (it has a depth attachment and no
             // colour one): the same kind of session-stable device fact, and the second one a context carries.
             .depth_format = this->vulkan_core.depth_format,
-            // The two channels a pass uses to build what it owns over resources the RENDERER holds: the handles
-            // of the resources this runtime published (`pass_resources`), and a set from the core's pool for a
-            // layout it handed out above. Both forward to the filter, which is the object that knows what a pass
-            // may reach - the context itself stays a plain struct of callbacks, so the framework still does not
-            // depend on `vulkan.core`.
+            // The channel a pass uses to build what it owns over resources the RENDERER holds: the handles of the
+            // resources this runtime published (`pass_resources`). It forwards to the filter, which is the object
+            // that knows what a pass may reach - the context itself stays a plain struct of callbacks, so the
+            // framework still does not depend on `vulkan.core`.
             .resource =
                 [](void* owner, render_resource::resource_id const id, uint32_t const element) {
                     runtime* const self = static_cast<runtime*>(owner);
                     resource_handles const handles = self->pass_resources.resource(id, element);
                     return pass::resolved_binding{.view = handles.view, .buffer = handles.buffer, .image = handles.image};
                 },
-            .descriptor_set = [](void* owner, VkDescriptorSetLayout const layout) { return static_cast<runtime*>(owner)->pass_resources.make_descriptor_set(layout); },
             .frames_in_flight = vulkan::core::MAX_FRAMES_IN_FLIGHT,
             .owner = this,
         };
@@ -3279,7 +2741,7 @@ namespace vulkan {
         // `resource_id::material_table` or `resource_id::skin_matrices` + a slot, not for a member of this class.
         // Everything here is SESSION-STABLE by the filter's contract (the material table and the texture array
         // are created once and only rewritten; the skin matrix buffers are created once and rewritten per slot),
-        // which is what makes them safe for a pass to bind into a descriptor set it writes once at create time.
+        // which is what makes them safe for a pass to name at create time.
         if (auto const* const materials = this->vulkan_core.vma.get_buffer_detail(this->material_buffer.handle()); materials != nullptr && this->material_mapped != nullptr) {
             this->pass_resources.register_resource(render_resource::resource_id::material_table, 0, resource_handles{.buffer = materials->buffer});
         }
@@ -3585,7 +3047,6 @@ namespace vulkan {
         // single-sided materials keep back-face culling here (the shadow pass overrides it with env.two_sided;
         // the main pass must not, or double-sided handling would cost fill rate)
         env.set_cull_mode_fn = [](VkCommandBuffer const cb, VkCullModeFlags const mode) { vkCmdSetCullMode(cb, mode); };
-        env.layout = self.vulkan_core.scene_pipeline_layout;
         // THE HEAP PUSH (see render_environment::push_block): every draw in this session sends its block through
         // the same endpoint a converted pass uses; that endpoint is what appends the two heap indices, which is
         // why a primitive's own push struct never had to grow a field.
@@ -3800,7 +3261,7 @@ namespace vulkan {
 
     pass::owned_pipeline runtime::resolve_pipeline(std::string_view const name) const noexcept {
         if (vk_pipeline const* const pipeline = this->get_pipeline(name); pipeline != nullptr) {
-            return pass::owned_pipeline{.pipeline = pipeline->get_pipeline(), .layout = pipeline->get_pipeline_layout()};
+            return pass::owned_pipeline{.pipeline = pipeline->get_pipeline()};
         }
         // ... AND THEN THE CHAIN'S OWN PASSES, because a chain's stages may SHARE one pipeline: the post chain's
         // four bloom levels record with the composite's R16F variant, and a copy per level would be five identical
@@ -3809,33 +3270,11 @@ namespace vulkan {
         return {};
     }
 
-    VkDescriptorSet runtime::resolve_shared_set(uint32_t const family, uint32_t const element, uint32_t const image_index) {
-        core const& vk = this->vulkan_core;
-        switch (family) {
-        case 0: // the scene set: one per frame SLOT (the camera and light UBOs live there)
-            return this->scene_sets.set(static_cast<uint32_t>(vk.current_frame));
-        case 1: // the G-buffer set: one per swapchain IMAGE, written on demand by the accessor its users share
-            this->ensure_gbuffer_descriptors();
-            return this->gbuffer_family.set(image_index, 0);
-        case 2:
-            // THE POST FAMILY, and the element is what makes it answerable: its five sets are one per STAGE, so
-            // the declaration names which one it binds (the four bloom levels are elements 0..3, the composite
-            // and FXAA share element 4 - the set the composite writes the LDR image through).
-            return this->post_family.set(image_index, element);
-        default:
-            return VK_NULL_HANDLE;
-        }
-    }
-
     pass::resolve_context runtime::make_resolve_context() noexcept {
         return pass::resolve_context{
             .resources = &this->frame_resources,
             .frame = this->pass_frame(),
             .cmd = *this->command_buffers[static_cast<uint32_t>(this->vulkan_core.current_frame)],
-            .descriptor_set =
-                [](void* owner, uint32_t const family, uint32_t const element, uint32_t const image_index) {
-                    return static_cast<runtime*>(owner)->resolve_shared_set(family, element, image_index);
-                },
             .extent_of = [](void* owner, render_resource::resource_id const id, uint32_t const element) { return static_cast<runtime*>(owner)->resolve_resource_extent(id, element); },
             .pipeline = [](void* owner, std::string_view const name) { return static_cast<runtime*>(owner)->resolve_pipeline(name); },
             .owner = this,
@@ -4268,17 +3707,21 @@ namespace vulkan {
     //
     // THE G-BUFFER DEBUG VIEW'S RESOLVER AND ITS `ensure_inputs` CALLBACK ARE GONE (S3). Its declaration resolves
     // generically - the HDR display target, the FOUR images it moves to a sampled layout (three stored surface
-    // targets and the motion vectors, all per-image families the table publishes), the shared G-buffer set (1),
+    // targets and the motion vectors, all per-image families the table publishes),
     // its own pipeline and a full-frame extent - and its push block is the pass's own (its channel, the frame's two
-    // projection terms and a motion gain derived from the frame's width). Nothing here is left but the frame's own
+    // projection terms and a motion gain derived from the frame's width). The images themselves are heap slots the
+    // shader names. Nothing here is left but the frame's own
     // transitions, which stay in the frame loop as they were: the HDR target's move to a colour attachment has to
     // happen even on a frame the pass cannot draw, because the post chain samples that image.
 
     void runtime::clear_hdr_for_missing_gbuffer_set(VkCommandBuffer const command_buffer) {
-        // The debug view did not record because the G-buffer family had no descriptor set for this image (its pool
-        // could not give one). The pass cannot do this itself - it never sees the family's pool - so the frame's
+        // The debug view did not record - its pipeline is missing (a startup failure), or the frame has no target
+        // for it. The pass cannot do this itself, because a pass records nothing when its declaration does not
+        // resolve - so the frame's
         // answer lives here: the target is CLEARED, which is what makes such a frame black rather than undefined
-        // (the post chain samples that image), and the log line says so once per frame.
+        // (the post chain samples that image), and the log line says so once per frame. (The log line's wording is
+        // historical: the missing thing used to be a descriptor set, and the frame's answer to a missing one was
+        // this same clear.)
         core const& vk = this->vulkan_core;
         uint32_t const index = this->current_image_index;
         if (index >= vk.hdr_images.size()) {
@@ -4301,8 +3744,7 @@ namespace vulkan {
         // ---- the scene side: close the geometry instance, then the stages that consume the G-buffer
         this->record_scene_tail(command_buffer);
 
-        this->ensure_post_descriptors();
-        if (!this->pass_ready("post_composite") || this->post_family.set(static_cast<uint32_t>(this->current_image_index), 4) == VK_NULL_HANDLE) {
+        if (!this->pass_ready("post_composite")) {
             return false; // no post pipeline (creation failed): the HDR frame cannot be presented correctly
         }
 
@@ -4564,7 +4006,6 @@ namespace vulkan {
         // is a re-expression rather than a rewrite.
         std::array<VkPipelineColorBlendAttachmentState, 1> const blend_attachments = {make_color_blend_attachment()};
         auto make_result = vulkan::make_pipeline(this->vulkan_core.device,
-                                                 this->vulkan_core.scene_pipeline_layout,
                                                  std::span<VkFormat const>(color_formats),
                                                  this->vulkan_core.depth_format,
                                                  vertex_shader_code,
@@ -4681,9 +4122,9 @@ namespace vulkan {
         // Only meaningful once the startup is complete: the app applies the config to the runtime
         // BEFORE the pipelines exist (main sets the toggles, chores then creates the pipelines), so
         // warning there would claim "TAA has no effect" one line above "TAA pipeline
-        // created". The scene set is created on the first recorded frame, i.e. once every optional
-        // pipeline exists.
-        if (!this->scene_sets.created()) {
+        // created". The scene's resources exist once `ensure_scene_set` has run, i.e. once the first primitive
+        // (or the first recorded frame) has asked for them - which is the moment every optional pipeline exists.
+        if (this->cluster_count_buffers.empty()) {
             return;
         }
         // At most once per feature per session: main() mirrors the overlay's state into the runtime

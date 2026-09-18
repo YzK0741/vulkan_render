@@ -5,17 +5,18 @@
  * @brief The ninth real pass, and the only one that traces outside the chain: the ray-traced sun shadow.
  * @defgroup vulkan_pass_rt_shadow Ray-Traced Shadow Pass
  *
- * WHAT IT OWNS: its pipeline layout and its RAY TRACING pipeline (three stages - raygen, closest hit and miss -
+ * WHAT IT OWNS: its RAY TRACING pipeline (three stages - raygen, closest hit and miss -
  * with the three shader groups and the shader binding table regions that go with them, built at create time from
- * its own declaration's push-block size and the two shared set layouts its owner hands over); the frame's
- * recording - the two barriers around the visibility image it rewrites, the two shared sets it binds, the push
+ * its own declaration's push-block size); the frame's
+ * recording - the two barriers around the visibility image it rewrites, the push
  * block's values (composed by the renderer) and the full-resolution `traceRays` launch; and the one-shot log that
  * says what was built, which used to live in the runtime as a bool next to the pipeline.
  *
  * WHAT IT DOES NOT OWN, in the same shape as the tracer and the spatial filter: no descriptor set of its own.
- * The camera, the light UBO and the top level structure are the shared scene set's, the surface each ray starts
- * from is the shared G-buffer set's, and the visibility image it writes lives in the G-buffer set too - so the
- * only handle it needs is the IMAGE it transitions, and that arrives through `pass_io::barrier_images`.
+ * The camera, the light UBO, the top level structure, the surface each ray starts
+ * from and the visibility image it writes are all heap slots the shaders name themselves - so the
+ * only handle it needs beyond the pipeline is the IMAGE it transitions, and that arrives through
+ * `pass_io::barrier_images`.
  *
  * THE OVER-OCCLUSION THIS PASS SHIPPED WITH WAS THE PAYLOAD, and the fix is the miss shader's one assignment.
  * It is recorded at this length because its shape is a trap: nothing about it is visible in the source,
@@ -153,7 +154,6 @@ export namespace vulkan::pass {
         }
         /// @brief the pipeline the runner binds before this pass records
         [[nodiscard]] VkPipeline pipeline() const noexcept override;
-        [[nodiscard]] VkPipelineLayout pipeline_layout() const noexcept override;
 
     private:
         // THREE GROUPS but FOUR stages: the shader binding table's order is raygen, miss, hit - the any-hit
@@ -183,7 +183,6 @@ export namespace vulkan::pass {
         void release_owned() noexcept;
 
         VkDevice device_ = VK_NULL_HANDLE;
-        VkPipelineLayout pipeline_layout_ = VK_NULL_HANDLE;
         std::optional<vk_pipeline> pipeline_ = std::nullopt;
         // The shader binding table's three regions, filled at create time from the pipeline's group handles. The
         // BUFFER is the owner's (see pass_context::create_upload_buffer); what the pass keeps is where each

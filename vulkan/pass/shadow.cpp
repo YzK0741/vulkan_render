@@ -28,10 +28,7 @@ namespace vulkan::pass {
     }
 
     void shadow_pass::release_owned() noexcept {
-        // The pipeline LAYOUT is not destroyed here: it is the SCENE's (the owner handed it over), which is why this
-        // pass creates its pipeline against it rather than around it.
         this->pipeline_.reset();
-        this->pipeline_layout_ = VK_NULL_HANDLE;
     }
 
     render_resource::pass_io const& shadow_pass::io() const noexcept {
@@ -66,21 +63,13 @@ namespace vulkan::pass {
             utility::log("shadow disabled: the owner has no {} or {}", vertex_shader_name, fragment_shader_name);
             return;
         }
-        // THE SCENE'S PIPELINE LAYOUT, which this pass does not own: its draw is a subset of the scene's (the same
-        // scene set, the same per-leaf push block) and its per-cascade push lands at that block's end - so a layout
-        // of its own would be a second object whose push ranges are this pass's guess.
-        VkPipelineLayout const scene_layout = context.shared_pipeline_layout != nullptr ? context.shared_pipeline_layout(context.owner) : VK_NULL_HANDLE;
-        if (scene_layout == VK_NULL_HANDLE) {
-            utility::log("shadow disabled: the owner has no scene pipeline layout for this pass's draw");
-            return;
-        }
-        auto built = pipelines::build_shadow(context.device, scene_layout, context.depth_format, create_bias_constant, create_bias_slope, create_bias_clamp, vertex_spirv, fragment_spirv);
+        // The pipeline is heap-native: nothing about the draw's descriptors or push travels through a layout.
+        auto built = pipelines::build_shadow(context.device, context.depth_format, create_bias_constant, create_bias_slope, create_bias_clamp, vertex_spirv, fragment_spirv);
         if (!built) {
             utility::log("shadow disabled: {}", built.error());
             this->release_owned();
             return;
         }
-        this->pipeline_layout_ = scene_layout;
         this->pipeline_ = std::move(*built);
         utility::log("SUCCESS: shadow pipeline created (directional depth-only cascade pass)");
     }
@@ -91,15 +80,11 @@ namespace vulkan::pass {
     }
 
     bool shadow_pass::pipeline_ready() const noexcept {
-        return this->pipeline_.has_value() && this->pipeline_layout_ != VK_NULL_HANDLE;
+        return this->pipeline_.has_value();
     }
 
     VkPipeline shadow_pass::pipeline() const noexcept {
         return this->pipeline_.has_value() ? this->pipeline_->get_pipeline() : VK_NULL_HANDLE;
-    }
-
-    VkPipelineLayout shadow_pass::pipeline_layout() const noexcept {
-        return this->pipeline_layout_;
     }
 
     void shadow_pass::set_frame(shadow_frame const& frame) noexcept {
@@ -107,7 +92,7 @@ namespace vulkan::pass {
     }
 
     void shadow_pass::record(resolved_io const& io) {
-        if (!this->pipeline_ready() || io.targets.empty() || io.pipeline_layout == VK_NULL_HANDLE) {
+        if (!this->pipeline_ready() || io.targets.empty()) {
             return;
         }
         if (this->frame_.record_cascade == nullptr || this->frame_.run_tasks == nullptr || this->frame_.map_size == 0u) {
@@ -122,7 +107,6 @@ namespace vulkan::pass {
             return;
         }
         VkPipeline const pipeline = this->pipeline();
-        VkPipelineLayout const layout = this->pipeline_layout_;
         // ---- THE CONTENT: one task per cascade, each into its OWN secondary ----
         // A VkCommandPool is not thread safe, which is why every cascade has its own {pool, buffer} pair (the same
         // rule the main pass's workers follow). Only the CONTENT moves off the primary thread: the barriers, the
@@ -132,12 +116,12 @@ namespace vulkan::pass {
         tasks.reserve(layers);
         std::vector<bool> recorded(layers, false);
         for (uint32_t cascade = 0; cascade < layers; ++cascade) {
-            tasks.emplace_back([this, cascade, pipeline, layout, &recorded] {
+            tasks.emplace_back([this, cascade, pipeline, &recorded] {
                 VkCommandBuffer const secondary = this->frame_.cascades[cascade];
                 if (secondary == VK_NULL_HANDLE) {
                     return;
                 }
-                recorded[cascade] = this->frame_.record_cascade(this->frame_.owner, secondary, cascade, pipeline, layout);
+                recorded[cascade] = this->frame_.record_cascade(this->frame_.owner, secondary, cascade, pipeline);
             });
         }
         this->frame_.run_tasks(this->frame_.owner, tasks);

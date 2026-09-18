@@ -57,10 +57,6 @@ namespace vulkan {
         return this->vk_core->make_command_buffer();
     }
 
-    vk_descriptor_set user_filter::make_descriptor_set(VkDescriptorSetLayout const layout) const {
-        return this->vk_core->make_descriptor_set(layout);
-    }
-
     std::optional<vk_shader_module> user_filter::make_shader_module(std::span<unsigned char> const shader) const noexcept {
         return this->vk_core->make_shader_module(shader);
     }
@@ -104,10 +100,6 @@ namespace vulkan {
 
     VkExtent2D pass_filter::swap_chain_extent() const noexcept {
         return this->vk_core->swap_chain_extent;
-    }
-
-    vk_descriptor_set pass_filter::make_descriptor_set(VkDescriptorSetLayout const layout) const {
-        return this->vk_core->make_descriptor_set(layout);
     }
 
     vma_allocator& pass_filter::vma() noexcept { // NOLINT: the same const contract as user_filter::get_vma

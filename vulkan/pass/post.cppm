@@ -13,12 +13,11 @@
  * family (the prefilter reads the HDR target, downsample L reads level L-1, the composite reads all four levels
  * plus the GI image and the G-buffer depth and normal).
  *
- * WHAT THE COMPOSITE OWNS, and it is the whole post chain's GPU material: the post SET LAYOUT (nine combined
- * image samplers), the pipeline layout that binds it and takes the 52-byte push block, and the TWO pipelines the
+ * WHAT THE COMPOSITE OWNS, and it is the whole post chain's GPU material: the TWO pipelines the
  * chain records with - one per colour format the chain renders into, because a pipeline's declared colour format
  * has to match the attachment it renders into (the swapchain's format for the composite when it finishes the
  * frame, R16F for the bloom levels and for the composite when FXAA will finish it instead). `pipelines::build_post`
- * is what creates all four objects in one call, which is why the bloom passes reach the layout through this pass
+ * is what creates both in one call, which is why the bloom passes reach the R16F variant through this pass
  * rather than building a second copy of it.
  *
  * WHAT THE BLOOM PASSES OWN: their own recording - the transition of the level they read, the clear-instance over
@@ -186,8 +185,6 @@ export namespace vulkan::pass {
          * (see `frame_pass::named_pipeline`).
          */
         [[nodiscard]] owned_pipeline named_pipeline(std::string_view name) const noexcept override;
-        /// @brief the layout every post pipeline binds its set and takes its push block through
-        [[nodiscard]] VkPipelineLayout pipeline_layout() const noexcept override;
         /**
          * @brief the GI upsample's ON/OFF lane, which is THIS pass's parameter
          *
@@ -223,8 +220,6 @@ export namespace vulkan::pass {
         [[nodiscard]] bool fill_push(resolved_io& out, bool writing_ldr) const;
 
         VkDevice device_ = VK_NULL_HANDLE;
-        VkDescriptorSetLayout set_layout_ = VK_NULL_HANDLE;
-        VkPipelineLayout pipeline_layout_ = VK_NULL_HANDLE;
         std::optional<vk_pipeline> composite_ = std::nullopt;
         std::optional<vk_pipeline> hdr_ = std::nullopt;
         /// the surface's format, cached at create: the `encode_gamma` lane is a consequence of it (and of the

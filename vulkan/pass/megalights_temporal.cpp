@@ -31,14 +31,6 @@ namespace vulkan::pass {
 
     void megalights_temporal_pass::release_owned() noexcept {
         this->pipeline_.reset();
-        if (this->pipeline_layout_ != VK_NULL_HANDLE && this->device_ != VK_NULL_HANDLE) {
-            vkDestroyPipelineLayout(this->device_, this->pipeline_layout_, nullptr);
-            this->pipeline_layout_ = VK_NULL_HANDLE;
-        }
-        if (this->set_layout_ != VK_NULL_HANDLE && this->device_ != VK_NULL_HANDLE) {
-            vkDestroyDescriptorSetLayout(this->device_, this->set_layout_, nullptr);
-            this->set_layout_ = VK_NULL_HANDLE;
-        }
     }
 
     render_resource::pass_io const& megalights_temporal_pass::io() const noexcept {
@@ -56,19 +48,11 @@ namespace vulkan::pass {
     }
 
     bool megalights_temporal_pass::ready() const noexcept {
-        return this->pipeline_.has_value() && this->set_layout_ != VK_NULL_HANDLE;
+        return this->pipeline_.has_value();
     }
 
     VkPipeline megalights_temporal_pass::pipeline() const noexcept {
         return this->pipeline_.has_value() ? this->pipeline_->get_pipeline() : VK_NULL_HANDLE;
-    }
-
-    VkPipelineLayout megalights_temporal_pass::pipeline_layout() const noexcept {
-        return this->pipeline_layout_;
-    }
-
-    VkDescriptorSetLayout megalights_temporal_pass::set_layout() const noexcept {
-        return this->set_layout_;
     }
 
     bool megalights_temporal_pass::resolved() const noexcept {
@@ -102,9 +86,6 @@ namespace vulkan::pass {
 
     void megalights_temporal_pass::on_swapchain_recreated(pass_host const&) {
         this->resolved_ = false;
-        // The family is OURS to retire: its sets name that generation's images, so they are stale the moment
-        // the swapchain is rebuilt.
-        this->family_.retire_all();
     }
 
     void megalights_temporal_pass::create(pass_context const& context) {
@@ -115,7 +96,6 @@ namespace vulkan::pass {
             this->release_owned();
         }
         this->device_ = context.device;
-        this->samplers_ = context.samplers;
         if (this->ready()) {
             return; // already built for this device
         }
@@ -124,23 +104,12 @@ namespace vulkan::pass {
             utility::log("stochastic punctual lighting's temporal resolve disabled (the chain will stay off): the owner has no {}", shader_name);
             return;
         }
-        // THE SET LAYOUT IS GENERATED FROM THE DECLARATION (the same call the GI denoiser makes): the three
-        // bindings and the family's pool count cannot drift apart because both read this declaration.
-        std::expected<VkDescriptorSetLayout, std::string> const layout = bindings::make_set_layout(context.device, render_resource::megalights_temporal_io, render_resource::megalights_temporal_io.own_set);
-        if (!layout.has_value()) {
-            utility::log("stochastic punctual lighting's temporal resolve disabled (the chain will stay off): {}", layout.error());
-            return;
-        }
-        this->set_layout_ = *layout;
-        // ONE set layout, this pass's own (see the declaration): its depth and velocity are own bindings too, so
-        // there is no shared set to hand over - which is the shape `build_resolve_pipeline` takes.
-        auto built = pipelines::build_resolve_pipeline(context.device, this->set_layout_, render_resource::megalights_temporal_io.push->size, spirv);
+        auto built = pipelines::build_resolve_pipeline(context.device, spirv);
         if (!built) {
             utility::log("stochastic punctual lighting's temporal resolve disabled (the chain will stay off): {}", built.error());
             this->release_owned();
             return;
         }
-        this->pipeline_layout_ = built->pipeline_layout;
         this->pipeline_ = std::move(built->resolve);
         utility::log("SUCCESS: stochastic punctual lighting's temporal resolve created (running mean with a per-pixel frame count)");
     }
@@ -148,48 +117,11 @@ namespace vulkan::pass {
     void megalights_temporal_pass::record(resolved_io const& io) {
         this->resolved_ = false;
         if (!this->ready() || io.barrier_images.size() < render_resource::megalights_temporal_barriers.size() || io.frame.image_count == 0 || io.pipelines.empty() ||
-            io.pipelines[0] == VK_NULL_HANDLE || io.pipeline_layout == VK_NULL_HANDLE || io.extent.width == 0 || io.extent.height == 0) {
+            io.pipelines[0] == VK_NULL_HANDLE || io.extent.width == 0 || io.extent.height == 0) {
             return; // the runner resolves all of this or skips the pass (the declaration's own gates are the table's)
         }
         VkImage const resolve_image = io.barrier_images[barrier_resolve].image;
         VkImage const history_image = io.barrier_images[barrier_history].image;
-
-        // ---- the set this dispatch binds: OURS, written from the per-image views ----
-        constexpr std::size_t own_binding_count = render_resource::megalights_temporal_io.bindings.size();
-        auto const views_for = [&io](uint32_t const image, std::array<VkImageView, own_binding_count>& out) {
-            for (std::size_t b = 0; b < out.size(); ++b) {
-                if (io.own_per_image[b].size() <= image) {
-                    return false;
-                }
-                out[b] = io.own_per_image[b][image];
-            }
-            return true;
-        };
-        auto const write_sets = [&views_for, this](uint32_t const image_index, std::span<VkDescriptorSet const> const sets) {
-            std::array<VkImageView, own_binding_count> views = {};
-            if (!views_for(image_index, views)) {
-                utility::log("megalights_temporal: no per-image views for image {} - this frame has no stochastic lighting", image_index);
-                return;
-            }
-            auto const written = bindings::write_set(this->device_, render_resource::megalights_temporal_io, render_resource::megalights_temporal_io.own_set, sets[0], views, {}, this->samplers_);
-            if (!written) {
-                utility::log("megalights_temporal: {}", written.error());
-            }
-        };
-        std::array<VkImageView, own_binding_count> signature = {};
-        if (!views_for(0u, signature)) {
-            return; // the host filled nothing: not a frame this pass can resolve
-        }
-        uint32_t const descriptors_per_set = render_resource::descriptor_counts_for(render_resource::megalights_temporal_io, render_resource::megalights_temporal_io.own_set).total();
-        if (!this->family_.ensure(this->device_, this->set_layout_, io.frame.image_count, 1u, descriptors_per_set, signature, write_sets)) {
-            utility::log("megalights_temporal: descriptor sets unavailable - this frame has no stochastic lighting");
-            return;
-        }
-        VkDescriptorSet const set = this->family_.set(io.frame.image_index, 0);
-        if (set == VK_NULL_HANDLE) {
-            utility::log("megalights_temporal: no descriptor set for image {} - this frame has no stochastic lighting", io.frame.image_index);
-            return;
-        }
 
         // Layouts, all before the dispatch. The accumulation is READ across frames (the lighting stage samples
         // it after this pass) and the history only by the resolve, which is a copy's destination first.

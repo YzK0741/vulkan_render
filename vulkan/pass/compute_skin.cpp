@@ -1,7 +1,7 @@
-// The compute-skinning job's implementation: the pipeline it owns, the per-slot sets it writes once, and the
-// per-caster dispatch plus the build-ordering barrier. Moved out of `runtime::make_compute_skin_pipeline` and
-// `runtime::record_compute_skin_pass` UNCHANGED in behaviour - the same scene layout for the sets, the same
-// binding 9, the same 32-byte push block, the same 64-wide workgroup, the same one dispatch per skinned caster
+// The compute-skinning job's implementation: the pipeline it owns and the per-caster dispatch plus the
+// build-ordering barrier. Moved out of `runtime::make_compute_skin_pipeline` and
+// `runtime::record_compute_skin_pass` UNCHANGED in behaviour - the same layout-free heap path, the same
+// 32-byte push block, the same 64-wide workgroup, the same one dispatch per skinned caster
 // and the same single memory barrier at the end - so the A/B against the parent commit decides it.
 
 module;
@@ -16,7 +16,6 @@ module;
 
 module vulkan.pass.compute_skin;
 
-import vulkan.render_resource;
 import vulkan.pipelines; // build_compute_skin: the compute pipeline this job owns
 import utility;
 
@@ -28,30 +27,14 @@ namespace vulkan::pass {
 
     void compute_skin_job::release_owned() noexcept {
         this->pipeline_.reset();
-        if (this->pipeline_layout_ != VK_NULL_HANDLE && this->device_ != VK_NULL_HANDLE) {
-            vkDestroyPipelineLayout(this->device_, this->pipeline_layout_, nullptr);
-            this->pipeline_layout_ = VK_NULL_HANDLE;
-        }
-        for (vk_descriptor_set& set : this->sets_) {
-            set.release(); // the pool is the core's and outlives this job (see the header)
-        }
-        this->sets_.clear();
     }
 
     bool compute_skin_job::ready() const noexcept {
-        return this->pipeline_.has_value() && !this->sets_.empty();
+        return this->pipeline_.has_value();
     }
 
     VkPipeline compute_skin_job::pipeline() const noexcept {
         return this->pipeline_.has_value() ? this->pipeline_->get_pipeline() : VK_NULL_HANDLE;
-    }
-
-    VkPipelineLayout compute_skin_job::pipeline_layout() const noexcept {
-        return this->pipeline_layout_;
-    }
-
-    VkDescriptorSet compute_skin_job::set(uint32_t const slot) const noexcept {
-        return slot < this->sets_.size() ? this->sets_[slot].get() : VK_NULL_HANDLE;
     }
 
     std::expected<void, std::string> compute_skin_job::create(pass_context const& context) {
@@ -66,52 +49,13 @@ namespace vulkan::pass {
         if (spirv.empty()) {
             return std::unexpected(std::string("compute skin: the owner has no ") + std::string(shader_name));
         }
-        // The scene set ALONE, because the job reads exactly one thing from it: the per-joint matrices at
-        // binding 9. The vertices come through push-constant device addresses, like every other traced stage.
-        VkDescriptorSetLayout const scene_layout = context.shared_set_layout != nullptr ? context.shared_set_layout(context.owner, 0) : VK_NULL_HANDLE;
-        if (scene_layout == VK_NULL_HANDLE) {
-            return std::unexpected(std::string("compute skin: the owner has no scene set layout"));
-        }
-        auto built = pipelines::build_compute_skin(context.device, scene_layout, static_cast<uint32_t>(sizeof(compute_skin_push_constants)), spirv);
+        // The per-joint matrices the dispatch reads are a heap slot the shader names itself (see the header), so
+        // nothing about the renderer's buffers is handed in and the pipeline is all this job builds.
+        auto built = pipelines::build_compute_skin(context.device, spirv);
         if (!built) {
             return std::unexpected(std::move(built.error()));
         }
-        this->pipeline_layout_ = built->pipeline_layout;
         this->pipeline_ = std::move(built->trace);
-
-        // ONE SET PER FRAME SLOT, each allocated here from the owner's pool and written with THAT slot's
-        // per-joint matrix buffer - both asked for by declaration identity (`skin_matrices`, element = slot),
-        // which is what replaced the renderer allocating and writing them on the job's behalf. Only binding 9 is
-        // written; the animation rewrites the BUFFER every frame, not the descriptor, so the sets stay valid -
-        // which matters twice over, because a set updated while a recording command buffer holds it invalidates
-        // that buffer (the trap the MASK bake's set documents) and one set would point at another slot's
-        // matrices for half the frames.
-        if (context.frames_in_flight == 0) {
-            return std::unexpected(std::string("compute skin: the owner did not say how many frames are in flight"));
-        }
-        this->sets_.clear();
-        this->sets_.reserve(context.frames_in_flight);
-        for (uint32_t slot = 0; slot < context.frames_in_flight; ++slot) {
-            resolved_binding const matrices = context.resource != nullptr ? context.resource(context.owner, render_resource::resource_id::skin_matrices, slot) : resolved_binding{};
-            if (matrices.buffer == VK_NULL_HANDLE || context.descriptor_set == nullptr) {
-                return std::unexpected(std::string("compute skin: the per-slot skin matrix buffers or the set allocation are not available"));
-            }
-            vk_descriptor_set set = context.descriptor_set(context.owner, scene_layout);
-            if (set.get() == VK_NULL_HANDLE) {
-                return std::unexpected(std::string("compute skin: descriptor set allocation failed"));
-            }
-            VkDescriptorBufferInfo const skins_info = {.buffer = matrices.buffer, .offset = 0, .range = VK_WHOLE_SIZE};
-            VkWriteDescriptorSet write = {};
-            write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            write.dstSet = set.get();
-            write.dstBinding = 9; // SkinMatrices, the same binding shaders/pbr.vert reads
-            write.dstArrayElement = 0;
-            write.descriptorCount = 1;
-            write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-            write.pBufferInfo = &skins_info;
-            vkUpdateDescriptorSets(this->device_, 1, &write, 0, nullptr);
-            this->sets_.push_back(std::move(set));
-        }
         utility::log("SUCCESS: compute skinning pipeline created (skinned casters can be refitted per frame)");
         return {};
     }

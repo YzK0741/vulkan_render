@@ -91,7 +91,6 @@ export namespace vulkan::pass {
         }
         /// @brief the pipeline the runner binds before this pass records
         [[nodiscard]] VkPipeline pipeline() const noexcept override;
-        [[nodiscard]] VkPipelineLayout pipeline_layout() const noexcept override;
 
         /// @brief the compile-time bound on samples per pixel, which is the shader's own constant
         static constexpr uint32_t max_samples = 4;
@@ -131,7 +130,6 @@ export namespace vulkan::pass {
          */
         uint32_t frame_index_ = 0;
         VkDevice device_ = VK_NULL_HANDLE;
-        VkPipelineLayout pipeline_layout_ = VK_NULL_HANDLE;
         std::optional<vk_pipeline> pipeline_ = std::nullopt;
     };
 
