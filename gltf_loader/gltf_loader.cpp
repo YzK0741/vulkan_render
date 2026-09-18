@@ -337,15 +337,7 @@ namespace {
         // (the runtime draws it alpha-blended, back-to-front, depth-write off)
         result.factors.alpha_cutoff = material.alphaCutoff;
         result.factors.alpha_mask = material.alphaMode == fastgltf::AlphaMode::Mask;
-        // A BLEND MATERIAL WHOSE baseColorFactor IS FULLY OPAQUE IS TREATED AS MASK, and the reason is a
-        // measured asset class rather than taste: mmd2gltf marks EVERY MMD material BLEND, including the
-        // body/skin, so the renderer drew the hands in the transparent pass - they vanished from the G-buffer
-        // (no albedo, no normal, no depth), the shadow pass skipped them (it cannot shadow a blended caster)
-        // and their shading came from the forward transparent path instead of the deferred one. MASK keeps the
-        // texture's own cut-outs while writing the G-buffer and casting a shadow, which is what such an asset
-        // means. A material that really is translucent has an alpha below one in its factor and stays BLEND.
-        result.factors.alpha_blend = material.alphaMode == fastgltf::AlphaMode::Blend && material.pbrData.baseColorFactor[3] < 1.0f;
-        result.factors.alpha_mask = result.factors.alpha_mask || (material.alphaMode == fastgltf::AlphaMode::Blend && material.pbrData.baseColorFactor[3] >= 1.0f);
+        result.factors.alpha_blend = material.alphaMode == fastgltf::AlphaMode::Blend;
         result.double_sided = material.doubleSided;
         result.texture_indices = get_texture_indices(material);
         return result;
