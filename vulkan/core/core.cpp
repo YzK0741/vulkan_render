@@ -67,6 +67,45 @@ namespace vulkan {
                 this->heap_texture_array_offset = this->descriptor_heaps.reserve(scene_texture_capacity, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE);
                 this->heap_material_table_offset = this->descriptor_heaps.reserve(1u, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
                 utility::log("descriptor heap: layout reserved (texture array at {}, material table at {})", this->heap_texture_array_offset, this->heap_material_table_offset);
+
+                // ---- THE SCENE SET'S PER-SLOT BLOCK (see core.cppm): one descriptor per set-0 binding, per slot.
+                //      The strides differ by KIND (a buffer descriptor is smaller than an image one), so the offsets
+                //      are computed once here rather than derived from a binding number later, and the block is
+                //      reserved in BYTES. The scene set is per frame slot, and the mapping will select the slot with
+                //      VK_DESCRIPTOR_MAPPING_SOURCE_HEAP_WITH_PUSH_INDEX_EXT - one pushed block offset per frame
+                //      instead of one pipeline per slot.
+                VkDeviceSize const descriptor_alignment = this->descriptor_heaps.limits().resource_alignment != 0 ? this->descriptor_heaps.limits().resource_alignment : 8u;
+                auto const stride_of = [this](uint32_t const binding) -> VkDeviceSize {
+                    switch (binding) {
+                    case 15: // the visibility image's storage view
+                    case 1:  // 1 textures, 2 environment, 3 irradiance, 4 BRDF LUT, 8 shadow map, 14 visibility:
+                    case 2:  // sampled images
+                    case 3:
+                    case 4:
+                    case 8:
+                    case 14:
+                        return this->descriptor_heaps.limits().image_descriptor_size;
+                    default: // 0 camera UBO, 5 material table, 6 instance transforms, 7 light UBO, 9 skin
+                             // matrices, 10 morph, 11/12 clusters, 13 motion, 16 top level structure (a heap
+                             // descriptor for one is its device address), 17 ray instance table
+                        return this->descriptor_heaps.limits().buffer_descriptor_size;
+                    }
+                };
+                VkDeviceSize cursor = 0;
+                for (uint32_t binding = 0; binding < this->heap_scene_binding_offset.size(); ++binding) {
+                    cursor = ((cursor + descriptor_alignment - 1u) / descriptor_alignment) * descriptor_alignment;
+                    this->heap_scene_binding_offset[binding] = cursor;
+                    cursor += stride_of(binding);
+                }
+                this->heap_scene_slot_stride = ((cursor + descriptor_alignment - 1u) / descriptor_alignment) * descriptor_alignment;
+                this->heap_scene_set_base = this->descriptor_heaps.reserve_bytes(this->heap_scene_slot_stride * MAX_FRAMES_IN_FLIGHT, descriptor_alignment);
+                utility::log("descriptor heap: scene set block reserved ({} slots x {} B at {}, {} bindings placed, base+{} = {})",
+                             MAX_FRAMES_IN_FLIGHT,
+                             this->heap_scene_slot_stride,
+                             this->heap_scene_set_base,
+                             this->heap_scene_binding_offset.size(),
+                             this->heap_scene_slot_stride,
+                             this->heap_scene_set_base + this->heap_scene_slot_stride * MAX_FRAMES_IN_FLIGHT);
             } else {
                 utility::log("descriptor heap: not created, so descriptor sets stay the binding model");
             }

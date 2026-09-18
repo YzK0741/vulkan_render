@@ -269,4 +269,19 @@ namespace vulkan {
         this->next_free_ = end;
         return offset;
     }
+
+    VkDeviceSize descriptor_heap::reserve_bytes(VkDeviceSize const bytes, VkDeviceSize const alignment) noexcept {
+        if (!this->ready() || bytes == 0) {
+            return VK_WHOLE_SIZE;
+        }
+        VkDeviceSize const step = alignment != 0 ? alignment : 1u;
+        VkDeviceSize const cursor = this->next_free_ != 0 ? this->next_free_ : this->usable_offset();
+        VkDeviceSize const offset = ((cursor + step - 1u) / step) * step;
+        if (offset + bytes > this->resource_size_) {
+            utility::log("descriptor heap: a reservation of {} B does not fit the {} B resource heap", bytes, this->resource_size_);
+            return VK_WHOLE_SIZE;
+        }
+        this->next_free_ = offset + bytes;
+        return offset;
+    }
 } // namespace vulkan

@@ -449,6 +449,27 @@ namespace vulkan {
          */
         VkDeviceSize heap_texture_array_offset = VK_WHOLE_SIZE;
         VkDeviceSize heap_material_table_offset = VK_WHOLE_SIZE;
+        /**
+         * @brief THE SCENE SET'S PER-SLOT BLOCK, and the point of it is that the whole set migrates at once
+         *
+         * @note MEASURED, and it is why there is no half-way state: mapping ONE binding (the material table, the
+         *       simplest kind there is) leaves the stage reading the heap for EVERY binding it declares, so the
+         *       unmapped ones come back garbage and the frame is black with validation silent. A stage is either
+         *       fully on the heap or not on it at all - so the block below holds one descriptor per set-0 binding,
+         *       per frame slot, and the mapping covers the whole set.
+         *
+         * @note ONE DESCRIPTOR PER SET-0 BINDING, at `heap_scene_binding_offset[binding]` inside the slot's block:
+         *       the strides differ by KIND (a buffer descriptor is smaller than an image one), so the offsets are
+         *       computed once here rather than derived from the binding number later. The per-SLOT part matters
+         *       because the scene set is per frame slot (the camera and light UBOs, the visibility images, the
+         *       TLAS and the instance table are all rewritten per slot), and the mapping selects the slot with
+         *       VK_DESCRIPTOR_MAPPING_SOURCE_HEAP_WITH_PUSH_INDEX_EXT - one pushed block offset per frame, instead
+         *       of one pipeline per slot.
+         */
+        VkDeviceSize heap_scene_set_base = VK_WHOLE_SIZE;
+        VkDeviceSize heap_scene_slot_stride = 0;
+        /// @brief the offset of set-0 binding b inside a slot's block, or VK_WHOLE_SIZE when the heap has no slot for it
+        std::array<VkDeviceSize, 18> heap_scene_binding_offset = {};
 
         // ---- frame synchronization (timeline semaphores; see create_sync_objects) ----
         // vkAcquireNextImageKHR and vkQueuePresentKHR both require BINARY semaphores:

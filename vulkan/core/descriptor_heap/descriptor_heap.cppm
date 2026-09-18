@@ -184,6 +184,15 @@ namespace vulkan {
          */
         [[nodiscard]] VkDeviceSize reserve(uint32_t count, VkDescriptorType type) noexcept;
 
+        /**
+         * @brief reserve @p bytes of the resource heap and return the offset, aligned to @p alignment
+         * @return the offset, or VK_WHOLE_SIZE when the heap is not ready or the reservation does not fit
+         * @note this is the form a MIXED block needs: a scene set holds descriptors of several kinds - buffers at
+         *       one stride, images at another - so a block is laid out by hand and reserved as bytes, while the
+         *       single-kind case above stays the convenient one.
+         */
+        [[nodiscard]] VkDeviceSize reserve_bytes(VkDeviceSize bytes, VkDeviceSize alignment) noexcept;
+
         /// @brief the byte offset of descriptor @p index of the block that starts at @p block_offset
         [[nodiscard]] VkDeviceSize descriptor_offset(VkDeviceSize block_offset, uint32_t index, VkDescriptorType type) const noexcept {
             return block_offset + static_cast<VkDeviceSize>(index) * this->descriptor_stride(type);
