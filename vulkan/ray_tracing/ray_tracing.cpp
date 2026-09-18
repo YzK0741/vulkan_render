@@ -353,10 +353,26 @@ namespace vulkan::ray_tracing {
             //
             // The bake is off by default and the micromap is the mechanism that replaces it, so this must not sit
             // behind the same gate: it is created for every caster that carries an alphaMode MASK material, which
-            // is the same test the bake's rule makes ("material_record::flags bit 4"). Every micro-triangle in it
-            // is written UNKNOWN, which is the state that makes the traversal invoke the any-hit shader - so this
-            // step attaches a micromap that cannot change a decision, and the next one fills it with what the
-            // material's alpha actually says.
+            // is the same test the bake's rule makes ("material_record::flags bit 4").
+            //
+            // MEASURED, AND IT IS A NEGATIVE RESULT WORTH KEEPING: the attachment is legal and validation is
+            // silent, but on this device (NVIDIA RTX 4060, 591.59.0.0) the micromap does NOT change traversal.
+            // Two arms, same config and pose, on the AlphaBlendModeTest asset (3 MASK materials, 6 triangles):
+            //   - all-UNKNOWN 4-state (what this writes) against no micromap at all: byte-identical, which is
+            //     expected by construction - an unknown micro-triangle is the state that asks the any-hit shader;
+            //   - all-TRANSPARENT 2-state against the same, WITH THE ANY-HIT NEUTRALISED so that only the micromap
+            //     could decide: byte-identical as well (123.11 mean both ways, mean|d| = 0.0000). A transparent
+            //     micro-triangle must skip the hit entirely, so this says the micromap is not being CONSULTED
+            //     rather than that its content is wrong - the other 2-state value is opaque, and an all-opaque
+            //     micromap would have reverted the any-hit's cut, which is not what happens either.
+            // What is left to try, in the order worth trying: gl_RayFlagsForceOpacityMicromap2StateEXT (the flag
+            // the spec provides for exactly this mechanism); dropping gl_RayFlagsTerminateOnFirstHitEXT for one
+            // arm, since a traversal that may stop at the first hit can take a path that never asks about opacity;
+            // and a scene with a larger MASK footprint, because six triangles from three small quads is a weak
+            // instrument. Until one of those shows an effect, what makes MASK surfaces correct is the any-hit
+            // stage's own cut (shaders/rt_shadow.rahit, 3.0/255 from the raster shadow over the pixels it changes
+            // against 136.6/255 without it), and this micromap is architecture that is in place and verified to be
+            // LEGAL rather than a working feature. It costs one build per MASK caster at load and is inert after.
             uint32_t micromap_index = caster_level::micromap_none;
             if (caster->index_count >= 3u) {
                 uint32_t const material_index = caster->push.material_index.value;
