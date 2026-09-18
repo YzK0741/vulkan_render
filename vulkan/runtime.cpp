@@ -539,6 +539,18 @@ namespace vulkan {
             return static_cast<VkDeviceSize>(slot) * core::heap_slot_stride;
         }
 
+        /// THE HEAP'S COPY OF ONE IMAGE, built from the SAME arguments `core::make_image_view` uses (see
+        /// vulkan::make_image_view_info in vulkan.constant_init): a heap image descriptor carries a CREATE INFO
+        /// rather than a view, and the driver makes the view inside it. That is why this is called where the image
+        /// and its view are created - only that site knows the format, the view type and the range.
+        bool write_heap_grid_image(core& vk, uint32_t const slot, VkImage const image, VkFormat const format, VkImageViewType const type) {
+            if (!vk.descriptor_heaps.ready() || vk.heap_grid_offset == VK_WHOLE_SIZE || image == VK_NULL_HANDLE) {
+                return false;
+            }
+            VkImageViewCreateInfo const view_info = make_image_view_info(image, format, type, VK_IMAGE_ASPECT_COLOR_BIT, VK_REMAINING_MIP_LEVELS, VK_REMAINING_ARRAY_LAYERS);
+            return vk.descriptor_heaps.write_image(heap_slot_offset(slot), view_info, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        }
+
         void write_heap_scene_buffer(core& vk, std::vector<vk_buffer> const& buffers, uint32_t const slot_base, VkDeviceSize const size, VkDescriptorType const type) {
             if (!vk.descriptor_heaps.ready() || vk.heap_grid_offset == VK_WHOLE_SIZE) {
                 return;
@@ -914,6 +926,13 @@ namespace vulkan {
         }
         this->ibl_images.push_back(std::move(env_image));
         this->ibl_views.push_back(this->vulkan_core.make_image_view(env_detail->image, VK_FORMAT_R16G16B16A16_SFLOAT, VK_IMAGE_VIEW_TYPE_CUBE));
+        // ... and the heap's copy of it, at its own grid slot (see docs/descriptor_heap_migration.md): written
+        // HERE because this is the site that knows the format and the view type, which is what a heap image
+        // descriptor is made of. An image whose BINDING is later repointed (the furnace mode) needs a rewrite
+        // beside that change - the heap does not follow a view.
+        if (!write_heap_grid_image(this->vulkan_core, core::heap_slots::env_cube, env_detail->image, VK_FORMAT_R16G16B16A16_SFLOAT, VK_IMAGE_VIEW_TYPE_CUBE)) {
+            utility::log("descriptor heap: the environment cube did not reach grid slot {}", core::heap_slots::env_cube);
+        }
 
         // irradiance cubemap
         vulkan::image_create_info irr_info = {};
@@ -929,6 +948,9 @@ namespace vulkan {
         }
         this->ibl_images.push_back(std::move(irr_image));
         this->ibl_views.push_back(this->vulkan_core.make_image_view(irr_detail->image, VK_FORMAT_R16G16B16A16_SFLOAT, VK_IMAGE_VIEW_TYPE_CUBE));
+        if (!write_heap_grid_image(this->vulkan_core, core::heap_slots::irradiance_cube, irr_detail->image, VK_FORMAT_R16G16B16A16_SFLOAT, VK_IMAGE_VIEW_TYPE_CUBE)) {
+            utility::log("descriptor heap: the irradiance cube did not reach grid slot {}", core::heap_slots::irradiance_cube);
+        }
 
         // BRDF integration LUT
         vulkan::image_create_info lut_info = {};
@@ -944,6 +966,9 @@ namespace vulkan {
         }
         this->ibl_images.push_back(std::move(lut_image));
         this->ibl_views.push_back(this->vulkan_core.make_image_view(lut_detail->image, VK_FORMAT_R16G16_SFLOAT, VK_IMAGE_VIEW_TYPE_2D));
+        if (!write_heap_grid_image(this->vulkan_core, core::heap_slots::brdf_lut, lut_detail->image, VK_FORMAT_R16G16_SFLOAT, VK_IMAGE_VIEW_TYPE_2D)) {
+            utility::log("descriptor heap: the BRDF LUT did not reach grid slot {}", core::heap_slots::brdf_lut);
+        }
 
         this->env_sampler = this->vulkan_core.make_sampler(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, static_cast<float>(info.env_mip_count - 1));
         this->ibl_ready = true;
