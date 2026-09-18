@@ -1066,6 +1066,16 @@ namespace vulkan {
                     hdr_format,
                     VK_IMAGE_ASPECT_COLOR_BIT,
                     device);
+                // the heap's copy: a bloom level is RENDERED into and SAMPLED by the next level and the composite,
+                // so one sampled descriptor per level per image - and the grid packs the levels `heap_image_capacity`
+                // apart, which is the same stride this loop's level index multiplies (see core.cppm's heap_slots).
+                if (this->descriptor_heaps.ready() && this->heap_grid_offset != VK_WHOLE_SIZE) {
+                    uint32_t const level_base = heap_slots::bloom_l0 + level * heap_image_capacity;
+                    VkImageViewCreateInfo const heap_view = make_image_view_info(level_images[i], hdr_format, VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_ASPECT_COLOR_BIT, VK_REMAINING_MIP_LEVELS, VK_REMAINING_ARRAY_LAYERS);
+                    if (!this->descriptor_heaps.write_image(static_cast<VkDeviceSize>(level_base + static_cast<uint32_t>(i)) * heap_slot_stride, heap_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE)) {
+                        utility::log("descriptor heap: bloom level {} for image {} did not reach grid slot {}", level, i, level_base + static_cast<uint32_t>(i));
+                    }
+                }
             }
         }
 
