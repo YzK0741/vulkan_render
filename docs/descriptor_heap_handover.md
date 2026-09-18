@@ -128,28 +128,49 @@ image crosses a function boundary. Indexing one declared array for every caller 
 heap array view is a view of the *same* resource heap - the slot chooses the image, the name does not. After
 this change the run reports **no `OpFunctionCall` error at all**: every shader module validates.
 
-**2. The one thing left: a secondary command buffer must inherit the heap bind.** This is the frame being
-black:
+**2. The inherited heap bind - FIXED, and it removed every validation error.** A secondary is validated on
+its own, so the primary's bind never reached it (`VUID-vkCmdDrawIndexed-None-11308`). The two bind infos
+`record_bind` builds are now a separate `descriptor_heap::bind_infos` (one definition, two destinations),
+and all three secondaries chain a `VkCommandBufferInheritanceDescriptorHeapInfoEXT` whose `pNext` is the
+rendering info they already passed: `scene.cpp`'s segment begin, `transparent.cpp`, and the shadow
+cascade in `runtime.cpp`. The passes receive the infos through a `fill_heap_bind` callback on their frame
+structs - the heap itself stays the renderer's, exactly as with `make_environment` and `push_block`.
 
-```
-[ERROR] vkCmdDrawIndexed(): The shader [VK_SHADER_STAGE_VERTEX_BIT] uses resource descriptors, but
-VkCommandBufferInheritanceDescriptorHeapInfoEXT::pResourceHeapBindInfo is NULL
-VUID-vkCmdDrawIndexed-None-11308
-```
+**3. The post chain's source slot - FIXED.** The third push lane now crosses the line it needed to: a post
+stage passes WHICH source it reads (0 = the HDR target the chain starts from, N > 0 = bloom level N - 1)
+and `runtime::push_stage_block` turns that into the absolute slot the shader indexes, image index
+included. Before this every level read the HDR slot, so the whole bloom chain and the composite were
+sampling the wrong image.
 
-`runtime::begin_recording` binds the heaps on the primary, and a secondary is validated on its own, so
-the bind does not reach it. There are three places that build a secondary's inheritance info -
-`scene.cpp:64` (a segment), `transparent.cpp:76` and `runtime.cpp:2443` (a shadow cascade) - and all
-three call `constant_init::make_inheritance_info(p_next)`, which takes a single `pNext`. The fix is to
-chain a `VkCommandBufferInheritanceDescriptorHeapInfoEXT` (whose `pNext` is the rendering info already
-passed) carrying the same bind infos `descriptor_heap::record_bind` uses. The bind info structs live
-inside `descriptor_heap` today, so it needs a public accessor - and the passes need it handed over the
-same way `push_block` and `make_environment` already are, since a pass does not own the heap.
+**After all of that the run is CLEAN: zero `[ERROR]` lines, everything created, frames recorded,
+screenshot saved.** And the frame is still a uniform black image whose bytes are identical across
+scenarios and across every one of the fixes (`DC5F6D66428C26D8`). That is the state to pick up, and it
+is a *data* problem now, not a binding one: the draws are legal, the heaps are bound and inherited, the
+probes prove that a heap read and a heap draw both work, and no push is refused.
 
-**This is the one measurement worth carrying forward:** the black frame's hash is
-`dc5f6d66428c26d8…` - byte for byte the hash this migration recorded earlier as "a half-migrated frame
-renders nothing". It was never a vague observation. It is the scene pass drawing into secondaries that
-have no heap bound.
+Two candidates, with the experiment that separates them:
+
+* **The image index the shader is given may not be the image being captured.** Every per-swapchain-image
+  slot is computed from the pushed `heap_image_index` (`self->current_image_index` at recording time),
+  while the attachments come from `resolved_io`'s targets. If those two disagree, the passes render into
+  the real image and every sampling stage reads a *different* one - which is black for a one-frame
+  capture and would look exactly like this. **Experiment:** log `current_image_index` next to the
+  acquired image index once per frame, and dump the G-buffer albedo slot for both indices.
+* **The third lane may be one word longer than the stage declares.** `push_stage_block` always appends
+  three lanes; the stages other than the post chain declare two. Validation is silent about it, but a
+  driver that refuses the overlong range would drop the whole block, and a primitive whose model matrix
+  never arrives draws nothing - also black, also silent. **Experiment:** append two lanes for everything
+  but the post chain (which is what `push_index_block` already does) and see whether the frame changes;
+  or read `pc.model` back in a probe.
+
+The second is a two-line change to try first, and neither needs the gate: a single
+`--capture-frames 1` run whose screenshot stops being black answers it.
+
+**The measurement worth carrying forward:** the black frame's hash is `dc5f6d66428c26d8…` - byte for byte
+the hash this migration recorded earlier as "a half-migrated frame renders nothing". It is a *uniform*
+image, which is why it survived every fix that changed what the frame does: it says the captured image
+received nothing, not that the frame is subtly wrong. So do not read it as "the frame is close"; read it
+as "find out which image the capture is looking at, and whether the draws put anything in it".
 
 ## How to finish and verify
 

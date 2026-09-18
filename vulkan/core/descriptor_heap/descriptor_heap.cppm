@@ -153,6 +153,21 @@ namespace vulkan {
         void record_bind(VkCommandBuffer command_buffer) const noexcept;
 
         /**
+         * @brief write THIS heap's two bind infos into storage the caller owns
+         * @param resource filled with the resource heap's bind info (the same one record_bind binds)
+         * @param sampler filled with the sampler heap's bind info
+         *
+         * WHY IT EXISTS SEPARATELY FROM record_bind: a SECONDARY COMMAND BUFFER IS VALIDATED ON ITS OWN, so the
+         * bind the primary records never reaches it - validation refuses the draw with "The shader uses resource
+         * descriptors, but VkCommandBufferInheritanceDescriptorHeapInfoEXT::pResourceHeapBindInfo is NULL"
+         * (VUID-vkCmdDrawIndexed-None-11308), and a migrated frame whose leaves draw in secondaries therefore
+         * comes out black. `VkCommandBufferInheritanceDescriptorHeapInfoEXT` POINTS at the bind infos rather than
+         * copying them, which is why this fills caller-owned storage: it has to outlive vkBeginCommandBuffer, and
+         * a stack local in the recording function does that.
+         */
+        void bind_infos(VkBindHeapInfoEXT& resource, VkBindHeapInfoEXT& sampler) const noexcept;
+
+        /**
          * @brief send PUSH CONSTANTS to a heap pipeline: the bytes a shader reads as `layout(push_constant)`
          * @param offset the byte offset into the push-data window (0 for a pass that pushes one block)
          * @param data the block itself, whose size must fit `maxPushDataSize - offset`

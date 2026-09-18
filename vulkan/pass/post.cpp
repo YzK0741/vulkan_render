@@ -349,7 +349,10 @@ namespace vulkan::pass {
         VkRenderingInfo const rendering_info = make_rendering_info(0, {{0, 0}, io.extent}, true, &attachment, nullptr);
         vkCmdBeginRendering(io.cmd, &rendering_info);
         vkCmdSetCullMode(io.cmd, VK_CULL_MODE_NONE);
-        [[maybe_unused]] bool const pushed = io.push_block(io.cmd, pass::push_bytes(push));
+        // THIS LEVEL'S SOURCE: the third lane says which one, and the HOST turns it into a heap slot (see
+        // runtime::push_stage_block). Level 0 (the prefilter) and the composite read the HDR target, which is the
+        // lane's 0; a downsample at level N reads the level above it, which is N.
+        [[maybe_unused]] bool const pushed = io.push_block(io.cmd, pass::push_bytes(push), this->level_);
         vkCmdDraw(io.cmd, 3, 1, 0, 0);
         vkCmdEndRendering(io.cmd);
         // THE HAND-BACK, and it is the deepest level's because it has no successor to do it for it: the composite

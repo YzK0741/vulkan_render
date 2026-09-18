@@ -50,6 +50,9 @@ export namespace vulkan::pass {
         /// the draw state builder (see scene_frame::make_environment: the registry is the renderer's)
         render_environment (*make_environment)(void* owner, VkCommandBuffer command_buffer, bool gbuffer) = nullptr;
         void* owner = nullptr;
+        /// the heap bind infos this secondary must inherit (see scene_frame::fill_heap_bind: a secondary is
+        /// validated on its own, so the primary's heap bind does not reach it)
+        void (*fill_heap_bind)(void* owner, VkBindHeapInfoEXT& resource, VkBindHeapInfoEXT& sampler) = nullptr;
         /// the ONE colour attachment the secondary inherits, plus the depth format
         VkFormat color_format = VK_FORMAT_UNDEFINED;
         VkFormat depth_format = VK_FORMAT_UNDEFINED;

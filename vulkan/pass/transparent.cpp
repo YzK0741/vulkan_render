@@ -73,7 +73,21 @@ namespace vulkan::pass {
         std::array<VkFormat, 1> const color_formats = {this->frame_.color_format};
         VkCommandBufferInheritanceRenderingInfo const inheritance =
             make_inheritance_rendering_info(color_formats.data(), 1, this->frame_.depth_format, VK_SAMPLE_COUNT_1_BIT);
-        VkCommandBufferInheritanceInfo const secondary_inherit = make_inheritance_info(&inheritance);
+        // The heaps are inherited (see scene.cpp's segment begin): a secondary is validated on its own, so the
+        // primary's heap bind does not reach it.
+        VkBindHeapInfoEXT resource_bind = {};
+        VkBindHeapInfoEXT sampler_bind = {};
+        bool const inherit_heaps = this->frame_.fill_heap_bind != nullptr;
+        if (inherit_heaps) {
+            this->frame_.fill_heap_bind(this->frame_.owner, resource_bind, sampler_bind);
+        }
+        VkCommandBufferInheritanceDescriptorHeapInfoEXT const heap_inheritance = {
+            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_DESCRIPTOR_HEAP_INFO_EXT,
+            .pNext = &inheritance,
+            .pSamplerHeapBindInfo = inherit_heaps ? &sampler_bind : nullptr,
+            .pResourceHeapBindInfo = inherit_heaps ? &resource_bind : nullptr,
+        };
+        VkCommandBufferInheritanceInfo const secondary_inherit = make_inheritance_info(&heap_inheritance);
         VkCommandBufferBeginInfo const secondary_begin = make_command_buffer_begin_info(VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT, &secondary_inherit);
         bool recorded = false;
         if (vkBeginCommandBuffer(this->frame_.secondary, &secondary_begin) == VK_SUCCESS) {

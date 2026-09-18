@@ -173,26 +173,33 @@ namespace vulkan {
         return this->write_descriptors_(this->device, static_cast<uint32_t>(infos.size()), infos.data(), &host_range) == VK_SUCCESS;
     }
 
+    void descriptor_heap::bind_infos(VkBindHeapInfoEXT& resource, VkBindHeapInfoEXT& sampler) const noexcept {
+        resource = {};
+        resource.sType = VK_STRUCTURE_TYPE_BIND_HEAP_INFO_EXT;
+        resource.heapRange.address = this->resource_address_;
+        resource.heapRange.size = this->resource_size_;
+        resource.reservedRangeOffset = 0;
+        resource.reservedRangeSize = this->limits_.resource_reserved;
+
+        sampler = {};
+        sampler.sType = VK_STRUCTURE_TYPE_BIND_HEAP_INFO_EXT;
+        sampler.heapRange.address = this->sampler_address_;
+        sampler.heapRange.size = this->sampler_size_;
+        sampler.reservedRangeOffset = 0;
+        // The reserved window is the reason a combined image sampler can live in the resource heap with its
+        // sampler taken from here: minSamplerHeapReservedRangeWithEmbedded is the floor for exactly that.
+        sampler.reservedRangeSize = this->limits_.sampler_reserved_with_embedded;
+    }
+
     void descriptor_heap::record_bind(VkCommandBuffer const command_buffer) const noexcept {
         if (!this->ready() || command_buffer == VK_NULL_HANDLE) {
             return;
         }
+        // The same two bind infos a secondary inherits (see bind_infos): one definition, two destinations.
         VkBindHeapInfoEXT resource_info = {};
-        resource_info.sType = VK_STRUCTURE_TYPE_BIND_HEAP_INFO_EXT;
-        resource_info.heapRange.address = this->resource_address_;
-        resource_info.heapRange.size = this->resource_size_;
-        resource_info.reservedRangeOffset = 0;
-        resource_info.reservedRangeSize = this->limits_.resource_reserved;
-        this->bind_resource_heap(command_buffer, &resource_info);
-
         VkBindHeapInfoEXT sampler_info = {};
-        sampler_info.sType = VK_STRUCTURE_TYPE_BIND_HEAP_INFO_EXT;
-        sampler_info.heapRange.address = this->sampler_address_;
-        sampler_info.heapRange.size = this->sampler_size_;
-        sampler_info.reservedRangeOffset = 0;
-        // The reserved window is the reason a combined image sampler can live in the resource heap with its
-        // sampler taken from here: minSamplerHeapReservedRangeWithEmbedded is the floor for exactly that.
-        sampler_info.reservedRangeSize = this->limits_.sampler_reserved_with_embedded;
+        this->bind_infos(resource_info, sampler_info);
+        this->bind_resource_heap(command_buffer, &resource_info);
         this->bind_sampler_heap(command_buffer, &sampler_info);
     }
 

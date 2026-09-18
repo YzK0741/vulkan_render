@@ -1177,6 +1177,12 @@ namespace vulkan {
         /// @brief a block pushed VERBATIM, with no index lanes: the mask bake declares none (it addresses its
         ///        sources and its destination through device addresses and reads one material table)
         static bool push_raw_block(void* owner, VkCommandBuffer command_buffer, std::span<std::byte const> bytes);
+        /**
+         * @brief hand a SECONDARY the two heap bind infos it must inherit (see scene_frame::fill_heap_bind)
+         * @note the caller owns the storage, because VkCommandBufferInheritanceDescriptorHeapInfoEXT points at the
+         *       infos rather than copying them, and they have to outlive vkBeginCommandBuffer.
+         */
+        static void fill_heap_bind(void* owner, VkBindHeapInfoEXT& resource, VkBindHeapInfoEXT& sampler);
         static bool structure_skin_ready(void* owner) noexcept;
         static bool structure_record_skin(void* owner, VkCommandBuffer command_buffer, std::span<ray_tracing::caster_level const> casters);
         /** @brief point a scene set's binding 16 (the structure) and binding 17 (its instance table) at @p tlas's slot */

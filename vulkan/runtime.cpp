@@ -2440,7 +2440,19 @@ namespace vulkan {
         // viewMask 0. The inheritance struct hangs off VkCommandBufferInheritanceInfo::pNext (NOT the begin info's),
         // and a secondary buffer must always provide inheritance info.
         VkCommandBufferInheritanceRenderingInfo const inheritance = make_inheritance_rendering_info(false, nullptr, vk.depth_format, VK_SAMPLE_COUNT_1_BIT);
-        VkCommandBufferInheritanceInfo const inherit = make_inheritance_info(&inheritance);
+        // An inherited HEAP bind, for the same reason the scene pass's segments carry one (see
+        // scene_frame::fill_heap_bind): this secondary is validated on its own, and the shadow shaders read the
+        // light matrices and the shadow map straight out of the heaps.
+        VkBindHeapInfoEXT resource_bind = {};
+        VkBindHeapInfoEXT sampler_bind = {};
+        vk.descriptor_heaps.bind_infos(resource_bind, sampler_bind);
+        VkCommandBufferInheritanceDescriptorHeapInfoEXT const heap_inheritance = {
+            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_DESCRIPTOR_HEAP_INFO_EXT,
+            .pNext = &inheritance,
+            .pSamplerHeapBindInfo = &sampler_bind,
+            .pResourceHeapBindInfo = &resource_bind,
+        };
+        VkCommandBufferInheritanceInfo const inherit = make_inheritance_info(&heap_inheritance);
         VkCommandBufferBeginInfo const begin = make_command_buffer_begin_info(VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT, &inherit);
         if (vkBeginCommandBuffer(secondary, &begin) != VK_SUCCESS) {
             utility::log("runtime: shadow secondary command buffer begin failed - cascade {} skipped this frame", cascade_index);
@@ -3572,6 +3584,7 @@ namespace vulkan {
             .make_environment = &runtime::make_scene_environment,
             .run_tasks = &runtime::run_scene_tasks,
             .owner = this,
+            .fill_heap_bind = vk.descriptor_heaps.ready() ? &runtime::fill_heap_bind : nullptr,
             .color_formats = this->scene_color_formats,
             .depth_format = vk.depth_format,
             .samples = VK_SAMPLE_COUNT_1_BIT,
@@ -3645,6 +3658,7 @@ namespace vulkan {
             .secondary = *secondaries[static_cast<std::size_t>(secondary_pass::transparent)],
             .make_environment = &runtime::make_scene_environment,
             .owner = this,
+            .fill_heap_bind = vk.descriptor_heaps.ready() ? &runtime::fill_heap_bind : nullptr,
             .color_format = vulkan::hdr_format,
             .depth_format = vk.depth_format,
             .extent = vk.swap_chain_extent,
@@ -5031,7 +5045,17 @@ namespace vulkan {
         // its static_assert on the size - untouched. The optional third lane is the post chain's own source slot,
         // which only that chain's passes can name.
         runtime* const self = static_cast<runtime*>(owner);
-        return push_with_lanes(self->vulkan_core, static_cast<uint32_t>(self->vulkan_core.current_frame), self->current_image_index, command_buffer, bytes, extra_lane, 3u);
+        // THE THIRD LANE IS RESOLVED INTO A SLOT HERE, because it is the one fact that needs both sides: a post
+        // stage knows WHICH source it reads (0 = the HDR target every post chain starts from, N > 0 = bloom level
+        // N - 1, which is what a downsample at level N reads), and the renderer knows WHERE the grid puts those
+        // images. Neither half is useful to the other, which is why the lane crosses here. The shader indexes
+        // `post_source_texture[pc.post_source_slot]` with an ABSOLUTE slot, so the image index is added here too -
+        // and the per-level stride is heap_image_capacity, the same 8 slots every per-swapchain-image array is
+        // spaced by.
+        uint32_t const source_slot = extra_lane == 0u
+                                         ? core::heap_slots::post_color + self->current_image_index
+                                         : core::heap_slots::bloom_l0 + (extra_lane - 1u) * core::heap_image_capacity + self->current_image_index;
+        return push_with_lanes(self->vulkan_core, static_cast<uint32_t>(self->vulkan_core.current_frame), self->current_image_index, command_buffer, bytes, source_slot, 3u);
     }
 
     bool runtime::push_index_block(void* const owner, VkCommandBuffer const command_buffer, std::span<std::byte const> const bytes, uint32_t const extra_lane) {
@@ -5042,6 +5066,10 @@ namespace vulkan {
     bool runtime::push_raw_block(void* const owner, VkCommandBuffer const command_buffer, std::span<std::byte const> const bytes) {
         runtime* const self = static_cast<runtime*>(owner);
         return push_with_lanes(self->vulkan_core, 0u, 0u, command_buffer, bytes, 0u, 0u);
+    }
+
+    void runtime::fill_heap_bind(void* const owner, VkBindHeapInfoEXT& resource, VkBindHeapInfoEXT& sampler) {
+        static_cast<runtime*>(owner)->vulkan_core.descriptor_heaps.bind_infos(resource, sampler);
     }
 
     void runtime::structure_record_mask_bake(void* const owner, VkCommandBuffer const command_buffer, pass::mask_bake_request const& request) {

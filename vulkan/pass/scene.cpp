@@ -61,7 +61,22 @@ namespace vulkan::pass {
         // moved into the pool and may run later, on another thread.
         VkCommandBufferInheritanceRenderingInfo const inheritance =
             make_inheritance_rendering_info(this->frame_.color_formats.data(), static_cast<uint32_t>(this->frame_.color_formats.size()), this->frame_.depth_format, this->frame_.samples);
-        VkCommandBufferInheritanceInfo const inherit = make_inheritance_info(&inheritance);
+        // THE HEAPS ARE INHERITED, and a secondary needs that explicitly: it is validated on its own, so the bind
+        // the primary records (see runtime::begin_recording) does not reach it. Without this the draws below are
+        // VUID-vkCmdDrawIndexed-None-11308 and the frame comes out black.
+        VkBindHeapInfoEXT resource_bind = {};
+        VkBindHeapInfoEXT sampler_bind = {};
+        bool const inherit_heaps = this->frame_.fill_heap_bind != nullptr;
+        if (inherit_heaps) {
+            this->frame_.fill_heap_bind(this->frame_.owner, resource_bind, sampler_bind);
+        }
+        VkCommandBufferInheritanceDescriptorHeapInfoEXT const heap_inheritance = {
+            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_DESCRIPTOR_HEAP_INFO_EXT,
+            .pNext = &inheritance,
+            .pSamplerHeapBindInfo = inherit_heaps ? &sampler_bind : nullptr,
+            .pResourceHeapBindInfo = inherit_heaps ? &resource_bind : nullptr,
+        };
+        VkCommandBufferInheritanceInfo const inherit = make_inheritance_info(&heap_inheritance);
         VkCommandBufferBeginInfo const begin = make_command_buffer_begin_info(VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT, &inherit);
         return vkBeginCommandBuffer(command_buffer, &begin) == VK_SUCCESS;
     }

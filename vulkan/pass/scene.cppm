@@ -84,6 +84,18 @@ export namespace vulkan::pass {
         /// record the segments in parallel through the renderer's task pool (same reason as above)
         void (*run_tasks)(void* owner, std::span<std::function<void()>> tasks) = nullptr;
         void* owner = nullptr;
+        /**
+         * Fill the two heap bind infos a SECONDARY command buffer must INHERIT (see
+         * descriptor_heap::bind_infos and runtime::fill_heap_bind).
+         *
+         * A SECONDARY IS VALIDATED ON ITS OWN, so the heap bound on the primary does not reach it, and validation
+         * refuses the draws with "The shader uses resource descriptors, but
+         * VkCommandBufferInheritanceDescriptorHeapInfoEXT::pResourceHeapBindInfo is NULL"
+         * (VUID-vkCmdDrawIndexed-None-11308). A CALLBACK RATHER THAN THE HEAP, for the reason `make_environment`
+         * and `push_block` are: the heap is the renderer's, and a pass that held it could take over an image
+         * family.
+         */
+        void (*fill_heap_bind)(void* owner, VkBindHeapInfoEXT& resource, VkBindHeapInfoEXT& sampler) = nullptr;
         /// the attachments a SECONDARY must inherit (dynamic rendering): formats in attachment order + depth
         std::span<VkFormat const> color_formats = {};
         VkFormat depth_format = VK_FORMAT_UNDEFINED;
