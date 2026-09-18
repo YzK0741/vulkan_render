@@ -156,12 +156,9 @@ Two candidates, with the experiment that separates them:
   the real image and every sampling stage reads a *different* one - which is black for a one-frame
   capture and would look exactly like this. **Experiment:** log `current_image_index` next to the
   acquired image index once per frame, and dump the G-buffer albedo slot for both indices.
-* **The third lane may be one word longer than the stage declares.** `push_stage_block` always appends
-  three lanes; the stages other than the post chain declare two. Validation is silent about it, but a
-  driver that refuses the overlong range would drop the whole block, and a primitive whose model matrix
-  never arrives draws nothing - also black, also silent. **Experiment:** append two lanes for everything
-  but the post chain (which is what `push_index_block` already does) and see whether the frame changes;
-  or read `pc.model` back in a probe.
+* **The third lane may be one word longer than the stage declares - REFUTED, by measurement.** Appending
+  two lanes instead of three produced **six validation errors** and the same black hash. The three-lane
+  append is what validation accepts, so the push range is not the problem and the blocks do arrive.
 
 The second is a two-line change to try first, and neither needs the gate: a single
 `--capture-frames 1` run whose screenshot stops being black answers it.
