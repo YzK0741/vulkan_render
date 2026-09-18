@@ -370,6 +370,11 @@ target_link_libraries(utility
         xxhash
         mimalloc_vendored
 )
+# The file dialog (utility/platform_dialog.cpp, for the config's `model = "ask"`) is GetOpenFileNameW,
+# which lives in the common dialog library. Windows-only, like the backend itself.
+if(WIN32)
+    target_link_libraries(utility comdlg32)
+endif()
 
 target_link_libraries(app_config
         utility
@@ -624,8 +629,12 @@ endif()
 # The platform halves of utility live in plain (non-module) TUs so that <windows.h> stays out of a
 # module's global module fragment - including it there made libc++'s operator new ambiguous in every
 # TU that imported `utility`. One file per platform facility; the module side only sees their C
-# entry points (see utility/platform_sleep.cpp and utility/platform_path.cpp).
-target_sources(utility PRIVATE utility/platform_sleep.cpp utility/platform_path.cpp)
+# entry points (see utility/platform_sleep.cpp, platform_path.cpp and platform_dialog.cpp).
+target_sources(utility PRIVATE
+        utility/platform_sleep.cpp
+        utility/platform_path.cpp
+        utility/platform_dialog.cpp
+)
 # ---- GLSL -> SPIR-V: the build owns the step ----
 # Editing a .glsl without recompiling used to leave you running stale SPIR-V ("my shader change does
 # nothing"), so the compiled binaries are no longer committed and are never hand-synced: every build

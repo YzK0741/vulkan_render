@@ -7,6 +7,9 @@ extern "C" void utility_platform_sleep_ns(std::int64_t nanoseconds); // implemen
 // the running executable's directory, written into the caller's buffer; -1 = unavailable. Implemented
 // in platform_path.cpp, a plain TU for the same reason as the sleep above.
 extern "C" int utility_platform_executable_directory(char* out, std::size_t capacity);
+// file dialog, the chosen path written into the caller's buffer; 1 = picked, 0 = cancelled, -1 = no
+// backend could ask. Implemented in platform_dialog.cpp, a plain TU for the same reason as the two above.
+extern "C" int utility_platform_ask_open_file(char const* title, char const* filter_patterns, char* out, std::size_t capacity);
 #include <xxhash.h>
 
 module utility;
@@ -308,6 +311,26 @@ std::filesystem::path utility::executable_directory() {
         return {};
     }
     return std::filesystem::path(std::string(buffer.data(), static_cast<std::size_t>(written)));
+}
+
+std::optional<std::filesystem::path> utility::ask_open_file(std::string_view const title, std::string_view const filter_patterns) {
+    // The platform half fills a plain buffer and reports 1/0/-1 for picked/cancelled/unavailable (see
+    // platform_dialog.cpp, which keeps <windows.h> out of the module's global module fragment). Both
+    // failures are "no path" here, but they are not the same news: one is the user saying no and the other
+    // is the build having no way to ask, so they are logged apart.
+    std::array<char, 32768> buffer = {};
+    std::string const title_z(title);
+    std::string const patterns_z(filter_patterns);
+    int const result = utility_platform_ask_open_file(title_z.c_str(), patterns_z.c_str(), buffer.data(), buffer.size());
+    if (result > 0) {
+        return std::filesystem::path(std::string(buffer.data()));
+    }
+    if (result == 0) {
+        utility::log("file dialog: cancelled by the user");
+    } else {
+        utility::log("file dialog: no platform backend could ask (headless session, or no zenity/kdialog)");
+    }
+    return std::nullopt;
 }
 
 utility::xxh3_digest utility::xxh3_128bits(std::span<unsigned char const> const data_view) {

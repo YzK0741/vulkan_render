@@ -602,6 +602,23 @@ namespace utility {
     export std::filesystem::path executable_directory();
 
     /**
+     * @brief ask the user for an existing file with the platform's own open dialog
+     * @param title window/prompt title; a backend that builds a command line refuses a shell-hostile one
+     * @param filter_patterns `;`-separated glob patterns, e.g. "*.glb;*.gltf"; empty means all files
+     * @return the chosen path, or std::nullopt when the user cancelled OR no backend could ask
+     * @ingroup utility
+     *
+     * This exists for the config's `model = "ask"`. The model is resolved before the window is created,
+     * which rules out an in-app picker (that would need the overlay and a frame loop, and the scene is
+     * imported before either), so the question goes to the platform: GetOpenFileNameW on Windows, zenity
+     * or kdialog on Linux, osascript on macOS, and "nobody could ask" everywhere else.
+     * @note the two nullopt cases are logged apart, because they are different news: a cancelled dialog is
+     *       a decision and the caller quietly falls back to its default model, while an unavailable backend
+     *       is a limitation the user should hear about rather than guess at.
+     */
+    export std::optional<std::filesystem::path> ask_open_file(std::string_view title, std::string_view filter_patterns = {});
+
+    /**
      * @brief xxh3_128bits hash function
      * @param data_view bytes to fingerprint
      * @return 16-byte digest of @p data_view (the raw 128-bit fingerprint)

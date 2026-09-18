@@ -383,6 +383,11 @@ namespace app_config {
         return settings;
     }
 
+    bool wants_model_dialog(app_settings const& settings) {
+        // the sentinel is compared in exactly one function on purpose (see the declaration's note)
+        return settings.model == model_ask;
+    }
+
     app_settings resolve_from_argv(int const argc, char const* const* const argv, std::string const& default_config_path) {
         // 1. Collect the non-option positional arguments (--config <path> / --config=<path> is
         //    consumed as an option, not a positional), so model/grid positions stay stable

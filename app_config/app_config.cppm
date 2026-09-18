@@ -283,14 +283,35 @@ namespace app_config {
      *       built-in defaults, mirroring the pre-config argv behavior.
      */
     export struct app_settings {
-        std::string model = {}; // model file (empty = locate default via paths.model_dir)
-        int grid_side = 0;      // > 1 enables the instancing stress grid
+        // model file (empty = locate default via paths.model_dir; "ask" opens the platform's own file
+        // dialog at startup - see wants_model_dialog, which is the only thing that may interpret it)
+        std::string model = {};
+        int grid_side = 0; // > 1 enables the instancing stress grid
         path_settings paths = {};
         render_settings render = {};
         lighting_settings lighting = {};
         gui_settings gui = {};
         std::string config_file = {}; // path actually read (empty = no config file found / used)
     };
+
+    /**
+     * @ingroup app_config
+     * @brief the `model` value that means "ask me with the platform's file dialog at startup"
+     */
+    export inline constexpr std::string_view model_ask = "ask";
+
+    /**
+     * @ingroup app_config
+     * @brief whether @p settings asks for the model dialog instead of naming a file
+     * @return true when `model` is exactly the @ref model_ask sentinel
+     *
+     * A function rather than a field, so that exactly ONE place decides what the sentinel is: a caller
+     * must never write `settings.model == "ask"` itself, because the day the sentinel changes, that copy
+     * opens a file called "ask" instead of asking. The comparison is exact and case-sensitive on purpose -
+     * a model may legitimately be named ASK, and a near miss should be treated as the path it looks like
+     * rather than as an instruction.
+     */
+    export bool wants_model_dialog(app_settings const& settings);
 
     /**
      * @ingroup app_config

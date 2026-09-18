@@ -42,19 +42,33 @@ namespace chores {
             utility::panic("cannot find shaders/ directory. run the program from the project root, pass shaders_dir in config.toml, or use a cmake-build-* directory.");
         }
 
-        // 3. Pick the model file: settings.model when configured/argv-given; else the default model
-        //    under settings.paths.model_dir (or the auto-located gltf_model/).
-        if (!settings.model.empty()) {
+        // 3. Pick the model file: `model = "ask"` opens the platform's own file dialog first (the config's
+        //    way of saying "let me choose at startup"); otherwise settings.model when configured/argv-given;
+        //    else the default model under settings.paths.model_dir (or the auto-located gltf_model/).
+        if (app_config::wants_model_dialog(settings)) {
+            // A CANCELLED DIALOG IS NOT AN ERROR, and neither is a build with no way to ask: both fall
+            // through to the same default chain an empty model takes, so the app still starts with
+            // something on screen. The two are logged apart inside ask_open_file, because "I said no" and
+            // "nobody could ask me" are different answers and only one of them is the user's decision.
+            if (std::optional<std::filesystem::path> const chosen = utility::ask_open_file("choose a glTF/GLB model to render", "*.glb;*.gltf")) {
+                config.model_path = chosen->string();
+            } else {
+                utility::log("model: 'ask' produced no file, using the default model");
+            }
+        } else if (!settings.model.empty()) {
             config.model_path = settings.model;
-        } else if (!settings.paths.model_dir.empty()) {
+        }
+        if (config.model_path.empty() && !settings.paths.model_dir.empty()) {
             config.model_path = (std::filesystem::path(settings.paths.model_dir) / "DamagedHelmet.gltf").string();
             if (!std::filesystem::is_regular_file(config.model_path)) {
                 utility::panic(std::source_location::current(), "cannot find model '{}' under configured model_dir '{}'.", "DamagedHelmet.gltf", settings.paths.model_dir);
             }
-        } else if (std::optional<std::filesystem::path> const located = locate_model_file()) {
-            config.model_path = located->string();
-        } else {
-            utility::panic("cannot find gltf_model/DamagedHelmet.gltf. run the program from the project root or pass a model path as argv[1]");
+        } else if (config.model_path.empty()) {
+            if (std::optional<std::filesystem::path> const located = locate_model_file()) {
+                config.model_path = located->string();
+            } else {
+                utility::panic("cannot find gltf_model/DamagedHelmet.gltf. run the program from the project root or pass a model path as argv[1]");
+            }
         }
 
         return config;

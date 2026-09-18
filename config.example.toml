@@ -16,6 +16,10 @@
 # ---- top level: model to load ----
 # model: glTF/GLB file to load. When empty, tries DamagedHelmet.gltf under
 #   paths.model_dir, then auto-locates gltf_model/ upward from the cwd.
+#   The value "ask" (exactly, case-sensitive) opens the platform's own file dialog at startup instead:
+#   GetOpenFileNameW on Windows, zenity/kdialog on Linux, osascript on macOS. Cancelling it, or running
+#   where no dialog backend exists, is NOT an error - the app falls back to the default model above, so
+#   an unattended run still starts. A positional argv model path overrides this key, dialog and all.
 model = "gltf_model/DamagedHelmet.gltf"
 
 # grid_side: when > 1, lays the first pbr model out as a grid_side x grid_side

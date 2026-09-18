@@ -160,6 +160,29 @@ namespace {
         CHECK(settings.lighting.lut_size == 256);
     }
 
+    void test_model_ask_sentinel_is_recognized_and_never_a_path() {
+        // `model = "ask"` is the config's way of asking for the startup file dialog, and the ONLY thing that
+        // may read it that way is app_config::wants_model_dialog - every other caller has to see the string
+        // as the path it looks like. The near misses below are why that comparison is exact and
+        // case-sensitive: a build that opened a file named "ask" instead of asking is the bug this guards.
+        app_config::app_settings const asking = app_config::load_settings(VR_TEST_SOURCE_DIR "/tests/fixtures/config_ask_model.toml");
+        CHECK(asking.model == "ask"); // the parser keeps the sentinel verbatim
+        CHECK(app_config::wants_model_dialog(asking));
+
+        app_config::app_settings const named = app_config::load_settings(VR_TEST_SOURCE_DIR "/tests/fixtures/config_full.toml");
+        CHECK(!app_config::wants_model_dialog(named)); // a real path is a real path
+
+        app_config::app_settings near = {};
+        near.model = "ASK"; // a model may legitimately be called this
+        CHECK(!app_config::wants_model_dialog(near));
+        near.model = "ask.glb";
+        CHECK(!app_config::wants_model_dialog(near));
+        near.model = " ask";
+        CHECK(!app_config::wants_model_dialog(near));
+        near.model = {}; // empty means "locate the default", not "ask"
+        CHECK(!app_config::wants_model_dialog(near));
+    }
+
     void test_resolve_from_argv_merges_config_and_positional() {
         char const* argv[] = {"vk_test", "Models/tri.gltf", "3"};
         app_config::app_settings const settings =
@@ -175,6 +198,7 @@ int main() {
     test_load_settings_missing_file_keeps_defaults();
     test_lighting_sizes_are_clamped();
     test_generated_config_parses();
+    test_model_ask_sentinel_is_recognized_and_never_a_path();
     test_resolve_from_argv_merges_config_and_positional();
     return vk_test::finish("test_app_config");
 }
