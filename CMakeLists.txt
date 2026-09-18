@@ -680,8 +680,10 @@ set(VR_SHADER_SOURCES
     mask_bake.comp
     compute_skin.comp
     # the heap-native probe: not part of any frame, run once at setup in a command buffer of its own (see
-    # runtime::run_heap_probe and docs/descriptor_heap_migration.md)
+    # runtime::run_heap_probe and docs/descriptor_heap_migration.md). The .vert/.frag pair is its GRAPHICS half -
+    # a fragment stage reading the heap through a heap-flagged, layout-less pipeline.
     heap_probe.comp
+    heap_probe.vert heap_probe.frag
     shadow.vert shadow.frag post.vert post.frag fxaa.frag
 )
 set(VR_SHADER_OUTPUTS "")

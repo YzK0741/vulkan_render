@@ -307,6 +307,14 @@ namespace chores {
             std::vector<unsigned char> heap_probe_code;
             load_shader(shaders_dir, "heap_probe.comp.spv", heap_probe_code);
             runtime.register_shader("heap_probe.comp.spv", heap_probe_code);
+            // ... and its GRAPHICS half: the same read through a graphics pipeline, which is a different question
+            // (a fragment stage reading the heap, and a pipeline created with the flag and no layout).
+            std::vector<unsigned char> heap_probe_vertex_code;
+            load_shader(shaders_dir, "heap_probe.vert.spv", heap_probe_vertex_code);
+            runtime.register_shader("heap_probe.vert.spv", heap_probe_vertex_code);
+            std::vector<unsigned char> heap_probe_fragment_code;
+            load_shader(shaders_dir, "heap_probe.frag.spv", heap_probe_fragment_code);
+            runtime.register_shader("heap_probe.frag.spv", heap_probe_fragment_code);
 
             // ... and now that every pass's and every job's shaders are registered, run the create steps.
             // This is the ONE call that builds what the passes and the jobs own (their set layouts, pipeline

@@ -134,6 +134,22 @@ namespace vulkan::pipelines {
      */
     export std::expected<compute_pipeline_owned, std::string> build_heap_probe(VkDevice device, std::span<unsigned char const> compute_shader_code);
 
+    /// the probe's target: one size for the image, the viewport, the scissor and the readback, so a mismatch
+    /// between them is impossible rather than merely unlikely
+    export inline constexpr uint32_t heap_probe_extent = 4u;
+
+    /**
+     * @brief the GRAPHICS half of the heap-native probe: a heap-flagged, layout-less pipeline over two stages
+     * @param device the logical device
+     * @param colour_format the format the probe renders into (dynamic rendering, like every pass here)
+     * @param vertex_code / @param fragment_code the probe's SPIR-V (see shaders/heap_probe.vert / .frag)
+     * @return the pipeline, or the reason it could not be created
+     * @note no vertex input, no blend and a static viewport: the probe's subject is the FRAGMENT stage reading the
+     *       heap through a graphics pipeline at all, and every one of those would be a second thing that could be
+     *       wrong. The flag and the null layout are the rule the compute probe established.
+     */
+    export std::expected<vk_pipeline, std::string> build_heap_probe_graphics(VkDevice device, VkFormat colour_format, std::span<unsigned char const> vertex_code, std::span<unsigned char const> fragment_code);
+
     /// what build_resolve_pipeline() creates: the pipeline layout and the resolve pipeline. The SET layout comes IN
     /// as a parameter now - it is generated from the denoiser's own DECLARATION (see
     /// its own DECLARATION), which is what stops the bindings and the family's descriptor pool count from
@@ -718,6 +734,115 @@ namespace vulkan::pipelines {
     // tracing), the stored surface in the G-buffer set - so the caller's only variable is the push block size.
     // (Its old name, build_rt_shadow, is gone with the ray-query shadow pass: the shadow traces through a real
     // ray-tracing PIPELINE now, which is a different builder below.)
+    std::expected<vk_pipeline, std::string> build_heap_probe_graphics(VkDevice const device, VkFormat const colour_format, std::span<unsigned char const> const vertex_code, std::span<unsigned char const> const fragment_code) {
+        using fail = std::unexpected<std::string>;
+        auto const vertex_module = make_shader_module(vertex_code, device);
+        if (!vertex_module.has_value()) {
+            return fail("heap probe (graphics): vertex shader module creation failed");
+        }
+        auto const fragment_module = make_shader_module(fragment_code, device);
+        if (!fragment_module.has_value()) {
+            return fail("heap probe (graphics): fragment shader module creation failed");
+        }
+        std::array<VkPipelineShaderStageCreateInfo, 2> stages = {};
+        stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+        stages[0].module = **vertex_module;
+        stages[0].pName = "main";
+        stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+        stages[1].module = **fragment_module;
+        stages[1].pName = "main";
+
+        VkPipelineVertexInputStateCreateInfo const vertex_input = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+                                                                   .pNext = nullptr,
+                                                                   .flags = 0,
+                                                                   .vertexBindingDescriptionCount = 0,
+                                                                   .pVertexBindingDescriptions = nullptr,
+                                                                   .vertexAttributeDescriptionCount = 0,
+                                                                   .pVertexAttributeDescriptions = nullptr};
+        VkPipelineInputAssemblyStateCreateInfo const input_assembly = {.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+                                                                       .pNext = nullptr,
+                                                                       .flags = 0,
+                                                                       .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+                                                                       .primitiveRestartEnable = VK_FALSE};
+        VkViewport const viewport = {.x = 0.0f, .y = 0.0f, .width = static_cast<float>(heap_probe_extent), .height = static_cast<float>(heap_probe_extent), .minDepth = 0.0f, .maxDepth = 1.0f};
+        VkRect2D const scissor = {.offset = {0, 0}, .extent = {heap_probe_extent, heap_probe_extent}};
+        VkPipelineViewportStateCreateInfo const viewport_state = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+                                                                  .pNext = nullptr,
+                                                                  .flags = 0,
+                                                                  .viewportCount = 1,
+                                                                  .pViewports = &viewport,
+                                                                  .scissorCount = 1,
+                                                                  .pScissors = &scissor};
+        VkPipelineRasterizationStateCreateInfo const rasterization = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+                                                                      .pNext = nullptr,
+                                                                      .flags = 0,
+                                                                      .depthClampEnable = VK_FALSE,
+                                                                      .rasterizerDiscardEnable = VK_FALSE,
+                                                                      .polygonMode = VK_POLYGON_MODE_FILL,
+                                                                      .cullMode = VK_CULL_MODE_NONE,
+                                                                      .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE,
+                                                                      .depthBiasEnable = VK_FALSE,
+                                                                      .depthBiasConstantFactor = 0.0f,
+                                                                      .depthBiasClamp = 0.0f,
+                                                                      .depthBiasSlopeFactor = 0.0f,
+                                                                      .lineWidth = 1.0f};
+        VkPipelineMultisampleStateCreateInfo const multisample = {.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+                                                                  .pNext = nullptr,
+                                                                  .flags = 0,
+                                                                  .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
+                                                                  .sampleShadingEnable = VK_FALSE,
+                                                                  .minSampleShading = 1.0f,
+                                                                  .pSampleMask = nullptr,
+                                                                  .alphaToCoverageEnable = VK_FALSE,
+                                                                  .alphaToOneEnable = VK_FALSE};
+        VkPipelineColorBlendAttachmentState const blend_attachment = {.blendEnable = VK_FALSE,
+                                                                      .srcColorBlendFactor = VK_BLEND_FACTOR_ONE,
+                                                                      .dstColorBlendFactor = VK_BLEND_FACTOR_ZERO,
+                                                                      .colorBlendOp = VK_BLEND_OP_ADD,
+                                                                      .srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE,
+                                                                      .dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO,
+                                                                      .alphaBlendOp = VK_BLEND_OP_ADD,
+                                                                      .colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT};
+        VkPipelineColorBlendStateCreateInfo const colour_blend = {.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+                                                                  .pNext = nullptr,
+                                                                  .flags = 0,
+                                                                  .logicOpEnable = VK_FALSE,
+                                                                  .logicOp = VK_LOGIC_OP_COPY,
+                                                                  .attachmentCount = 1,
+                                                                  .pAttachments = &blend_attachment,
+                                                                  .blendConstants = {0.0f, 0.0f, 0.0f, 0.0f}};
+        VkPipelineRenderingCreateInfo rendering = {};
+        rendering.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+        rendering.colorAttachmentCount = 1;
+        rendering.pColorAttachmentFormats = &colour_format;
+        // The heap flag is a flags2 bit and the rendering struct hangs off it, so both travel in one pNext chain.
+        VkPipelineCreateFlags2CreateInfo flags = {};
+        flags.sType = VK_STRUCTURE_TYPE_PIPELINE_CREATE_FLAGS_2_CREATE_INFO;
+        flags.pNext = &rendering;
+        flags.flags = VK_PIPELINE_CREATE_2_DESCRIPTOR_HEAP_BIT_EXT;
+
+        VkGraphicsPipelineCreateInfo pipeline_info = {};
+        pipeline_info.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+        pipeline_info.pNext = &flags;
+        pipeline_info.stageCount = static_cast<uint32_t>(stages.size());
+        pipeline_info.pStages = stages.data();
+        pipeline_info.pVertexInputState = &vertex_input;
+        pipeline_info.pInputAssemblyState = &input_assembly;
+        pipeline_info.pViewportState = &viewport_state;
+        pipeline_info.pRasterizationState = &rasterization;
+        pipeline_info.pMultisampleState = &multisample;
+        pipeline_info.pColorBlendState = &colour_blend;
+        pipeline_info.layout = VK_NULL_HANDLE; // required by the flag, exactly as for the compute probe
+
+        VkPipeline pipeline = VK_NULL_HANDLE;
+        if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &pipeline) != VK_SUCCESS) {
+            return fail("heap probe (graphics): vkCreateGraphicsPipelines failed");
+        }
+        return vk_pipeline(pipeline, VK_NULL_HANDLE, device);
+    }
+
     std::expected<compute_pipeline_owned, std::string> build_two_set_compute(VkDevice device, VkDescriptorSetLayout const scene_layout, VkDescriptorSetLayout const gbuffer_layout, uint32_t const push_constant_size, std::span<unsigned char const> const compute_shader_code) {
         using fail = std::unexpected<std::string>;
         compute_pipeline_owned out;
