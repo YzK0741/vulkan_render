@@ -973,6 +973,16 @@ namespace vulkan {
             // the DEPTH aspect (a color view of a depth image is invalid) - same raw-view
             // convention as the other per-image targets, whose destruction is registered below
             gbuffer_depth_image_views[i] = create_image_view(gbuffer_depth_images[i], depth_format, VK_IMAGE_ASPECT_DEPTH_BIT, device);
+            // ... and the heap's copy, with the DEPTH aspect and the depth format the view above used: the heap
+            // descriptor is a create info, and a colour aspect on a depth image is a validation error rather than a
+            // wrong picture (the shadow map paid for that one already). The deferred, post and TAA stages all sample
+            // this image, which is why the grid array is named for the surface rather than for one reader.
+            if (this->descriptor_heaps.ready() && this->heap_grid_offset != VK_WHOLE_SIZE) {
+                VkImageViewCreateInfo const heap_depth_view = make_image_view_info(gbuffer_depth_images[i], depth_format, VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_ASPECT_DEPTH_BIT, VK_REMAINING_MIP_LEVELS, VK_REMAINING_ARRAY_LAYERS);
+                if (!this->descriptor_heaps.write_image(static_cast<VkDeviceSize>(heap_slots::gbuffer_depth + static_cast<uint32_t>(i)) * heap_slot_stride, heap_depth_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE)) {
+                    utility::log("descriptor heap: the gbuffer depth for image {} did not reach grid slot {}", i, heap_slots::gbuffer_depth + static_cast<uint32_t>(i));
+                }
+            }
         }
 
         // bloom targets: the 4-level chain (halved per level, min 1x1), same lifetime as the HDR
