@@ -30,10 +30,13 @@ namespace vulkan::gui {
         ImGui::CreateContext();
         ImGuiIO& io = ImGui::GetIO();
         io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-        // Persist window layout (position/size/open) to imgui_layout.ini in the working
-        // directory: dragging a panel to a comfortable size records it there, and the recorded
-        // size can be baked into the panel defaults later. DestroyContext() saves on shutdown.
-        io.IniFilename = "imgui_layout.ini";
+        // NO .ini IS EVER LOADED OR WRITTEN: the panel's layout belongs to the code (the widget list
+        // build_panel() pushes, the default panel size in gui_create_info), and a persisted file only ever
+        // fought it - a layout recorded by an older build came back and re-arranged a panel whose structure
+        // had changed, which reads as "the UI changed for no reason". Setting IniFilename to nullptr disables
+        // BOTH the automatic load at the first NewFrame() and the periodic save, so every run starts from the
+        // code's own defaults.
+        io.IniFilename = nullptr;
 
         // Display scale: on a monitor with Windows display scaling (the machine this was written on
         // reports 1.50) the framebuffer is LARGER than the logical window. Without telling ImGui, the
@@ -115,11 +118,8 @@ namespace vulkan::gui {
         if (!this->active) {
             return;
         }
-        // Save the window layout (position/size/open) before tearing the backends down, so a
-        // dragged panel size survives into imgui_layout.ini for the next run.
-        if (ImGui::GetIO().WantSaveIniSettings) {
-            ImGui::SaveIniSettingsToDisk(ImGui::GetIO().IniFilename);
-        }
+        // No .ini to save on the way out either (see init(): IniFilename is nullptr, so the load and the save
+        // are both off and the layout is the code's).
         ImGui_ImplVulkan_Shutdown();
         ImGui_ImplGlfw_Shutdown();
         ImGui::DestroyContext();
