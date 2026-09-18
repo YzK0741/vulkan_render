@@ -160,22 +160,25 @@ probes prove that a heap read and a heap draw both work, and no push is refused.
 * **The push block layout.** 8 uints + `alignas(16) glm::mat4` = 96 = `scene_push_constant_size`, and the
   shader's block is the same 8 uints then `mat4`, so the lanes land at 96/100 exactly as declared.
 * **The vertex stage, entirely.** With `gl_Position` computed by hand - no camera UBO at all - and the model
-  matrix replaced by the identity, the frame is *still* black. Geometry that cannot be mis-projected and
-  cannot be mis-placed still produces nothing.
+  matrix replaced by the identity, the frame is *still* black.
 * **The image index, and the capture path.** Painting the post chain flat red changed the captured hash
   (`90BC07F22EE6BBD2` against the black `DC5F6D66428C26D8`), and that red reached the capture *through*
   `fxaa.frag`'s read of `display_texture[heap_slots_display_color + heap_image_index]`. So the index the
-  shaders are given is the image being captured, the capture reads the image the passes write, and the post
-  chain runs.
+  shaders are given is the image being captured, the capture reads what the passes write, and the post
+  chain - which runs in the PRIMARY - renders.
+* **The G-buffer fragment stage.** Forcing a flat green albedo in `gbuffer.frag` left the G-buffer debug
+  view black, so the scene's fragments never execute at all - it is not that they write black.
+* **The inheritance chain order.** Chaining the heap info onto the rendering info instead of the other way
+  round produces two validation errors and the same black hash: the original order is the validated one.
+* **The viewport.** Dynamic viewport/scissor are set per pipeline bind (`vk_pipeline::begin_pipeline`), so
+  a secondary gets them; the scene path is not missing them.
 
-**What that leaves.** The G-buffer debug view - which bypasses lighting, TAA, FXAA and the post chain -
-is black, so the G-buffer itself is black, and it stays black with a hand-projected identity model. The
-scene pass therefore rasterises nothing *visible* into it, and the surviving suspects are the fragment
-stage's own reads (the material record `push.material_index` names - note the graphics probe reads record
-0 of that same table as white) or the draws not reaching the target at all (they are recorded into
-secondaries). The next probe is to read back the material record the primitive names, and the G-buffer
-albedo target itself, exactly as `heap_probe.frag` reads its material: the probes are the one instrument
-in this migration that has never misled.
+**What that leaves, and it is now one sentence.** The PRIMARY's passes render (the red test proves it) and
+the SECONDARIES' content does not (the flat-green test proves it). Every shader, descriptor, index, push and
+viewport question is measured away, so the fault is in how the scene segments are recorded or executed -
+`scene_pass::begin_segment`'s inheritance, or the primary's `vkCmdExecuteCommands` around them - and the
+next probe should compare a *known-good* secondary (the shadow cascade's, or the transparent pass's) with a
+segment's, rather than touching the shading path again.
 
 **The measurement worth carrying forward:** the black frame's hash is `dc5f6d66428c26d8…` - byte for byte
 the hash this migration recorded earlier as "a half-migrated frame renders nothing". It is a *uniform*
