@@ -721,6 +721,15 @@ namespace vulkan {
                 hdr_format,
                 VK_IMAGE_ASPECT_COLOR_BIT,
                 device);
+            // the heap's copy: this target is RENDERED into (an attachment is not a descriptor) and SAMPLED by the
+            // post chain, so one sampled descriptor is what the grid needs - unlike the images a compute pass
+            // writes, which need a storage descriptor beside it.
+            if (this->descriptor_heaps.ready() && this->heap_grid_offset != VK_WHOLE_SIZE) {
+                VkImageViewCreateInfo const heap_view = make_image_view_info(hdr_images[i], hdr_format, VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_ASPECT_COLOR_BIT, VK_REMAINING_MIP_LEVELS, VK_REMAINING_ARRAY_LAYERS);
+                if (!this->descriptor_heaps.write_image(static_cast<VkDeviceSize>(heap_slots::post_color + static_cast<uint32_t>(i)) * heap_slot_stride, heap_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE)) {
+                    utility::log("descriptor heap: the post HDR target for image {} did not reach grid slot {}", i, heap_slots::post_color + static_cast<uint32_t>(i));
+                }
+            }
         }
 
         // Display-referred (LDR) targets, one per swapchain image, same size and lifetime as the
@@ -746,6 +755,13 @@ namespace vulkan {
                 hdr_format,
                 VK_IMAGE_ASPECT_COLOR_BIT,
                 device);
+            // the heap's copy, at the array named for its reader: this is the display-referred target FXAA samples
+            if (this->descriptor_heaps.ready() && this->heap_grid_offset != VK_WHOLE_SIZE) {
+                VkImageViewCreateInfo const heap_view = make_image_view_info(ldr_images[i], hdr_format, VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_ASPECT_COLOR_BIT, VK_REMAINING_MIP_LEVELS, VK_REMAINING_ARRAY_LAYERS);
+                if (!this->descriptor_heaps.write_image(static_cast<VkDeviceSize>(heap_slots::display_color + static_cast<uint32_t>(i)) * heap_slot_stride, heap_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE)) {
+                    utility::log("descriptor heap: the display target for image {} did not reach grid slot {}", i, heap_slots::display_color + static_cast<uint32_t>(i));
+                }
+            }
         }
 
         // ---- G-buffer targets (see gbuffer_formats) + the pass's own 1x depth image ----
@@ -931,6 +947,14 @@ namespace vulkan {
                 ml_history_images[i],
                 ml_history_image_memories[i]);
             ml_history_image_views[i] = create_image_view(ml_history_images[i], hdr_format, VK_IMAGE_ASPECT_COLOR_BIT, device);
+            // the heap's copy: the history is written by a TRANSFER and read as the temporal resolve's input, so
+            // one sampled descriptor is all it needs (the copy is not a descriptor write)
+            if (this->descriptor_heaps.ready() && this->heap_grid_offset != VK_WHOLE_SIZE) {
+                VkImageViewCreateInfo const heap_view = make_image_view_info(ml_history_images[i], hdr_format, VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_ASPECT_COLOR_BIT, VK_REMAINING_MIP_LEVELS, VK_REMAINING_ARRAY_LAYERS);
+                if (!this->descriptor_heaps.write_image(static_cast<VkDeviceSize>(heap_slots::ml_history + static_cast<uint32_t>(i)) * heap_slot_stride, heap_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE)) {
+                    utility::log("descriptor heap: the megalights history for image {} did not reach grid slot {}", i, heap_slots::ml_history + static_cast<uint32_t>(i));
+                }
+            }
         }
 
         // The GI denoiser's resolve target, its history and the spatial filter's output were created here: three
