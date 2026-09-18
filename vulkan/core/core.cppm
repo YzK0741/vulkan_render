@@ -22,6 +22,7 @@ import utility;
 export import vstd;
 export import vulkan.core.handles;
 export import vulkan.core.vma;
+export import vulkan.core.descriptor_heap;
 export import vulkan.core.vma.handles;
 
 /**
@@ -468,6 +469,12 @@ namespace vulkan {
         void init_scene_layouts() noexcept;
 
         vma_allocator vma = {};
+        /// the device-wide descriptor heap (see vulkan/core/descriptor_heap): one resource heap and one
+        /// sampler heap, created right after the device so every pass can be written against it
+        descriptor_heap descriptor_heaps = {};
+        /// the heap's limits, copied out of the capability query (see core::init_device_and_queue) because the
+        /// heap itself is created in the constructor, after vma.init() - the capabilities are not in scope there
+        heap_limits descriptor_heap_limits = {};
 
         // ---- frame synchronization (timeline semaphores; see create_sync_objects) ----
         // vkAcquireNextImageKHR and vkQueuePresentKHR both require BINARY semaphores:

@@ -2,6 +2,16 @@ module; // the macro-using Vulkan header must not be imported into a module purv
 
 #include <vulkan/vulkan.h>
 
+// LOAD-BEARING, for the reason chores.cpp documents at length: with -fno-exceptions and the vendored std
+// module, a TU that instantiates std::vector sees TWO 'operator new(size_t, align_val_t)' declarations - module
+// std's and the textual libc++ copy baked into utility.data_block.pcm - and resolves neither. This file
+// allocates (the zero-filled heap contents, and utility::log's formatting), and it died with an access
+// violation inside the FIRST allocation it made until this include was added, with no log line, no validation
+// message and no allocation error: exactly the shape of the ambiguous-operator-new failure, one step further
+// along. Textually including glm merges the two copies. Do not remove this include to "clean up".
+#include <fstream>
+#include <glm/glm.hpp>
+
 module vulkan.core.descriptor_heap;
 
 import utility;
@@ -58,8 +68,15 @@ namespace vulkan {
         VkBufferUsageFlags const heap_usage = VK_BUFFER_USAGE_DESCRIPTOR_HEAP_BIT_EXT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
         this->resource_size_ = limits.max_resource_size < resource_working_size ? limits.max_resource_size : resource_working_size;
         this->sampler_size_ = limits.max_sampler_size < sampler_working_size ? limits.max_sampler_size : sampler_working_size;
-        this->resource_heap_ = allocator.create_buffer(nullptr, this->resource_size_, buffer_type::storage_coherent, heap_usage);
-        this->sampler_heap_ = allocator.create_buffer(nullptr, this->sampler_size_, buffer_type::storage_coherent, heap_usage);
+        // ZERO-FILLED CONTENTS, for the ordinary reason that a heap holds no descriptors until one is written.
+        // (The crash that led to this line was NOT the data pointer: it was ORDERING. A heap is two buffers from
+        // the allocator, and core creates it after vma.init() for that reason - create_buffer before the
+        // allocator exists is an access violation with no log line, no validation message and no allocation
+        // error, which is why this took so long to find. See vulkan/core/core.cpp.)
+        std::vector<unsigned char> const zeroed_resource(static_cast<std::size_t>(this->resource_size_), 0u);
+        std::vector<unsigned char> const zeroed_sampler(static_cast<std::size_t>(this->sampler_size_), 0u);
+        this->resource_heap_ = allocator.create_buffer(zeroed_resource.data(), zeroed_resource.size(), buffer_type::storage_coherent, heap_usage);
+        this->sampler_heap_ = allocator.create_buffer(zeroed_sampler.data(), zeroed_sampler.size(), buffer_type::storage_coherent, heap_usage);
         if (!this->resource_heap_.valid() || !this->sampler_heap_.valid()) {
             utility::log("descriptor heap: the heap allocations failed, so descriptor sets stay the binding model");
             this->destroy();

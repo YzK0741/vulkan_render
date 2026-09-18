@@ -4,6 +4,15 @@ module;
 #include <GLFW/glfw3.h>
 #include <vulkan/vulkan.h>
 
+// LOAD-BEARING, and it is the same trap chores.cpp documents at length: with -fno-exceptions and the vendored
+// std module, a TU that instantiates std::vector sees TWO 'operator new(size_t, align_val_t)' declarations -
+// module std's and the textual libc++ copy baked into utility.data_block.pcm - and resolves neither, which is
+// "call to operator new is ambiguous" at allocate.h. This file instantiates plenty of std::vector (the device
+// extension-name list, the descriptor pool sizes), and it began seeing both the moment vulkan.core gained an
+// import edge it did not have before: descriptor_heap, whose own module carries a textual Vulkan header in its
+// global module fragment. Textually including glm here makes clang MERGE the two copies, exactly as it does for
+// chores.cpp and vulkan/animation/controller.cpp. Do not remove this include to "clean up".
+#include <glm/glm.hpp>
 module vulkan.core;
 import vulkan.core.pipeline;
 import vulkan.core.init_utils;
@@ -44,6 +53,17 @@ namespace vulkan {
         this->register_cleanup([this] {
             vma.destroy();
         });
+
+        // ---- THE DESCRIPTOR HEAP (VK_EXT_descriptor_heap), created HERE because this is the first point at which
+        //      the allocator exists: the heap is two buffers, the extension asks for ONE heap for the
+        //      application's lifetime (binding a new one costs a pipeline flush), and every pass reads the
+        //      descriptors in it. A failure - no entry points, an allocation, an address that misses the required
+        //      alignment - logs and leaves the renderer on descriptor sets, which is what the false return means.
+        if (this->descriptor_heap_limits.max_resource_size != 0) {
+            if (!this->descriptor_heaps.init(this->vma, this->device, this->descriptor_heap_limits)) {
+                utility::log("descriptor heap: not created, so descriptor sets stay the binding model");
+            }
+        }
     };
 
     core::~core() {
@@ -308,6 +328,28 @@ namespace vulkan {
         auto const [device, graphics_family_index, present_family_index, graphics_queue, present_queue] = create_logical_device(physical_device, creation_info); // NOLINT(*-misplaced-const)
 
         this->device = device;
+
+        // ---- THE DESCRIPTOR HEAP's LIMITS, recorded here and not created here: the heap's buffers come from the
+        //      ALLOCATOR, and vma.init() runs at the END of the constructor (after every init_* step), so a
+        //      create_buffer at this point is a call on an uninitialised allocator - which is an access violation
+        //      with no log line, no validation message and no allocation error. The capabilities are in scope
+        //      here and nowhere later, so this copies the numbers and the constructor does the creation.
+        if (capabilities.descriptor_heap_available) {
+            auto const& heap = capabilities.descriptor_heap_properties;
+            this->descriptor_heap_limits = heap_limits{
+                .max_resource_size = heap.maxResourceHeapSize,
+                .max_sampler_size = heap.maxSamplerHeapSize,
+                .resource_alignment = heap.resourceHeapAlignment,
+                .sampler_alignment = heap.samplerHeapAlignment,
+                .resource_reserved = heap.minResourceHeapReservedRange,
+                .sampler_reserved_with_embedded = heap.minSamplerHeapReservedRangeWithEmbedded,
+                .buffer_descriptor_size = static_cast<uint32_t>(heap.bufferDescriptorSize),
+                .image_descriptor_size = static_cast<uint32_t>(heap.imageDescriptorSize),
+                .sampler_descriptor_size = static_cast<uint32_t>(heap.samplerDescriptorSize),
+                .max_push_data = static_cast<uint32_t>(heap.maxPushDataSize),
+                .max_embedded_samplers = heap.maxDescriptorHeapEmbeddedSamplers,
+            };
+        }
         this->graphics_queue = graphics_queue;
         this->present_queue = present_queue;
         this->graphics_family_index = graphics_family_index;
