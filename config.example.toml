@@ -169,13 +169,21 @@ furnace = false
 # into one band (raising the map to 8192 only sharpens the band; the ray resolves each merlon, verified by
 # comparing the three side by side).
 #
-# Two limits come with it, one of which each of the next two keys addresses: a MASK surface is SOLID to a
-# ray (an inline ray query has no any-hit shader to run the material's discard) unless `rt_mask_bake` is on,
-# and a skinned or morphed mesh casts its BIND POSE (the deformation happens in the vertex shader and never
-# reaches the memory a build reads) unless `rt_skin_bake` is on.
+# One limit comes with it, which the next key addresses: a skinned or morphed mesh casts its BIND POSE (the
+# deformation happens in the vertex shader and never reaches the memory a build reads) unless `rt_skin_bake`
+# is on. The other limit a traced shadow used to have - alphaMode MASK geometry being SOLID to the ray,
+# because an inline ray query has no any-hit stage to run the material's discard - is GONE: the shadow runs
+# on a ray-tracing PIPELINE whose hit group carries an any-hit shader that fetches the hit's own UV, samples
+# the material's alpha and refuses the intersection below the cutoff (shaders/rt_shadow.rahit). `rt_mask_bake`
+# below is the older, worse substitute for that stage and stays only as an A/B instrument.
 rt_shadows = false
 # rt_mask_bake: bake alphaMode MASK into the acceleration structures, so a masked surface is not SOLID to a
-# ray. A compute pass (`shaders/mask_bake.comp`) samples the material's alpha over each triangle of masked
+# ray. THIS IS THE SUBSTITUTE FOR AN ANY-HIT STAGE, and the shipped path does not need it: the ray-tracing
+# pipeline's any-hit shader answers the same question per HIT rather than per triangle (shaders/rt_shadow.rahit
+# fetches the hit's own UV, samples the material's alpha and refuses the intersection below the cutoff; measured
+# on the AlphaBlendModeTest asset it lands 3.0/255 from the raster shadow over the pixels it changes, against
+# 136.6/255 without it). What is left here is the A/B arm of that comparison.
+# A compute pass (`shaders/mask_bake.comp`) samples the material's alpha over each triangle of masked
 # geometry and COLLAPSES the triangles the mask covers nowhere - all three of their vertices written at one
 # position, which is a triangle no traversal can report a hit against. Hiding a triangle that way is only
 # safe if it owns its vertices, so the geometry is expanded to three unique vertices per triangle, made
@@ -188,8 +196,9 @@ rt_shadows = false
 # should match, i.e. triangles the raster path still shadows (through its own filtered texel sampling) were
 # removed from the structure. The rule samples every texel of a triangle's UV footprint and keeps anything
 # it cannot walk, so it does not remove geometry it has not looked at - what it cannot do is reproduce a
-# PER-PIXEL mask, which is exactly the limitation the mechanism has and the reason a better answer needs a
-# different mechanism (subdividing along the mask boundary, or the opacity-micromap extension).
+# PER-PIXEL mask, which is exactly the limitation the mechanism has and the reason the any-hit stage in
+# `shaders/rt_shadow.rahit` is the answer instead (and why the opacity-micromap extension, which does the same
+# job in hardware, is enabled for a later step).
 # A no-op without `rt_shadows`: no structures, no bake, byte-identical.
 rt_mask_bake = false
 # rt_skin_bake: re-skin the animated casters and REFIT their acceleration structures every frame, so a

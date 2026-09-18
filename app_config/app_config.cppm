@@ -167,12 +167,13 @@ namespace app_config {
         // maps, which is what makes the key safe to leave in a shared config file.
         bool rt_shadows = false;
         // Bake alphaMode MASK into the acceleration structures ([render] rt_mask_bake): a compute pass
-        // collapses the triangles a material's alpha covers nowhere, so a ray-traced shadow can agree with
-        // the raster one instead of treating the surface as solid. OFF BY DEFAULT, because the measurement
-        // says the per-triangle rule is not good enough to be on: on a MASK-heavy sample asset it removes
-        // triangles the raster path's own filtered sampling keeps, and the frame comes out 1.29 of mean
-        // brightness BRIGHTER than the raster shadow it should match. It stays as an instrument: a knob is the only
-        // way to measure the next attempt at the same mechanism.
+        // collapses the triangles a material's alpha covers nowhere. This is the SUBSTITUTE for an any-hit
+        // stage and the shipped path no longer needs it: the shadow runs on a ray-tracing pipeline whose
+        // any-hit shader cuts the mask per hit (shaders/rt_shadow.rahit). It stays because a knob is the only
+        // way to measure the arms against each other. OFF BY DEFAULT, because the measurement says the
+        // per-triangle rule is not good enough to be on: on a MASK-heavy sample asset it removes triangles
+        // the raster path's own filtered sampling keeps, and the frame comes out 1.29 of mean brightness
+        // BRIGHTER than the raster shadow it should match.
         bool rt_mask_bake = false;
         // Re-skin animated casters and refit their acceleration structures every frame ([render]
         // rt_skin_bake). The structures are built from the bind pose, so without this a ray-traced shadow of

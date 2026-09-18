@@ -320,7 +320,7 @@ namespace vulkan::ray_tracing {
             // The measurement this feature is read with: how much geometry the mask actually removed is a property
             // of the asset (a two-quad MASK plane whose pattern is in the middle keeps every triangle; a vase of
             // flowers loses 40% of them).
-            utility::log("ray-traced shadows: {} MASK casters baked into their structures ({} could not be - those stay solid to a ray)", mask_baked, skipped_mask_buffers);
+            utility::log("ray-traced shadows: {} MASK casters baked into their structures ({} could not be - those are still cut per hit by the any-hit stage)", mask_baked, skipped_mask_buffers);
         }
         if (skinned_baked != 0 || skipped_skin_buffers != 0) {
             // The skinned casters are re-skinned and REFITTED every frame (see update), so this count is also the

@@ -627,7 +627,7 @@ namespace vulkan {
             if (this->vulkan_core.ray_query_available && this->structures.ready()) {
                 VkAccelerationStructureKHR const tlas = this->structures.handle(static_cast<uint32_t>(slot));
                 if (tlas != VK_NULL_HANDLE) {
-                    this->write_rt_structure_binding(set, tlas);
+                    this->write_rt_structure_binding(set, tlas, static_cast<uint32_t>(slot));
                 }
             }
         }
@@ -638,7 +638,7 @@ namespace vulkan {
         this->write_ibl_bindings();
     }
 
-    void runtime::write_rt_structure_binding(VkDescriptorSet const set, VkAccelerationStructureKHR const tlas) {
+    void runtime::write_rt_structure_binding(VkDescriptorSet const set, VkAccelerationStructureKHR const tlas, uint32_t const frame_slot) {
         VkWriteDescriptorSetAccelerationStructureKHR structure_info = {};
         structure_info.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR;
         structure_info.accelerationStructureCount = 1;
@@ -650,7 +650,28 @@ namespace vulkan {
         write.dstBinding = 16;
         write.descriptorCount = 1;
         write.descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
-        vkUpdateDescriptorSets(this->vulkan_core.device, 1, &write, 0, nullptr);
+
+        // binding 17 rides along, because it is the same event: the instance table is rebuilt WITH the
+        // structures, and the only reader is the pass gated on the handle written above. A null buffer is not a
+        // legal descriptor without the nullDescriptor feature (the same rule binding 16's comment states), so a
+        // slot whose table does not exist yet is left unwritten rather than written with nothing.
+        VkWriteDescriptorSet writes[2] = {write, {}};
+        uint32_t write_count = 1;
+        VkDescriptorBufferInfo table_info = {};
+        VkBuffer const instance_table = this->structures.instance_table(frame_slot);
+        if (instance_table != VK_NULL_HANDLE) {
+            table_info.buffer = instance_table;
+            table_info.offset = 0;
+            table_info.range = VK_WHOLE_SIZE;
+            writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[1].dstSet = set;
+            writes[1].dstBinding = 17;
+            writes[1].descriptorCount = 1;
+            writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            writes[1].pBufferInfo = &table_info;
+            write_count = 2;
+        }
+        vkUpdateDescriptorSets(this->vulkan_core.device, write_count, writes, 0, nullptr);
     }
     void runtime::update_all_scene_sets(VkWriteDescriptorSet const* const writes, uint32_t const write_count) {
         // the sets, the per-slot dstSet substitution and the "not created yet" case belong to the
@@ -1758,7 +1779,7 @@ namespace vulkan {
                 // buffer failing.
                 VkAccelerationStructureKHR const tlas = this->structures.handle(frame_slot);
                 if (frame_slot < this->rt_binding_written.size() && this->rt_binding_written[frame_slot] != tlas) {
-                    this->write_rt_structure_binding(this->scene_sets.set(frame_slot), tlas);
+                    this->write_rt_structure_binding(this->scene_sets.set(frame_slot), tlas, frame_slot);
                     this->rt_binding_written[frame_slot] = tlas;
                 }
             }
@@ -2590,7 +2611,7 @@ namespace vulkan {
         // same step. Before the pass filter existed each had its own entry point in this class, because a pass
         // could not name a resource the renderer owns; now it asks (see publish_pass_resources).
         if (auto const created = this->mask_bake.create(build); !created) {
-            utility::log("alphaMode MASK bake unavailable: {} (masked geometry stays solid to a ray)", created.error());
+            utility::log("alphaMode MASK bake unavailable: {} (the any-hit stage still cuts masked geometry per hit)", created.error());
         }
         if (auto const created = this->compute_skin.create(build); !created) {
             utility::log("skinned shadow refit unavailable: {} (a traced shadow keeps the bind pose)", created.error());

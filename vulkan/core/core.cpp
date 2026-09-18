@@ -1122,19 +1122,21 @@ namespace vulkan {
 
     void core::init_scene_layouts() noexcept {
         // ---- 1. Fixed flat descriptor set layout (see the convention docs in core.cppm) ----
-        std::array<VkDescriptorSetLayoutBinding, 17> bindings = {};
+        std::array<VkDescriptorSetLayoutBinding, 18> bindings = {};
         bindings[0] = {.binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR | VK_SHADER_STAGE_MISS_BIT_KHR, .pImmutableSamplers = nullptr};
         // 1, 2, 4 and 5 carry COMPUTE as well as FRAGMENT: the traced GI pass needs the bindless texture
         // array, the prefiltered environment and the BRDF LUT (its IBL) and the material table (the
         // material of the surface a ray hit) once it shades a hit itself instead of sampling the screen.
-        bindings[1] = {.binding = 1, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = scene_texture_capacity, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT, .pImmutableSamplers = nullptr};
+        bindings[1] = {.binding = 1, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = scene_texture_capacity, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_ANY_HIT_BIT_KHR, .pImmutableSamplers = nullptr};
         bindings[2] = {.binding = 2, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT, .pImmutableSamplers = nullptr};
         // COMPUTE as well as FRAGMENT: the traced GI pass samples the irradiance map directly (its off-screen
         // fallback), and a binding a shader statically uses has to name that shader's stage here.
         bindings[3] = {.binding = 3, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT, .pImmutableSamplers = nullptr};
         bindings[4] = {.binding = 4, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT, .pImmutableSamplers = nullptr};
-        // material table: per-material texture indices + factors (see material_record in vulkan/scene_tree/scene_tree.cppm)
-        bindings[5] = {.binding = 5, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT, .pImmutableSamplers = nullptr};
+        // material table: per-material texture indices + factors (see material_record in vulkan/scene_tree/scene_tree.cppm).
+        // ANY_HIT as well as FRAGMENT/COMPUTE: the ray-traced shadow's any-hit stage reads the alpha cutoff and the
+        // base colour factor's alpha from here to decide whether a triangle is really there (see rt_shadow.rahit).
+        bindings[5] = {.binding = 5, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_ANY_HIT_BIT_KHR, .pImmutableSamplers = nullptr};
         // per-instance world transforms for instanced draws (mat4 per instance, read in pbr.vert)
         bindings[6] = {.binding = 6, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_VERTEX_BIT, .pImmutableSamplers = nullptr};
         // light UBO: directional sun (light-space view-proj + direction) + BRDF model ids +
@@ -1184,10 +1186,18 @@ namespace vulkan {
         uint32_t binding_count = 16;
         if (this->ray_query_available) {
             bindings[16] = {.binding = 16, .descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR | VK_SHADER_STAGE_MISS_BIT_KHR, .pImmutableSamplers = nullptr};
-            binding_count = 17;
+            // 17: THE INSTANCE TABLE the traversal's hits resolve through - one instance_record per instance
+            // (the vertex and index buffer addresses, the object -> world matrix, the vertex stride, the index
+            // type and the material index). Every structure build fills it, and until the alphaMode MASK cut
+            // NOTHING READ IT, which is why it is bound here rather than with the structures: the any-hit stage
+            // is its first consumer. It rides binding 16's condition because a device without a top level
+            // structure has no instance records either, and it carries the same mid-flight flags below for the
+            // same reason - the buffer it names is per frame slot and rebuilt with the structures.
+            bindings[17] = {.binding = 17, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_ANY_HIT_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, .pImmutableSamplers = nullptr};
+            binding_count = 18;
         }
 
-        std::array<VkDescriptorBindingFlags, 17> binding_flags = {};
+        std::array<VkDescriptorBindingFlags, 18> binding_flags = {};
         // texture array: only written entries are valid, appended before the render loop starts;
         // non-uniform indexing itself is a device feature, not a layout flag
         binding_flags[1] = VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT;
@@ -1199,6 +1209,7 @@ namespace vulkan {
         // bindingCount follows `binding_count`).
         if (this->ray_query_available) {
             binding_flags[16] = VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT | VK_DESCRIPTOR_BINDING_UPDATE_UNUSED_WHILE_PENDING_BIT;
+            binding_flags[17] = binding_flags[16]; // the instance table is per frame slot and rewritten with the structures
         }
 
         VkDescriptorSetLayoutBindingFlagsCreateInfo flags_info = {};

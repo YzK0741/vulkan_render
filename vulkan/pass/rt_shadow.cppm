@@ -58,12 +58,36 @@
  * than of a rendering change.
  *
  * The SBT was verified along the way and is correct: group 0 raygen / 1 miss / 2 hit, the instance's SBT record
- * offset 0, one geometry per BLAS, `VK_GEOMETRY_OPAQUE_BIT_KHR` set, mask 0xFF, facing-cull disabled, and
- * validation silent throughout. One real fix came out of the search without being the cause - the pass's two image
+ * offset 0, one geometry per BLAS, mask 0xFF, facing-cull disabled, and validation silent throughout. (The
+ * geometry's `VK_GEOMETRY_OPAQUE_BIT_KHR` was still set during that search and is deliberately NOT set now - see
+ * the ordering note below.) One real fix came out of the search without being the cause - the pass's two image
  * barriers were the shared constants written for a COMPUTE producer, so the GENERAL -> SHADER_READ transition
  * named COMPUTE_SHADER in `srcStageMask` while the writer had become the ray-tracing stage; the producer stage is
  * overridden in the recording now, and it changed nothing (the frame stayed byte-identical), which is itself the
  * evidence that this was never an ordering problem.
+ *
+ * THE ALPHAMODE MASK CUT IS WHAT THE PIPELINE WAS FOR, and it is measured rather than asserted. `rt_shadow.rahit`
+ * refuses an intersection whose material alpha is below the material's cutoff, fetching the hit's own UV from the
+ * geometry's vertex and index buffers through binding 17's instance record (that shader records why an attribute
+ * cannot carry it: `hitAttributeEXT` is written by an intersection shader and triangle geometry has none). Two
+ * arms on the AlphaBlendModeTest asset - 3 MASK materials, cutoffs 0.25 and 0.75, `rt_mask_bake = false`, the
+ * same config and the same capture pose, so the alpha cut is the ONLY mask handling in either:
+ *
+ *   | arm                    | whole frame | mean|d| vs the raster shadow | over the 9612 px the cut changes |
+ *   |------------------------|-------------|------------------------------|----------------------------------|
+ *   | alpha cut ON (shipped) | 124.41      | 0.7857                       | 3.0                              |
+ *   | alpha cut OFF          | 123.11      | 2.0238                       | 136.6                            |
+ *
+ * The cut changes 9,612 pixels, EVERY ONE OF THEM BRIGHTER (a shadow removed, which is what a mask cut means), and
+ * on 99.4% of them it is closer to the raster shadow than the uncut arm is - so the holes it cuts are the raster
+ * path's holes. It is inert where it must be: the DamagedHelmet scene has no MASK material at all and renders
+ * byte-identically with and without the stage.
+ *
+ * ORDERING NOTE: it needs no `gl_RayFlagsOpaqueEXT` (see `rt_shadow.rgen`) and no `VK_GEOMETRY_OPAQUE_BIT_KHR` (see
+ * vulkan/acceleration_structure/acceleration_structure.cppm): both would DECLARE that no any-hit shader may run,
+ * which is the opposite of what this stage is for. Neither flag was observed to actually suppress the stage on
+ * this device - measured, three arms - but relying on a driver over-invoking it would be relying on the wrong
+ * thing.
  *
  * WHY IT IS A PASS RATHER THAN A `record_*` FUNCTION: its position is an ordering constraint - after the G-buffer
  * pass (whose depth and normal the rays start from) and before the lighting stage (which multiplies the sun term

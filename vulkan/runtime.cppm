@@ -1075,9 +1075,10 @@ namespace vulkan {
         // The alphaMode MASK bake (see shaders/mask_bake.comp): ONE JOB OBJECT owns its pipeline layout, its
         // pipeline and the set it writes (vulkan.pass.mask_bake_job), because it is not a frame pass at all -
         // it runs once, inside the same command buffer as the bottom level builds it feeds, and its input is
-        // the caster list this renderer is walking at that moment. Absent on a device without ray queries, and
-        // then masked geometry is silently solid to a ray, which is the documented behaviour of every traced
-        // effect here.
+        // the caster list this renderer is walking at that moment. It is OFF by default and the shipped shadow
+        // does not need it: the ray-tracing pipeline's any-hit stage cuts a MASK surface per hit
+        // (shaders/rt_shadow.rahit). Absent on a device without ray queries, where masked geometry is solid to a
+        // ray - but so is everything else, since nothing traces there at all.
         //
         // The set is the reason it OWNS one instead of using a scene set: it is created from the SCENE layout
         // so its two bindings have the shapes the scene set gives them, and written ONCE - never the per-slot
@@ -1137,8 +1138,8 @@ namespace vulkan {
         static void structure_record_mask_bake(void* owner, VkCommandBuffer command_buffer, pass::mask_bake_request const& request);
         static bool structure_skin_ready(void* owner) noexcept;
         static bool structure_record_skin(void* owner, VkCommandBuffer command_buffer, std::span<ray_tracing::caster_level const> casters);
-        /** @brief point a scene set's binding 16 at @p tlas (see the null-descriptor rule it avoids) */
-        void write_rt_structure_binding(VkDescriptorSet set, VkAccelerationStructureKHR tlas);
+        /** @brief point a scene set's binding 16 (the structure) and binding 17 (its instance table) at @p tlas's slot */
+        void write_rt_structure_binding(VkDescriptorSet set, VkAccelerationStructureKHR tlas, uint32_t frame_slot);
         // scene center handed to enable_shadows. The fit falls back to center +- scene_radius when a
         // shadow caster has no world AABB of its own AND is not an instanced draw whose instance
         // matrices we can read (see instanced_world_aabb).

@@ -11,12 +11,18 @@
  *        triangle whose WHOLE AREA the mask cuts out, in an expanded copy of the vertices.
  * @ingroup shaders
  *
- * WHY THIS EXISTS. An inline ray query has no any-hit stage, so a MASK material's `discard` cannot run
- * during traversal and the surface is SOLID to every ray: the raster shadow pass cuts the material's holes
- * and a ray-traced one does not, which is a difference a user sees. The reference implementation resolves
- * the mask BEFORE the build for the same reason, and documents the alternative's cost bluntly - with no
- * any-hit shader, masked geometry is silently solid. So: evaluate the material's alpha over a triangle,
- * write the result into a vertex buffer, and build the structure from that buffer.
+ * WHY THIS EXISTS, AND WHAT REPLACED IT. An inline ray query has no any-hit stage, so a MASK material's
+ * `discard` cannot run during traversal and the surface is SOLID to every ray: the raster shadow pass cuts the
+ * material's holes and a ray-traced one does not, which is a difference a user sees. This pass is the answer
+ * that was available while the shadow ran on a ray QUERY: resolve the mask BEFORE the build - evaluate the
+ * material's alpha over a triangle, write the result into a vertex buffer, and build the structure from that
+ * buffer.
+ *
+ * THE SHADOW NO LONGER RUNS ON A RAY QUERY, so this is the OLD ARM of an A/B rather than the mechanism: a
+ * ray-tracing pipeline's any-hit shader (`shaders/rt_shadow.rahit`) decides the same question PER HIT instead
+ * of per triangle, which is strictly finer - a triangle cannot represent a per-pixel mask, and this pass was
+ * measured landing 1.29 of mean brightness away from the raster reference because of exactly that. It stays
+ * because a switch is what makes the two comparable, and it is off by default (`[render] rt_mask_bake`).
  *
  * Hiding a triangle means writing all three of its vertices at the SAME position - a degenerate triangle,
  * which traversal can never report a hit against. That is only safe when the triangle OWNS its vertices: a

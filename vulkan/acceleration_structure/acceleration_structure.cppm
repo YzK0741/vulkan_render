@@ -44,13 +44,21 @@ export import vulkan.core;
  *    the uncompacted cost first (Sponza: 17.8 MiB for 262k triangles) is what makes that decision
  *    reviewable rather than assumed. It is also a BOTTOM level concern here: the top level is rebuilt
  *    every frame, and a compacted structure is rebuilt in place rather than re-compacted.
- *  - the shading a ray-traced hit needs. The instance table IS filled (see instance_record), but no
- *    shader reads it yet: the first consumer is a shadow ray, which only asks "did anything block me".
+ *  - the shading a ray-traced hit needs. The instance table IS filled (see instance_record) and its first
+ *    consumer is now the shadow's any-hit stage, which resolves a hit back to a triangle's vertices and its
+ *    material through it (see shaders/rt_shadow.rahit).
  *
  * What a hit can and cannot be told, today, is worth stating where it is decided:
- *  - every geometry is built OPAQUE. Inline ray queries have no any-hit shader, so an alphaMode MASK
- *    surface is SOLID to a ray while the raster shadow pass cuts its holes - a known difference, not a
- *    bug, until there is a ray-tracing PIPELINE with an any-hit stage.
+ *  - NO geometry is built OPAQUE any more, and that is a reversal: the flag DECLARES "no any-hit shader may be
+ *    invoked", and while every geometry carried it - which is what this module shipped with, because an inline
+ *    ray query has no any-hit stage and a MASK surface was therefore as solid as its bounding triangles - the
+ *    ray-tracing shadow's any-hit stage could not have run at all. Whether a geometry is opaque is a property
+ *    of its MATERIAL, which this module is not told (it is handed vertex and index addresses), so the flag is
+ *    off for every geometry and the alphaMode MASK decision is taken per HIT instead
+ *    (shaders/rt_shadow.rahit, measured against the raster shadow there). Measured on an NVIDIA RTX 4060
+ *    (591.59.0.0), lifting the flag changes no image: three capture arms with the closest-hit stage silenced
+ *    all produced the correct frame, differing by 0.01 whole-frame mean - the flag changes the BUILT structure
+ *    and with it the traversal order, not the visibility.
  *  - a skinned or morphed mesh is built from its SOURCE vertex buffer, which holds the bind pose: the
  *    deformation happens in the vertex shader and never reaches this memory. Such a primitive casts
  *    its bind-pose shadow until a compute skinning pass exists to write deformed vertices somewhere a
