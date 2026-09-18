@@ -121,3 +121,6 @@ void main() {
 
     imageStore(visibility_out, pixel, vec4(payload_occluded > 0.5 ? 0.0 : 1.0));
 }
+
+
+

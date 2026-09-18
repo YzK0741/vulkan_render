@@ -22,3 +22,4 @@ layout(location = 0) rayPayloadInEXT float payload_occluded;
 void main() {
     payload_occluded = 1.0;
 }
+

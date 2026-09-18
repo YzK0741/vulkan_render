@@ -16,6 +16,26 @@
  * from is the shared G-buffer set's, and the visibility image it writes lives in the G-buffer set too - so the
  * only handle it needs is the IMAGE it transitions, and that arrives through `pass_io::barrier_images`.
  *
+ * OPEN DEFECT, MEASURED, and it is why the ray-query form is still the one this renderer ships: the pipeline
+ * path OVER-OCCLUDES. With a scenario that pins `rt_shadows = true`, the ray-tracing build's frame is darker
+ * than the ray-query build's on 5.0% of pixels and BRIGHTER on none (model-region mean 61.2 against 76.6; the
+ * ray-query frame matches the shipped cascaded reference to 0.03), so the sun term is being killed where the
+ * query left it alone. What the probes established rather than guessed:
+ *
+ *  - the push constants ARRIVE (writing `pc.params.x * 100` as the visibility gives a fully lit frame, 78.5),
+ *    `world_pos` reconstructs correctly (writing its Y as the visibility gives a smooth gradient over the
+ *    model with the expected sign), and the raygen really writes the image (a constant 1.0 lights the frame);
+ *  - it is NOT a mirrored write (comparing the frame against vertically, horizontally and 180-degree flipped
+ *    references: as-is is by far the closest);
+ *  - the hit shader's distance, written out as the visibility, shows ~20% of model pixels hit at t ~ 0 (a
+ *    self-hit) and the rest at t ~ 1-4, i.e. the traversal finds geometry the query does not.
+ *
+ * The SBT itself is fine (group 0 raygen / 1 miss / 2 hit, the instance's SBT record offset is 0, one geometry
+ * per BLAS, `VK_GEOMETRY_OPAQUE_BIT_KHR` set, mask 0xFF, facing-cull disabled), and validation is clean. So the
+ * remaining suspects are the TRAVERSAL SEMANTICS of a traced ray versus a query - and the next diagnostic is to
+ * write the hit t out as the visibility on BOTH builds and diff the two, which separates "the same hits at the
+ * same distances" from "different hits" before anything else is changed.
+ *
  * WHY IT IS A PASS RATHER THAN A `record_*` FUNCTION: its position is an ordering constraint - after the G-buffer
  * pass (whose depth and normal the rays start from) and before the lighting stage (which multiplies the sun term
  * by its result), and running it earlier would mean starting rays from the PREVIOUS frame's surface. That
