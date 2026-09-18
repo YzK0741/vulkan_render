@@ -184,4 +184,57 @@ namespace vulkan {
             return this->limits_.image_descriptor_size; // textures dominate this renderer's bindings
         }
     }
+
+    bool descriptor_heap::write_image(VkDeviceSize const offset_bytes, VkImageViewCreateInfo const& view, VkImageLayout const layout, VkDescriptorType const type) noexcept {
+        VkImageDescriptorInfoEXT image_info = {};
+        image_info.sType = VK_STRUCTURE_TYPE_IMAGE_DESCRIPTOR_INFO_EXT;
+        image_info.pNext = nullptr;
+        image_info.pView = &view; // the VIEW TO CREATE, not an existing VkImageView (see the header's note)
+        image_info.layout = layout;
+        VkResourceDescriptorInfoEXT const info = {.sType = VK_STRUCTURE_TYPE_RESOURCE_DESCRIPTOR_INFO_EXT,
+                                                  .pNext = nullptr,
+                                                  .type = type,
+                                                  .data = {.pImage = &image_info}};
+        return this->write_descriptors(offset_bytes, std::span<VkResourceDescriptorInfoEXT const>(&info, 1));
+    }
+
+    bool descriptor_heap::write_buffer(VkDeviceSize const offset_bytes, VkDeviceAddress const address, VkDeviceSize const size, VkDescriptorType const type) noexcept {
+        VkDeviceAddressRangeEXT const range = {.address = address, .size = size};
+        VkResourceDescriptorInfoEXT const info = {.sType = VK_STRUCTURE_TYPE_RESOURCE_DESCRIPTOR_INFO_EXT,
+                                                  .pNext = nullptr,
+                                                  .type = type,
+                                                  .data = {.pAddressRange = &range}};
+        return this->write_descriptors(offset_bytes, std::span<VkResourceDescriptorInfoEXT const>(&info, 1));
+    }
+
+    bool descriptor_heap::make_mapping(VkDescriptorSetAndBindingMappingEXT& mapping,
+                                       uint32_t const set,
+                                       uint32_t const first_binding,
+                                       uint32_t const binding_count,
+                                       uint32_t const heap_offset,
+                                       uint32_t const array_stride,
+                                       VkSamplerCreateInfo const* const embedded_sampler) const noexcept {
+        if (!this->ready()) {
+            return false;
+        }
+        mapping = VkDescriptorSetAndBindingMappingEXT{};
+        mapping.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_AND_BINDING_MAPPING_EXT;
+        mapping.pNext = nullptr;
+        mapping.descriptorSet = set;
+        mapping.firstBinding = first_binding;
+        mapping.bindingCount = binding_count;
+        // The resource mask says which shader resource KINDS the range covers; leaving it at 0 would mean "all",
+        // and the valid usage only forbids two mappings from overlapping in BOTH range and mask, so the precise
+        // mask is what lets a later step map a different kind over the same range without a conflict.
+        mapping.resourceMask = VK_SPIRV_RESOURCE_TYPE_SAMPLED_IMAGE_BIT_EXT | VK_SPIRV_RESOURCE_TYPE_SAMPLER_BIT_EXT;
+        mapping.source = VK_DESCRIPTOR_MAPPING_SOURCE_HEAP_WITH_CONSTANT_OFFSET_EXT;
+        mapping.sourceData.constantOffset.heapOffset = heap_offset;
+        mapping.sourceData.constantOffset.heapArrayStride = array_stride;
+        // A combined image sampler takes its sampler from here (an EMBEDDED sampler) or from the sampler heap at
+        // samplerHeapOffset; the sampler heap's reserved-with-embedded window is what makes the first form legal.
+        mapping.sourceData.constantOffset.pEmbeddedSampler = embedded_sampler;
+        mapping.sourceData.constantOffset.samplerHeapOffset = 0;
+        mapping.sourceData.constantOffset.samplerHeapArrayStride = 0;
+        return true;
+    }
 } // namespace vulkan

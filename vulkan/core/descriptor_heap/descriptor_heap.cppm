@@ -128,6 +128,44 @@ namespace vulkan {
         /// @brief the heap offset of the descriptor KIND @p type occupies, or 0 when the heap cannot hold it
         [[nodiscard]] uint32_t descriptor_stride(VkDescriptorType type) const noexcept;
 
+        /**
+         * @brief write ONE image descriptor (a sampled image or a combined image sampler) into the resource heap
+         * @param offset_bytes the byte offset in the heap, e.g. `descriptor_offset(block, index, type)`
+         * @param view the VIEW TO CREATE - and this is the model difference worth knowing: a heap image
+         *        descriptor carries a VkImageViewCreateInfo, not an existing VkImageView, because the driver
+         *        creates the view inside the descriptor. A descriptor-set path that already holds a view has to
+         *        keep the create info it made that view from in order to write the same binding here.
+         * @param layout the layout the image will be in when sampled
+         * @param type VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE or VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER
+         * @note a COMBINED_IMAGE_SAMPLER's sampler does NOT come from here: it is the mapping's business (an
+         *       embedded sampler, or a sampler-heap offset), which is what minSamplerHeapReservedRangeWithEmbedded
+         *       exists for.
+         */
+        [[nodiscard]] bool write_image(VkDeviceSize offset_bytes, VkImageViewCreateInfo const& view, VkImageLayout layout, VkDescriptorType type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) noexcept;
+        /// @brief write ONE buffer descriptor (its device address range) into the resource heap
+        [[nodiscard]] bool write_buffer(VkDeviceSize offset_bytes, VkDeviceAddress address, VkDeviceSize size, VkDescriptorType type) noexcept;
+
+        /**
+         * @brief build a mapping that makes EXISTING shaders read @p first_binding .. of @p set from the heap
+         * @param mapping the output entry
+         * @param set the descriptor set number the shaders already declare
+         * @param first_binding the first binding of the range
+         * @param binding_count how many consecutive bindings the range covers
+         * @param heap_offset the byte offset in the resource heap the range starts at
+         * @param array_stride the stride between elements of a descriptor ARRAY, or 0 for a single descriptor
+         * @param embedded_sampler the sampler a combined image sampler uses (may be null for image-only kinds)
+         * @return whether the entry was written
+         * @note this is what keeps the GLSL untouched: the mapping is chained into each
+         *       VkPipelineShaderStageCreateInfo and resolves `layout(set = set, binding = ...)` to heap memory.
+         */
+        [[nodiscard]] bool make_mapping(VkDescriptorSetAndBindingMappingEXT& mapping,
+                                        uint32_t set,
+                                        uint32_t first_binding,
+                                        uint32_t binding_count,
+                                        uint32_t heap_offset,
+                                        uint32_t array_stride,
+                                        VkSamplerCreateInfo const* embedded_sampler) const noexcept;
+
         /// @brief the byte offset of descriptor @p index of the block that starts at @p block_offset
         [[nodiscard]] VkDeviceSize descriptor_offset(VkDeviceSize block_offset, uint32_t index, VkDescriptorType type) const noexcept {
             return block_offset + static_cast<VkDeviceSize>(index) * this->descriptor_stride(type);
