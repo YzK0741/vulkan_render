@@ -121,14 +121,15 @@ fxaa, the mask bake and the compute skinning - ran the frame loop and saved
 `screenshot_20260918_133008.png`. The heap probes still pass (slot 16896 reads `255,255,255,255`,
 16897 reads `0,0,0,255`). Three things remain, all precisely identified:
 
-**1. Two shader modules are still rejected by spirv-val, with the same root cause in other helpers.**
-The failing functions are now `gbuffer_texel` (used where the stored surface is sampled) and
-`downsample_13` in `post.frag` - helpers that take a `texture2D` **parameter**, which is the same thing
-that broke `heap_texel`. They have to take the texture's heap **slot** (a `uint`) instead and index the
-array inside, so the sampler constructor is built where the fetch is written and no image crosses a
-function boundary.
+**1. The helper functions - FIXED.** `gbuffer_texel` (deferred.frag) and `downsample_13` / `sample_tent`
+(post.frag) took a `texture2D` **parameter**, the same thing that broke `heap_texel`. They take the image's
+heap **slot** (a `uint`) now and index the array inside, so the fetch is built where it is written and no
+image crosses a function boundary. Indexing one declared array for every caller is sound because every
+heap array view is a view of the *same* resource heap - the slot chooses the image, the name does not. After
+this change the run reports **no `OpFunctionCall` error at all**: every shader module validates.
 
-**2. A secondary command buffer must inherit the heap bind.** This is the frame being black:
+**2. The one thing left: a secondary command buffer must inherit the heap bind.** This is the frame being
+black:
 
 ```
 [ERROR] vkCmdDrawIndexed(): The shader [VK_SHADER_STAGE_VERTEX_BIT] uses resource descriptors, but

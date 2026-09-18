@@ -65,11 +65,16 @@ layout(descriptor_heap, descriptor_stride = heap_slot_stride) uniform texture2D 
 layout(descriptor_heap, descriptor_stride = heap_slot_stride) uniform texture2D gbuffer_normal_texture[];   // RGBA16F: normal.xyz + roughness
 layout(descriptor_heap, descriptor_stride = heap_slot_stride) uniform texture2D gbuffer_material_texture[]; // RGBA8: id lo/hi + ao + flags
 layout(descriptor_heap, descriptor_stride = heap_slot_stride) uniform texture2D gbuffer_depth_texture[];
-/// @brief one G-buffer texel, through the set's NEAREST sampler
-/// @note the two halves of a fetch are separate in a heap (image slot + sampler slot), which is why this exists
-///       rather than a plain `texture(...)` at each site
-vec4 gbuffer_texel(texture2D tex, vec2 uv) {
-    return texture(sampler2D(tex, heap_samplers[heap_sampler_gbuffer]), uv);
+/// @brief one G-buffer texel AT @p slot, through the set's NEAREST sampler
+/// @param slot the heap slot of the image, already per-image (heap_slots_gbuffer_x + heap_image_index)
+/// @note THE PARAMETER IS A SLOT, NOT A texture2D, and that is measured rather than stylistic: a texture2D
+///       parameter does not survive a function boundary - glslang emits a call whose argument type does not match
+///       the callee's parameter type, and spirv-val then rejects the module at vkCreateShaderModule
+///       (VUID-VkShaderModuleCreateInfo-pCode-08737). Indexing ONE of the declared arrays inside is sound
+///       because every heap array view is a view of the SAME resource heap: the slot chooses the image and the
+///       name does not.
+vec4 gbuffer_texel(uint slot, vec2 uv) {
+    return texture(sampler2D(gbuffer_albedo_texture[slot], heap_samplers[heap_sampler_gbuffer]), uv);
 }
 // set 0 (the shared scene set, per frame slot): the ray-traced sun visibility this stage multiplies the
 // sun term by when the light UBO says so. Written by the ray-traced shadow pass, which runs between the
@@ -181,7 +186,7 @@ float ssao_occlusion(vec2 uv, float depth, vec3 world_normal) {
         if (sample_uv.x < 0.0 || sample_uv.x > 1.0 || sample_uv.y < 0.0 || sample_uv.y > 1.0) {
             continue; // outside the frame: no depth to compare against (the screen-space limit)
         }
-        const float sample_depth = gbuffer_texel(gbuffer_depth_texture[heap_slots_gbuffer_depth + heap_image_index], sample_uv).r;
+        const float sample_depth = gbuffer_texel(heap_slots_gbuffer_depth + heap_image_index, sample_uv).r;
         if (sample_depth >= 1.0) {
             continue; // sky there: not an occluder
         }
@@ -200,7 +205,7 @@ float ssao_occlusion(vec2 uv, float depth, vec3 world_normal) {
  * @brief shade the pixel described by the G-buffer
  */
 void main() {
-    const float depth = gbuffer_texel(gbuffer_depth_texture[heap_slots_gbuffer_depth + heap_image_index], v_uv).r;
+    const float depth = gbuffer_texel(heap_slots_gbuffer_depth + heap_image_index, v_uv).r;
     if (depth >= 1.0) {
         // No geometry here: this pixel shows the sky. The far-plane point along the pixel's ray gives
         // the view direction (the reconstructed position is exact even at depth 1), and the sky
@@ -212,7 +217,7 @@ void main() {
         return;
     }
 
-    const vec4 albedo_metallic = gbuffer_texel(gbuffer_albedo_texture[heap_slots_gbuffer_albedo + heap_image_index], v_uv);
+    const vec4 albedo_metallic = gbuffer_texel(heap_slots_gbuffer_albedo + heap_image_index, v_uv);
     // "unlit" render mode: the forward path draws this geometry with the flat unlit pipeline, so the
     // deferred path must produce the same thing - the base color with no lighting, no shadows, no
     // IBL and no AO (the sky above is still the shared sky, exactly as on the forward path).
@@ -220,8 +225,8 @@ void main() {
         out_color = vec4(albedo_metallic.rgb, 1.0);
         return;
     }
-    const vec4 normal_roughness = gbuffer_texel(gbuffer_normal_texture[heap_slots_gbuffer_normal + heap_image_index], v_uv);
-    const vec4 material = gbuffer_texel(gbuffer_material_texture[heap_slots_gbuffer_material + heap_image_index], v_uv);
+    const vec4 normal_roughness = gbuffer_texel(heap_slots_gbuffer_normal + heap_image_index, v_uv);
+    const vec4 material = gbuffer_texel(heap_slots_gbuffer_material + heap_image_index, v_uv);
 
     shade_input si;
     si.pixel = ivec2(gl_FragCoord.xy); // the cluster grid's tile coordinate (see shade_input)
@@ -269,14 +274,14 @@ void main() {
         for (int y = 0; y <= 1; ++y) {
             for (int x = 0; x <= 1; ++x) {
                 const vec2 tap_uv = (clamp(base + vec2(float(x), float(y)), vec2(0.0), ml_extent - 1.0) + 0.5) * ml_texel;
-                const float tap_depth = gbuffer_texel(gbuffer_depth_texture[heap_slots_gbuffer_depth + heap_image_index], tap_uv).r;
+                const float tap_depth = gbuffer_texel(heap_slots_gbuffer_depth + heap_image_index, tap_uv).r;
                 if (tap_depth >= 1.0) {
                     continue; // a background tap holds no lighting and has no view depth to compare
                 }
                 const vec3 tap_world = world_position_from_depth(tap_uv, tap_depth);
                 const float tap_view = -length(tap_world - camera[heap_camera_slot].camera_pos.xyz);
                 const float depth_weight = exp(-abs(tap_view - view_here) / depth_tolerance);
-                const vec3 tap_normal = gbuffer_texel(gbuffer_normal_texture[heap_slots_gbuffer_normal + heap_image_index], tap_uv).xyz;
+                const vec3 tap_normal = gbuffer_texel(heap_slots_gbuffer_normal + heap_image_index, tap_uv).xyz;
                 const float normal_weight = pow(max(dot(si.normal, tap_normal), 0.0), 16.0);
                 const float weight = depth_weight * normal_weight;
                 ml_sum += texture(sampler2D(ml_lighting_texture[heap_slots_ml_resolved + heap_image_index], heap_samplers[heap_sampler_gbuffer]), tap_uv).rgb * weight;
