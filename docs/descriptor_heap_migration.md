@@ -111,6 +111,32 @@ Push *data* (`vkCmdPushDataEXT`) cannot carry these: it only feeds mapping sourc
 deliberate **wrong-index** push as the negative proof (the picture must break, which is what proves the shaders
 read the heap).
 
+## The acceleration structure, and the one thing it still needs
+
+The heap's descriptor payload has no acceleration-structure member - the whole union is
+
+```c
+typedef union VkResourceDescriptorDataEXT {
+    const VkImageDescriptorInfoEXT*        pImage;
+    const VkTexelBufferDescriptorInfoEXT*  pTexelBuffer;
+    const VkDeviceAddressRangeEXT*         pAddressRange;
+    const VkTensorViewCreateInfoARM*       pTensorARM;
+} VkResourceDescriptorDataEXT;
+```
+
+so an AS in a heap is an **address range** with `type = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR`, i.e. the
+structure's `vkGetAccelerationStructureDeviceAddressKHR` address - which is what "a heap descriptor for one is its
+device address" meant. `descriptor_heap::write_buffer(offset, address, size, type)` already builds exactly that.
+
+WHAT IS STILL OPEN IS THE SIZE, and it is open on purpose rather than guessed: the same call's size ends up in
+`VkDeviceAddressRangeEXT::size`, and this renderer already learned (VUID-VkDeviceAddressRangeKHR-address-11365,
+on the material table) that a heap range must carry a REAL size rather than `VK_WHOLE_SIZE`. An acceleration
+structure is not a buffer, so the candidates are its creation size (`VkAccelerationStructureCreateInfoKHR::size`)
+or the size the build sizes query reports - whichever the structures module already knows. The write site is
+`runtime::build_rt_structures`'s per-slot block (runtime.cpp, beside `write_rt_structure_binding`), inside the
+same `rt_binding_written[frame_slot] != tlas` guard, at grid slot `heap_slots::tlas + frame_slot` - the two slots
+the TLAS has BECAUSE it is rebuilt every frame.
+
 ## What populating the IMAGE half needs (found by trying)
 
 A heap image descriptor carries a **`VkImageViewCreateInfo`, not a view** - the driver creates the view inside
