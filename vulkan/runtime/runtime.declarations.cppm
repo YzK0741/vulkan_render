@@ -8,7 +8,7 @@
 // ============================================================================
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.79.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.80.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -2926,6 +2926,7 @@ namespace vulkan {
                 info.factors.mmd_edge_present = factors.mmd_edge_present;
                 info.factors.mmd_sphere_index = factors.mmd_sphere_index;
                 info.factors.mmd_sphere_mode = factors.mmd_sphere_mode;
+                info.factors.mmd_face = factors.mmd_face;
                 info.double_sided = drawable.get_double_sided();
             };
             // attach one leaf primitive to @p node (geometry from the next drawable of the stream);

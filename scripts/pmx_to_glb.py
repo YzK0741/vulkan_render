@@ -391,6 +391,22 @@ def write_glb(out_path: Path, model: dict) -> dict:
 
     gltf_textures = [{"source": i} for i in range(len(gltf_images))]
 
+    # The face block of an MMD model, by the name prefixes every PMX shares (see the extras below).
+    MMD_FACE_MATERIAL_PREFIXES = (
+        "顔",  # face skin
+        "颜",  # ... the simplified form
+        "口",  # mouth
+        "齿",  # teeth
+        "歯",
+        "舌",  # tongue
+        "睫",  # lashes
+        "眉",  # brows
+        "目",  # eyes (iris, highlight, shadow)
+        "白目",  # ... and the eye whites, which start with 白 rather than 目
+        "白",
+        "淚",  # tears
+    )
+
     gltf_materials = []
     for m in model["materials"]:
         d = m["diffuse"]
@@ -413,6 +429,14 @@ def write_glb(out_path: Path, model: dict) -> dict:
                 # converter already has. Written only when the sphere texture was embedded (the BMP -> PNG
                 # step can fail on a missing file), so "no key" and "no sphere" mean the same thing.
                 "mmd_sphere_texture": pmx_to_gltf_image.get(m["sphere_index"]),
+                # ... AND whether this is a FACE material. The reference shades the face with a separate
+                # shader (its `- Face` group) whose shadow is far lighter than the body's, because a face
+                # is nearly flat and its shading is painted into the texture; this is the flag that lets the
+                # engine do the same. The match is by NAME because MMD names are the only place that fact
+                # lives, and the prefixes below are the face block every PMX shares (skin, mouth, teeth,
+                # lashes, brows, eyes, eye shadow) - checked against this asset's 22 materials, where they
+                # select 0..11 and nothing else.
+                "mmd_face": any(m["name"].startswith(prefix) for prefix in MMD_FACE_MATERIAL_PREFIXES),
                 "mmd_toon_name": model["textures"][m["toon_index"]] if m["toon_flag"] == 0 and 0 <= m["toon_index"] < len(model["textures"]) else None,
             },
         }

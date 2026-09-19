@@ -244,6 +244,9 @@ void main() {
     // the reference's Matcap combine (which needs the sample and the light factor together). Zero is its
     // documented "no sample" value; the forward path (pbr.frag) passes the real one.
     si.sphere_sample = vec3(0.0);
+    // ... but the material byte DOES: flags bit7 is the face bit, and it is 7 precisely so that it fits in
+    // this byte (see material_record). Stored as k/255, so *255 recovers the byte exactly.
+    si.face_mask = (uint(round(material.a * 255.0)) & 128u) != 0u ? 1.0 : 0.0;
     // Ray-traced sun visibility, or NEGATIVE to keep the cascaded shadow maps: the flag is the light
     // UBO's, and it is only ever set when the pass ran and the device has ray queries - so a frame with
     // rt_shadows off samples nothing that does not exist and shades exactly as it did before.

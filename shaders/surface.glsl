@@ -38,14 +38,15 @@ struct Material {
     uint emissive_index;
     float alpha_cutoff;       // alphaMode MASK threshold
     float occlusion_strength; // mix(1, sampled AO, strength)
-    uint sphere_index; // MMD sphere map: the texture it was combined from (0 = none); flags bits 7-8 hold the mode
+    uint sphere_index; // MMD sphere map: the texture it was combined from (0 = none); flags bits 8-9 hold the mode
     vec4 base_color_factor;
     vec4 emissive_factor;
     float metallic_factor;
     float roughness_factor;
     float normal_scale;
     uint flags; // bit0: normal map, bit1: occlusion map, bit2: emissive map, bit3: double-sided,
-                // bit4: alphaMode MASK, bit5: alphaMode BLEND
+                // bit4: alphaMode MASK, bit5: alphaMode BLEND, bit6: MMD edge authored, bit7: face,
+                // bits 8-9: MMD sphere mode
     // MMD's own outline inputs, from the glTF material's `extras` (see docs/zzz_shading.md): xyz is the
     // line colour the model authored, w its thickness multiplier, and flags bit6 says whether the model
     // authored an edge AT ALL - required, because black is a legitimate edge colour and 0 a legitimate
@@ -111,6 +112,9 @@ struct surface_sample {
     vec3 sphere_sample; // the material's MMD sphere/matcap lookup, or 0 when it has none: the reference's
                         // Matcap combine needs the SAMPLE and the light factor together, so the lookup is
                         // kept here rather than only folded into the albedo (see reference_matcap_combine)
+    float face_mask; // 1 for the model's FACE block (see the converter's mmd_face), 0 otherwise: the
+                     // reference shades the face with a separate shader, and what that changes here is the
+                     // shadow's depth (see the band derivation in shading.glsl)
 };
 
 /**
@@ -181,7 +185,8 @@ surface_sample gather_surface(vec3 world_pos, vec3 geo_normal, vec2 uv, vec3 vie
     //      flags bits 7-8: 1 multiply, 2 add. Mode 3 (sub-texture, which samples the model's extra UV sets
     //      instead) is NOT implemented; no material in the asset this was built for uses it, and pretending
     //      otherwise would sample a texture with the wrong coordinates.
-    const uint sphere_mode = (mat.flags >> 7u) & 3u;
+    const uint sphere_mode = (mat.flags >> 8u) & 3u;
+    s.face_mask = (mat.flags & 128u) != 0u ? 1.0 : 0.0;
     s.sphere_sample = vec3(0.0);
     if (sphere_mode == 1u || sphere_mode == 2u) {
         const vec3 sphere_normal = normalize(view_normal);

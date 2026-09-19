@@ -937,7 +937,15 @@ namespace vulkan {
         // MODE rides two flag bits, so the record keeps its size and every shader copy keeps its layout.
         // 0 = none, 1 = multiply, 2 = add, 3 = sub-texture.
         record.sphere_index = info.factors.mmd_sphere_index;
-        record.flags |= static_cast<uint32_t>(std::clamp(info.factors.mmd_sphere_mode, 0, 3)) << 7u;
+        if (info.factors.mmd_face) {
+            // bit7, NOT a higher bit: the deferred path's only channel for material flags is ONE BYTE in the
+            // G-buffer (out_material.a), and the shading stage reads the face there rather than from the
+            // record - so the face bit has to live inside that byte. The sphere MODE moved up to bits 8-9 for
+            // the same reason, and it loses nothing: the stage that applies the sphere (the G-buffer pass)
+            // reads the record directly.
+            record.flags |= 128u; // bit7: this material is part of the model's FACE block
+        }
+        record.flags |= static_cast<uint32_t>(std::clamp(info.factors.mmd_sphere_mode, 0, 3)) << 8u;
 
         // ---- 3. Content-address the record, then append (or degrade on overflow) ----
         // Identical materials (same texture slots, factors and flags) share ONE table entry:

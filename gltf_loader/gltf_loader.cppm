@@ -1,6 +1,6 @@
 // ============================================================================
 // module: gltf_loader
-// module version: 0.3.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.4.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // Pure-CPU glTF / GLB loader (vendored fastgltf + stb): drawable stream, retained
 // node tree, animations / skins / morph targets / cameras / punctual lights.
@@ -247,6 +247,10 @@ namespace gltf {
         // saturation, because the diffuse textures are authored pale and the sphere map is combined on top.
         uint32_t mmd_sphere_index = 0;
         int mmd_sphere_mode = 0;
+
+        // this material is part of the model's FACE block (the PMX converter marks it by name);
+        // the reference shades the face with a separate shader whose shadow is much lighter
+        bool mmd_face = false;
     };
 
     /**
@@ -792,6 +796,9 @@ namespace gltf {
         bool mmd_edge_present = false;
         uint32_t mmd_sphere_index = 0;
         int mmd_sphere_mode = 0;
+        // this material is part of the model's FACE block (the PMX converter marks it by name); the
+        // reference shades the face with a separate shader whose shadow is much lighter
+        bool mmd_face = false;
     };
 
     /**

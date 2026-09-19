@@ -222,6 +222,42 @@ slider, and matching a reference render needs it reproducible. It is NOT the lev
 face to luma 220.9, further from the reference's 236.1 - but it is what let the question be answered with
 numbers rather than by eye.
 
+**The face does get its own path now, as far as this asset allows.** What the reference does with a shader,
+this port does with a flag and one number: the converter marks the model's face block by material NAME
+(`mmd_face`, the prefixes every PMX shares - on this asset exactly materials 0..11, the skin, mouth, teeth,
+lashes, brows, eyes and eye shadow), the flag rides `material_record` bit7, and the lighting gives those
+materials a shallower band, because the one thing the reference's face shader changes that is measurable
+here is that its shadow is far lighter than the body's.
+
+Bit **7** is not a free choice: the deferred path's only channel for material flags is ONE BYTE in the
+G-buffer (`out_material.a`), so a flag the LIGHTING stage needs has to fit inside it. The sphere mode moved
+up to bits 8-9 for the same reason and loses nothing, because the stage that applies the sphere is the
+G-buffer pass, which reads the record directly.
+
+Measured with FIXED patches inside the face (a mean over a box, so the pixel set cannot change between
+arms), and the offset swept:
+
+| band offset | cheek luma | cheek sat | forehead luma |
+| --- | --- | --- | --- |
+| 0.0 (no face path) | 159.6 | 0.024 | 217.6 |
+| 0.2 (shipped) | 161.4 | 0.029 | 218.2 |
+| 0.5 | 163.2 | 0.033 | 218.8 |
+| 0.8 | 164.2 | 0.040 | 219.2 |
+
+The direction is right and monotone, but the effect is SMALL - 4.6 luma of cheek across the whole 0..0.8
+range - so 0.2 is the arm that also puts the lit quartile nearest the reference (235.4 against 236.1) and
+leaves the hair untouched. The offset is a documented constant rather than a `[render]` key because the
+reference has no such parameter.
+
+**A second measurement trap, and it invalidated a whole sweep before the fixed patches replaced it.** A
+quartile computed through an ABSOLUTE-threshold mask is not comparable between two shading arms: `R > 150`
+admits more of a region's dark pixels as that region brightens, so the "shadow quartile" of the admitted set
+can move the OPPOSITE way to the shading. It reported the face's shadow at 157/0.402 for offset 0.5, i.e. a
+large effect in the wrong direction, when the fixed patches show a small effect in the right one. Quartiles
+through a mask are fine for comparing two renders against a fixed benchmark; they are not fine for deciding
+which way a knob moves.
+
+
 
 ## The outline, and the three things it cost
 
