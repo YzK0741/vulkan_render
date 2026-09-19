@@ -94,8 +94,8 @@ jobs:
           clang-tidy -p build --warnings-as-errors='*'
           application_configuration/application_configuration.cppm application_configuration/application_configuration.cpp
           utility/data_block.cppm utility/utility.cppm utility/utility.cpp
-         utility/thread_pool/thread_pool.cppm
-         utility/BVH/bvh.cppm
+          utility/thread_pool/thread_pool.cppm
+          utility/BVH/bvh.cppm
           utility/frame_clock/frame_clock.cppm
           utility/frame_stats/frame_stats.cppm
           utility/better_pmr/better_pmr.cppm
