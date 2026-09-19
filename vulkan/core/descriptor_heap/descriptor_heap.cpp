@@ -4,7 +4,7 @@ module; // the macro-using Vulkan header must not be imported into a module purv
 
 // LOAD-BEARING, for the reason chores.cpp documents at length: with -fno-exceptions and the vendored std
 // module, a TU that instantiates std::vector sees TWO 'operator new(size_t, align_val_t)' declarations - module
-// std's and the textual libc++ copy baked into utility.data_block.pcm - and resolves neither. This file
+// std's and the textual libc++ copy baked into utility:data_block.pcm - and resolves neither. This file
 // allocates (the zero-filled heap contents, and utility::log's formatting), and it died with an access
 // violation inside the FIRST allocation it made until this include was added, with no log line, no validation
 // message and no allocation error: exactly the shape of the ambiguous-operator-new failure, one step further

@@ -2,10 +2,10 @@ module;
 
 #include <glm/glm.hpp>
 
-export module utility.bvh;
+export module utility:bvh;
 export import vstd;
 
-export import utility.data_block;
+export import :data_block;
 
 /**
  * @file bvh.cppm
@@ -535,4 +535,147 @@ namespace utility {
             return result;
         }
     };
+} // namespace utility
+
+bool hit(glm::vec3 const& min, glm::vec3 const& max, glm::vec3 const& start, glm::vec3 const& direction, float const t_min, float const t_max) {
+    float near = t_min;
+    float far = t_max;
+
+    for (int axis = 0; axis < 3; axis++) {
+        if (glm::abs(direction[axis]) < 1e-8) {
+            if (start[axis] < min[axis] || start[axis] > max[axis]) {
+                return false;
+            }
+        } else {
+            float const inv_d = 1.0f / direction[axis];
+            float t1 = (min[axis] - start[axis]) * inv_d;
+            float t2 = (max[axis] - start[axis]) * inv_d;
+
+            if (t1 > t2) {
+                std::swap(t1, t2);
+            }
+
+            near = std::max(near, t1);
+            far = std::min(far, t2);
+
+            if (near > far) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+namespace {
+    // Standard-C++ morton interleave (no __uint128_t extension, so this compiles on every
+    // toolchain incl. MSVC): output bit 3*i carries x bit i, 3*i+1 carries y bit i, 3*i+2
+    // carries z bit i for i in [0, 32). Bits are set straight into the little-endian byte
+    // array, which is byte-identical to the former __uint128_t spread + dump. constexpr so
+    // the interleaving is verifiable at compile time (static_assert below).
+    constexpr utility::morton_code morton_encode(uint32_t const x, uint32_t const y, uint32_t const z) {
+        utility::morton_code code; // NSDMI: zero-initialized
+        auto const set_bit = [&code](uint32_t const bit) {
+            code.data[bit >> 3] =
+                static_cast<uint8_t>(code.data[bit >> 3] | static_cast<uint8_t>(1u << (bit & 7u)));
+        };
+        for (uint32_t i = 0; i < 32; ++i) {
+            if (((x >> i) & 1u) != 0) {
+                set_bit(3 * i);
+            }
+            if (((y >> i) & 1u) != 0) {
+                set_bit(3 * i + 1);
+            }
+            if (((z >> i) & 1u) != 0) {
+                set_bit(3 * i + 2);
+            }
+        }
+        return code;
+    }
+
+    // Compile-time golden vectors (little-endian bytes). The axis vectors lock the interleave
+    // offsets (x/y/z land on bits 0/1/2 of the 96-bit code); the mixed + saturated vectors
+    // were cross-checked against the previous __uint128_t implementation.
+    constexpr uint8_t axis_x[] = {1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    constexpr uint8_t axis_y[] = {2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    constexpr uint8_t axis_z[] = {4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    constexpr uint8_t mix_golden[] = {67, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    constexpr uint8_t sat_x_golden[] = {73, 146, 36, 73, 146, 36, 73, 146, 36, 73, 146, 36};
+    static_assert(morton_encode(1, 0, 0) == utility::morton_code(axis_x));
+    static_assert(morton_encode(0, 1, 0) == utility::morton_code(axis_y));
+    static_assert(morton_encode(0, 0, 1) == utility::morton_code(axis_z));
+    static_assert(morton_encode(5, 9, 0) == utility::morton_code(mix_golden));
+    static_assert(morton_encode(0xFFFFFFFFu, 0, 0) == utility::morton_code(sat_x_golden));
+} // namespace
+
+namespace utility {
+
+    std::expected<morton_code, std::string> generate_morton_from_midpoint(glm::vec3 const& midpoint, float const scale) {
+        using fail = std::unexpected<std::string>;
+
+        // NaN must be rejected explicitly: every "<" and ">" below is FALSE for a NaN operand, so a
+        // NaN midpoint passes a range check written the obvious way and then reaches
+        // static_cast<uint32_t>(NaN), which is undefined behaviour (not merely a wrong code). A
+        // non-finite or non-positive scale is just as bad - a single NaN component would poison the
+        // whole code, and the BVH's sort order derives from these codes.
+        //
+        // The build does not rely on this to survive a bad asset: bvh<T>::normalize() already maps a
+        // non-finite normalized midpoint onto the origin, so such a leaf is ordered soundly rather
+        // than rejected. This is the backstop for a direct caller that skips that sanitizing step.
+        if (!all_finite(midpoint) || !std::isfinite(scale) || scale <= 0.0f) {
+            return fail("midpoint must be finite and scale a positive finite number");
+        }
+        if (midpoint.x < 0.0 || midpoint.y < 0.0 || midpoint.z < 0.0 || midpoint.x > 1.0 || midpoint.y > 1.0 || midpoint.z > 1.0) {
+            return fail("position must be in [0, 1]");
+        }
+
+        auto const x = static_cast<uint32_t>(midpoint.x * scale);
+        auto const y = static_cast<uint32_t>(midpoint.y * scale);
+        auto const z = static_cast<uint32_t>(midpoint.z * scale);
+
+        morton_code code = morton_encode(x, y, z);
+
+        return code;
+    }
+
+    bool frustum::in(glm::vec3 const& min, glm::vec3 const& max) const {
+        return std::ranges::all_of(this->planes, [&min, &max](glm::vec4 const& p) {
+            glm::vec3 pos = {};
+            pos.x = p.x >= 0 ? max.x : min.x;
+            pos.y = p.y >= 0 ? max.y : min.y;
+            pos.z = p.z >= 0 ? max.z : min.z;
+
+            return glm::dot(pos, glm::vec3(p.x, p.y, p.z)) + p.w >= 0;
+        });
+    }
+
+    frustum make_frustum(glm::mat4 const& view_proj) {
+        // view_proj is a column-major glm mat4 meaning v_clip = view_proj * v_world, i.e. the
+        // i-th ROW of the matrix is (view_proj[0][i], view_proj[1][i], view_proj[2][i],
+        // view_proj[3][i]). Grab the four rows first, then combine them Gribb-Hartmann style:
+        //   left   = row3 + row0        right = row3 - row0
+        //   bottom = row3 + row1        top   = row3 - row1
+        //   near   = row2               far   = row3 - row2   (depth [0,1] + RH_ZO: see below)
+        // Planes face inward: point p is inside when dot(xyz, p) + w >= 0 (frustum::in test).
+        glm::vec4 const row0(view_proj[0][0], view_proj[1][0], view_proj[2][0], view_proj[3][0]);
+        glm::vec4 const row1(view_proj[0][1], view_proj[1][1], view_proj[2][1], view_proj[3][1]);
+        glm::vec4 const row2(view_proj[0][2], view_proj[1][2], view_proj[2][2], view_proj[3][2]);
+        glm::vec4 const row3(view_proj[0][3], view_proj[1][3], view_proj[2][3], view_proj[3][3]);
+
+        frustum result = {};
+        auto const inward = [](glm::vec4 const& plane) {
+            // normalize the (a,b,c) part so w becomes a real signed distance; keep orientation
+            float const length = glm::length(glm::vec3(plane));
+            return length > 1e-8f ? plane / length : plane;
+        };
+        result.planes[0] = inward(row3 + row0); // left
+        result.planes[1] = inward(row3 - row0); // right
+        result.planes[2] = inward(row3 + row1); // bottom
+        result.planes[3] = inward(row3 - row1); // top
+        // The renderer uses perspectiveRH_ZO with a y-flip; clip z in [0,1]. For row-major clip
+        // coords with M*v convention, near plane = row2 (z_w = 0 -> row2 dot v = 0) already has
+        // the correct inward orientation for RH_ZO, and far = row3 - row2.
+        result.planes[4] = inward(row2);        // near
+        result.planes[5] = inward(row3 - row2); // far
+        return result;
+    }
 } // namespace utility

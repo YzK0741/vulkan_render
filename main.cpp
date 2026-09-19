@@ -4,14 +4,14 @@ import vstd;
 import application_configuration;
 import chores; // demo bootstrap helpers (shader loading / dir locating / pipelines)
 import gltf_loader;
-import utility;          // re-exports utility.frame_clock / frame_stats / bvh / better_pmr / thread_pool / data_block
+import utility;          // re-exports utility:frame_clock / frame_stats / bvh / better_pmr / thread_pool / data_block
 import vulkan.animation; // animation::controller: glTF playback / skinning / morphs on the runtime tree
 import vulkan.math;
 import vulkan.scene_tree; // scene storage + GPU primitives (was vulkan.model)
 import vulkan.runtime;
 import vulkan.render_start_demo; // the example's pass wiring: this app's chain, from outside the renderer
 
-// Route std::pmr allocations through mimalloc (utility.better_pmr) before main(): this
+// Route std::pmr allocations through mimalloc (utility:better_pmr) before main(): this
 // file-scope reference's dynamic initialization runs at startup, so every runtime/scene
 // object built below already allocates its std::pmr vectors from mimalloc. Idempotent —
 // other TUs (vulkan/runtime.cpp) keep their own copy of the same singleton.
@@ -379,7 +379,7 @@ int main(int argc, char** argv) {
     // Dear ImGui debug overlay on by default ([gui] show)
     bool const use_gui = settings.gui.show;
 
-    // FPS statistics (utility.frame_stats): a rolling one-second window of frame gaps.
+    // FPS statistics (utility:frame_stats): a rolling one-second window of frame gaps.
     // tick() once per presented frame, on_skipped() on minimized/recreate iterations, and
     // the once-per-second report (log + the overlay's smoothed value) keys off window_rolled().
     utility::frame_stats frame_stats;

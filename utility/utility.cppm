@@ -19,12 +19,12 @@ export import vstd;
 // (frame_clock / frame_stats are the frame-loop time + fps helpers; data_block /
 // bvh / better_pmr / thread_pool cover the rest). Submodules stay individually
 // importable for callers that want only one of them.
-export import utility.data_block;
-export import utility.bvh;
-export import utility.better_pmr;
-export import utility.frame_clock;
-export import utility.frame_stats;
-export import utility.thread_pool;
+export import :data_block;
+export import :bvh;
+export import :better_pmr;
+export import :frame_clock;
+export import :frame_stats;
+export import :thread_pool;
 
 /**
  * @file utility.cppm

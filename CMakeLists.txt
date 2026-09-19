@@ -86,9 +86,6 @@ target_sources(utility
         utility/thread_pool/thread_pool.cppm
         PRIVATE
         utility/utility.cpp
-        utility/BVH/bvh.cpp
-        utility/better_pmr/better_pmr.cpp
-        utility/thread_pool/thread_pool.cpp
 )
 
 # Startup configuration: parses config.toml (+ --config / argv merging) into app_settings.

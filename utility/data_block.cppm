@@ -5,7 +5,7 @@ module;
 #include <format>
 #include <string>
 
-export module utility.data_block;
+export module utility:data_block;
 namespace utility {
     /**
      * @defgroup data_block Fixed-Size Byte Container

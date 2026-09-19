@@ -44,7 +44,7 @@ import vulkan.init_utils;      // the resource-creation patterns the init/ensure
 import vulkan.frame_constants; // one frame's shared constants (see update_frame_constants)
 import vulkan.core.pipeline;   // vulkan::make_pipeline for the post-process pipeline
 
-// Route std::pmr allocations through mimalloc for this TU (utility.better_pmr). Idempotent:
+// Route std::pmr allocations through mimalloc for this TU (utility:better_pmr). Idempotent:
 // init_pmr() returns the same process-wide singleton no matter which TU calls it first, so
 // main.cpp's keep-alive and this one coexist safely. The reference itself is never read; it
 // only forces the (dynamic) initialization before any pmr container in this TU is constructed.

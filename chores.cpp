@@ -3,7 +3,7 @@ module;
 // The global-module-fragment include below is load-bearing, not stylistic: with -fno-exceptions
 // and the vendored std module, a chores implementation unit that instantiates std::vector (this
 // file does, in load_shader) sees TWO 'operator new(size_t, align_val_t)' declarations - module
-// std's and the textual libc++ copy baked into utility.data_block.pcm (data_block is the one
+// std's and the textual libc++ copy baked into utility:data_block.pcm (data_block is the one
 // module that never imports std; it includes libc++ headers in its own GMF). The result is
 // 'call to operator new is ambiguous' at allocate.h. Textually including glm here (the same
 // trick vulkan/animation/controller.cpp uses) makes clang merge the two copies, so
