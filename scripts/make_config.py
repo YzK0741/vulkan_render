@@ -185,6 +185,8 @@ def write_toml(path: str, cfg: dict) -> None:
         f"toon_shadow_band = {cfg['toon_shadow_band']}",
         f"toon_specular = {cfg['toon_specular']}",
         f"toon_shadow_band_gain = {cfg['toon_shadow_band_gain']}",
+        "# camera_pose = [yaw_deg, pitch_deg, distance, tx, ty, tz]   # a PINNED initial pose; absent\n"
+        "#   leaves camera_fit in charge. F12 and exit print one (`camera pose: ...`) to paste back.\n"
         "outline_color = [{0}, {1}, {2}]".format(*cfg["outline_color"]),
         f"outline_width = {cfg['outline_width']}",
         "",

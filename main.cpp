@@ -307,8 +307,18 @@ int main(int argc, char** argv) {
     // narrow hall while still leaving enough parallax for the view to read as a space.
     {
         glm::vec3 const half_extent = (bounds.max - bounds.min) * 0.5f;
+        if (settings.render.camera_pose_set) {
+            // A pinned pose from the config: the same six numbers `--capture-camera` takes, so a view a user
+            // reports (printed by the F12 block below) can be pasted straight back in here.
+            runtime.camera.yaw = glm::radians(settings.render.camera_pose[0]);
+            runtime.camera.pitch = glm::radians(settings.render.camera_pose[1]);
+            runtime.camera.distance = settings.render.camera_pose[2];
+            runtime.camera.target = glm::vec3(settings.render.camera_pose[3], settings.render.camera_pose[4], settings.render.camera_pose[5]);
+        }
         bool const interior = settings.render.camera_fit == "interior";
-        if (interior) {
+        if (settings.render.camera_pose_set) {
+            // the pinned pose above already decided everything; the fit's numbers would overwrite it
+        } else if (interior) {
             runtime.camera.yaw = half_extent.x >= half_extent.z ? glm::radians(90.0f) : 0.0f;
             runtime.camera.pitch = 0.0f;
             runtime.camera.distance = std::min(half_extent.x, half_extent.z) * 0.7f;
@@ -324,6 +334,19 @@ int main(int argc, char** argv) {
                      half_extent.x,
                      half_extent.z);
     }
+    // ONE place that turns the live pose into the six numbers the config and the command line take: the F12
+    // screenshot prints it (so a bug report carries its own camera) and so does the exit below.
+    auto const log_camera_pose = [&runtime](char const* const why) {
+        utility::log("camera pose ({}): {:.4f},{:.4f},{:.4f},{:.4f},{:.4f},{:.4f}   -> [render] camera_pose = [...] or --capture-camera",
+                     why,
+                     glm::degrees(runtime.camera.yaw),
+                     glm::degrees(runtime.camera.pitch),
+                     runtime.camera.distance,
+                     runtime.camera.target.x,
+                     runtime.camera.target.y,
+                     runtime.camera.target.z);
+    };
+
     gltf::scene_node_iterator const node_first = scenes->nodes_begin();
     gltf::scene_node_iterator const node_last;
     gltf::drawable_iterator const scene_first(*scenes, materials);
@@ -827,6 +850,10 @@ int main(int argc, char** argv) {
                 } else {
                     utility::log("screenshot save failed: {}", written.error());
                 }
+                // ... AND THE POSE THAT FRAME WAS RENDERED WITH, in the form both the config and the
+                // command line take. A screenshot without its camera is a picture nobody can reproduce,
+                // which is how a user's "the face goes grey at some angle" cost a day of guessing.
+                log_camera_pose("F12 screenshot");
             }
             // scripted capture: the frame is captured (saved or not - do not spin forever on a
             // failing writer), so leave the render loop and shut down cleanly
@@ -858,6 +885,10 @@ int main(int argc, char** argv) {
         }
     }
 
+    // The pose the session ENDED on, so a view reached by orbiting can be written down without
+    // re-deriving it from the fit. Printed whether the loop ended by closing the window or by a
+    // scripted capture finishing.
+    log_camera_pose("exit");
     // 15. Wait for the GPU to finish; primitives and pipelines are released by the runtime destructor
     runtime->wait_idle();
     utility::log("render loop finished");
