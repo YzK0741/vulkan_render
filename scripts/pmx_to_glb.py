@@ -41,6 +41,7 @@ USAGE:  python pmx_to_glb.py <model.pmx> <out.glb>
 from __future__ import annotations
 
 import json
+import math
 import struct
 import sys
 import zlib
@@ -132,7 +133,19 @@ def read_pmx(path: Path):
         # (measured: without this the model renders back-to-front, in a scene whose glTF models face it) and
         # converts the handedness. A mirror inverts triangle winding, which is why the faces are reversed.
         positions.append((position[0], position[1], -position[2]))
-        normals.append((normal[0], normal[1], -normal[2]))
+        # ... and the NORMAL is normalized, which the spec requires rather than merely prefers: glTF says a
+        # normal attribute's vectors are unit length, and the Khronos validator reports
+        # ACCESSOR_VECTOR3_NON_UNIT for every one that is not - 616 errors on this asset before this line
+        # existed, because MMD's own normals are close to unit but not unit (633 of 32307 vertices sit
+        # outside 1 +/- 0.0005, the smallest at 0.9914). A viewer that shades with them gets a slightly
+        # wrong N.L and an IBL lookup in a slightly wrong direction.
+        mirrored_normal = (normal[0], normal[1], -normal[2])
+        normal_length = math.sqrt(mirrored_normal[0] ** 2 + mirrored_normal[1] ** 2 + mirrored_normal[2] ** 2)
+        normals.append(
+            (mirrored_normal[0] / normal_length, mirrored_normal[1] / normal_length, mirrored_normal[2] / normal_length)
+            if normal_length > 1e-8
+            else (0.0, 0.0, 1.0)  # a degenerate source normal has no direction to keep; any unit one will do
+        )
         uv = r.vec(2)
         # NOT flipped, and that is a measurement rather than a preference. glTF's UV origin is the texture's
         # UPPER-left corner and so is MMD's, so the two agree and a flip mirrors every lookup. Measured on
