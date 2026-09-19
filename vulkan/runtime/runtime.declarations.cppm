@@ -8,7 +8,7 @@
 // ============================================================================
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.76.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.77.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -820,6 +820,11 @@ namespace vulkan {
         // the view-space rim added on top. Copied into light_state.npr_shadow/npr_rim every frame.
         glm::vec3 toon_shadow_tint = glm::vec3(1.0f);
         float toon_rim = 0.0f;
+        // The band factor the reference's five-colour shadow cascade is walked with (its `MData.x`, the
+        // light-map channel a ZZZ model carries in its ILM texture). A PMX carries no light map, so this is
+        // the frame's substitute: 0 = its deepest shadow colour, 1 = its lit end. Copied into
+        // light_state.npr_shadow.w every frame, beside the tint.
+        float toon_shadow_band = 0.3f;
         // The OUTLINE (runtime::set_outline; see docs/zzz_shading.md): the hull's colour and its width in
         // world units. 0 width = no hull is recorded at all, which is the compiled default and what keeps a
         // frame that does not ask for an outline byte-identical to one recorded before it existed.

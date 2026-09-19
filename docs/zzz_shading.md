@@ -97,6 +97,67 @@ reference's `- Face` group works in a `headOrgn`/`headFwd`/`headUp` frame with a
 which is the piece listed as missing above.
 
 
+## The reference's own shader, read out of the .blend
+
+The rules above were being invented from the reference's *names*. They are now read from its *graph*: the
+`.blend` is dumped headless (`blender --background XIYAG_ZZZ_Shader.blend --python ...`), in four passes -
+every node with its unlinked defaults, every node group's interface, every operator and interpolation type,
+and every socket's exact source. That is what a port needs and what a screenshot cannot give.
+
+Two things the dump settled that guessing had got wrong:
+
+- **The shadow colours are MULTIPLIERS, not colours.** `ShadowColor1..5` default to pure WHITE, and white
+  means "no shadow at all". The shaded albedo is therefore `albedo * mix(SC, white, light)`, not a lerp
+  between two absolute colours.
+- **The diffuse falloff IS the shadow multiplier.** The reference's `Light Factor` is
+  `smoothstep(0, 0.25, NdotL)` - every surface past a quarter-lit is fully lit, which is where the cel edge
+  comes from - and there is no separate NdotL multiply on top of it. It multiplies that by
+  `smoothstep(0, 0.5, 1 - vertex_colour)`; a PMX has no vertex colours, so that term is 1 here.
+
+The whole main path, as the graph has it:
+
+```
+light = smoothstep(0, 0.25, NdotL) * smoothstep(0, 0.5, 1 - vertex_colour)
+SC    = pow( mix-chain(SC1..5, f * (0.2, 0.4, 0.6, 0.8)), 2.2 )    f = MData.x, the light-map channel
+SP    = pow( mix-chain(SP1..5, f < (0.8, 0.6, 0.4, 0.2)), 2.2 )    the SAME chain, but hard thresholds
+base' = Matcap(base, view_normal, light)                            per-channel, see below
+out   = base' * mix(SC, white, light) + SP * (MData.z * smoothstep(0.75, 1, NdotH) * light)
+```
+
+The shadow cascade is SMOOTH (its Math nodes multiply the factor) and the specular one is HARD - which is
+the opposite of what "cel shading" suggests, and the reason the reference's shadows have no visible borders
+while its highlights read as shapes. The `Matcap` group is not a texture lookup alone: it combines the
+matcap image with the base colour **per channel**, `mix(2*base*x, 1 - 2*(1-base)*x, base*0.5)`, which is
+where the reference's extra saturation in the darks actually comes from.
+
+**What this port substitutes, and why it has to.** The `.blend` is a TEMPLATE: its materials ship every
+colour white, `Stocking` 0, `LUT` 1, and its `Eff_MatCap` image is an empty placeholder. So there is no
+authored data to copy - and a PMX carries none either (no five shadow colours, no five specular colours, no
+ILM light map, no vertex colours). The substitutions, each named in the code:
+
+| reference input | here |
+| --- | --- |
+| `ShadowColor1..5` | derived from the material's albedo: a ramp from a vibrance+darken transform of it to WHITE, which is the reference's own lit end |
+| `MData.x` (light-map band) | `runtime::toon_shadow_band`, one frame-wide value (0 = the deepest shadow colour) |
+| `MData.z` (specular mask) | not ported yet - the specular cascade is the next slice |
+| the vertex-colour shadow mask | 1 (a PMX has no vertex colours) |
+| `Eff_MatCap` | the model's own MMD sphere map when it has one, otherwise no matcap |
+| `Stocking` / `LUT` | not ported: the first is a per-model gradient the texture already carries here, the second needs a LUT image the template does not ship |
+
+Measured against the in-game reference, same masks and same lit/shadow quartiles as the table above:
+
+| | lit luma | lit sat | shadow luma | shadow sat | shadow/lit |
+| --- | --- | --- | --- | --- | --- |
+| reference hair | 241.0 | 0.078 | 180.3 | 0.246 | 0.75 |
+| ported hair | 239.2 | 0.089 | 189.7 | 0.294 | 0.79 |
+| reference skin | 237.2 | 0.101 | 187.9 | 0.123 | 0.79 |
+| ported skin (mask catches the shirt too) | 247.0 | 0.006 | 214.1 | 0.111 | 0.87 |
+
+The hair - the material with the most authored shading in the reference - lands within a few percent on all
+four numbers. The skin row is not yet trustworthy: the "warm pale skin" mask also selects the white shirt in
+our frame, so it is measuring mostly cloth.
+
+
 ## The outline, and the three things it cost
 
 The outline is the classic inverted hull: the model is drawn a second time, expanded along its normals by

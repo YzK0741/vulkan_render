@@ -173,23 +173,83 @@ float toon_band(float x, float steps, float softness) {
 }
 
 /**
- * @brief ZZZ's Diffuse Warp: the shadowed side of a surface takes a TINTED colour rather than a
- *        darkened base colour (XIYAG's ZZZ shader - see docs/zzz_shading.md for the credit and for
- *        what this engine's version leaves out)
+ * @brief the shadow-end MULTIPLIER of a material's ramp, DERIVED from its own albedo
  * @param base_color the material's albedo (factor x texture)
- * @param ramp the quantized diffuse falloff in [0,1]: the band index the cel path produced
- * @param shadow_tint the reference's ShadowColor, as a MULTIPLIER of the base colour
- * @return the colour the diffuse term uses in place of the base colour
+ * @return a per-channel multiplier: the colour the shadowed side is multiplied by
  *
- * This is the mechanism that makes the reference's look what it is. A cel ramp on its own darkens the
- * base colour by the band, which on a stylised model reads as grey plastic; the reference instead
- * interpolates between an AUTHORED shadow colour and the base colour, and the authored one is usually
- * lower in value but higher in saturation - often rotated towards the cool end. The five ShadowColor
- * values the reference exposes per material are this lerp sampled at the five band edges, so a 5-step
- * ramp walks exactly those five colours.
+ * The reference authors these as MULTIPLIERS - its `ShadowColor1..5` default to pure white, and white means
+ * "no shadow at all" - which is why this is a ratio to the albedo rather than an absolute colour.
+ *
+ * The rule is the one the reference's own numbers describe, measured off an in-game capture (sRGB, same
+ * material, lit vs shadowed side): its mint hair goes from luma 241 / saturation 0.08 to luma 180 /
+ * saturation 0.25, i.e. 0.75x the value and THREE times the saturation, while its skin - already twice as
+ * saturated - gains only 20%. That is a VIBRANCE curve rather than a scale, which is why it is written as
+ * one: the less saturated the colour, the more of the boost it gets. A plain multiply darkens without
+ * re-saturating, and that is exactly the "grey plastic" a cel ramp reads as on a model like this one.
  */
-vec3 diffuse_warp(vec3 base_color, float ramp, vec3 shadow_tint) {
-    return mix(base_color * shadow_tint, base_color, ramp);
+vec3 derived_shadow_multiplier(vec3 base_color) {
+    const float luma = dot(base_color, vec3(0.2126, 0.7152, 0.0722));
+    const float peak = max(max(base_color.r, base_color.g), base_color.b);
+    const float trough = min(min(base_color.r, base_color.g), base_color.b);
+    const float saturation = peak > 1e-4 ? (peak - trough) / peak : 0.0;
+    const float vibrance = 3.0;
+    const float value_scale = 0.75;
+    const vec3 saturated = mix(vec3(luma), base_color, 1.0 + vibrance * (1.0 - saturation));
+    const vec3 shadowed = clamp(saturated * value_scale, vec3(0.0), vec3(1.0));
+    // ... expressed as a MULTIPLIER of the albedo, which is the space the reference's cascade works in
+    return clamp(shadowed / max(base_color, vec3(0.02)), vec3(0.0), vec3(2.0));
+}
+
+/**
+ * @brief the reference's `Shadow Colors` group: a five-colour cascade, gamma 2.2 at the end
+ * @param base_color the material's albedo (factor x texture)
+ * @param factor the band factor the cascade is walked with (the reference's `MData.x`, its light-map
+ *        channel; a PMX carries no light map, so this is the frame's `toon_shadow_band`)
+ * @param tint an extra multiplier on the deepest colour; (1,1,1) = the derivation alone
+ * @return the shadow-end multiplier of the ramp
+ *
+ * PORTED FROM THE REFERENCE, structure for structure: five colours blended by `factor * (0.2, 0.4, 0.6,
+ * 0.8)` in that order, then `pow(c, 2.2)`. The reference's five colours are AUTHORED per material
+ * (`ShadowColor1..5`, default white = no shadow); a PMX carries none, so they are derived here as a ramp
+ * from the derived shadow multiplier to WHITE - the lit end of the reference's own ramp.
+ *
+ * The cascade is a SMOOTH blend in the reference (its Math nodes MULTIPLY the factor), which is why its
+ * shadows have no hard borders - the hard stepping is on the SPECULAR side only.
+ */
+vec3 reference_shadow_colors(vec3 base_color, float factor, vec3 tint) {
+    const vec3 sc1 = derived_shadow_multiplier(base_color) * tint;
+    const vec3 sc5 = vec3(1.0);
+    const vec3 sc2 = mix(sc1, sc5, 0.25);
+    const vec3 sc3 = mix(sc1, sc5, 0.50);
+    const vec3 sc4 = mix(sc1, sc5, 0.75);
+    vec3 c = mix(sc1, sc2, factor * 0.2);
+    c = mix(c, sc3, factor * 0.4);
+    c = mix(c, sc4, factor * 0.6);
+    c = mix(c, sc5, factor * 0.8);
+    // the reference's final Gamma node, 2.2 - its authored colours are sRGB values being used as multipliers
+    return pow(max(c, vec3(0.0)), vec3(2.2));
+}
+
+/**
+ * @brief the reference's `Light Factor` and its diffuse composition, ported whole
+ * @param base_color the material's albedo (factor x texture)
+ * @param ndotl the UNQUANTIZED falloff
+ * @param band the band factor (see reference_shadow_colors)
+ * @param shadow_tint an extra multiplier on the deepest colour
+ * @return the multiplier the albedo is shaded by - NOT a replacement colour
+ *
+ * Two things in the reference are easy to get wrong from its name alone, and both are load-bearing:
+ *   - its shadow colours are MULTIPLIERS (white = no shadow), so the shaded albedo is
+ *     `albedo * mix(SC, white, light)` rather than a lerp between two absolute colours;
+ *   - its `Light Factor` compresses NdotL into a NARROW band - `smoothstep(0, 0.25, NdotL)`, i.e. every
+ *     surface past a quarter-lit is fully lit - which is what gives the terminator its cel edge. It is also
+ *     the whole falloff: there is no separate NdotL multiply on top of it.
+ * The reference multiplies this by `smoothstep(0, 0.5, 1 - vertex_colour)`; a PMX has no vertex colours, so
+ * that term is 1 here and the port notes it rather than inventing a substitute.
+ */
+vec3 reference_shadow_multiplier(vec3 base_color, float ndotl, float band, vec3 shadow_tint) {
+    const float light = smoothstep(0.0, 0.25, ndotl);
+    return mix(reference_shadow_colors(base_color, band, shadow_tint), vec3(1.0), light);
 }
 
 /**
@@ -458,30 +518,28 @@ vec3 evaluate_direct_light(vec3 n, vec3 v, vec3 base_color, float metallic, floa
         specular *= smoothstep(highlight_threshold - light[heap_light_slot].toon_softness, highlight_threshold + light[heap_light_slot].toon_softness, ndoth);
     }
 
-    // ---- ZZZ's diffuse WARP (no-op while LightUBO.npr_shadow.rgb is (1,1,1), which is the compiled
-    //      default). In this style the ramp IS the light term rather than a scale on top of one: the
-    //      colour it interpolates towards is already the shadowed result, so multiplying by ndotl as
-    //      well would darken the shadow side twice. That, and not the tint alone, is why the warp
-    //      takes the light factor over.
+    // ---- THE REFERENCE'S DIFFUSE PATH (XIYAG's `Main Shader`), taken over from the cel ramp while
+    //      `toon_steps > 0`. What the port keeps from the reference: the shading is a MULTIPLIER on the
+    //      albedo whose falloff is the reference's own narrow Light Factor (smoothstep(0, 0.25, NdotL)), the
+    //      shadow end of that multiplier walks a five-colour cascade (reference_shadow_colors), and the
+    //      specular is attenuated by the same factor. What it substitutes, and why, is on those functions.
+    //
+    //      The measured reason the falloff is NOT a separate NdotL multiply on top: this engine's sun
+    //      carries a radiance of 7.5 (see shade_surface), so the first version - which dropped the falloff
+    //      and let the tinted colour be the whole result - put the lit band at albedo/pi * 7.5 = 2.4x the
+    //      albedo and the tonemapper resolved it to white (face region mean 176 against PBR's 154 and pure
+    //      albedo's 182).
     const vec3 shadow_tint = light[heap_light_slot].npr_shadow.rgb;
-    const bool warp = any(notEqual(shadow_tint, vec3(1.0)));
+    const float shadow_band = light[heap_light_slot].npr_shadow.w;
+    const bool warp = light[heap_light_slot].toon_steps > 0.5;
 
     // ---- Diffuse by the selected model (LightUBO.diffuse_model): Lambert (default) or the
     //      roughness-dependent Oren-Nayar approximation (0 -> Lambert).
-    //
-    // THE WARP CHANGES THE DIFFUSE COLOUR, NOT THE LIGHT FACTOR, and that distinction is a measurement
-    // rather than a reading of the reference's name for it (Diffuse Warp). The first version took the
-    // light factor over - the argument being that the tinted colour already IS the shadowed result, so an
-    // extra ndotl would darken the shadow side twice - and the capture came out bleached: this engine's
-    // sun carries a radiance of 7.5 (see shade_surface), so the lit band landed at albedo/pi * 7.5 =
-    // 2.4x the albedo and the tonemapper resolved it to white. Measured on the stylised asset's face, in
-    // the face region's mean: PBR 154, the warp without ndotl 176, pure albedo (unlit) 182 - i.e. the
-    // shading had been flattened into the texture. With the light factor kept, the ramp selects the
-    // colour and the light still falls off, which is what the band structure is for.
     vec3 radiance;
     if (warp) {
-        const vec3 warped = kd * diffuse_warp(base_color, ndotl, shadow_tint) / PI;
-        radiance = (warped + specular) * (light_radiance * ndotl);
+        const float light_factor = smoothstep(0.0, 0.25, raw_ndotl);
+        const vec3 shaded = kd * base_color * reference_shadow_multiplier(base_color, raw_ndotl, shadow_band, shadow_tint) / PI;
+        radiance = (shaded + specular * light_factor) * light_radiance;
     } else {
         vec3 diffuse;
         if (int(light[heap_light_slot].diffuse_model + 0.5) == 1) {
