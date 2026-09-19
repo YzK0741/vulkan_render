@@ -1,6 +1,6 @@
 // ============================================================================
 // module: app_config
-// module version: 0.28.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.29.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // Startup configuration: TOML file (config.toml / --config) merged with argv.
 // Pure CPU, no Vulkan dependency.
@@ -215,11 +215,6 @@ namespace app_config {
         // takes over the display role and this stays as the inspection tool.
         bool gbuffer_debug = false;
         int gbuffer_channel = 1; // 0 albedo, 1 normal, 2 roughness, 3 metallic, 4 ao, 5 material id, 6 depth, 7 flags, 8 motion
-        // deferred lighting ([render] deferred): the opaque scene is stored in the G-buffer and shaded
-        // in screen space afterwards, through shade_surface() - the single lighting entry point every
-        // shading stage in the engine calls; alpha-blended
-        // geometry is not drawn in this mode yet (see runtime::set_deferred).
-        bool deferred = false;
         // Temporal anti-aliasing ([render] taa / taa_blend_static / taa_blend_min): the deferred path's
         // anti-aliasing (a G-buffer cannot be multisampled, so there is no MSAA to fall back on). The projection is jittered every frame and a resolve pass blends the
         // reprojected, neighborhood-clamped history in - see runtime::set_taa. There is no per-object
