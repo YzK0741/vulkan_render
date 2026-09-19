@@ -44,20 +44,6 @@ import vulkan.core.pipeline;   // vulkan::make_pipeline for the post-process pip
 // only forces the (dynamic) initialization before any pmr container in this TU is constructed.
 
 namespace vulkan {
-    namespace {
-        /// THE GRID'S BYTE OFFSET FOR A SLOT (see core::heap_slots and docs/descriptor_heap_migration.md): every
-        /// descriptor is 64 B from the next, so a write HERE and a heap-native shader's `array[slot]` with
-        /// `descriptor_stride = 64` are the same address by construction. There is no second stride to disagree
-        /// with - which is exactly what the older per-slot block could not promise, because it mixed the device's
-        /// 16 B buffer stride with its 32 B image stride and put each binding at its own offset.
-        /// @note A SLOT NUMBER IS ALREADY ABSOLUTE: `core::heap_slots::x` includes `heap_slot_base`, so this is a
-        ///       multiply and nothing else. The first version added `heap_grid_offset` as well and doubled the
-        ///       1 MiB base - every write landed past the heap and was refused, which the heap's own bounds check
-        ///       reported (`... did not fit at offset 2130432`).
-        VkDeviceSize heap_slot_offset(uint32_t const slot) {
-            return static_cast<VkDeviceSize>(slot) * core::heap_slot_stride;
-        }
-    } // namespace
 
     frame_status runtime::pace_and_acquire() {
         vulkan::profiling::cpu_phase_timer const phase_timer{this->cpu_timings, vulkan::profiling::cpu_phase::pace};
@@ -1970,7 +1956,7 @@ namespace vulkan {
                 return;
             }
             VkImageViewCreateInfo const view = make_image_view_info(image, format, VK_IMAGE_VIEW_TYPE_2D, aspect, VK_REMAINING_MIP_LEVELS, VK_REMAINING_ARRAY_LAYERS);
-            [[maybe_unused]] bool const written = this->vulkan_core.descriptor_heaps.write_image(heap_slot_offset(slot), view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE);
+            [[maybe_unused]] bool const written = this->vulkan_core.descriptor_heaps.write_image(core::heap_slot_offset(slot), view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE);
         };
         std::size_t const heap_image = static_cast<std::size_t>(this->current_image_index);
         if (heap_image < this->vulkan_core.gbuffer_images[0].size()) {
@@ -1991,7 +1977,7 @@ namespace vulkan {
                     return;
                 }
                 VkImageViewCreateInfo const view = make_image_view_info(image, format, VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_ASPECT_COLOR_BIT, VK_REMAINING_MIP_LEVELS, VK_REMAINING_ARRAY_LAYERS);
-                [[maybe_unused]] bool const written = this->vulkan_core.descriptor_heaps.write_image(heap_slot_offset(slot), view, VK_IMAGE_LAYOUT_GENERAL, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
+                [[maybe_unused]] bool const written = this->vulkan_core.descriptor_heaps.write_image(core::heap_slot_offset(slot), view, VK_IMAGE_LAYOUT_GENERAL, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
             };
             if (heap_image < this->vulkan_core.taa_history_images.size()) {
                 write_sampled_target(core::heap_slots::taa_history + image_slot, this->vulkan_core.taa_history_images[heap_image], vulkan::hdr_format, VK_IMAGE_ASPECT_COLOR_BIT);

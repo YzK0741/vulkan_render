@@ -32,22 +32,6 @@ import vulkan.core.pipeline;   // vulkan::make_pipeline for the post-process pip
 [[maybe_unused]] static auto& pmr = utility::init_pmr(); // NOLINT(keep-alive)
 
 namespace vulkan {
-    namespace {
-
-        /// THE GRID'S BYTE OFFSET FOR A SLOT (see core::heap_slots and docs/descriptor_heap_migration.md): every
-        /// descriptor is 64 B from the next, so a write HERE and a heap-native shader's `array[slot]` with
-        /// `descriptor_stride = 64` are the same address by construction. There is no second stride to disagree
-        /// with - which is exactly what the older per-slot block could not promise, because it mixed the device's
-        /// 16 B buffer stride with its 32 B image stride and put each binding at its own offset.
-        /// @note A SLOT NUMBER IS ALREADY ABSOLUTE: `core::heap_slots::x` includes `heap_slot_base`, so this is a
-        ///       multiply and nothing else. The first version added `heap_grid_offset` as well and doubled the
-        ///       1 MiB base - every write landed past the heap and was refused, which the heap's own bounds check
-        ///       reported (`... did not fit at offset 2130432`).
-        VkDeviceSize heap_slot_offset(uint32_t const slot) {
-            return static_cast<VkDeviceSize>(slot) * core::heap_slot_stride;
-        }
-
-    } // namespace
     void runtime::write_rt_structure_binding(VkAccelerationStructureKHR const tlas, uint32_t const frame_slot) {
         // The top level structure is a HEAP slot now, and this is the one thing this function still does: a heap
         // descriptor for an acceleration structure is an ADDRESS RANGE carrying the structure's device address
@@ -71,7 +55,7 @@ namespace vulkan {
             .accelerationStructure = tlas,
         };
         VkDeviceAddress const tlas_address = get_structure_address != nullptr ? get_structure_address(this->vulkan_core.device, &tlas_address_info) : 0;
-        if (!this->vulkan_core.descriptor_heaps.write_buffer(heap_slot_offset(core::heap_slots::tlas + frame_slot), tlas_address, this->structures.structure_size(frame_slot), VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR)) {
+        if (!this->vulkan_core.descriptor_heaps.write_buffer(core::heap_slot_offset(core::heap_slots::tlas + frame_slot), tlas_address, this->structures.structure_size(frame_slot), VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR)) {
             utility::log("descriptor heap: the top level structure did not reach grid slot {}", core::heap_slots::tlas + frame_slot);
         }
 
@@ -82,7 +66,7 @@ namespace vulkan {
         if (instance_table != VK_NULL_HANDLE) {
             VkBufferDeviceAddressInfo const table_address_info = {.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .pNext = nullptr, .buffer = instance_table};
             VkDeviceAddress const table_address = vkGetBufferDeviceAddress(this->vulkan_core.device, &table_address_info);
-            if (!this->vulkan_core.descriptor_heaps.write_buffer(heap_slot_offset(core::heap_slots::mask_instances + frame_slot), table_address, this->structures.instance_table_size(frame_slot), VK_DESCRIPTOR_TYPE_STORAGE_BUFFER)) {
+            if (!this->vulkan_core.descriptor_heaps.write_buffer(core::heap_slot_offset(core::heap_slots::mask_instances + frame_slot), table_address, this->structures.instance_table_size(frame_slot), VK_DESCRIPTOR_TYPE_STORAGE_BUFFER)) {
                 utility::log("descriptor heap: the instance table did not reach grid slot {}", core::heap_slots::mask_instances + frame_slot);
             }
         }

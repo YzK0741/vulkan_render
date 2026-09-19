@@ -244,7 +244,7 @@ namespace vulkan {
         // diffuse term is multiplied away by (1 - metallic) anyway) looked untouched. The startup probe had
         // it in the log the whole time: "the heap-native probe sampled grid slot 16384 ... read back
         // 0x00000000", on the very slot this write fills, while the material table's white record read 0xffff.
-        // @note heap_slot_offset() is defined below this constructor, so the arithmetic is spelled out: a slot
+        // @note core::heap_slot_offset() is defined below this constructor, so the arithmetic is spelled out: a slot
         //       number is already absolute and the stride is the one every heap array agrees on.
         if (this->vulkan_core.descriptor_heaps.ready()) {
             auto const* const white_detail = this->vulkan_core.vma.get_image_detail(this->owned_textures.back().handle());
@@ -519,19 +519,6 @@ namespace vulkan {
 
     namespace {
 
-        /// THE GRID'S BYTE OFFSET FOR A SLOT (see core::heap_slots and docs/descriptor_heap_migration.md): every
-        /// descriptor is 64 B from the next, so a write HERE and a heap-native shader's `array[slot]` with
-        /// `descriptor_stride = 64` are the same address by construction. There is no second stride to disagree
-        /// with - which is exactly what the older per-slot block could not promise, because it mixed the device's
-        /// 16 B buffer stride with its 32 B image stride and put each binding at its own offset.
-        /// @note A SLOT NUMBER IS ALREADY ABSOLUTE: `core::heap_slots::x` includes `heap_slot_base`, so this is a
-        ///       multiply and nothing else. The first version added `heap_grid_offset` as well and doubled the
-        ///       1 MiB base - every write landed past the heap and was refused, which the heap's own bounds check
-        ///       reported (`... did not fit at offset 2130432`).
-        VkDeviceSize heap_slot_offset(uint32_t const slot) {
-            return static_cast<VkDeviceSize>(slot) * core::heap_slot_stride;
-        }
-
         /// THE HEAP'S COPY OF ONE IMAGE, built from the SAME arguments `core::make_image_view` uses (see
         /// vulkan::make_image_view_info in vulkan.constant_init): a heap image descriptor carries a CREATE INFO
         /// rather than a view, and the driver makes the view inside it. That is why this is called where the image
@@ -541,7 +528,7 @@ namespace vulkan {
                 return false;
             }
             VkImageViewCreateInfo const view_info = make_image_view_info(image, format, type, aspect, VK_REMAINING_MIP_LEVELS, VK_REMAINING_ARRAY_LAYERS);
-            return vk.descriptor_heaps.write_image(heap_slot_offset(slot), view_info, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            return vk.descriptor_heaps.write_image(core::heap_slot_offset(slot), view_info, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
         }
 
         /**
@@ -549,7 +536,7 @@ namespace vulkan {
          *
          * THE HEAP'S BUFFER PATTERN, in one place: a heap descriptor for a buffer IS its address range, and a
          * per-slot binding's entry must name THAT slot's buffer - so this walks the per-slot vector, takes each
-         * buffer's device address and writes it at `heap_slot_offset(slot_base + slot)`: one GRID slot per frame in
+         * buffer's device address and writes it at `core::heap_slot_offset(slot_base + slot)`: one GRID slot per frame in
          * flight, which is exactly where the shaders read it (`heap_slots_scene_camera + heap_frame_slot` and its
          * neighbours). The heap is the only path now, so "the heap is not in use" is a startup
          * failure rather than a quiet fall back to a descriptor set.
@@ -566,7 +553,7 @@ namespace vulkan {
                 }
                 VkBufferDeviceAddressInfo const info = {.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .pNext = nullptr, .buffer = detail->buffer};
                 VkDeviceAddress const address = vkGetBufferDeviceAddress(vk.device, &info);
-                VkDeviceSize const offset = heap_slot_offset(slot_base + slot);
+                VkDeviceSize const offset = core::heap_slot_offset(slot_base + slot);
                 if (vk.descriptor_heaps.write_buffer(offset, address, size, type)) {
                     ++written;
                 } else {
@@ -642,7 +629,7 @@ namespace vulkan {
             if (instance_table_detail != nullptr) {
                 VkBufferDeviceAddressInfo const instance_table_address_info = {.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .pNext = nullptr, .buffer = instance_table_detail->buffer};
                 VkDeviceAddress const instance_table_address = vkGetBufferDeviceAddress(this->vulkan_core.device, &instance_table_address_info);
-                if (!this->vulkan_core.descriptor_heaps.write_buffer(heap_slot_offset(core::heap_slots::instance_transforms), instance_table_address, static_cast<VkDeviceSize>(vulkan::instance_capacity) * sizeof(glm::mat4), VK_DESCRIPTOR_TYPE_STORAGE_BUFFER)) {
+                if (!this->vulkan_core.descriptor_heaps.write_buffer(core::heap_slot_offset(core::heap_slots::instance_transforms), instance_table_address, static_cast<VkDeviceSize>(vulkan::instance_capacity) * sizeof(glm::mat4), VK_DESCRIPTOR_TYPE_STORAGE_BUFFER)) {
                     utility::log("descriptor heap: the instance transform table did not reach grid slot {}", core::heap_slots::instance_transforms);
                 }
             }
@@ -699,7 +686,7 @@ namespace vulkan {
             if (this->vulkan_core.descriptor_heaps.ready() && this->vulkan_core.heap_grid_offset != VK_WHOLE_SIZE) {
                 VkBufferDeviceAddressInfo const address_info = {.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .pNext = nullptr, .buffer = light_detail->buffer};
                 VkDeviceAddress const light_address = vkGetBufferDeviceAddress(this->vulkan_core.device, &address_info);
-                VkDeviceSize const heap_offset = heap_slot_offset(core::heap_slots::scene_light + slot);
+                VkDeviceSize const heap_offset = core::heap_slot_offset(core::heap_slots::scene_light + slot);
                 if (!this->vulkan_core.descriptor_heaps.write_buffer(heap_offset, light_address, sizeof(light_ubo), VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER)) {
                     utility::log("descriptor heap: the light UBO did not fit slot {}'s block at offset {}", slot, heap_offset);
                 }
@@ -873,7 +860,7 @@ namespace vulkan {
                                                              .format = slots[i].second,
                                                              .components = {VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY},
                                                              .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS}};
-                    VkDeviceSize const heap_offset = heap_slot_offset(core::heap_slots::textures + index);
+                    VkDeviceSize const heap_offset = core::heap_slot_offset(core::heap_slots::textures + index);
                     if (this->vulkan_core.descriptor_heaps.write_image(heap_offset, heap_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)) {
                         ++heap_texture_descriptors;
                     } else {

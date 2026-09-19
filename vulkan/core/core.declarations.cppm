@@ -15,7 +15,7 @@
 // ============================================================================
 // ============================================================================
 // module: vulkan.core
-// module version: 0.23.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.24.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // GPU scaffolding: instance / device / swapchain / VMA / pipeline / descriptor
 // plumbing (core.vma / core.pipeline / core.filter / core.init_utils submodules
@@ -494,6 +494,22 @@ namespace vulkan {
          *       the constructor logs this table (see the `descriptor heap: slot grid` line).
          */
         static constexpr VkDeviceSize heap_slot_stride = 64;
+        /// THE GRID'S BYTE OFFSET FOR A SLOT (see core::heap_slots and docs/descriptor_heap_migration.md): every
+        /// descriptor is 64 B from the next, so a write HERE and a heap-native shader's `array[slot]` with
+        /// `descriptor_stride = 64` are the same address by construction. There is no second stride to disagree
+        /// with - which is exactly what the older per-slot block could not promise, because it mixed the device's
+        /// 16 B buffer stride with its 32 B image stride and put each binding at its own offset.
+        /// @note A SLOT NUMBER IS ALREADY ABSOLUTE: `core::heap_slots::x` includes `heap_slot_base`, so this is a
+        ///       multiply and nothing else. The first version added `heap_grid_offset` as well and doubled the
+        ///       1 MiB base - every write landed past the heap and was refused, which the heap's own bounds check
+        ///       reported (`... did not fit at offset 2130432`).
+        /// @note THIS IS THE ONE COPY: it used to be duplicated in runtime:constructor, runtime:frames and
+        ///       runtime.cpp, which is what a helper defined in terms of the stride below invites. It belongs
+        ///       beside the constant it multiplies, and it is exported so those units can drop their own.
+        [[nodiscard]] static constexpr VkDeviceSize heap_slot_offset(uint32_t const slot) noexcept {
+            return static_cast<VkDeviceSize>(slot) * heap_slot_stride;
+        }
+
         static constexpr uint32_t heap_slot_base = 16384;  // 1 MiB / 64 B: the grid's slot 0
         static constexpr uint32_t heap_slot_count = 1024;  // 703 slots are in use, the rest is room to grow
         static constexpr uint32_t heap_image_capacity = 8; // per-swapchain-image arrays (3-4 images in practice)
