@@ -14,7 +14,7 @@ import vulkan.render_start_demo; // the example's pass wiring: this app's chain,
 // Route std::pmr allocations through mimalloc (utility:better_pmr) before main(): this
 // file-scope reference's dynamic initialization runs at startup, so every runtime/scene
 // object built below already allocates its std::pmr vectors from mimalloc. Idempotent —
-// other TUs (vulkan/runtime.cpp) keep their own copy of the same singleton.
+// other TUs (vulkan/runtime/runtime.cpp) keep their own copy of the same singleton.
 [[maybe_unused]] static auto& pmr = utility::init_pmr(); // NOLINT(keep-alive)
 
 namespace {

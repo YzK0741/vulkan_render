@@ -127,12 +127,12 @@ target_sources(vulkancorekit
         vulkan/core/pipeline/pipeline.cppm
         vulkan/math/math.cppm
         vulkan/constant_init/constant_init.cppm
-        vulkan/runtime.cppm
-    vulkan/runtime.declarations.cppm
-    vulkan/runtime.constructor.cppm
-    vulkan/runtime.probes.cppm
-    vulkan/runtime.frames.cppm
-    vulkan/runtime.readback.cppm
+        vulkan/runtime/runtime.cppm
+    vulkan/runtime/runtime.declarations.cppm
+    vulkan/runtime/runtime.constructor.cppm
+    vulkan/runtime/runtime.probes.cppm
+    vulkan/runtime/runtime.frames.cppm
+    vulkan/runtime/runtime.readback.cppm
         vulkan/bindings/bindings.cppm
         vulkan/pipelines/pipelines.cppm
         vulkan/render_resource/render_resource.cppm
@@ -177,7 +177,7 @@ target_sources(vulkancorekit
         vulkan/core/pipeline/pipeline.cpp
         vulkan/math/math.cpp
         vulkan/core/pipeline/spirv_parser.cpp
-        vulkan/runtime.cpp
+        vulkan/runtime/runtime.cpp
         vulkan/pass/taa.cpp
         vulkan/pass/scene.cpp
         vulkan/pass/transparent.cpp

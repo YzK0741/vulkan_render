@@ -9,7 +9,7 @@ export import vstd;
  * @ingroup utility
  * @brief a submodule from utility helps to optimize pmr container's memory performance via mimalloc
  * @note the entry is utility::init_pmr(); call it before creating any std::pmr container
- * @note in use: main.cpp and vulkan/runtime.cpp keep a file-scope
+ * @note in use: main.cpp and vulkan/runtime/runtime.cpp keep a file-scope
  *     @c [[maybe_unused]] static auto& pmr = utility::init_pmr(); whose dynamic
  *     initialization runs before main(), so the runtime's per-frame std::pmr vectors
  *     (cull_visible / frame_leaves / frame_visible) already allocate via mimalloc

@@ -24,7 +24,7 @@ is its own I/O. What exists today is that interface written TWICE BY HAND and ke
 
 * the layout, in `vulkan/pipelines/pipelines.cppm` (`build_resolve_pipeline` builds a 5-binding layout with a
   loop whose storage case is `b == 4u`, `build_gbuffer_debug` a 16-binding one whose storage cases are enumerated);
-* the descriptor WRITES, in `vulkan/runtime.cpp`'s `ensure_*_descriptors()`, as a parallel array of views, a
+* the descriptor WRITES, in `vulkan/runtime/runtime.cpp`'s `ensure_*_descriptors()`, as a parallel array of views, a
   parallel array of `VkDescriptorImageInfo`, and ternaries that decide storage-vs-sampler and which sampler.
 
 Both drifts this pair can have are already in this project's history, and both were found by the validation
