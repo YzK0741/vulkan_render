@@ -8,7 +8,7 @@
 // ============================================================================
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.77.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.78.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -825,6 +825,10 @@ namespace vulkan {
         // the frame's substitute: 0 = its deepest shadow colour, 1 = its lit end. Copied into
         // light_state.npr_shadow.w every frame, beside the tint.
         float toon_shadow_band = 0.3f;
+        // The reference's `MData.z`: the mask on its stepped highlight term, which a ZZZ model carries in its
+        // ILM texture and a PMX does not. 0 = the highlight term is off, which is the compiled default.
+        // Copied into light_state.npr_rim.z every frame.
+        float toon_specular = 0.0f;
         // The OUTLINE (runtime::set_outline; see docs/zzz_shading.md): the hull's colour and its width in
         // world units. 0 width = no hull is recorded at all, which is the compiled default and what keeps a
         // frame that does not ask for an outline byte-identical to one recorded before it existed.
@@ -2105,17 +2109,20 @@ namespace vulkan {
 
         /**
          * @ingroup vulkan_runtime
-         * @brief the ZZZ-style NPR half of the toon path: a diffuse WARP towards a tinted shadow colour
-         *        and a view-space rim, both off at their neutral value
-         * @param shadow_tint the colour the shadowed end of the cel ramp lerps towards, as a multiplier
-         *        of each material's base colour. (1,1,1) = OFF, which is the default and what keeps the
-         *        gate's references valid; the reference shader's five ShadowColor values are this one
-         *        tint walked across the bands (see docs/zzz_shading.md, and @ref set_toon_shading for
-         *        the band count it is walked over - the warp without bands is a smooth lerp).
+         * @brief the ZZZ-style NPR half of the toon path: the reference's own shading parameters, all off at
+         *        their neutral value
+         * @param shadow_tint an extra multiplier on the deepest of the reference's five shadow colours.
+         *        (1,1,1) = the derived colours alone, which is the default. Values above 1 brighten the
+         *        shadowed side instead of darkening it - allowed, and what a stylised model sometimes wants.
          * @param rim rim strength added along the silhouette (0 = off; clamped to 0..2)
+         * @param shadow_band the band factor the reference's five-colour shadow cascade is walked with (its
+         *        `MData.x`, the light-map channel a ZZZ model carries in its ILM texture): 0 = its deepest
+         *        shadow colour, 1 = its lit end. A PMX carries no light map, so this is the frame's stand-in.
+         * @param specular the mask on the reference's stepped highlight term (its `MData.z`, from the same
+         *        ILM texture); 0 = no highlight term, the default
          * @note same timing rule as set_toon_shading: CPU-side, copied into the light UBO every frame
          */
-        void set_toon_warp(glm::vec3 const& shadow_tint, float rim) noexcept;
+        void set_toon_warp(glm::vec3 const& shadow_tint, float rim, float shadow_band = 0.3f, float specular = 0.0f) noexcept;
 
         /**
          * @ingroup vulkan_runtime

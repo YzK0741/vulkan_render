@@ -50,6 +50,7 @@ void main() {
     si.world_pos = v_world_pos;
     si.normal = s.normal;
     si.albedo = s.albedo;
+    si.sphere_sample = s.sphere_sample;
     si.emissive = s.emissive;
     si.metallic = s.metallic;
     si.roughness = s.roughness;

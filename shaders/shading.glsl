@@ -124,7 +124,8 @@ layout(descriptor_heap, descriptor_stride = heap_slot_stride) uniform LightUBO {
     //                    this one tint walked across the five bands, and (1,1,1) means the warp is
     //                    OFF - which is the compiled default, so a stock frame is unchanged.
     //                    w unused.
-    //   npr_rim    x = rim strength (0 = off), y = rim exponent (its falloff in view space), z/w unused.
+    //   npr_rim    x = rim strength (0 = off), y = rim exponent (its falloff in view space),
+    //              z = the reference's `MData.z` specular mask (see reference_specular_colors), w unused.
     vec4 npr_shadow;
     vec4 npr_rim;
 } light[];
@@ -192,7 +193,12 @@ vec3 derived_shadow_multiplier(vec3 base_color) {
     const float peak = max(max(base_color.r, base_color.g), base_color.b);
     const float trough = min(min(base_color.r, base_color.g), base_color.b);
     const float saturation = peak > 1e-4 ? (peak - trough) / peak : 0.0;
-    const float vibrance = 3.0;
+    // vibrance 2.0: a fully grey colour is pushed to 3x its (zero) saturation, and a saturated one barely
+    // moves - the shape the two reference measurements above have. It was 3.0 until the ported pipeline was
+    // measured end to end: at 3.0 the deepest band put this asset's hair shadow at saturation 0.44 against
+    // the reference's 0.34, with every other number already matching, so the boost came down rather than the
+    // band or the value scale moving.
+    const float vibrance = 2.0;
     const float value_scale = 0.75;
     const vec3 saturated = mix(vec3(luma), base_color, 1.0 + vibrance * (1.0 - saturation));
     const vec3 shadowed = clamp(saturated * value_scale, vec3(0.0), vec3(1.0));
@@ -250,6 +256,58 @@ vec3 reference_shadow_colors(vec3 base_color, float factor, vec3 tint) {
 vec3 reference_shadow_multiplier(vec3 base_color, float ndotl, float band, vec3 shadow_tint) {
     const float light = smoothstep(0.0, 0.25, ndotl);
     return mix(reference_shadow_colors(base_color, band, shadow_tint), vec3(1.0), light);
+}
+
+/**
+ * @brief the reference's `Specular Colors` group: the SAME five-colour chain, driven by HARD thresholds
+ * @param base_color the material's albedo (factor x texture)
+ * @param factor the band factor (the reference's `MData.x`, see reference_shadow_colors)
+ * @return the colour the highlight term adds
+ *
+ * PORTED: the reference's Math nodes here are `LESS_THAN 0.8 / 0.6 / 0.4 / 0.2` on the band factor rather
+ * than the shadow side's MULTIPLY - so the highlight STEPS between five colours instead of blending. That
+ * asymmetry is the reference's, not a simplification: its shadows are smooth and its highlights are hard,
+ * which is the opposite of what "cel shading" suggests and the reason its highlights read as shapes.
+ * The reference's five specular colours are authored and default to white; the ramp here runs from a dimmer
+ * to a brighter tint of the material's own hue.
+ */
+vec3 reference_specular_colors(vec3 base_color, float factor) {
+    const vec3 sp1 = mix(base_color, vec3(1.0), 0.35);
+    const vec3 sp5 = mix(base_color, vec3(1.0), 0.90);
+    const vec3 sp2 = mix(sp1, sp5, 0.25);
+    const vec3 sp3 = mix(sp1, sp5, 0.50);
+    const vec3 sp4 = mix(sp1, sp5, 0.75);
+    vec3 c = mix(sp1, sp2, factor < 0.8 ? 1.0 : 0.0);
+    c = mix(c, sp3, factor < 0.6 ? 1.0 : 0.0);
+    c = mix(c, sp4, factor < 0.4 ? 1.0 : 0.0);
+    c = mix(c, sp5, factor < 0.2 ? 1.0 : 0.0);
+    return pow(max(c, vec3(0.0)), vec3(2.2));
+}
+
+/**
+ * @brief the reference's `Matcap` group, operator for operator
+ * @param base_color the material's albedo (factor x texture)
+ * @param light_factor the reference's `Light Factor`
+ * @param matcap_sample the `Eff_MatCap` lookup, which is the matcap or the model's sphere map
+ * @return the shaded base colour the shadow multiplier is then applied to
+ *
+ * PORTED WHOLE, including the part that is easy to mistake for a texture trick: the last node is a
+ * NON-UNIFORM mix whose factor is a PER-CHANNEL BOOLEAN (`base > 0.5`), so colours below half are scaled
+ * down while colours above it get the `1 - 2(1-base)(1-mix)` term on top. That switch - not a colour ramp -
+ * is where the reference's extra saturation in the darks comes from, and it runs on EVERY material, with or
+ * without a matcap image.
+ *
+ * `matcap_sample` is 0 at this port's call site: the .blend ships `Eff_MatCap` as an EMPTY image, and this
+ * model's own sphere map is already applied to the albedo in MMD's own mode (see gather_surface), so
+ * feeding it here as well would count it twice. Zero is the reference's own no-matcap case.
+ */
+vec3 reference_matcap_combine(vec3 base_color, float light_factor, vec3 matcap_sample) {
+    const vec3 mix3 = (matcap_sample - vec3(0.5)) * 0.5 + matcap_sample; // Mix.003: ADD, factor 1
+    const vec3 mix1 = vec3(0.5) + mix3 * (light_factor * 0.5);           // Mix.001: ADD, factor = light * 0.5
+    const vec3 v12 = vec3(1.0) - ((vec3(1.0) - mix1) * ((vec3(1.0) - base_color) * 2.0)); // .006 .009 .011 .012
+    const vec3 v10 = (base_color * 2.0) * mix1;                          // Vector Math.008, .010
+    const vec3 factor = vec3(base_color.r > 0.5 ? 1.0 : 0.0, base_color.g > 0.5 ? 1.0 : 0.0, base_color.b > 0.5 ? 1.0 : 0.0);
+    return v10 + v12 * factor;                                           // Mix.002, NON_UNIFORM factor
 }
 
 /**
@@ -468,7 +526,7 @@ vec3 fresnel_schlick(float cos_theta, vec3 f0) {
  *       multiscatter compensation, Lambert diffuse irradiance) - the GUI preset switch is an honest
  *       direct-light A/B, not a whole-scene model comparison.
  */
-vec3 evaluate_direct_light(vec3 n, vec3 v, vec3 base_color, float metallic, float roughness, vec3 f0, vec3 light_dir, vec3 light_radiance) {
+vec3 evaluate_direct_light(vec3 n, vec3 v, vec3 base_color, float metallic, float roughness, vec3 f0, vec3 light_dir, vec3 light_radiance, vec3 matcap_sample) {
     vec3 l = normalize(light_dir);
     // Half vector: normalize(v + l) is NaN when the light sits exactly behind the fragment
     // along the view ray (v + l == 0, e.g. a point light placed at the camera). Fall back to
@@ -538,8 +596,29 @@ vec3 evaluate_direct_light(vec3 n, vec3 v, vec3 base_color, float metallic, floa
     vec3 radiance;
     if (warp) {
         const float light_factor = smoothstep(0.0, 0.25, raw_ndotl);
-        const vec3 shaded = kd * base_color * reference_shadow_multiplier(base_color, raw_ndotl, shadow_band, shadow_tint) / PI;
-        radiance = (shaded + specular * light_factor) * light_radiance;
+        // the reference's own composition, in its own order: the base colour goes through the per-channel
+        // Matcap combine, THAT is multiplied by the shadow multiplier, and the stepped highlight is added on
+        // top of it, masked by the reference's `MData.z` (a per-material value the game reads from its ILM
+        // texture; a PMX has none, so it is the frame's [render] toon_specular here) and by its own
+        // smoothstep(0.75, 1, NdotH) band and the Light Factor.
+        // the reference's Matcap combine runs where the material HAS a matcap sample - its own `Eff_MatCap`
+        // image, which this port feeds the model's MMD sphere map instead. With no sample the reference's
+        // maths degenerates into a per-channel contrast curve driven by the light factor alone, and measured
+        // on this asset's hair that LIGHTENS the shadow side (the shadow/lit quartile ratio moves from 0.78
+        // to 0.83, away from the reference's own 0.75). That degeneration is an artifact of the reference's
+        // template shipping its matcap image EMPTY rather than an intended look, so a material without a
+        // sample passes through unchanged.
+        const vec3 combined = matcap_sample == vec3(0.0) ? base_color : reference_matcap_combine(base_color, light_factor, matcap_sample);
+        const vec3 shadow_mult = reference_shadow_multiplier(base_color, raw_ndotl, shadow_band, shadow_tint);
+        const float spec_mask = light[heap_light_slot].npr_rim.z;
+        // the half-vector dot this branch needs is not the one the BRDF helper computes internally, so it is
+        // taken here; v + l degenerates to zero when the view and the light are exactly opposed
+        const vec3 half_vector = v + l;
+        const float half_length = length(half_vector);
+        const float ndoth_band = half_length > 1e-6 ? smoothstep(0.75, 1.0, max(dot(n, half_vector / half_length), 0.0)) : 0.0;
+        const vec3 highlight = reference_specular_colors(base_color, shadow_band) * (spec_mask * ndoth_band * light_factor);
+        const vec3 shaded = kd * (combined * shadow_mult + highlight) / PI;
+        radiance = shaded * light_radiance;
     } else {
         vec3 diffuse;
         if (int(light[heap_light_slot].diffuse_model + 0.5) == 1) {
@@ -691,6 +770,9 @@ struct shade_input {
     vec3 world_pos; // world-space position (view vector + shadow lookup)
     vec3 normal;    // world-space shading normal (normal-mapped, double-sided flipped)
     vec3 albedo;    // base color, linear
+    vec3 sphere_sample; // the material's MMD sphere/matcap lookup, or 0 when it has none: the reference's
+                    // Matcap combine needs the sample and the light factor together, so the lookup travels
+                    // with the shading input rather than only being folded into the albedo
     vec3 emissive;  // emissive radiance, linear (added after the lighting)
     float metallic; // 0 = dielectric, 1 = metal
     float roughness; // perceptual roughness
@@ -742,7 +824,7 @@ vec3 shade_surface(shade_input s) {
         } else if (light[heap_light_slot].shadow_enabled > 0.5) {
             shadow = calc_shadow(s.world_pos, s.normal);
         }
-        direct += evaluate_direct_light(s.normal, v, s.albedo, s.metallic, s.roughness, f0, light[heap_light_slot].light_dir.xyz, vec3(7.5 * light[heap_light_slot].sun_intensity) * shadow);
+        direct += evaluate_direct_light(s.normal, v, s.albedo, s.metallic, s.roughness, f0, light[heap_light_slot].light_dir.xyz, vec3(7.5 * light[heap_light_slot].sun_intensity) * shadow, s.sphere_sample);
     }
     // punctual lights (point/spot, no shadow casting in this version): inverse-square falloff
     // (well-behaved at zero distance) with an optional smooth range cutoff; spots add a soft
@@ -767,7 +849,7 @@ vec3 shade_surface(shade_input s) {
         float dist;
         const vec3 radiance = punctual_light_radiance(pl, s.world_pos, dir, dist);
         if (radiance != vec3(0.0)) {
-            direct += evaluate_direct_light(s.normal, v, s.albedo, s.metallic, s.roughness, f0, dir, radiance);
+            direct += evaluate_direct_light(s.normal, v, s.albedo, s.metallic, s.roughness, f0, dir, radiance, s.sphere_sample);
         }
     }
 

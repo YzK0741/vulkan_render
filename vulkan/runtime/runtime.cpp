@@ -944,15 +944,18 @@ namespace vulkan {
         this->toon_softness = std::clamp(softness, 0.01f, 0.5f);
     }
 
-    void runtime::set_toon_warp(glm::vec3 const& shadow_tint, float const rim) noexcept {
-        // Both are "off" at their neutral value, and that is deliberate rather than a convenience: the
-        // shader branches on `tint != (1,1,1)` and on `rim > 0`, so a stock config compiles and records
-        // exactly the frame it recorded before this path existed (the gate's references are the proof).
-        // The tint is a diffuse multiplier, so values above 1 brighten the shadowed side instead of
-        // darkening it - allowed, and what a stylised model sometimes wants; the clamp only keeps it
-        // from leaving the range a shadow colour can plausibly live in.
+    void runtime::set_toon_warp(glm::vec3 const& shadow_tint, float const rim, float const shadow_band, float const specular) noexcept {
+        // All four are "off" at their neutral value, and that is deliberate rather than a convenience: the
+        // shader branches on `toon_steps` alone, so a stock config (toon_steps 0) compiles and records
+        // exactly the frame it recorded before this path existed (the gate's references are the proof). The
+        // tint is a diffuse multiplier, so values above 1 brighten the shadowed side instead of darkening it -
+        // allowed, and what a stylised model sometimes wants; the clamp only keeps it from leaving the range
+        // a shadow colour can plausibly live in. The band and the specular mask are the reference's own
+        // parameters (its `MData.x` / `MData.z`); see docs/zzz_shading.md for what stands in for them here.
         this->toon_shadow_tint = glm::clamp(shadow_tint, glm::vec3(0.0f), glm::vec3(2.0f));
         this->toon_rim = std::clamp(rim, 0.0f, 2.0f);
+        this->toon_shadow_band = std::clamp(shadow_band, 0.0f, 1.0f);
+        this->toon_specular = std::clamp(specular, 0.0f, 2.0f);
     }
 
     void runtime::set_outline(glm::vec3 const& color, float const width) noexcept {

@@ -550,7 +550,7 @@ int main(int argc, char** argv) {
         gui.toon_bands_index = nearest;
     }
     gui.toon_softness = settings.render.toon_softness;
-    runtime.set_toon_warp(glm::vec3(settings.render.toon_shadow_tint[0], settings.render.toon_shadow_tint[1], settings.render.toon_shadow_tint[2]), settings.render.toon_rim);
+    runtime.set_toon_warp(glm::vec3(settings.render.toon_shadow_tint[0], settings.render.toon_shadow_tint[1], settings.render.toon_shadow_tint[2]), settings.render.toon_rim, settings.render.toon_shadow_band, settings.render.toon_specular);
     // ... and the OUTLINE ([render] outline_color / outline_width): the inverted hull, whose width 0 default
     // means the scene pass records no hull commands at all (see docs/zzz_shading.md)
     runtime.set_outline(glm::vec3(settings.render.outline_color[0], settings.render.outline_color[1], settings.render.outline_color[2]), settings.render.outline_width);

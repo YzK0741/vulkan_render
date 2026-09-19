@@ -178,6 +178,8 @@ def write_toml(path: str, cfg: dict) -> None:
         f"toon_softness = {cfg['toon_softness']}",
         "toon_shadow_tint = [{0}, {1}, {2}]".format(*cfg["toon_shadow_tint"]),
         f"toon_rim = {cfg['toon_rim']}",
+        f"toon_shadow_band = {cfg['toon_shadow_band']}",
+        f"toon_specular = {cfg['toon_specular']}",
         "outline_color = [{0}, {1}, {2}]".format(*cfg["outline_color"]),
         f"outline_width = {cfg['outline_width']}",
         "",
@@ -295,6 +297,16 @@ def ask_all(output_dir: str) -> dict:
     toon_rim = ask_float(
         "render.toon_rim", 0.0, 0.0, 2.0, hint="rim strength along the silhouette (0 = off)"
     )
+    toon_shadow_band = ask_float(
+        "render.toon_shadow_band",
+        0.3,
+        0.0,
+        1.0,
+        hint="the reference shader's five-colour shadow cascade: 0 = its deepest shadow colour, 1 = its lit end",
+    )
+    toon_specular = ask_float(
+        "render.toon_specular", 0.0, 0.0, 2.0, hint="the reference shader's stepped highlight mask (0 = off)"
+    )
     outline_color = ask_float3(
         "render.outline_color (RGB; the inverted hull's colour)", (0.0, 0.0, 0.0)
     )
@@ -387,6 +399,8 @@ def ask_all(output_dir: str) -> dict:
         "toon_softness": toon_softness,
         "toon_shadow_tint": toon_shadow_tint,
         "toon_rim": toon_rim,
+        "toon_shadow_band": toon_shadow_band,
+        "toon_specular": toon_specular,
         "outline_color": outline_color,
         "outline_width": outline_width,
         "rt_shadows": rt_shadows,

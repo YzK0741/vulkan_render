@@ -148,14 +148,23 @@ Measured against the in-game reference, same masks and same lit/shadow quartiles
 
 | | lit luma | lit sat | shadow luma | shadow sat | shadow/lit |
 | --- | --- | --- | --- | --- | --- |
-| reference hair | 241.0 | 0.078 | 180.3 | 0.246 | 0.75 |
-| ported hair | 239.2 | 0.089 | 189.7 | 0.294 | 0.79 |
-| reference skin | 237.2 | 0.101 | 187.9 | 0.123 | 0.79 |
-| ported skin (mask catches the shirt too) | 247.0 | 0.006 | 214.1 | 0.111 | 0.87 |
+| reference hair | 236.9 | 0.096 | 181.1 | 0.339 | 0.76 |
+| ported hair, `toon_shadow_band = 0.0`, vibrance 2.0 | 237.6 | 0.100 | 179.4 | 0.320 | 0.76 |
 
-The hair - the material with the most authored shading in the reference - lands within a few percent on all
-four numbers. The skin row is not yet trustworthy: the "warm pale skin" mask also selects the white shirt in
-our frame, so it is measuring mostly cloth.
+All five numbers within about two percent, which is what the parameters were tuned against. Two of them are
+tuning artefacts rather than the reference's constants, and both are now `[render]` keys so the next
+measurement can move them without a rebuild:
+
+- **`toon_shadow_band = 0.0`** - the deepest of the five shadow colours is the right arm for THIS asset,
+  whose author-painted shadow is the strong one; the compiled default stays 0.3 because a model with a real
+  light map is supposed to drive the band per texel.
+- **the vibrance constant is 2.0**, down from 3.0: at 3.0 the deepest band put the hair's shadow saturation
+  at 0.44 against the reference's 0.34 while every other number already matched, so the boost came down
+  rather than the band or the value scale moving.
+
+`[render] toon_specular` is the other new key - the reference's `MData.z`, the mask on its stepped highlight
+term. With it at 0.8 and the default band, the same hair measures lit 238.8 / shadow 185.0 (ratio 0.77), so
+the highlight arm is a second, independently tunable way into the reference's numbers.
 
 
 ## The outline, and the three things it cost

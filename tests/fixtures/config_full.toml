@@ -27,6 +27,8 @@ toon_steps = 5
 toon_softness = 0.05
 toon_shadow_tint = [0.55, 0.5, 0.75]
 toon_rim = 0.8
+toon_shadow_band = 0.15
+toon_specular = 0.9
 # the outline, at non-default values too (the generated-defaults fixture's colour is black = the compiled
 # default, so only this fixture can prove the two keys are read back)
 outline_color = [0.1, 0.05, 0.2]

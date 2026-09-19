@@ -108,6 +108,9 @@ struct surface_sample {
     float metallic;  // metallic_factor * metallic-roughness texture .b
     float ao;        // mix(1, occlusion texture .r, occlusion_strength)
     uint flags;      // the material record's flag bits (see Material)
+    vec3 sphere_sample; // the material's MMD sphere/matcap lookup, or 0 when it has none: the reference's
+                        // Matcap combine needs the SAMPLE and the light factor together, so the lookup is
+                        // kept here rather than only folded into the albedo (see reference_matcap_combine)
 };
 
 /**
@@ -179,12 +182,14 @@ surface_sample gather_surface(vec3 world_pos, vec3 geo_normal, vec2 uv, vec3 vie
     //      instead) is NOT implemented; no material in the asset this was built for uses it, and pretending
     //      otherwise would sample a texture with the wrong coordinates.
     const uint sphere_mode = (mat.flags >> 7u) & 3u;
+    s.sphere_sample = vec3(0.0);
     if (sphere_mode == 1u || sphere_mode == 2u) {
         const vec3 sphere_normal = normalize(view_normal);
         // MMD's sphere textures are stored with the opposite vertical convention to glTF's UV origin, which
         // a matcap lookup makes look like a flipped gradient rather than an obvious error.
         const vec2 sphere_uv = vec2(sphere_normal.x * 0.5 + 0.5, 1.0 - (sphere_normal.y * 0.5 + 0.5));
         const vec3 sphere = heap_sample(mat.sphere_index, sphere_uv).rgb;
+        s.sphere_sample = sphere;
         s.albedo = sphere_mode == 1u ? s.albedo * sphere : s.albedo + sphere;
     }
     return s;

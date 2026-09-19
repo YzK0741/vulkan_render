@@ -31,6 +31,8 @@ namespace {
         CHECK(settings.render.toon_shadow_tint[1] > 0.499f && settings.render.toon_shadow_tint[1] < 0.501f);
         CHECK(settings.render.toon_shadow_tint[2] > 0.749f && settings.render.toon_shadow_tint[2] < 0.751f);
         CHECK(settings.render.toon_rim > 0.799f && settings.render.toon_rim < 0.801f);
+        CHECK(settings.render.toon_shadow_band > 0.149f && settings.render.toon_shadow_band < 0.151f);
+        CHECK(settings.render.toon_specular > 0.899f && settings.render.toon_specular < 0.901f);
         // the outline: both keys at non-default values (the width is the one that matters - 0 is the
         // compiled default AND the generated default, so only this fixture proves it is read at all)
         CHECK(settings.render.outline_color[0] > 0.099f && settings.render.outline_color[0] < 0.101f);
@@ -162,6 +164,8 @@ namespace {
         CHECK(settings.render.toon_softness > 0.14f && settings.render.toon_softness < 0.16f);
         CHECK(settings.render.toon_shadow_tint[0] == 1.0f && settings.render.toon_shadow_tint[1] == 1.0f && settings.render.toon_shadow_tint[2] == 1.0f);
         CHECK(settings.render.toon_rim == 0.0f);
+        CHECK(settings.render.toon_shadow_band > 0.29f && settings.render.toon_shadow_band < 0.31f);
+        CHECK(settings.render.toon_specular == 0.0f);
         // the outline: the generator writes both, and its defaults are the NEUTRAL pair (black, width 0),
         // which is what leaves the hull unrecorded in a frame that does not ask for one
         CHECK(settings.render.outline_color[0] == 0.0f && settings.render.outline_color[1] == 0.0f && settings.render.outline_color[2] == 0.0f);

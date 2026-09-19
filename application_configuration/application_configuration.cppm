@@ -1,6 +1,6 @@
 // ============================================================================
 // module: app_config
-// module version: 0.31.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.32.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // Startup configuration: TOML file (config.toml / --config) merged with argv.
 // Pure CPU, no Vulkan dependency.
@@ -136,6 +136,11 @@ namespace app_config {
         float toon_softness = 0.15f;
         std::array<float, 3> toon_shadow_tint = {1.0f, 1.0f, 1.0f};
         float toon_rim = 0.0f;
+        // The reference's own two shading parameters, which a ZZZ model carries in its ILM light map and a
+        // PMX does not: the band factor its five-colour shadow cascade is walked with (0 = its deepest
+        // shadow colour, 1 = its lit end) and the mask on its stepped highlight term (0 = no highlight).
+        float toon_shadow_band = 0.3f;
+        float toon_specular = 0.0f;
         // ---- the OUTLINE ([render] outline_color / outline_width; see docs/zzz_shading.md): an inverted
         // hull of the scene, drawn into the G-buffer in `outline_color`, expanded by `outline_width` WORLD
         // units. Width 0 is the default and means the hull is not recorded at all, so the default frame is
