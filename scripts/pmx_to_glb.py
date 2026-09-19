@@ -418,24 +418,44 @@ def write_glb(out_path: Path, model: dict) -> dict:
         gltf_materials.append(mat)
 
     # ---- primitives: one per material, over its contiguous index range ----
+    #
+    # EACH PRIMITIVE GETS ITS OWN INDEX ACCESSOR over the shared index buffer view, because that is the
+    # only place a glTF primitive can say WHICH triangles are its own: it has no firstIndex, so the range
+    # IS the accessor's byteOffset + count. Handing every primitive the one accessor that covers the whole
+    # buffer - which is what this did - makes all of them draw the entire mesh: the depth test then decides
+    # which material is seen, and since the primitives are drawn in order the FIRST material wins. Measured
+    # with the Khronos validator's cousin, a UV-region report over the exported GLB: 22 primitives, each
+    # with 40944 triangles (the whole mesh) and each with the full-atlas UV bounding box, so the whole model
+    # wore the face atlas - the body pale, the tie brown (the face atlas's fabric patch), the "hair" showing
+    # that atlas's dark and mint regions.
     primitives = []
     start = 0
     for mi, m in enumerate(model["materials"]):
         count = m["face_count"]
         if count == 0:
             continue
+        index_acc_i = {
+            "bufferView": index_view,
+            "byteOffset": start * 4,  # UNSIGNED_INT indices, so the byte offset is 4 per index
+            "componentType": 5125,
+            "count": count,
+            "type": "SCALAR",
+        }
+        accessors.append(index_acc_i)
         primitives.append(
             {
                 "attributes": dict(
                     {"POSITION": pos_acc, "NORMAL": nrm_acc, "TEXCOORD_0": uv_acc, "_EDGESCALE": edge_acc},
                     **{f"TEXCOORD_{i + 1}": a for i, a in enumerate(extra_acc)},
                 ),
-                "indices": index_acc,
+                "indices": len(accessors) - 1,
                 "material": mi,
                 "extras": {"mmd_index_begin": start, "mmd_index_count": count},
             }
         )
         start += count
+    if start != len(model["indices"]):
+        raise SystemExit(f"material face counts cover {start} of {len(model['indices'])} indices")
 
     gltf = {
         "asset": {"version": "2.0", "generator": "pmx_to_glb.py (project tool)"},
