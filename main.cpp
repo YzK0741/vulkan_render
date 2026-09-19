@@ -550,6 +550,10 @@ int main(int argc, char** argv) {
         gui.toon_bands_index = nearest;
     }
     gui.toon_softness = settings.render.toon_softness;
+    // The exposure has a GUI slider and the FRAME LOOP is what calls set_exposure, so the config value is
+    // seeded into the gui for the same reason the toon softness above is: a config that is not mirrored
+    // here is overwritten on frame 1.
+    gui.exposure = settings.render.exposure;
     runtime.set_toon_warp(glm::vec3(settings.render.toon_shadow_tint[0], settings.render.toon_shadow_tint[1], settings.render.toon_shadow_tint[2]), settings.render.toon_rim, settings.render.toon_shadow_band, settings.render.toon_specular);
     // ... and the OUTLINE ([render] outline_color / outline_width): the inverted hull, whose width 0 default
     // means the scene pass records no hull commands at all (see docs/zzz_shading.md)

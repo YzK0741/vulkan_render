@@ -21,7 +21,7 @@ there, and the shader source says so where the warp is implemented (`shaders/sha
 | `NTShadow Colors` / `NTSmoothstep` - the banded ramp the colours are indexed by | `toon_band` in `shaders/shading.glsl`, driven by `[render] toon_steps` / `toon_softness` | already existed; the warp rides it |
 | `SpecularColor1..5` - the specular's own five bands | the cel path's hardened highlight (`toon_steps > 0`), no per-band colours | partial |
 | `NTMatcap` / `Eff_MatCap` / `CombineMESphere` - the matcap, and the model's MMD sphere texture combined with it | the model's own sphere map, sampled matcap-style from the view-space normal and combined per its mode (`material_record::sphere_index` + flags bits 7-8: 1 multiply, 2 add), in `gather_surface` | **implemented** for the model's sphere; mode 3 (sub-texture) is not, and the authored matcap half has no equivalent yet - `[render] toon_rim` remains a procedural stand-in for it |
-| the `- Face` group: `headOrgn` / `headFwd` / `headUp`, `Face_lightmap`, `SpecularShapeMaskDot` | - | **not implemented**: it needs a face light-map/SDF the MMD model does not carry (its extra UV sets ride along in the GLB, the map they index does not) |
+| the `- Face` group: `headOrgn` / `headFwd` / `headUp`, `Face_lightmap`, `SpecularShapeMaskDot` | the same frame's cel path on the face, with the measured agreement below | **not ported, and read from the .blend rather than assumed**: `Light Vector` takes the head frame from three SCENE OBJECTS (empties placed by the artist, their position differences), `Face Factor` needs a face light map whose R is a signed distance and whose Alpha is a mask (`Map Range 0.1..0.35`) plus a mirrored-UV lookup so the shadow edge is symmetric, and `Face Shader` needs a `TData` mask texture to cut the eyes out and blend its `ShadowColor` in. A PMX carries none of the three |
 | the `Outline` shader, thickness from the vertex colour | `[render] outline_color` / `outline_width` as the FALLBACK, and the material's own `mmd_edge_color` / `mmd_edge_size` from the glTF `extras` (read by the loader, carried in `material_record::npr_edge`, used by shaders/outline.vert + outline.frag) | **implemented**: per-material colour and thickness. The per-VERTEX edge scale the reference reads from the vertex colour is exported by the converter (`_EDGESCALE`) but the loader does not import that attribute yet |
 | the `Glow` shader | - | **not implemented** |
 
@@ -165,6 +165,33 @@ measurement can move them without a rebuild:
 `[render] toon_specular` is the other new key - the reference's `MData.z`, the mask on its stepped highlight
 term. With it at 0.8 and the default band, the same hair measures lit 238.8 / shadow 185.0 (ratio 0.77), so
 the highlight arm is a second, independently tunable way into the reference's numbers.
+
+### The face, measured rather than assumed
+
+The face groups are the one part of the reference that cannot be ported from the file, and the measurement
+says it matters less than the name suggests. With a skin mask that excludes the white shirt and the mint
+hair (a warm filter, `R > G > B` and `R - B > 12`) and a box on the head alone:
+
+| | lit rgb | lit luma | lit sat | shadow luma | shadow sat | shadow/lit |
+| --- | --- | --- | --- | --- | --- | --- |
+| reference face | 250/233/225 | 236.1 | 0.102 | 196.7 | 0.157 | 0.83 |
+| ported face, exposure 1.0 | 242/227/219 | 229.8 | 0.094 | 180.8 | 0.264 | 0.79 |
+
+The lit half - the hue and its saturation - is within a few percent, which is what the reference's face
+shader is FOR (a flat, symmetric, mask-driven face); what is left is the shadow half, where our derived
+shadow is darker and more saturated than the reference's painted one.
+
+**A measurement trap worth recording**, because it produced a wrong conclusion first: a mask of
+`R >= G >= B` and `R > 150` also selects a white shirt, and a box that reaches the collar then reports the
+FACE as neutral grey (247/247/246, saturation 0.005) - which reads exactly like a colour-pipeline bug and is
+not one. The albedo path is warm (the unlit face measures 225/215/211), the shirt is what was neutral, and
+the fix was the warmth filter in the table above rather than any shader change. For the same reason the
+"shadow" of a box that reaches the chest is the red tie, not skin.
+
+`[render] exposure` was added while chasing that: it is the exposure scale the README documents as a GUI
+slider, and matching a reference render needs it reproducible. It is NOT the lever here - 0.7 pulls the lit
+face to luma 220.9, further from the reference's 236.1 - but it is what let the question be answered with
+numbers rather than by eye.
 
 
 ## The outline, and the three things it cost

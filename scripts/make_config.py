@@ -174,6 +174,7 @@ def write_toml(path: str, cfg: dict) -> None:
         f"ssao_samples = {cfg['ssao_samples']}",
         "",
         "# ---- [render] cel/toon + ZZZ-style NPR (see docs/zzz_shading.md) ----",
+        f"exposure = {cfg['exposure']}",
         f"toon_steps = {cfg['toon_steps']}",
         f"toon_softness = {cfg['toon_softness']}",
         "toon_shadow_tint = [{0}, {1}, {2}]".format(*cfg["toon_shadow_tint"]),
@@ -279,6 +280,13 @@ def ask_all(output_dir: str) -> dict:
     ssao_samples = ask_int("render.ssao_samples", 8, 1, 16, hint="samples per pixel")
 
     print("\n-- render (cel/toon + ZZZ-style NPR; see docs/zzz_shading.md) --")
+    exposure = ask_float(
+        "render.exposure",
+        1.0,
+        0.05,
+        4.0,
+        hint="linear exposure scale applied before the tonemapper (see docs/zzz_shading.md)",
+    )
     toon_steps = ask_int(
         "render.toon_steps",
         0,
@@ -395,6 +403,7 @@ def ask_all(output_dir: str) -> dict:
         "ssao_radius": ssao_radius,
         "ssao_intensity": ssao_intensity,
         "ssao_samples": ssao_samples,
+        "exposure": exposure,
         "toon_steps": toon_steps,
         "toon_softness": toon_softness,
         "toon_shadow_tint": toon_shadow_tint,
