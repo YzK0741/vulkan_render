@@ -931,7 +931,10 @@ namespace vulkan {
         // colour and 0 a legitimate size, so the values cannot say it themselves.
         if (info.factors.mmd_edge_present) {
             record.npr_edge = glm::vec4(glm::vec3(info.factors.mmd_edge_color), info.factors.mmd_edge_size);
-            record.flags |= 64u; // bit6: the model authored MMD edge data
+            // bit10, NOT bit6: the record's low eight bits are the ones the G-buffer copies into its
+            // material channel, and those are spent on the flags the LIGHTING has to see (painted, face).
+            // The MMD edge flag is only ever read by the outline stages, which index the record itself.
+            record.flags |= 1024u; // bit10: the model authored MMD edge data
         }
         // MMD's sphere map (docs/zzz_shading.md): the texture index rides the record's spare 4 bytes and the
         // MODE rides two flag bits, so the record keeps its size and every shader copy keeps its layout.
@@ -941,7 +944,7 @@ namespace vulkan {
             // bit7 is the PAINTED flag the lighting stage reads out of the G-buffer's one-byte material
             // channel, so it has to be bit7 for the same reason the face bit did: a shading flag only
             // reaches the deferred lighting stage if it fits inside that byte.
-            record.flags |= 128u;
+            record.flags |= 64u; // bit6: this material is PAINTED (drawn from its albedo)
         }
         if (info.factors.mmd_face) {
             // bit7, NOT a higher bit: the deferred path's only channel for material flags is ONE BYTE in the
@@ -951,7 +954,7 @@ namespace vulkan {
             // reads the record directly.
             // ... while the FACE flag rides bit8, which only the G-buffer PASS can see - and that is enough,
             // because the one thing needing it (the redrawn nose mark) is drawn on the albedo there.
-            record.flags |= 256u; // bit8: this material is part of the model's FACE block
+            record.flags |= 128u; // bit7: this material is part of the model's FACE block
         }
         record.flags |= static_cast<uint32_t>(std::clamp(info.factors.mmd_sphere_mode, 0, 3)) << 8u;
 

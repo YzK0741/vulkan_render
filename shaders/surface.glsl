@@ -45,8 +45,8 @@ struct Material {
     float roughness_factor;
     float normal_scale;
     uint flags; // bit0: normal map, bit1: occlusion map, bit2: emissive map, bit3: double-sided,
-                // bit4: alphaMode MASK, bit5: alphaMode BLEND, bit6: MMD edge authored, bit7: face,
-                // bits 8-9: MMD sphere mode
+                // bit4: alphaMode MASK, bit5: alphaMode BLEND, bit6: painted, bit7: face,
+                // bits 8-9: MMD sphere mode, bit10: MMD edge authored
     // MMD's own outline inputs, from the glTF material's `extras` (see docs/zzz_shading.md): xyz is the
     // line colour the model authored, w its thickness multiplier, and flags bit6 says whether the model
     // authored an edge AT ALL - required, because black is a legitimate edge colour and 0 a legitimate
@@ -109,6 +109,8 @@ struct surface_sample {
     float metallic;  // metallic_factor * metallic-roughness texture .b
     float ao;        // mix(1, occlusion texture .r, occlusion_strength)
     uint flags;      // the material record's flag bits (see Material)
+    float face_mask; // 1 for the model's FACE block: it shades from its own flattened normal below, and
+                     // the lighting gives it a lighter cast shadow (see shade_surface)
     vec3 sphere_sample; // the material's MMD sphere/matcap lookup, or 0 when it has none: the reference's
                         // Matcap combine needs the SAMPLE and the light factor together, so the lookup is
                         // kept here rather than only folded into the albedo (see reference_matcap_combine)
@@ -130,7 +132,7 @@ struct surface_sample {
  *       mirrored UV layouts (glTF TANGENT.w = -1) are handled implicitly and the vertex TANGENT
  *       attribute is never consumed; a degenerate UV derivative falls back to the fine normal.
  */
-surface_sample gather_surface(vec3 world_pos, vec3 geo_normal, vec2 uv, vec3 view_normal, float nose_strength) {
+surface_sample gather_surface(vec3 world_pos, vec3 geo_normal, vec2 uv, vec3 view_normal, float nose_strength, vec3 face_normal) {
     Material mat = heap_material_tables[heap_slots_materials].materials[push.material_index];
 
     surface_sample s;
@@ -177,6 +179,16 @@ surface_sample gather_surface(vec3 world_pos, vec3 geo_normal, vec2 uv, vec3 vie
     if ((mat.flags & 8u) != 0u && !gl_FrontFacing) {
         s.normal = -s.normal;
     }
+    // ---- THE FACE'S OWN SHADING NORMAL (the reference's `- Face` group exists for this): a face is nearly
+    // flat and its shading should follow the HEAD, not the nose, the lips and the cheeks - those normals
+    // are what put a gradient across a face that has none in the art. The normal is blended towards the
+    // direction the face is facing (at the eye, in a portrait), which leaves the face LIT - it still
+    // brightens and darkens as the light moves - while the per-feature shading goes away. A blend rather
+    // than a replacement, because the edges of the head still need their own normals.
+    if ((mat.flags & 128u) != 0u) {
+        const float face_normal_flatten = 0.85;
+        s.normal = normalize(mix(s.normal, normalize(face_normal), face_normal_flatten));
+    }
 
     // ---- MMD's SPHERE map (see docs/zzz_shading.md), which is where a model like this gets its saturation:
     //      the diffuse texture is authored pale and the sphere map is combined on top of it. The lookup is
@@ -185,7 +197,8 @@ surface_sample gather_surface(vec3 world_pos, vec3 geo_normal, vec2 uv, vec3 vie
     //      instead) is NOT implemented; no material in the asset this was built for uses it, and pretending
     //      otherwise would sample a texture with the wrong coordinates.
     const uint sphere_mode = (mat.flags >> 8u) & 3u;
-    s.painted_mask = (mat.flags & 128u) != 0u ? 1.0 : 0.0; // record bit7
+    s.painted_mask = (mat.flags & 64u) != 0u ? 1.0 : 0.0; // record bit6
+    s.face_mask = (mat.flags & 128u) != 0u ? 1.0 : 0.0;    // record bit7
     s.sphere_sample = vec3(0.0);
     if (sphere_mode == 1u || sphere_mode == 2u) {
         const vec3 sphere_normal = normalize(view_normal);
@@ -207,7 +220,7 @@ surface_sample gather_surface(vec3 world_pos, vec3 geo_normal, vec2 uv, vec3 vie
     // per-surface coordinates. Its first version sat in shade_surface and drew its ellipse at the middle of
     // the FRAME, on fragments nothing had marked as face: measured, a strength sweep from 1.0 to 0.0 moved
     // 392 pixels, which is the run-to-run jitter. Here both the forward and the deferred path get it.
-    if ((mat.flags & 256u) != 0u && nose_strength > 0.0) { // record bit8: the FACE block alone
+    if ((mat.flags & 128u) != 0u && nose_strength > 0.0) { // record bit7: the FACE block alone
 
         const vec2 nose_uv = vec2(0.5000, 0.5073);
         // SIZED IN PIXELS, NOT IN UV, and that is the correction a measurement forced: the painted mark is

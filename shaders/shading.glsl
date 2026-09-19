@@ -802,6 +802,8 @@ struct shade_input {
                     // with the shading input rather than only being folded into the albedo
     float painted_mask; // 1 when this material is PAINTED: drawn from its albedo rather than from the
                     // lighting stack (the converter's mmd_unlit - the face block and the head's props)
+    float face_mask; // 1 for the model's FACE block, which the LIGHTING needs too: a lit face keeps less of
+                    // the cast shadow than the body does (the reference's face path reads a light map)
     vec3 emissive;  // emissive radiance, linear (added after the lighting)
     float metallic; // 0 = dielectric, 1 = metal
     float roughness; // perceptual roughness
@@ -853,7 +855,13 @@ vec3 shade_surface(shade_input s) {
         } else if (light[heap_light_slot].shadow_enabled > 0.5) {
             shadow = calc_shadow(s.world_pos, s.normal);
         }
-        direct += evaluate_direct_light(s.normal, v, s.albedo, s.metallic, s.roughness, f0, light[heap_light_slot].light_dir.xyz, vec3(7.5 * light[heap_light_slot].sun_intensity) * shadow, s.sphere_sample);
+        // ---- THE FACE KEEPS ONLY PART OF THE CAST SHADOW. Measured when the face was first flattened: its
+        // shading variation was almost ENTIRELY the hair's shadow falling on it (a spread of 63.3 with the
+        // shadow map on and 10.9 with it off), i.e. the bangs painting a shadow across a face - which is what
+        // the reference's face path does not do, because it takes its factor from a light map.
+        const float face_shadow_retain = 0.35;
+        const float sun_shadow = mix(shadow, 1.0, s.face_mask * (1.0 - face_shadow_retain));
+        direct += evaluate_direct_light(s.normal, v, s.albedo, s.metallic, s.roughness, f0, light[heap_light_slot].light_dir.xyz, vec3(7.5 * light[heap_light_slot].sun_intensity) * sun_shadow, s.sphere_sample);
     }
     // punctual lights (point/spot, no shadow casting in this version): inverse-square falloff
     // (well-behaved at zero distance) with an optional smooth range cutoff; spots add a soft

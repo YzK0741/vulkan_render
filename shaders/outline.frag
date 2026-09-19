@@ -89,7 +89,7 @@ layout(descriptor_heap, descriptor_stride = heap_slot_stride) readonly buffer Ma
 
 void main() {
     const Material material = heap_material_tables[heap_slots_materials].materials[push.material_index];
-    const vec3 line = (material.flags & 64u) != 0u ? material.npr_edge.rgb : camera[heap_camera_slot].outline.rgb;
+    const vec3 line = (material.flags & 1024u) != 0u ? material.npr_edge.rgb : camera[heap_camera_slot].outline.rgb;
     out_albedo_metallic = vec4(line, 0.0);
     // A degenerate interpolated normal would normalize to a NaN, which the lighting stage would then read
     // as a normal - so it falls back to a facing direction instead.

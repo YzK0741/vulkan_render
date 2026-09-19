@@ -296,6 +296,35 @@ washes the hair towards white (mean 225.1 against the reference's 216.9) while 1
 1.1 is the arm that keeps the flat look at the reference's level. Three prefixes in
 `scripts/pmx_to_glb.py` are the whole revert.
 
+### Option 2: the face back in the LIGHT, with its own shading normal
+
+The painted face is flat but deaf: the sun scale cannot reach it (measured earlier: `sun_intensity` 0.5 moves
+the hair and the shirt, and the cheek by 0.2). The alternative the user asked for is to put the face back into
+the lighting and make it flat THERE, which is what the reference's `- Face` group does with a light map and an
+SDF. Two pieces do it here, and neither needs an asset:
+
+- **a flattened SHADING NORMAL.** `gather_surface` blends a face material's normal 85% of the way towards the
+  direction the face is facing (at the eye, in a portrait), so the nose, the lips and the cheeks stop shading
+  the face while the edges of the head keep their own normals. A blend, not a replacement.
+- **a lighter CAST SHADOW.** A lit face's variation turned out to be almost entirely the hair's shadow falling
+  on it (a spread of 63.3 with the shadow map on against 10.9 with it off), so a face material keeps 35% of it
+  - the bangs painting a shadow across a face is exactly what the reference's face path does not do.
+
+Measured, and the point of the exercise is in the third column: the face is LIT again.
+
+| arm | cheek luma | hair luma | shirt luma |
+| --- | --- | --- | --- |
+| option 2, `sun_intensity` 1.0 | 197.3 | 178.1 | 222.8 |
+| option 2, `sun_intensity` 0.5 | 181.4 | 171.0 | 203.6 |
+| painted face (what it replaces) | 187.5 | 178.1 | 222.8 |
+
+The sun moves the cheek by 15.9 luma now, where the painted face's cheek did not move at all. And the face
+looks the same: the lit half's saturation is 0.104 against the reference's 0.102, where the painted face
+measured 0.080 - lighting the face back up is what puts that saturation there.
+
+The two constants (`face_normal_flatten` 0.85, `face_shadow_retain` 0.35) are documented in place; they are
+the obvious next pair of knobs, alongside the ones the panel already has.
+
 ### The painted set is wider than the face: the ears are in it too
 
 The face is not the only thing on this model that should be DRAWN rather than lit. 千夏's ears live in the

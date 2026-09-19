@@ -410,7 +410,10 @@ def write_glb(out_path: Path, model: dict) -> dict:
     # reference's `- Face` treatment, generalised to the head's own painted props. 千夏's ears live in
     # `头饰` - its geometry reaches y 18.842, the tallest thing in the model and above the hair - and an
     # ear lit like a surface reads as a lump of plastic where a drawn ear should read as a shape.
-    MMD_UNLIT_MATERIAL_PREFIXES = MMD_FACE_MATERIAL_PREFIXES + (
+    # OPTION 2: the face is NOT painted any more - it is LIT again, with its own flattened shading normal
+    # (see gather_surface) and its own cast-shadow retention, which is what the reference's `- Face`
+    # group stands in for. This set is therefore only the head's PROPS.
+    MMD_UNLIT_MATERIAL_PREFIXES = (
         "耳",  # ears
         "头饰",  # ... and the head wear they are modelled in on this asset
     )

@@ -3,7 +3,7 @@
 //         GPU primitives that live in the scene-tree leaves, plus the GPU
 //         material / camera / light UBO records of the scene block; versioned in
 //         lock-step with vulkan.runtime, see that module's banner)
-// module version: 0.15.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.16.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // GPU scene contents (namespace vulkan):
 //   - vulkan::primitive (owns geometry buffers + material push constants,
@@ -424,10 +424,12 @@ namespace vulkan {
         float roughness_factor = 1.0f;
         float normal_scale = 1.0f;
         // bit0: normal map, bit1: occlusion map, bit2: emissive map, bit3: double-sided,
-        // bit4: alphaMode MASK, bit5: alphaMode BLEND, bit6: the model authored MMD edge data (npr_edge),
-        // bit7: the material is part of the model's FACE block. THE FACE BIT IS 7 ON PURPOSE: the
-        // deferred path's only channel for material flags is one BYTE in the G-buffer, so a shading
-        // flag that has to reach the lighting stage must sit inside it. The sphere mode is bits 8-9.
+        // bit4: alphaMode MASK, bit5: alphaMode BLEND, bit6: PAINTED (drawn from the albedo, not lit),
+        // bit7: the model's FACE block. PAINTED AND FACE ARE 6 AND 7 ON PURPOSE: the deferred path's only
+        // channel for material flags is one BYTE in the G-buffer, so every flag the LIGHTING has to see
+        // must sit inside it - and the face needs to be visible there now that it is lit again, for its
+        // shadow handling. The sphere mode is bits 8-9 and the MMD edge bit is bit10, read only by the
+        // outline stages, which index this record directly.
         uint32_t flags = 0;
         // ---- MMD's own outline inputs, from the glTF material's `extras` (this project's PMX converter
         //      writes them; a glTF from anywhere else leaves them at these neutral values, and then the

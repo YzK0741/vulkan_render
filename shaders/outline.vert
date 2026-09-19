@@ -164,7 +164,7 @@ void main() {
     // body 1.0 - and the frame's [render] outline_width is the overall multiplier on top of it. A model
     // without the data (any glTF this project's converter did not write) keeps the frame's width flat.
     const Material material = heap_material_tables[heap_slots_materials].materials[push.material_index];
-    const float width = (material.flags & 64u) != 0u ? camera[heap_camera_slot].outline.w * material.npr_edge.w : camera[heap_camera_slot].outline.w;
+    const float width = (material.flags & 1024u) != 0u ? camera[heap_camera_slot].outline.w * material.npr_edge.w : camera[heap_camera_slot].outline.w;
     // A degenerate normal (a vertex no triangle uses, or a mesh with no normals) has nothing to push
     // along, and normalizing it would be a NaN that rasterizes the whole hull away - so the guard is on
     // the length rather than on a zero comparison.
