@@ -9,16 +9,16 @@
 
 export namespace std {
   using std::streampos;
-#if _LIBCPP_HAS_WIDE_CHARACTERS
+#if VSTD_HAS_WIDE_CHARACTERS
   using std::wstreampos;
 #endif
   using std::u16streampos;
   using std::u32streampos;
-#if _LIBCPP_HAS_CHAR8_T
+#if VSTD_HAS_CHAR8_T
   using std::u8streampos;
 #endif
 
-#if _LIBCPP_HAS_EXPERIMENTAL_SYNCSTREAM
+#if VSTD_HAS_EXPERIMENTAL_SYNCSTREAM
   using std::basic_osyncstream;
   using std::basic_syncbuf;
 #endif
@@ -26,15 +26,15 @@ export namespace std {
   using std::istreambuf_iterator;
   using std::ostreambuf_iterator;
 
-#if _LIBCPP_HAS_EXPERIMENTAL_SYNCSTREAM
+#if VSTD_HAS_EXPERIMENTAL_SYNCSTREAM
   using std::osyncstream;
   using std::syncbuf;
 
-#  if _LIBCPP_HAS_WIDE_CHARACTERS
+#  if VSTD_HAS_WIDE_CHARACTERS
   using std::wosyncstream;
   using std::wsyncbuf;
 #  endif
-#endif // _LIBCPP_HAS_EXPERIMENTAL_SYNCSTREAM
+#endif // VSTD_HAS_EXPERIMENTAL_SYNCSTREAM
 
   using std::fpos;
 } // namespace std

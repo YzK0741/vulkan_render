@@ -27,7 +27,7 @@ export namespace std {
   // hash support
   using std::hash;
 
-#if _LIBCPP_STD_VER >= 23
+#if VSTD_STD_VER >= 23
   // [vector.bool.fmt], formatter specialization for vector<bool>
   using std::formatter;
 #endif

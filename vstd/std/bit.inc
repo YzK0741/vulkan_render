@@ -11,7 +11,7 @@ export namespace std {
   // [bit.cast], bit_cast
   using std::bit_cast;
 
-#if _LIBCPP_STD_VER >= 23
+#if VSTD_STD_VER >= 23
   // [bit.byteswap], byteswap
   using std::byteswap;
 #endif

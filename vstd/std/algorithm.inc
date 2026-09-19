@@ -16,11 +16,11 @@ export namespace std {
     using std::ranges::in_in_result;
     using std::ranges::in_out_out_result;
     using std::ranges::in_out_result;
-#if _LIBCPP_STD_VER >= 23
+#if VSTD_STD_VER >= 23
     using std::ranges::in_value_result;
 #endif
     using std::ranges::min_max_result;
-#if _LIBCPP_STD_VER >= 23
+#if VSTD_STD_VER >= 23
     using std::ranges::out_value_result;
 #endif
   } // namespace ranges
@@ -44,13 +44,13 @@ export namespace std {
     using std::ranges::none_of;
   }
 
-#if _LIBCPP_STD_VER >= 23
+#if VSTD_STD_VER >= 23
   // [alg.contains], contains
   namespace ranges {
     using std::ranges::contains;
     using std::ranges::contains_subrange;
   } // namespace ranges
-#endif // _LIBCPP_STD_VER >= 23
+#endif // VSTD_STD_VER >= 23
 
   // [alg.foreach], for each
   using std::for_each;
@@ -79,7 +79,7 @@ export namespace std {
     using std::ranges::find_if_not;
   } // namespace ranges
 
-#if _LIBCPP_STD_VER >= 23
+#if VSTD_STD_VER >= 23
   // [alg.find.last], find last
   namespace ranges {
     using std::ranges::find_last;
@@ -155,7 +155,7 @@ export namespace std {
   }
 
   namespace ranges {
-#if _LIBCPP_STD_VER >= 23
+#if VSTD_STD_VER >= 23
     // [alg.starts.with], starts with
     using std::ranges::starts_with;
 
@@ -174,7 +174,7 @@ export namespace std {
     using std::ranges::fold_left_first_with_iter;
     using std::ranges::fold_left_first_with_iter;
 #  endif
-#endif // _LIBCPP_STD_VER >= 23
+#endif // VSTD_STD_VER >= 23
   }    // namespace ranges
 
   // [alg.modifying.operations], mutating sequence operations

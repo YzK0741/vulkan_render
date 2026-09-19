@@ -43,10 +43,10 @@ export namespace std {
 
   namespace ranges {
 
-#if _LIBCPP_STD_VER >= 23
+#if VSTD_STD_VER >= 23
     using std::ranges::iota;
     using std::ranges::iota_result;
-#endif // _LIBCPP_STD_VER >= 23
+#endif // VSTD_STD_VER >= 23
 
   } // namespace ranges
 
@@ -59,7 +59,7 @@ export namespace std {
   // [numeric.ops.midpoint], midpoint
   using std::midpoint;
 
-#if _LIBCPP_STD_VER >= 26
+#if VSTD_STD_VER >= 26
   // [numeric.sat], saturation arithmetic
   using std::add_sat;
   using std::div_sat;

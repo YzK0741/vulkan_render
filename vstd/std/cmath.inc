@@ -9,258 +9,258 @@
 
 export namespace std {
 
-  using std::double_t _LIBCPP_USING_IF_EXISTS;
-  using std::float_t _LIBCPP_USING_IF_EXISTS;
+  using std::double_t VSTD_USING_IF_EXISTS;
+  using std::float_t VSTD_USING_IF_EXISTS;
 
-  using std::acos _LIBCPP_USING_IF_EXISTS;
-  using std::acosf _LIBCPP_USING_IF_EXISTS;
-  using std::acosl _LIBCPP_USING_IF_EXISTS;
+  using std::acos VSTD_USING_IF_EXISTS;
+  using std::acosf VSTD_USING_IF_EXISTS;
+  using std::acosl VSTD_USING_IF_EXISTS;
 
-  using std::asin _LIBCPP_USING_IF_EXISTS;
-  using std::asinf _LIBCPP_USING_IF_EXISTS;
-  using std::asinl _LIBCPP_USING_IF_EXISTS;
+  using std::asin VSTD_USING_IF_EXISTS;
+  using std::asinf VSTD_USING_IF_EXISTS;
+  using std::asinl VSTD_USING_IF_EXISTS;
 
-  using std::atan _LIBCPP_USING_IF_EXISTS;
-  using std::atanf _LIBCPP_USING_IF_EXISTS;
-  using std::atanl _LIBCPP_USING_IF_EXISTS;
+  using std::atan VSTD_USING_IF_EXISTS;
+  using std::atanf VSTD_USING_IF_EXISTS;
+  using std::atanl VSTD_USING_IF_EXISTS;
 
-  using std::atan2 _LIBCPP_USING_IF_EXISTS;
-  using std::atan2f _LIBCPP_USING_IF_EXISTS;
-  using std::atan2l _LIBCPP_USING_IF_EXISTS;
+  using std::atan2 VSTD_USING_IF_EXISTS;
+  using std::atan2f VSTD_USING_IF_EXISTS;
+  using std::atan2l VSTD_USING_IF_EXISTS;
 
-  using std::cos _LIBCPP_USING_IF_EXISTS;
-  using std::cosf _LIBCPP_USING_IF_EXISTS;
-  using std::cosl _LIBCPP_USING_IF_EXISTS;
+  using std::cos VSTD_USING_IF_EXISTS;
+  using std::cosf VSTD_USING_IF_EXISTS;
+  using std::cosl VSTD_USING_IF_EXISTS;
 
-  using std::sin _LIBCPP_USING_IF_EXISTS;
-  using std::sinf _LIBCPP_USING_IF_EXISTS;
-  using std::sinl _LIBCPP_USING_IF_EXISTS;
+  using std::sin VSTD_USING_IF_EXISTS;
+  using std::sinf VSTD_USING_IF_EXISTS;
+  using std::sinl VSTD_USING_IF_EXISTS;
 
-  using std::tan _LIBCPP_USING_IF_EXISTS;
-  using std::tanf _LIBCPP_USING_IF_EXISTS;
-  using std::tanl _LIBCPP_USING_IF_EXISTS;
+  using std::tan VSTD_USING_IF_EXISTS;
+  using std::tanf VSTD_USING_IF_EXISTS;
+  using std::tanl VSTD_USING_IF_EXISTS;
 
-  using std::acosh _LIBCPP_USING_IF_EXISTS;
-  using std::acoshf _LIBCPP_USING_IF_EXISTS;
-  using std::acoshl _LIBCPP_USING_IF_EXISTS;
+  using std::acosh VSTD_USING_IF_EXISTS;
+  using std::acoshf VSTD_USING_IF_EXISTS;
+  using std::acoshl VSTD_USING_IF_EXISTS;
 
-  using std::asinh _LIBCPP_USING_IF_EXISTS;
-  using std::asinhf _LIBCPP_USING_IF_EXISTS;
-  using std::asinhl _LIBCPP_USING_IF_EXISTS;
+  using std::asinh VSTD_USING_IF_EXISTS;
+  using std::asinhf VSTD_USING_IF_EXISTS;
+  using std::asinhl VSTD_USING_IF_EXISTS;
 
-  using std::atanh _LIBCPP_USING_IF_EXISTS;
-  using std::atanhf _LIBCPP_USING_IF_EXISTS;
-  using std::atanhl _LIBCPP_USING_IF_EXISTS;
+  using std::atanh VSTD_USING_IF_EXISTS;
+  using std::atanhf VSTD_USING_IF_EXISTS;
+  using std::atanhl VSTD_USING_IF_EXISTS;
 
-  using std::cosh _LIBCPP_USING_IF_EXISTS;
-  using std::coshf _LIBCPP_USING_IF_EXISTS;
-  using std::coshl _LIBCPP_USING_IF_EXISTS;
+  using std::cosh VSTD_USING_IF_EXISTS;
+  using std::coshf VSTD_USING_IF_EXISTS;
+  using std::coshl VSTD_USING_IF_EXISTS;
 
-  using std::sinh _LIBCPP_USING_IF_EXISTS;
-  using std::sinhf _LIBCPP_USING_IF_EXISTS;
-  using std::sinhl _LIBCPP_USING_IF_EXISTS;
+  using std::sinh VSTD_USING_IF_EXISTS;
+  using std::sinhf VSTD_USING_IF_EXISTS;
+  using std::sinhl VSTD_USING_IF_EXISTS;
 
-  using std::tanh _LIBCPP_USING_IF_EXISTS;
-  using std::tanhf _LIBCPP_USING_IF_EXISTS;
-  using std::tanhl _LIBCPP_USING_IF_EXISTS;
+  using std::tanh VSTD_USING_IF_EXISTS;
+  using std::tanhf VSTD_USING_IF_EXISTS;
+  using std::tanhl VSTD_USING_IF_EXISTS;
 
-  using std::exp _LIBCPP_USING_IF_EXISTS;
-  using std::expf _LIBCPP_USING_IF_EXISTS;
-  using std::expl _LIBCPP_USING_IF_EXISTS;
+  using std::exp VSTD_USING_IF_EXISTS;
+  using std::expf VSTD_USING_IF_EXISTS;
+  using std::expl VSTD_USING_IF_EXISTS;
 
-  using std::exp2 _LIBCPP_USING_IF_EXISTS;
-  using std::exp2f _LIBCPP_USING_IF_EXISTS;
-  using std::exp2l _LIBCPP_USING_IF_EXISTS;
+  using std::exp2 VSTD_USING_IF_EXISTS;
+  using std::exp2f VSTD_USING_IF_EXISTS;
+  using std::exp2l VSTD_USING_IF_EXISTS;
 
-  using std::expm1 _LIBCPP_USING_IF_EXISTS;
-  using std::expm1f _LIBCPP_USING_IF_EXISTS;
-  using std::expm1l _LIBCPP_USING_IF_EXISTS;
+  using std::expm1 VSTD_USING_IF_EXISTS;
+  using std::expm1f VSTD_USING_IF_EXISTS;
+  using std::expm1l VSTD_USING_IF_EXISTS;
 
-  using std::frexp _LIBCPP_USING_IF_EXISTS;
-  using std::frexpf _LIBCPP_USING_IF_EXISTS;
-  using std::frexpl _LIBCPP_USING_IF_EXISTS;
+  using std::frexp VSTD_USING_IF_EXISTS;
+  using std::frexpf VSTD_USING_IF_EXISTS;
+  using std::frexpl VSTD_USING_IF_EXISTS;
 
-  using std::ilogb _LIBCPP_USING_IF_EXISTS;
-  using std::ilogbf _LIBCPP_USING_IF_EXISTS;
-  using std::ilogbl _LIBCPP_USING_IF_EXISTS;
+  using std::ilogb VSTD_USING_IF_EXISTS;
+  using std::ilogbf VSTD_USING_IF_EXISTS;
+  using std::ilogbl VSTD_USING_IF_EXISTS;
 
-  using std::ldexp _LIBCPP_USING_IF_EXISTS;
-  using std::ldexpf _LIBCPP_USING_IF_EXISTS;
-  using std::ldexpl _LIBCPP_USING_IF_EXISTS;
+  using std::ldexp VSTD_USING_IF_EXISTS;
+  using std::ldexpf VSTD_USING_IF_EXISTS;
+  using std::ldexpl VSTD_USING_IF_EXISTS;
 
-  using std::log _LIBCPP_USING_IF_EXISTS;
-  using std::logf _LIBCPP_USING_IF_EXISTS;
-  using std::logl _LIBCPP_USING_IF_EXISTS;
+  using std::log VSTD_USING_IF_EXISTS;
+  using std::logf VSTD_USING_IF_EXISTS;
+  using std::logl VSTD_USING_IF_EXISTS;
 
-  using std::log10 _LIBCPP_USING_IF_EXISTS;
-  using std::log10f _LIBCPP_USING_IF_EXISTS;
-  using std::log10l _LIBCPP_USING_IF_EXISTS;
+  using std::log10 VSTD_USING_IF_EXISTS;
+  using std::log10f VSTD_USING_IF_EXISTS;
+  using std::log10l VSTD_USING_IF_EXISTS;
 
-  using std::log1p _LIBCPP_USING_IF_EXISTS;
-  using std::log1pf _LIBCPP_USING_IF_EXISTS;
-  using std::log1pl _LIBCPP_USING_IF_EXISTS;
+  using std::log1p VSTD_USING_IF_EXISTS;
+  using std::log1pf VSTD_USING_IF_EXISTS;
+  using std::log1pl VSTD_USING_IF_EXISTS;
 
-  using std::log2 _LIBCPP_USING_IF_EXISTS;
-  using std::log2f _LIBCPP_USING_IF_EXISTS;
-  using std::log2l _LIBCPP_USING_IF_EXISTS;
+  using std::log2 VSTD_USING_IF_EXISTS;
+  using std::log2f VSTD_USING_IF_EXISTS;
+  using std::log2l VSTD_USING_IF_EXISTS;
 
-  using std::logb _LIBCPP_USING_IF_EXISTS;
-  using std::logbf _LIBCPP_USING_IF_EXISTS;
-  using std::logbl _LIBCPP_USING_IF_EXISTS;
+  using std::logb VSTD_USING_IF_EXISTS;
+  using std::logbf VSTD_USING_IF_EXISTS;
+  using std::logbl VSTD_USING_IF_EXISTS;
 
-  using std::modf _LIBCPP_USING_IF_EXISTS;
-  using std::modff _LIBCPP_USING_IF_EXISTS;
-  using std::modfl _LIBCPP_USING_IF_EXISTS;
+  using std::modf VSTD_USING_IF_EXISTS;
+  using std::modff VSTD_USING_IF_EXISTS;
+  using std::modfl VSTD_USING_IF_EXISTS;
 
-  using std::scalbn _LIBCPP_USING_IF_EXISTS;
-  using std::scalbnf _LIBCPP_USING_IF_EXISTS;
-  using std::scalbnl _LIBCPP_USING_IF_EXISTS;
+  using std::scalbn VSTD_USING_IF_EXISTS;
+  using std::scalbnf VSTD_USING_IF_EXISTS;
+  using std::scalbnl VSTD_USING_IF_EXISTS;
 
-  using std::scalbln _LIBCPP_USING_IF_EXISTS;
-  using std::scalblnf _LIBCPP_USING_IF_EXISTS;
-  using std::scalblnl _LIBCPP_USING_IF_EXISTS;
+  using std::scalbln VSTD_USING_IF_EXISTS;
+  using std::scalblnf VSTD_USING_IF_EXISTS;
+  using std::scalblnl VSTD_USING_IF_EXISTS;
 
-  using std::cbrt _LIBCPP_USING_IF_EXISTS;
-  using std::cbrtf _LIBCPP_USING_IF_EXISTS;
-  using std::cbrtl _LIBCPP_USING_IF_EXISTS;
+  using std::cbrt VSTD_USING_IF_EXISTS;
+  using std::cbrtf VSTD_USING_IF_EXISTS;
+  using std::cbrtl VSTD_USING_IF_EXISTS;
 
   // [c.math.abs], absolute values
-  using std::abs _LIBCPP_USING_IF_EXISTS;
+  using std::abs VSTD_USING_IF_EXISTS;
 
-  using std::fabs _LIBCPP_USING_IF_EXISTS;
-  using std::fabsf _LIBCPP_USING_IF_EXISTS;
-  using std::fabsl _LIBCPP_USING_IF_EXISTS;
+  using std::fabs VSTD_USING_IF_EXISTS;
+  using std::fabsf VSTD_USING_IF_EXISTS;
+  using std::fabsl VSTD_USING_IF_EXISTS;
 
-  using std::hypot _LIBCPP_USING_IF_EXISTS;
-  using std::hypotf _LIBCPP_USING_IF_EXISTS;
-  using std::hypotl _LIBCPP_USING_IF_EXISTS;
+  using std::hypot VSTD_USING_IF_EXISTS;
+  using std::hypotf VSTD_USING_IF_EXISTS;
+  using std::hypotl VSTD_USING_IF_EXISTS;
 
   // [c.math.hypot3], three-dimensional hypotenuse
 
-  using std::pow _LIBCPP_USING_IF_EXISTS;
-  using std::powf _LIBCPP_USING_IF_EXISTS;
-  using std::powl _LIBCPP_USING_IF_EXISTS;
+  using std::pow VSTD_USING_IF_EXISTS;
+  using std::powf VSTD_USING_IF_EXISTS;
+  using std::powl VSTD_USING_IF_EXISTS;
 
-  using std::sqrt _LIBCPP_USING_IF_EXISTS;
-  using std::sqrtf _LIBCPP_USING_IF_EXISTS;
-  using std::sqrtl _LIBCPP_USING_IF_EXISTS;
+  using std::sqrt VSTD_USING_IF_EXISTS;
+  using std::sqrtf VSTD_USING_IF_EXISTS;
+  using std::sqrtl VSTD_USING_IF_EXISTS;
 
-  using std::erf _LIBCPP_USING_IF_EXISTS;
-  using std::erff _LIBCPP_USING_IF_EXISTS;
-  using std::erfl _LIBCPP_USING_IF_EXISTS;
+  using std::erf VSTD_USING_IF_EXISTS;
+  using std::erff VSTD_USING_IF_EXISTS;
+  using std::erfl VSTD_USING_IF_EXISTS;
 
-  using std::erfc _LIBCPP_USING_IF_EXISTS;
-  using std::erfcf _LIBCPP_USING_IF_EXISTS;
-  using std::erfcl _LIBCPP_USING_IF_EXISTS;
+  using std::erfc VSTD_USING_IF_EXISTS;
+  using std::erfcf VSTD_USING_IF_EXISTS;
+  using std::erfcl VSTD_USING_IF_EXISTS;
 
-  using std::lgamma _LIBCPP_USING_IF_EXISTS;
-  using std::lgammaf _LIBCPP_USING_IF_EXISTS;
-  using std::lgammal _LIBCPP_USING_IF_EXISTS;
+  using std::lgamma VSTD_USING_IF_EXISTS;
+  using std::lgammaf VSTD_USING_IF_EXISTS;
+  using std::lgammal VSTD_USING_IF_EXISTS;
 
-  using std::tgamma _LIBCPP_USING_IF_EXISTS;
-  using std::tgammaf _LIBCPP_USING_IF_EXISTS;
-  using std::tgammal _LIBCPP_USING_IF_EXISTS;
+  using std::tgamma VSTD_USING_IF_EXISTS;
+  using std::tgammaf VSTD_USING_IF_EXISTS;
+  using std::tgammal VSTD_USING_IF_EXISTS;
 
-  using std::ceil _LIBCPP_USING_IF_EXISTS;
-  using std::ceilf _LIBCPP_USING_IF_EXISTS;
-  using std::ceill _LIBCPP_USING_IF_EXISTS;
+  using std::ceil VSTD_USING_IF_EXISTS;
+  using std::ceilf VSTD_USING_IF_EXISTS;
+  using std::ceill VSTD_USING_IF_EXISTS;
 
-  using std::floor _LIBCPP_USING_IF_EXISTS;
-  using std::floorf _LIBCPP_USING_IF_EXISTS;
-  using std::floorl _LIBCPP_USING_IF_EXISTS;
+  using std::floor VSTD_USING_IF_EXISTS;
+  using std::floorf VSTD_USING_IF_EXISTS;
+  using std::floorl VSTD_USING_IF_EXISTS;
 
-  using std::nearbyint _LIBCPP_USING_IF_EXISTS;
-  using std::nearbyintf _LIBCPP_USING_IF_EXISTS;
-  using std::nearbyintl _LIBCPP_USING_IF_EXISTS;
+  using std::nearbyint VSTD_USING_IF_EXISTS;
+  using std::nearbyintf VSTD_USING_IF_EXISTS;
+  using std::nearbyintl VSTD_USING_IF_EXISTS;
 
-  using std::rint _LIBCPP_USING_IF_EXISTS;
-  using std::rintf _LIBCPP_USING_IF_EXISTS;
-  using std::rintl _LIBCPP_USING_IF_EXISTS;
+  using std::rint VSTD_USING_IF_EXISTS;
+  using std::rintf VSTD_USING_IF_EXISTS;
+  using std::rintl VSTD_USING_IF_EXISTS;
 
-  using std::lrint _LIBCPP_USING_IF_EXISTS;
-  using std::lrintf _LIBCPP_USING_IF_EXISTS;
-  using std::lrintl _LIBCPP_USING_IF_EXISTS;
+  using std::lrint VSTD_USING_IF_EXISTS;
+  using std::lrintf VSTD_USING_IF_EXISTS;
+  using std::lrintl VSTD_USING_IF_EXISTS;
 
-  using std::llrint _LIBCPP_USING_IF_EXISTS;
-  using std::llrintf _LIBCPP_USING_IF_EXISTS;
-  using std::llrintl _LIBCPP_USING_IF_EXISTS;
+  using std::llrint VSTD_USING_IF_EXISTS;
+  using std::llrintf VSTD_USING_IF_EXISTS;
+  using std::llrintl VSTD_USING_IF_EXISTS;
 
-  using std::round _LIBCPP_USING_IF_EXISTS;
-  using std::roundf _LIBCPP_USING_IF_EXISTS;
-  using std::roundl _LIBCPP_USING_IF_EXISTS;
+  using std::round VSTD_USING_IF_EXISTS;
+  using std::roundf VSTD_USING_IF_EXISTS;
+  using std::roundl VSTD_USING_IF_EXISTS;
 
-  using std::lround _LIBCPP_USING_IF_EXISTS;
-  using std::lroundf _LIBCPP_USING_IF_EXISTS;
-  using std::lroundl _LIBCPP_USING_IF_EXISTS;
+  using std::lround VSTD_USING_IF_EXISTS;
+  using std::lroundf VSTD_USING_IF_EXISTS;
+  using std::lroundl VSTD_USING_IF_EXISTS;
 
-  using std::llround _LIBCPP_USING_IF_EXISTS;
-  using std::llroundf _LIBCPP_USING_IF_EXISTS;
-  using std::llroundl _LIBCPP_USING_IF_EXISTS;
+  using std::llround VSTD_USING_IF_EXISTS;
+  using std::llroundf VSTD_USING_IF_EXISTS;
+  using std::llroundl VSTD_USING_IF_EXISTS;
 
-  using std::trunc _LIBCPP_USING_IF_EXISTS;
-  using std::truncf _LIBCPP_USING_IF_EXISTS;
-  using std::truncl _LIBCPP_USING_IF_EXISTS;
+  using std::trunc VSTD_USING_IF_EXISTS;
+  using std::truncf VSTD_USING_IF_EXISTS;
+  using std::truncl VSTD_USING_IF_EXISTS;
 
-  using std::fmod _LIBCPP_USING_IF_EXISTS;
-  using std::fmodf _LIBCPP_USING_IF_EXISTS;
-  using std::fmodl _LIBCPP_USING_IF_EXISTS;
+  using std::fmod VSTD_USING_IF_EXISTS;
+  using std::fmodf VSTD_USING_IF_EXISTS;
+  using std::fmodl VSTD_USING_IF_EXISTS;
 
-  using std::remainder _LIBCPP_USING_IF_EXISTS;
-  using std::remainderf _LIBCPP_USING_IF_EXISTS;
-  using std::remainderl _LIBCPP_USING_IF_EXISTS;
+  using std::remainder VSTD_USING_IF_EXISTS;
+  using std::remainderf VSTD_USING_IF_EXISTS;
+  using std::remainderl VSTD_USING_IF_EXISTS;
 
-  using std::remquo _LIBCPP_USING_IF_EXISTS;
-  using std::remquof _LIBCPP_USING_IF_EXISTS;
-  using std::remquol _LIBCPP_USING_IF_EXISTS;
+  using std::remquo VSTD_USING_IF_EXISTS;
+  using std::remquof VSTD_USING_IF_EXISTS;
+  using std::remquol VSTD_USING_IF_EXISTS;
 
-  using std::copysign _LIBCPP_USING_IF_EXISTS;
-  using std::copysignf _LIBCPP_USING_IF_EXISTS;
-  using std::copysignl _LIBCPP_USING_IF_EXISTS;
+  using std::copysign VSTD_USING_IF_EXISTS;
+  using std::copysignf VSTD_USING_IF_EXISTS;
+  using std::copysignl VSTD_USING_IF_EXISTS;
 
-  using std::nan _LIBCPP_USING_IF_EXISTS;
-  using std::nanf _LIBCPP_USING_IF_EXISTS;
-  using std::nanl _LIBCPP_USING_IF_EXISTS;
+  using std::nan VSTD_USING_IF_EXISTS;
+  using std::nanf VSTD_USING_IF_EXISTS;
+  using std::nanl VSTD_USING_IF_EXISTS;
 
-  using std::nextafter _LIBCPP_USING_IF_EXISTS;
-  using std::nextafterf _LIBCPP_USING_IF_EXISTS;
-  using std::nextafterl _LIBCPP_USING_IF_EXISTS;
+  using std::nextafter VSTD_USING_IF_EXISTS;
+  using std::nextafterf VSTD_USING_IF_EXISTS;
+  using std::nextafterl VSTD_USING_IF_EXISTS;
 
-  using std::nexttoward _LIBCPP_USING_IF_EXISTS;
-  using std::nexttowardf _LIBCPP_USING_IF_EXISTS;
-  using std::nexttowardl _LIBCPP_USING_IF_EXISTS;
+  using std::nexttoward VSTD_USING_IF_EXISTS;
+  using std::nexttowardf VSTD_USING_IF_EXISTS;
+  using std::nexttowardl VSTD_USING_IF_EXISTS;
 
-  using std::fdim _LIBCPP_USING_IF_EXISTS;
-  using std::fdimf _LIBCPP_USING_IF_EXISTS;
-  using std::fdiml _LIBCPP_USING_IF_EXISTS;
+  using std::fdim VSTD_USING_IF_EXISTS;
+  using std::fdimf VSTD_USING_IF_EXISTS;
+  using std::fdiml VSTD_USING_IF_EXISTS;
 
-  using std::fmax _LIBCPP_USING_IF_EXISTS;
-  using std::fmaxf _LIBCPP_USING_IF_EXISTS;
-  using std::fmaxl _LIBCPP_USING_IF_EXISTS;
+  using std::fmax VSTD_USING_IF_EXISTS;
+  using std::fmaxf VSTD_USING_IF_EXISTS;
+  using std::fmaxl VSTD_USING_IF_EXISTS;
 
-  using std::fmin _LIBCPP_USING_IF_EXISTS;
-  using std::fminf _LIBCPP_USING_IF_EXISTS;
-  using std::fminl _LIBCPP_USING_IF_EXISTS;
+  using std::fmin VSTD_USING_IF_EXISTS;
+  using std::fminf VSTD_USING_IF_EXISTS;
+  using std::fminl VSTD_USING_IF_EXISTS;
 
-  using std::fma _LIBCPP_USING_IF_EXISTS;
-  using std::fmaf _LIBCPP_USING_IF_EXISTS;
-  using std::fmal _LIBCPP_USING_IF_EXISTS;
+  using std::fma VSTD_USING_IF_EXISTS;
+  using std::fmaf VSTD_USING_IF_EXISTS;
+  using std::fmal VSTD_USING_IF_EXISTS;
 
   // [c.math.lerp], linear interpolation
-  using std::lerp _LIBCPP_USING_IF_EXISTS;
+  using std::lerp VSTD_USING_IF_EXISTS;
 
   // [c.math.fpclass], classification / comparison functions
-  using std::fpclassify _LIBCPP_USING_IF_EXISTS;
-  using std::isfinite _LIBCPP_USING_IF_EXISTS;
-  using std::isgreater _LIBCPP_USING_IF_EXISTS;
-  using std::isgreaterequal _LIBCPP_USING_IF_EXISTS;
-  using std::isinf _LIBCPP_USING_IF_EXISTS;
-  using std::isless _LIBCPP_USING_IF_EXISTS;
-  using std::islessequal _LIBCPP_USING_IF_EXISTS;
-  using std::islessgreater _LIBCPP_USING_IF_EXISTS;
-  using std::isnan _LIBCPP_USING_IF_EXISTS;
-  using std::isnormal _LIBCPP_USING_IF_EXISTS;
-  using std::isunordered _LIBCPP_USING_IF_EXISTS;
-  using std::signbit _LIBCPP_USING_IF_EXISTS;
+  using std::fpclassify VSTD_USING_IF_EXISTS;
+  using std::isfinite VSTD_USING_IF_EXISTS;
+  using std::isgreater VSTD_USING_IF_EXISTS;
+  using std::isgreaterequal VSTD_USING_IF_EXISTS;
+  using std::isinf VSTD_USING_IF_EXISTS;
+  using std::isless VSTD_USING_IF_EXISTS;
+  using std::islessequal VSTD_USING_IF_EXISTS;
+  using std::islessgreater VSTD_USING_IF_EXISTS;
+  using std::isnan VSTD_USING_IF_EXISTS;
+  using std::isnormal VSTD_USING_IF_EXISTS;
+  using std::isunordered VSTD_USING_IF_EXISTS;
+  using std::signbit VSTD_USING_IF_EXISTS;
 
   // [sf.cmath], mathematical special functions
 #if 0

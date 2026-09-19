@@ -17,7 +17,7 @@ export namespace std {
   // [ptr.align], pointer alignment
   using std::align;
   using std::assume_aligned;
-#if _LIBCPP_STD_VER >= 26
+#if VSTD_STD_VER >= 26
   using std::is_sufficiently_aligned;
 #endif
 
@@ -44,7 +44,7 @@ export namespace std {
   // [allocator.traits], allocator traits
   using std::allocator_traits;
 
-#if _LIBCPP_STD_VER >= 23
+#if VSTD_STD_VER >= 23
   using std::allocation_result;
 #endif
 
@@ -157,9 +157,9 @@ export namespace std {
   using std::reinterpret_pointer_cast;
   using std::static_pointer_cast;
 
-#if _LIBCPP_HAS_RTTI
+#if VSTD_HAS_RTTI
   using std::get_deleter;
-#endif // _LIBCPP_HAS_RTTI
+#endif // VSTD_HAS_RTTI
 
   // [util.smartptr.shared.io], shared_ptr I/O
 
@@ -180,7 +180,7 @@ export namespace std {
   // [util.smartptr.atomic], atomic smart pointers
   // using std::atomic;
 
-#if _LIBCPP_STD_VER >= 23
+#if VSTD_STD_VER >= 23
   // [out.ptr.t], class template out_ptr_t
   using std::out_ptr_t;
 
@@ -192,9 +192,9 @@ export namespace std {
 
   // [inout.ptr], function template inout_ptr
   using std::inout_ptr;
-#endif // _LIBCPP_STD_VER >= 23
+#endif // VSTD_STD_VER >= 23
 
-#if _LIBCPP_HAS_THREADS
+#if VSTD_HAS_THREADS
   // [depr.util.smartptr.shared.atomic]
   using std::atomic_is_lock_free;
 
@@ -211,5 +211,5 @@ export namespace std {
   using std::atomic_compare_exchange_strong_explicit;
   using std::atomic_compare_exchange_weak;
   using std::atomic_compare_exchange_weak_explicit;
-#endif // _LIBCPP_HAS_THREADS
+#endif // VSTD_HAS_THREADS
 } // namespace std

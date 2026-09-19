@@ -8,64 +8,64 @@
 //===----------------------------------------------------------------------===//
 
 export namespace std {
-  using std::div_t _LIBCPP_USING_IF_EXISTS;
-  using std::ldiv_t _LIBCPP_USING_IF_EXISTS;
-  using std::lldiv_t _LIBCPP_USING_IF_EXISTS;
-  using std::size_t _LIBCPP_USING_IF_EXISTS;
+  using std::div_t VSTD_USING_IF_EXISTS;
+  using std::ldiv_t VSTD_USING_IF_EXISTS;
+  using std::lldiv_t VSTD_USING_IF_EXISTS;
+  using std::size_t VSTD_USING_IF_EXISTS;
 
   // [support.start.term], start and termination
-  using std::_Exit _LIBCPP_USING_IF_EXISTS;
-  using std::abort _LIBCPP_USING_IF_EXISTS;
-  using std::at_quick_exit _LIBCPP_USING_IF_EXISTS;
-  using std::atexit _LIBCPP_USING_IF_EXISTS;
-  using std::exit _LIBCPP_USING_IF_EXISTS;
-  using std::quick_exit _LIBCPP_USING_IF_EXISTS;
+  using std::_Exit VSTD_USING_IF_EXISTS;
+  using std::abort VSTD_USING_IF_EXISTS;
+  using std::at_quick_exit VSTD_USING_IF_EXISTS;
+  using std::atexit VSTD_USING_IF_EXISTS;
+  using std::exit VSTD_USING_IF_EXISTS;
+  using std::quick_exit VSTD_USING_IF_EXISTS;
 
-  using std::getenv _LIBCPP_USING_IF_EXISTS;
-  using std::system _LIBCPP_USING_IF_EXISTS;
+  using std::getenv VSTD_USING_IF_EXISTS;
+  using std::system VSTD_USING_IF_EXISTS;
 
   // [c.malloc], C library memory allocation
-  using std::aligned_alloc _LIBCPP_USING_IF_EXISTS;
-  using std::calloc _LIBCPP_USING_IF_EXISTS;
-  using std::free _LIBCPP_USING_IF_EXISTS;
-  using std::malloc _LIBCPP_USING_IF_EXISTS;
-  using std::realloc _LIBCPP_USING_IF_EXISTS;
+  using std::aligned_alloc VSTD_USING_IF_EXISTS;
+  using std::calloc VSTD_USING_IF_EXISTS;
+  using std::free VSTD_USING_IF_EXISTS;
+  using std::malloc VSTD_USING_IF_EXISTS;
+  using std::realloc VSTD_USING_IF_EXISTS;
 
-  using std::atof _LIBCPP_USING_IF_EXISTS;
-  using std::atoi _LIBCPP_USING_IF_EXISTS;
-  using std::atol _LIBCPP_USING_IF_EXISTS;
-  using std::atoll _LIBCPP_USING_IF_EXISTS;
-  using std::strtod _LIBCPP_USING_IF_EXISTS;
-  using std::strtof _LIBCPP_USING_IF_EXISTS;
-  using std::strtol _LIBCPP_USING_IF_EXISTS;
-  using std::strtold _LIBCPP_USING_IF_EXISTS;
-  using std::strtoll _LIBCPP_USING_IF_EXISTS;
-  using std::strtoul _LIBCPP_USING_IF_EXISTS;
-  using std::strtoull _LIBCPP_USING_IF_EXISTS;
+  using std::atof VSTD_USING_IF_EXISTS;
+  using std::atoi VSTD_USING_IF_EXISTS;
+  using std::atol VSTD_USING_IF_EXISTS;
+  using std::atoll VSTD_USING_IF_EXISTS;
+  using std::strtod VSTD_USING_IF_EXISTS;
+  using std::strtof VSTD_USING_IF_EXISTS;
+  using std::strtol VSTD_USING_IF_EXISTS;
+  using std::strtold VSTD_USING_IF_EXISTS;
+  using std::strtoll VSTD_USING_IF_EXISTS;
+  using std::strtoul VSTD_USING_IF_EXISTS;
+  using std::strtoull VSTD_USING_IF_EXISTS;
 
   // [c.mb.wcs], multibyte / wide string and character conversion functions
-  using std::mblen _LIBCPP_USING_IF_EXISTS;
-#if _LIBCPP_HAS_WIDE_CHARACTERS
-  using std::mbstowcs _LIBCPP_USING_IF_EXISTS;
-  using std::mbtowc _LIBCPP_USING_IF_EXISTS;
-  using std::wcstombs _LIBCPP_USING_IF_EXISTS;
-  using std::wctomb _LIBCPP_USING_IF_EXISTS;
+  using std::mblen VSTD_USING_IF_EXISTS;
+#if VSTD_HAS_WIDE_CHARACTERS
+  using std::mbstowcs VSTD_USING_IF_EXISTS;
+  using std::mbtowc VSTD_USING_IF_EXISTS;
+  using std::wcstombs VSTD_USING_IF_EXISTS;
+  using std::wctomb VSTD_USING_IF_EXISTS;
 #endif
   // [alg.c.library], C standard library algorithms
-  using std::bsearch _LIBCPP_USING_IF_EXISTS;
-  using std::qsort _LIBCPP_USING_IF_EXISTS;
+  using std::bsearch VSTD_USING_IF_EXISTS;
+  using std::qsort VSTD_USING_IF_EXISTS;
 
   // [c.math.rand], low-quality random number generation
-  using std::rand _LIBCPP_USING_IF_EXISTS;
-  using std::srand _LIBCPP_USING_IF_EXISTS;
+  using std::rand VSTD_USING_IF_EXISTS;
+  using std::srand VSTD_USING_IF_EXISTS;
 
   // [c.math.abs], absolute values
-  using std::abs _LIBCPP_USING_IF_EXISTS;
+  using std::abs VSTD_USING_IF_EXISTS;
 
-  using std::labs _LIBCPP_USING_IF_EXISTS;
-  using std::llabs _LIBCPP_USING_IF_EXISTS;
+  using std::labs VSTD_USING_IF_EXISTS;
+  using std::llabs VSTD_USING_IF_EXISTS;
 
-  using std::div _LIBCPP_USING_IF_EXISTS;
-  using std::ldiv _LIBCPP_USING_IF_EXISTS;
-  using std::lldiv _LIBCPP_USING_IF_EXISTS;
+  using std::div VSTD_USING_IF_EXISTS;
+  using std::ldiv VSTD_USING_IF_EXISTS;
+  using std::lldiv VSTD_USING_IF_EXISTS;
 } // namespace std

@@ -49,12 +49,18 @@ module;
 
 #include <__config>
 
+// THE PORTABILITY LAYER, and the reason it sits exactly here: <__config> is what makes the
+// toolchain's own capability macros exist, and every partition below is written against the VSTD_*
+// spelling this file defines - which under libc++ IS the _LIBCPP_* macro, so this changes nothing
+// here and everything for a toolchain that is not libc++ (see vstd/vstd_compat.inc).
+#include "vstd_compat.inc"
+
 // The headers of Table 24: C++ library headers [tab:headers.cpp]
 // and the headers of Table 25: C++ headers for C library facilities [tab:headers.cpp.c]
 #include <algorithm>
 #include <any>
 #include <array>
-#if _LIBCPP_HAS_ATOMIC_HEADER
+#if VSTD_HAS_ATOMIC_HEADER
 #  include <atomic>
 #endif
 #include <bit>

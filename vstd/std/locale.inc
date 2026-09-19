@@ -8,7 +8,7 @@
 //===----------------------------------------------------------------------===//
 
 export namespace std {
-#if _LIBCPP_HAS_LOCALIZATION
+#if VSTD_HAS_LOCALIZATION
   // [locale], locale
   using std::has_facet;
   using std::locale;
@@ -67,7 +67,7 @@ export namespace std {
   using std::messages_base;
   using std::messages_byname;
 
-#  if _LIBCPP_STD_VER < 26 || defined(_LIBCPP_ENABLE_CXX26_REMOVED_WSTRING_CONVERT)
+#  if VSTD_STD_VER < 26 || defined(VSTD_ENABLE_CXX26_REMOVED_WSTRING_CONVERT)
 
   // [depr.conversions.buffer]
   using std::wbuffer_convert;
@@ -75,7 +75,7 @@ export namespace std {
   // [depr.conversions.string]
   using std::wstring_convert;
 
-#  endif // _LIBCPP_STD_VER < 26 || defined(_LIBCPP_ENABLE_CXX26_REMOVED_WSTRING_CONVERT)
+#  endif // VSTD_STD_VER < 26 || defined(VSTD_ENABLE_CXX26_REMOVED_WSTRING_CONVERT)
 
-#endif // _LIBCPP_HAS_LOCALIZATION
+#endif // VSTD_HAS_LOCALIZATION
 } // namespace std
