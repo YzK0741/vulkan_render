@@ -16,6 +16,7 @@
 #include <array>
 #include <cstdlib>
 #include <expected>
+#include <filesystem>
 #include <fstream>
 #include <map>
 #include <optional>
@@ -636,12 +637,21 @@ int main() {
         // arithmetic (`bloom_l0 + level * heap_image_capacity`), so l1..l3 are named in the header and never
         // spelled out in the host. Every other exception is a BUG, not a style choice.
         //
-        // NOTE FOR THE NEXT PARTITION: that list is EXPLICIT, so a partition that takes heap writes has to be
-        // added here by hand. Scanning vulkan/core and the runtime directories would be better, and is not
-        // done here because this commit is a move rather than a test rewrite.
+        // THIS SCANS THE RENDERER'S SOURCES INSTEAD OF NAMING THEM, and that is the fix for a real
+        // history: the explicit list broke three times, once per partition that took heap writes
+        // (core's constructor and runtime's), because a hand-kept list of "files where a heap write can
+        // live" has to be updated by the same person who just moved the writes. A directory walk cannot
+        // be forgotten, and it is STRICTER - it sees files the list never had.
         std::string host_text;
-        for (std::string const& path : {std::string("/vulkan/runtime.cpp"), std::string("/vulkan/core/core.cpp"), std::string("/vulkan/core/core.constructor.cppm")}) {
-            for (std::string const& line : read_lines(std::string(VR_TEST_SOURCE_DIR) + path)) {
+        for (auto const& entry : std::filesystem::recursive_directory_iterator(std::string(VR_TEST_SOURCE_DIR) + "/vulkan")) {
+            if (!entry.is_regular_file()) {
+                continue;
+            }
+            std::string const extension = entry.path().extension().string();
+            if (extension != ".cpp" && extension != ".cppm") {
+                continue;
+            }
+            for (std::string const& line : read_lines(entry.path().string())) {
                 host_text += line;
                 host_text += '\n';
             }
