@@ -492,6 +492,10 @@ namespace chores {
         // linear exposure applied before tonemapping (pbr.frag + skybox.frag); main pushes it
         // into the runtime every frame like the light slots
         panel.push_back(std::make_unique<vulkan::gui::slider_widget>("exposure", &bindings.exposure, 0.1f, 5.0f));
+        // the sun's own scale, next to the exposure it is easy to confuse it with: 1 = the shading
+        // path's constant 7.5, 0 = no sun at all (what furnace mode forces). main pushes it every frame
+        // like the exposure above.
+        panel.push_back(std::make_unique<vulkan::gui::slider_widget>("sun intensity", &bindings.sun_intensity, 0.0f, 3.0f));
         // bloom (bright-pass threshold + blend weight); 0 intensity disables it
         // the useful ranges: a threshold above ~0.75 leaves almost no pixel over it (so nothing
         // glows), and the intensity needed for a visible glow grows with the threshold - keeping

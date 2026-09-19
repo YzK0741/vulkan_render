@@ -127,6 +127,11 @@ namespace chores {
                                            // 2 = Beckmann, 3 = Blinn-Phong); write-through to runtime
         int diffuse_model = 0;             // diffuse combo (0 = Lambert, 1 = Oren-Nayar)
         float exposure = 1.0f;             // linear exposure slider (runtime::set_exposure)
+        // a scale on the sun's radiance, i.e. the shading path's constant 7.5 (runtime::set_sun_intensity).
+        // It is a SEPARATE knob from the exposure on purpose: the exposure scales the finished frame, while
+        // this moves how far into the tonemapper's flat, desaturating region the lit side sits - which is
+        // what decides whether a stylised model keeps its colour under a bright sun.
+        float sun_intensity = 1.0f;        // sun radiance scale slider (runtime::set_sun_intensity)
         // bloom on/off (M9): the checkbox gates the whole chain; the intensity slider keeps its value
         // while it is off, so toggling back restores the previous look. main() mirrors it by pushing an
         // intensity of 0 when the box is clear, which is what runtime::active_features() gates the
