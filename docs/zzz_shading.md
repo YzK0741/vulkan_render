@@ -270,6 +270,27 @@ large effect in the wrong direction, when the fixed patches show a small effect 
 through a mask are fine for comparing two renders against a fixed benchmark; they are not fine for deciding
 which way a knob moves.
 
+### ... and the hair, because that is where the ears are modelled
+
+千夏's ear SHELLS are not a material of their own: the flags channel shows them carrying the hair's byte, and
+the hair mesh is 81 connected fragments, so there is no clean ear island to split off. The converter's
+painted set therefore takes the hair too (`髮`, `髪`, `前髪`) - as a LOOK ARM rather than a correction, and
+the measurement says why:
+
+| hair arm | p10 | median | p90 | mean | spread |
+| --- | --- | --- | --- | --- | --- |
+| reference (the game) | 182.6 | 225.2 | 241.3 | 216.9 | 58.7 |
+| lit (what it was) | 194.7 | 221.4 | 230.1 | 217.1 | 35.4 |
+| painted, `unlit_gain` 1.3 | 215.7 | 228.0 | 236.0 | 225.1 | 20.2 |
+| painted, `unlit_gain` 1.0 | 198.4 | 208.8 | 235.1 | 211.6 | 36.6 |
+
+The game's own hair is MORE shaded than this engine's, not less (a spread of 58.7 against 35.4), so flattening
+it is a choice: it trades the strand volume for a drawn, uniform mass, and the painted version carries the
+strands' PAINTED detail instead of a lighting gradient. `unlit_gain` is the brightness knob for it - 1.3
+washes the hair towards white (mean 225.1 against the reference's 216.9) while 1.0 lands at 211.6, so about
+1.1 is the arm that keeps the flat look at the reference's level. Three prefixes in
+`scripts/pmx_to_glb.py` are the whole revert.
+
 ### The painted set is wider than the face: the ears are in it too
 
 The face is not the only thing on this model that should be DRAWN rather than lit. 千夏's ears live in the

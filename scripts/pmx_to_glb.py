@@ -413,6 +413,16 @@ def write_glb(out_path: Path, model: dict) -> dict:
     MMD_UNLIT_MATERIAL_PREFIXES = MMD_FACE_MATERIAL_PREFIXES + (
         "耳",  # ears
         "头饰",  # ... and the head wear they are modelled in on this asset
+        # ... AND THE HAIR, because 千夏's ears are modelled IN it (the ear shells are hair geometry:
+        # the flags channel shows them carrying the hair's byte, and the hair mesh is 81 connected
+        # fragments, so there is no clean ear island to split off). Measured cost, against the in-game
+        # capture's own hair: its tonal spread falls from 35.4 to 20.2 where the reference's is 58.7, and
+        # its mean rises from 217.1 to 225.1 where the reference's is 216.9 - i.e. the game's hair is MORE
+        # shaded than this, so painting it is a look choice rather than a correction. See
+        # docs/zzz_shading.md; removing these three prefixes is the whole revert.
+        "髮",
+        "髪",
+        "前髪",
     )
 
     gltf_materials = []
