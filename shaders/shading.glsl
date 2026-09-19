@@ -857,8 +857,17 @@ vec3 shade_surface(shade_input s) {
     // the G-buffer the other passes read. A normal bent towards the eye used for the shadow comparison
     // self-shadows (the offset no longer matches the surface) and one used for SSAO occludes the face
     // against itself - both measured as a face going grey on a turned head.
+    //
+    // AND THE TARGET IS THE CAMERA'S VIEW AXIS, NOT THE PER-FRAGMENT DIRECTION TO THE EYE. The first version
+    // used normalize(v), and that breaks at exactly the angles a user reported: looked at from below, the
+    // eye vector lies almost IN the face's plane, so a normal blended 85% towards it swings AWAY from the
+    // light, n.l falls off the cel threshold and the face reads as shadowed - past about 30 degrees of
+    // elevation. One direction for the whole face keeps it a flat plane that always faces the viewer.
     const float face_normal_flatten = 0.85;
-    const vec3 shading_normal = mix(s.normal, normalize(v), s.face_mask * face_normal_flatten);
+    // (the sign is measured, not reasoned about: +view[2] points AWAY from the eye in this engine's view
+    // matrix, and the face went black - the target has to be the direction from the scene TO the camera)
+    const vec3 face_forward = -normalize(camera[heap_camera_slot].view[2].xyz);
+    const vec3 shading_normal = mix(s.normal, face_forward, s.face_mask * face_normal_flatten);
 
     // directional sun: shadow factor attenuates only this light; IBL ambient stays unshadowed
     {

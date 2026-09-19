@@ -334,6 +334,16 @@ again and `shade_surface` derives the flattened one locally, where a normal is a
 else. Measured after the fix, the frontal face is unchanged (cheek 196.9 against 197.3, i.e. jitter) and
 the sun still moves it (196.9 -> 180.9 at `sun_intensity` 0.5).
 
+**And the flattening's TARGET has to be one direction for the whole face, not the per-fragment eye vector.**
+A user diagnosed this one: looked at from below, `normalize(v)` lies almost IN the face's plane, so a normal
+blended 85% towards it swings away from the light, `n.l` falls off the cel threshold, and the LOWER FACE
+goes dark - from about 30 degrees of elevation upwards, which is exactly the angle they reported. The
+target is the CAMERA'S VIEW AXIS (one direction per frame, the direction from the scene to the camera), so
+the face stays a flat plane facing the viewer at every angle. Measured at pitch -45 with the skin mask over
+a fixed box: spread 25.9 -> 17.8 and mean luma 213.7 -> 222.3, and the dark lower half in the comparison
+at build-release-clang64/gi-probe/ is gone. The sign of that axis is measured rather than reasoned about -
+`+view[2]` points AWAY from the eye in this engine's view matrix and the face went black.
+
 ### The painted set is wider than the face: the ears are in it too
 
 The face is not the only thing on this model that should be DRAWN rather than lit. 千夏's ears live in the
