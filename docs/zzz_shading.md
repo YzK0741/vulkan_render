@@ -70,10 +70,19 @@ one is the reason the warp was briefly removed from the "what does this look lik
   over, arguing that the tinted colour already IS the shadowed result and an extra ndotl would darken the
   shadow side twice. This engine's sun carries a radiance of 7.5 (`shade_surface`), so that put the lit
   band at `albedo/pi * 7.5` = 2.4x the albedo and the tonemapper resolved it to white. Measured on the
-  stylised asset's face region (mean R/G/B): PBR 154/155/166, the warp without ndotl 176/177/188, pure
-  albedo (unlit) 182/180/185, and the warp with the light factor kept 151/153/166 - i.e. the wrong shape
-  had flattened the shading into the texture, and the right one leaves the face where the PBR path has it
-  while still banding and tinting it.
+  asset's face region (mean R/G/B), one camera, one frame count, and - for the two warp arms - one commit
+  apart so that only the expression differs:
+
+  | | R | G | B | R stddev |
+  | --- | --- | --- | --- | --- |
+  | PBR (no warp) | 151.2 | 158.1 | 168.8 | 69.1 |
+  | warp, light factor dropped (wrong) | 172.9 | 178.4 | 190.1 | 65.7 |
+  | warp, light factor kept | 146.8 | 154.2 | 166.7 | 68.4 |
+  | pure albedo (unlit) | 181.0 | 185.2 | 190.7 | 45.8 |
+
+  The wrong shape sits at the albedo's own level with its contrast flattened towards the unlit row's - i.e.
+  it had pushed the shading into the texture. The right one bands and tints the face while leaving it where
+  the PBR path has it.
 - **The specular keeps the falloff, and the SAME one the diffuse uses.** Handing it the raw cosine while
   the diffuse took none - the first version's split - let the whole model, unlit side included, collect the
   sun's full specular. Both terms now carry `light_radiance * ndotl`, with the ndotl the ramp produced.
