@@ -47,6 +47,7 @@ void main() {
 
     shade_input si;
     si.pixel = ivec2(gl_FragCoord.xy); // the cluster grid's tile coordinate (see shade_input)
+    si.uv = v_uv;
     si.world_pos = v_world_pos;
     si.normal = s.normal;
     si.albedo = s.albedo;

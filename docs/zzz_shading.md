@@ -270,6 +270,32 @@ large effect in the wrong direction, when the fixed patches show a small effect 
 through a mask are fine for comparing two renders against a fixed benchmark; they are not fine for deciding
 which way a knob moves.
 
+### The face is PAINTED, not lit - and its nose mark is redrawn
+
+The reference's `- Face` shader reads a face light map and a `TData` mask, and never the sun. That is not an
+optimisation, it is the whole point of a face in this style: an anime face IS its painting - the eyes, the
+blush, the mouth and the nose mark - and lighting it means washing that painting out. So face materials (the
+converter's `mmd_face`) now take `albedo * face_gain` and NONE of the stack above it: no sun, no IBL
+ambient, no AO, no rim, no specular.
+
+Measured, and the reason it is worth doing rather than a matter of taste: the face's CHROMA (the mean
+sRGB max-minus-min over the skin mask) sits at 38.3 with the painted path against the reference's 31.1,
+where the lit face had 24.6 - the lit path was losing a third of the painting's colour to the lighting.
+
+**The nose mark.** The texture already paints one - a ~10x20 texel dot at uv (0.5000, 0.5073) in this
+model's 2048 atlas - but this render puts the whole face into about a hundred pixels, so a texel-true mark
+is sub-pixel and invisible. It is redrawn as an ellipse in UV SPACE at the painted mark's own position and
+shape (`face_nose_uv` / `face_nose_radius` / `face_nose_strength` in shading.glsl): a model-specific
+constant, which is exactly what the reference's per-model face light map would have carried. Measured on a
+fixed 7x9 pixel patch at the nose tip: luma 242.2 before, 229.6 after.
+
+Two honest notes about the numbers above. `face_gain` (1.3) is a LOOK constant rather than a fitted one,
+because neither metric can fit it: the skin-mask quartiles are not comparable between arms (a brighter face
+admits more of its own dark pixels, so the mean can move the wrong way - the same trap recorded above), and
+a mask-free box has to be mostly hair and background to avoid that, which makes it insensitive to the face.
+The two numbers that ARE reliable here are the ones quoted: the chroma, from the mask, and the nose patch,
+from a fixed box.
+
 ### Making the face FLAT, which is what the face shader is for
 
 The reference's `- Face` group exists to keep the surface NORMALS from shading a face: its factor comes from
