@@ -2579,11 +2579,13 @@ namespace vulkan {
          *        infinite falloff, otherwise a smooth cutoff at this distance), and for spot
          *        lights `spot = true` + `spot_direction` + `spot_outer_cos` (cos of the outer
          *        half-angle; the shader derives the soft inner cone as mix(outer, 1, 0.6)).
-         *        Entries beyond `vulkan::max_punctual_lights` (4) are dropped.
+         *        Entries beyond `vulkan::max_punctual_lights` (128) are dropped.
          * @note same timing rule as set_brdf_model: CPU-side only, copied into the paced
-         *       slot's buffer every frame, so safe at any time (GUI included). The demo GUI
-         *       currently exposes two POINT lights (no spot toggle); programmatic callers can
-         *       set spot lights directly.
+         *       slot's buffer every frame, so safe at any time (GUI included). The demo GUI edits
+         *       four slots ONE AT A TIME - a `punctual light` combo picks the slot and the group
+         *       below draws only that one (enable + position / color / intensity / range, plus
+         *       direction / inner and outer cone when the slot is a spot) - so a spot light is
+         *       settable from the panel as well as by a programmatic caller.
          */
         void set_point_lights(std::span<punctual_light const> lights) noexcept;
 

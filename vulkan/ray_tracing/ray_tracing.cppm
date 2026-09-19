@@ -40,6 +40,27 @@ import vulkan.pass.compute_skin; // the skinning job's request, which this modul
 import vulkan.pass.mask_bake;    // ... and the MASK bake's
 import utility;
 
+/**
+ * @file vulkan/ray_tracing/ray_tracing.cppm
+ * @defgroup vulkan_ray_tracing Ray-Tracing Structures and Casters
+ * @brief The structure phase: the acceleration structures every traced effect casts rays against, the map
+ *        that says which caster each one was built from, and the copies the hit-shading path reads that
+ *        geometry through (the MASK expansion and the skinned vertices).
+ *
+ * WHY IT IS A MODULE AND NOT PART OF vulkan.acceleration_structure: that module owns the GPU objects and
+ * says so in its own header - "nothing in this module knows what a primitive, a material or a draw call
+ * is" - and what is here is exactly that knowledge: which casters, which material is alphaMode MASK, which
+ * primitive is skinned, which buffer a hit must be read from. The two layers are `add`/`record_build`
+ * (there) and the POLICY plus the GATHER (here).
+ *
+ * WHY IT IS NOT A PASS, although it is one of the frame's phases: the structures are read by three
+ * consumers (the ray-traced shadow pass among them), so by this project's ownership rule they belong to
+ * the SHARED owner rather than to any one pass - and the phase is recorded BEFORE any rendering instance
+ * opens, which no pass's stage can express. What the renderer keeps is the POLICY (the three knobs and the
+ * two predicates), the caster set, the ORDER of the phase, and the scene block's slot it publishes the
+ * handle through.
+ */
+
 export import vstd;
 export import vulkan.core;
 export import vulkan.primitive;
