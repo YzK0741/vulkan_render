@@ -169,8 +169,6 @@ target_sources(vulkancorekit
     PRIVATE
         vulkan/core/core.cpp
         vulkan/core/filter/filters.cpp
-        vulkan/core/vma/vma.cpp
-        vulkan/core/descriptor_heap/descriptor_heap.cpp
         vulkan/core/handles/handles.cpp
         vulkan/init_utils/init_utils.cpp
         vulkan/core/pipeline/pipeline.cpp

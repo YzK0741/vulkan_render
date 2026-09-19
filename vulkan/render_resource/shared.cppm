@@ -11,7 +11,7 @@
  * pool count is derivable) be checked in `ctest` on a machine with no GPU. The capture gate cannot run in CI
  * at all, because its references are tied to one machine's driver, so that property is the only verification
  * this layer can have there. Handles are `VkImageView`/`VkBuffer`/`VkSampler`, so they live HERE, nested under
- * the same region - the repository's own convention (`vulkan.core.vma.handles`, `vulkan.core.pipeline`) is
+ * the same region - the repository's own convention (`vulkan.core:vma_handles`, `vulkan.core.pipeline`) is
  * that a region's internal parts nest while peer areas stay flat.
  *
  * WHAT BELONGS HERE: handles for resources the SCHEMA declares as shared (`resource_scope::device_wide` and

@@ -11,7 +11,7 @@
 // sit inside the init run (heap_slot_offset, write_heap_grid_image, write_heap_scene_buffer) came too,
 // and runtime.cpp keeps a copy of the ones its own frame path still calls. Duplication of small
 // file-local helpers across two anonymous namespaces is legal but it IS duplication: the follow-up is to
-// publish the heap three from vulkan.core.descriptor_heap, where heap plumbing belongs.
+// publish the heap three from vulkan.core:descriptor_heap, where heap plumbing belongs.
 //
 // Imports are NOT transitive: this partition imports what the moved code calls, and repeats the pmr
 // keep-alive that must run before any pmr container in this TU.

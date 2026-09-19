@@ -163,7 +163,7 @@ export namespace vulkan {
          *
          * The door rather than a wrapper per resource kind: a pass that creates GPU memory says so by asking
          * for the allocator, and the handles it gets back are RAII (`vk_buffer` / `vk_image` from
-         * `vulkan.core.vma.handles`), so a pass's own resources are released by its own destructor in the order
+         * `vulkan.core:vma_handles`), so a pass's own resources are released by its own destructor in the order
          * it wrote them. What the allocator does NOT do for a pass is decide the lifetime RULES: a per-generation
          * resource still has to be rebuilt in `on_swapchain_recreated`, and a descriptor family built over one
          * still has to retire its pool rather than destroy it (see `vulkan.bindings`).

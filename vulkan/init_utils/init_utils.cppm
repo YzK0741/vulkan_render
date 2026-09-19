@@ -62,7 +62,7 @@ export import vulkan.core; // the vma handles + the vk_* wrappers this interface
  *       two `create_image` span templates are additionally unusable as written: they forward
  *       `(data, create_info, size, type)` to an overload declared `(data, size, create_info, type)`, so
  *       instantiating either one is a compile error. Recorded rather than fixed here, because that fix
- *       belongs to vulkan.core.vma and not to this module.)
+ *       belongs to vulkan.core:vma and not to this module.)
  */
 namespace vulkan::init_utils {
     /**

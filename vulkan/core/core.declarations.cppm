@@ -36,9 +36,9 @@ export module vulkan.core:declarations;
 import utility;
 export import vstd;
 export import vulkan.core.handles;
-export import vulkan.core.vma;
-export import vulkan.core.descriptor_heap;
-export import vulkan.core.vma.handles;
+export import :vma;
+export import :descriptor_heap;
+export import :vma_handles;
 
 /**
  * @file core.cppm
