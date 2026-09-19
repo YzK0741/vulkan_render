@@ -9,7 +9,7 @@
 
 // ============================================================================
 // module: vstd
-// module version: 0.1.0a  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.1.1a  (independent of the app version in CMakeLists project(VERSION))
 //
 // The project's STL module, MODIFIED FROM libc++ (LLVM's C++ standard
 // library): a trimmed copy of libc++'s generated std-module output (upstream

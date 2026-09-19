@@ -1,6 +1,6 @@
 // ============================================================================
 // module: app_config
-// module version: 0.27.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.28.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // Startup configuration: TOML file (config.toml / --config) merged with argv.
 // Pure CPU, no Vulkan dependency.

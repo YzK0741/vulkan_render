@@ -1,6 +1,6 @@
 // ============================================================================
 // module: utility
-// module version: 0.6.0a  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.7.0a  (independent of the app version in CMakeLists project(VERSION))
 //
 // Pure-CPU toolkit: data_block, BVH, thread_pool, frame_clock / frame_stats,
 // better_pmr (mimalloc routing), content hashing. Standalone - no Vulkan or app

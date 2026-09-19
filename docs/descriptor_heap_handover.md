@@ -1,15 +1,15 @@
 # Descriptor heap migration: handover
 
-**The tree builds, and the renderer now runs end to end** - it initialises, creates every pipeline,
-records frames and saves a screenshot (exit 0). **The frame is black**, and the log says exactly why.
-This is still not the finished state, but it is no longer a migration that cannot execute at all.
+**STATUS: this document is the HISTORICAL RECORD of a finished migration.** Everything below was
+written while the work was in flight, so where it uses the present tense, read the past: the frame
+that was black renders, and the descriptor-set world it describes as still present - the set layouts,
+the pools, the per-pass descriptor families, the pipeline layouts and the whole mapping shim - has
+been DELETED, commit by commit, with the proof each one carried (see
+`docs/descriptor_heap_migration.md`, "Deletions ... ALL DONE"). What is still worth reading here is
+the reasoning and the measured bugs: this is where the design's shape comes from, and where the bugs
+that made the frame black and the fallback texture nobody wrote are recorded with their numbers.
 
-Branch `descriptor-heap-migration` holds the work. `pass-chain` (7fdeb86) is the last commit whose
-gate passes, and it is untouched, which is why this work is on a branch. The migration's unit is the
-whole frame and it has no green intermediate state - a half-migrated frame renders nothing, and that
-measurement (hash `DC5F6D66428C26D8`, mean `0.00` against the reference's `88.1`) is now *explained*
-rather than merely observed: see (e) below. So a mid-migration commit cannot pass the gate, and the
-choice was between saving the work off the gate-checked branch and losing twenty-five rounds of it.
+The work rode on the `descriptor-heap-migration` branch while it was in flight, because the migration's unit is the whole frame and a half-migrated frame renders nothing (hash `DC5F6D66428C26D8`, mean `0.00` against the reference's `88.1`, *explained* rather than merely observed: see (e) below). It is FINISHED - the branch carries the conversions and the deletions that followed them, and the commits that end the story, with the byte-identical gate proof each one carried, are recorded in `docs/descriptor_heap_migration.md`.
 
 ## What is done, and what verifies it
 
@@ -233,7 +233,7 @@ RenderDoc 1.46 cannot capture this renderer at all, and the reason is on RenderD
 HIDES `VK_EXT_descriptor_heap` from the application. Measured with `vulkaninfo` - without the layer
 `VK_EXT_descriptor_heap : extension revision 1` is listed (498 `VK_` lines); with
 `ENABLE_VULKAN_RENDERDOC_CAPTURE=1` it is gone (403 lines). Under the layer the app therefore takes its
-no-heap fallback (`descriptor heap: not available (descriptor sets stay the binding model)`) and dies when
+no-heap fallback (that log line then read `descriptor sets stay the binding model`; it now says the heap is the only binding model this renderer has, because there are no descriptor sets left to stay) and dies when
 the heap-native shaders are compiled. GFXReconstruct fails the same way. So the diagnosis was done with
 instruments inside the renderer instead, and they found the bug.
 
@@ -265,3 +265,36 @@ multi-image read-back that located this one: copy the swapchain, `hdr`, `scene_c
 G-buffer albedo into one staging buffer per capture and print each centre pixel - that shows exactly which
 stage drops it. The read-back code is in this branch's history (it was reverted; re-add it in
 `record_screenshot_copy`).
+
+## The bug the write path hid: a fallback texture nobody gave a heap slot
+
+**Symptom, measured at the gate's own camera.** Sponza rendered every indirectly-lit surface solid
+black: mean luma 33.67 with 72.24% of pixels below luma 12, against the official reference's 61.17 /
+13.66%. It was NOT the shadows - `shadow = false` produced a BYTE-IDENTICAL frame - and not SSAO,
+SSGI or the stochastic chain either (`ssao = false`, `ssgi = false`, `megalights = false` and even
+`irr_size = 1` / `env_size = 16` were all byte-identical, with the config dump proving those keys were
+loaded). `unlit = true` was bright and complete (mean 120.04) and every G-buffer channel was fully
+populated (albedo 118, normal 196), so geometry, textures and materials were fine and the fault was
+entirely in the shading.
+
+**The renderer had already said so.** Its own startup probe reads grid slot 16384 - the first slot of
+the bindless texture array - and the log had read for weeks:
+
+    the heap-native probe sampled grid slot 16384 ... read back 0x00000000 (texture red 0x0000, alpha 0x0000)
+    the material table's DEFAULT record read 0xffff (its white base colour is 0xffff)
+
+**Cause.** The 1x1 white fallback texture is created in the runtime's constructor and never passes
+through `register_material`'s heap-write loop, so its slot stayed EMPTY. Every material slot with no
+texture points at that index - Sponza's stone carries no occlusion map - so `s.ao` sampled as 0, and
+`shaders/shading.glsl` multiplies BOTH the diffuse ambient and the specular IBL by `s.ao`: those
+surfaces were left with the sun's direct light and nothing else. That is also why it looked
+Sponza-only: the assets whose materials DO carry an occlusion map (DamagedHelmet, and the five
+scenarios built on it) were untouched, and the metal sweep was the opposite of insensitive - `s.ao`
+scales the specular IBL too, which for a metal ball is nearly the whole image.
+
+**Fix and proof** (commit `f714580`): one `write_image` at creation. The probe now reads
+`0xffffffff`; sponza went 33.67 -> 61.24 mean and 72.24% -> 13.51% dark against the official 61.17 /
+13.66%; MetalRoughSpheres' two scenarios went 117.79 and 118.46 -> 123.02 and 123.23 against 123.00
+and 123.19; the blend asset landed exactly on 122.24. The five helmet scenarios did not move at all,
+which is the prediction the diagnosis made before the fix was written, and the gate reported exactly
+those four changed and no others.
