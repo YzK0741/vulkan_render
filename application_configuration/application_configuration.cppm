@@ -116,6 +116,14 @@ namespace app_config {
         // range's texel size. Applied BEFORE the scene import - see runtime::set_shadow_cascades.
         int shadow_cascades = 3;
         float shadow_cascade_blend = 0.1f;
+        // Shadow depth bias ([render] shadow_bias_constant / shadow_bias_slope): the rasterization bias the
+        // shadow pass pushes a caster's depth by, which is what keeps a lit surface from shadowing itself
+        // (acne). The defaults are the runtime's own (runtime::shadow_depth_bias_constant/_slope), so a config
+        // that omits them behaves exactly as before they existed. `slope` scales with the surface's depth
+        // gradient and is the one that usually matters; `constant` is a flat offset. The GUI panel exposes the
+        // same two values as sliders.
+        float shadow_bias_constant = 0.0f;
+        float shadow_bias_slope = 1.5f;
         // Clustered light culling ([render] clustered_lights, M5): the punctual lights are sorted
         // into a screen-tile x depth-slice grid once per frame and the shading stage loops only its
         // own cluster's list. false = the brute-force loop over every active light - the reference

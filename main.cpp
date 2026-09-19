@@ -187,6 +187,7 @@ int main(int argc, char** argv) {
     // is created when the first scene set binds it - see runtime::set_shadow_cascades.
     runtime.set_shadow_cascades(static_cast<uint32_t>(settings.render.shadow_cascades));
     runtime.set_shadow_cascade_blend(settings.render.shadow_cascade_blend);
+    runtime.set_shadow_depth_bias(settings.render.shadow_bias_constant, settings.render.shadow_bias_slope, 0.0f);
     // shadow map edge length: same startup-only rule as the cascade count (the layered image and its
     // views are created when the first scene set binds them, so this must precede the scene import)
     runtime.set_shadow_map_size(static_cast<uint32_t>(settings.render.shadow_map_size));

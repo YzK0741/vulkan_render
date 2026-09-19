@@ -180,6 +180,16 @@ namespace app_config {
                     settings.render.shadow_cascade_blend = static_cast<float>(*value);
                 }
             }
+            if (toml::node const* node = render->get("shadow_bias_constant")) {
+                if (std::optional<double> const value = node->value<double>()) {
+                    settings.render.shadow_bias_constant = static_cast<float>(*value);
+                }
+            }
+            if (toml::node const* node = render->get("shadow_bias_slope")) {
+                if (std::optional<double> const value = node->value<double>()) {
+                    settings.render.shadow_bias_slope = static_cast<float>(*value);
+                }
+            }
             if (toml::node const* node = render->get("clustered_lights")) {
                 if (std::optional<bool> const value = node->value<bool>()) {
                     settings.render.clustered_lights = *value;

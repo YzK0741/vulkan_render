@@ -118,6 +118,14 @@ shadow_map_size = 2048
 # (0.1 = the last 10% of the range). 0 = a hard switch.
 shadow_cascade_blend = 0.1
 
+# shadow_bias_constant / shadow_bias_slope: the rasterization depth bias the shadow pass applies to a
+# caster's depth, which is what stops a lit surface from shadowing itself. These are the runtime's own
+# defaults, so omitting them changes nothing; `slope` scales with the depth gradient and is the one that
+# usually matters, `constant` is a flat offset. The debug GUI exposes the same two as sliders, and moving
+# them there overrides whatever the config said.
+shadow_bias_constant = 0.0
+shadow_bias_slope = 1.5
+
 # clustered_lights: sort the punctual lights into a screen-tile x depth-slice grid once per frame (a
 # compute pass, shaders/light_cluster.comp) and evaluate only the pixel own cluster list instead of
 # every active light. This is what makes a light count far past the old four affordable: measured on
