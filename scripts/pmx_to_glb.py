@@ -121,10 +121,24 @@ def read_pmx(path: Path):
     extra_uvs: list[list[tuple[float, float]]] = []  # PMX additional vec4 UVs -> glTF TEXCOORD_1/2
     edge_scales: list[float] = []
     for _ in range(vertex_count):
-        positions.append(r.vec(3))
-        normals.append(r.vec(3))
+        position = r.vec(3)
+        normal = r.vec(3)
+        # PMX is LEFT-handed with its models facing -Z, and glTF is right-handed with the camera on +Z, so
+        # the coordinates are MIRRORED in Z rather than rotated. A rotation would have preserved the
+        # handedness and left the model's own left/right swapped; a mirror both turns it to face the camera
+        # (measured: without this the model renders back-to-front, in a scene whose glTF models face it) and
+        # converts the handedness. A mirror inverts triangle winding, which is why the faces are reversed.
+        positions.append((position[0], position[1], -position[2]))
+        normals.append((normal[0], normal[1], -normal[2]))
         uv = r.vec(2)
-        uvs.append((uv[0], 1.0 - uv[1]))  # MMD's V axis is flipped against glTF's
+        # NOT flipped, and that is a measurement rather than a preference. glTF's UV origin is the texture's
+        # UPPER-left corner and so is MMD's, so the two agree and a flip mirrors every lookup. Measured on
+        # this model's face material: with `1.0 - v` the forehead and the eyes sample the atlas's dark-fabric
+        # and eye-closeup regions - a brown smear across the face, and black where the ornament is - while
+        # without it the face is the face: irises, eyebrows, blush and the hair ornament where they were
+        # authored. (This converter carried the flip from the start, with the comment that MMD's V is flipped
+        # against glTF's; the render says otherwise.)
+        uvs.append((uv[0], uv[1]))
         # The field is the count of ADDITIONAL vec4 UVs (the main UV is always present). They are KEPT: the
         # ZZZ-style shading this model is headed for needs UV0/UV1/UV2 - the XIYAG reference shader's own
         # instructions require three UV maps, see the credit note in the file header.
@@ -161,7 +175,11 @@ def read_pmx(path: Path):
 
     # ---- faces ----
     face_index_count = r.i32()
-    indices = [index(vertex_index_size) for _ in range(face_index_count)]
+    face_indices = [index(vertex_index_size) for _ in range(face_index_count)]
+    # Reversed within every triangle, because the Z mirror above inverts the winding and a reader is
+    # entitled to cull by it. The model's materials are double-sided, so this is not what makes it visible -
+    # it is what keeps the winding consistent with the coordinates.
+    indices = [face_indices[tri + 2 - corner] for tri in range(0, len(face_indices), 3) for corner in range(3)]
 
     # ---- textures ----
     texture_count = r.i32()
