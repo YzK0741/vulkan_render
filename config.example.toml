@@ -147,6 +147,17 @@ toon_shadow_tint = [1.0, 1.0, 1.0]
 # term with the texture left out; docs/zzz_shading.md records what is still missing.
 toon_rim = 0.0
 
+# ---- the outline (an inverted hull; see docs/zzz_shading.md) ----
+# A second copy of the model is expanded along its own normals by `outline_width` WORLD units and drawn with
+# its FRONT faces culled, so the only part that survives the depth test is the sliver the real surface does
+# not cover - a silhouette. The colour goes into the G-buffer's albedo rather than on top of the frame, which
+# is what makes the line lit, shadowed and tonemapped with the model it surrounds. `outline_width = 0` (the
+# default) records no hull at all. THE WIDTH IS ABSOLUTE, not a fraction of the scene: a model ten times
+# larger wants a width ten times larger, and that is per-asset (the reference takes it from the model's own
+# per-vertex edge scale, which this engine does not import yet).
+outline_color = [0.0, 0.0, 0.0]
+outline_width = 0.0
+
 # clustered_lights: sort the punctual lights into a screen-tile x depth-slice grid once per frame (a
 # compute pass, shaders/light_cluster.comp) and evaluate only the pixel own cluster list instead of
 # every active light. This is what makes a light count far past the old four affordable: measured on

@@ -89,6 +89,24 @@ namespace vulkan::pass {
         // with the two indices its push block carries picking the frame's generation. The per-segment bind this
         // replaced existed because a secondary inherits no state from its primary; the heap bind has the same
         // property, and the runtime makes it when it records the segment's command buffer.
+        //
+        // THE OUTLINE HULLS FIRST (see docs/zzz_shading.md), then the surfaces. Order is not what makes the
+        // outline work - the depth test is, because the hull is the model pushed outwards and the shell it
+        // contributes is exactly what the surface does not cover - but recording them first means the hull
+        // loop shares one pipeline bind and one cull-mode set for the whole segment. Front faces are culled
+        // and depth writes are ON: where the hull wins the depth test it IS the surface the lighting stage
+        // will read, so it has to leave the depth the rest of the frame expects.
+        if (this->frame_.outline) {
+            env.bind_outline();
+            env.set_cull_front();
+            env.set_depth_write(true);
+            for (primitive const* const leaf : leaves) {
+                if (leaf->transparent) {
+                    continue; // a blended material has no silhouette to outline: it would wrap the hull in air
+                }
+                leaf->draw_outline(env);
+            }
+        }
         for (primitive const* const leaf : leaves) {
             leaf->draw(env); // polymorphic: normal / instanced / static / custom, each through its own pipeline
         }

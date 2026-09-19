@@ -31,6 +31,12 @@ namespace {
         CHECK(settings.render.toon_shadow_tint[1] > 0.499f && settings.render.toon_shadow_tint[1] < 0.501f);
         CHECK(settings.render.toon_shadow_tint[2] > 0.749f && settings.render.toon_shadow_tint[2] < 0.751f);
         CHECK(settings.render.toon_rim > 0.799f && settings.render.toon_rim < 0.801f);
+        // the outline: both keys at non-default values (the width is the one that matters - 0 is the
+        // compiled default AND the generated default, so only this fixture proves it is read at all)
+        CHECK(settings.render.outline_color[0] > 0.099f && settings.render.outline_color[0] < 0.101f);
+        CHECK(settings.render.outline_color[1] > 0.049f && settings.render.outline_color[1] < 0.051f);
+        CHECK(settings.render.outline_color[2] > 0.199f && settings.render.outline_color[2] < 0.201f);
+        CHECK(settings.render.outline_width > 0.059f && settings.render.outline_width < 0.061f);
         CHECK(settings.render.rt_shadows);                                                       // fixture: the ray-traced sun shadows
         CHECK(!settings.render.rt_mask_bake);                                                    // fixture: the bake off (the A/B)
         CHECK(settings.render.rt_skin_bake);                                                     // fixture: the per-frame skin refit on
@@ -156,6 +162,10 @@ namespace {
         CHECK(settings.render.toon_softness > 0.14f && settings.render.toon_softness < 0.16f);
         CHECK(settings.render.toon_shadow_tint[0] == 1.0f && settings.render.toon_shadow_tint[1] == 1.0f && settings.render.toon_shadow_tint[2] == 1.0f);
         CHECK(settings.render.toon_rim == 0.0f);
+        // the outline: the generator writes both, and its defaults are the NEUTRAL pair (black, width 0),
+        // which is what leaves the hull unrecorded in a frame that does not ask for one
+        CHECK(settings.render.outline_color[0] == 0.0f && settings.render.outline_color[1] == 0.0f && settings.render.outline_color[2] == 0.0f);
+        CHECK(settings.render.outline_width == 0.0f);
         // [render] ray tracing: written by the generator like every other switch, so it round-trips
         CHECK(!settings.render.rt_shadows);
         CHECK(!settings.render.rt_mask_bake);         // default: the mask bake is off (see the generated-defaults fixture)

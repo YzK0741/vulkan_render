@@ -3,7 +3,7 @@
 //         GPU primitives that live in the scene-tree leaves, plus the GPU
 //         material / camera / light UBO records of the scene block; versioned in
 //         lock-step with vulkan.runtime, see that module's banner)
-// module version: 0.9.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.10.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // GPU scene contents (namespace vulkan):
 //   - vulkan::primitive (owns geometry buffers + material push constants,
@@ -60,10 +60,18 @@ namespace vulkan {
         float padding = 0.0f;
         glm::mat4 view_proj_unjittered; // current view * projection, jitter removed
         glm::mat4 prev_view_proj;       // the previous RENDERED frame's view * projection
+        // ---- the OUTLINE parameters (runtime::set_outline; see docs/zzz_shading.md), APPENDED so every
+        //      offset above keeps its value and a stage that declares the block without this member still
+        //      matches the buffer:
+        //        xyz = the outline's colour (written into the G-buffer's albedo by shaders/outline.frag)
+        //        w   = its width in WORLD units, which is the distance the hull's vertex stage pushes a
+        //              vertex along its world normal. 0 = the outline is off, and then no hull is drawn at
+        //              all - which is what keeps a stock frame's commands unchanged.
+        glm::vec4 outline = glm::vec4(0.0f);
     };
     // std140 layout check (same style as light_ubo below): two mat4, a vec4-aligned position, then
-    // the two unjittered matrices the motion vectors read
-    static_assert(sizeof(camera_ubo) == 4 * sizeof(glm::mat4) + sizeof(glm::vec4));
+    // the two unjittered matrices the motion vectors read, then the outline lane
+    static_assert(sizeof(camera_ubo) == 4 * sizeof(glm::mat4) + 2 * sizeof(glm::vec4));
     static_assert(offsetof(camera_ubo, proj) == sizeof(glm::mat4));
     static_assert(offsetof(camera_ubo, camera_pos) == 2 * sizeof(glm::mat4));
     static_assert(offsetof(camera_ubo, view_proj_unjittered) == 2 * sizeof(glm::mat4) + sizeof(glm::vec4));
@@ -555,6 +563,22 @@ namespace vulkan {
         // the primitive lets draw() pick the depth-write state without a GPU readback.
         bool transparent = false;
 
+        /**
+         * @brief record this primitive's geometry a SECOND time as an outline hull (see docs/zzz_shading.md)
+         * @param env the recording session; it must already have the hull's pipeline bound (bind_outline)
+         *
+         * The default implementation binds this leaf's own geometry and issues the same indexed draw with
+         * the same push block as draw(): the hull's difference is entirely in its two shader stages (the
+         * vertex one expands along the world normal) and in the front-face culling the caller set, so no
+         * leaf has to re-describe its geometry. A leaf whose geometry belongs to someone else - an instanced
+         * draw reads its source's buffers - overrides this, exactly as it overrides draw().
+         *
+         * It is deliberately NOT part of vulkan::scene_tree::primitive (which only knows draw()): a hull is
+         * something this renderer adds to geometry it owns, not something every scene-tree primitive must be
+         * able to produce.
+         */
+        virtual void draw_outline(render_environment& env) const;
+
         // local-space AABB of this primitive's geometry (model space, i.e. before push.model);
         // filled by the runtime when the geometry is uploaded. has_bounds == false means "no
         // single world AABB" (e.g. an instanced primitive spreads over many transforms) and the
@@ -638,6 +662,7 @@ namespace vulkan {
         uint32_t instance_count = 0;
 
         void draw(render_environment& env) const override;
+        void draw_outline(render_environment& env) const override; // the hull geometry is source's, not ours
         void destroy(vma_allocator& vma) noexcept override;
         [[nodiscard]] bool is_valid() const noexcept override;
     };
@@ -722,6 +747,9 @@ namespace vulkan {
         std::vector<chunk_record> chunks = {};
 
         void draw(render_environment& env) const override;
+        // the hull of a static draw goes through the same chunk table its draw does (see the .cpp): one
+        // offset draw per chunk, so a batch of many materials outlines as the batches it is made of
+        void draw_outline(render_environment& env) const override;
         void destroy(vma_allocator& vma) noexcept override;
         [[nodiscard]] bool is_valid() const noexcept override;
     };

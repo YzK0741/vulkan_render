@@ -1,4 +1,4 @@
-// module version: 0.2.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.3.0  (independent of the app version in CMakeLists project(VERSION))
 
 /**
  * @file vulkan/pass/scene.cppm
@@ -102,6 +102,10 @@ export namespace vulkan::pass {
         VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
         /// whether this frame writes the G-buffer (the surface pass) or shades into the HDR target
         bool gbuffer = true;
+        /// whether to record the OUTLINE hulls before the surfaces (see docs/zzz_shading.md)
+        /// The renderer answers this, not the pass: it is true only when a width was asked for AND the
+        /// hull's pipeline exists, which is what makes "outline off" cost no commands at all.
+        bool outline = false;
         VkExtent2D extent = {0, 0};
     };
 

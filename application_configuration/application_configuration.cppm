@@ -1,6 +1,6 @@
 // ============================================================================
 // module: app_config
-// module version: 0.30.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.31.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // Startup configuration: TOML file (config.toml / --config) merged with argv.
 // Pure CPU, no Vulkan dependency.
@@ -136,6 +136,15 @@ namespace app_config {
         float toon_softness = 0.15f;
         std::array<float, 3> toon_shadow_tint = {1.0f, 1.0f, 1.0f};
         float toon_rim = 0.0f;
+        // ---- the OUTLINE ([render] outline_color / outline_width; see docs/zzz_shading.md): an inverted
+        // hull of the scene, drawn into the G-buffer in `outline_color`, expanded by `outline_width` WORLD
+        // units. Width 0 is the default and means the hull is not recorded at all, so the default frame is
+        // the frame recorded before this existed. The width is absolute rather than relative to the scene,
+        // which is the honest form for a per-model look: a model ten times larger wants a width ten times
+        // larger, and the value that suits a given asset is measured rather than guessed (the reference
+        // takes it per-vertex from the model's own edge scale instead - see the doc's "not here yet").
+        std::array<float, 3> outline_color = {0.0f, 0.0f, 0.0f};
+        float outline_width = 0.0f;
         // Clustered light culling ([render] clustered_lights, M5): the punctual lights are sorted
         // into a screen-tile x depth-slice grid once per frame and the shading stage loops only its
         // own cluster's list. false = the brute-force loop over every active light - the reference

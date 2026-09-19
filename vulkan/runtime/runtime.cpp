@@ -955,6 +955,14 @@ namespace vulkan {
         this->toon_rim = std::clamp(rim, 0.0f, 2.0f);
     }
 
+    void runtime::set_outline(glm::vec3 const& color, float const width) noexcept {
+        // The clamp is wide on purpose (2.0 in each channel and 2.0 world units): an outline is a look, and
+        // what a model wants depends on its own scale and palette. What it is NOT is unbounded, because a
+        // width of tens of world units turns a silhouette into a blob that costs fill rate for nothing.
+        this->outline_color = glm::clamp(color, glm::vec3(0.0f), glm::vec3(2.0f));
+        this->outline_width = std::clamp(width, 0.0f, 2.0f);
+    }
+
     void runtime::set_bloom(float const intensity, float const threshold) noexcept {
         this->bloom_intensity = std::clamp(intensity, 0.0f, 4.0f);
         // above ~0.75 the scene has almost no pixel brighter than the threshold, so nothing

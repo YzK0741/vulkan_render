@@ -694,6 +694,10 @@ set(VR_SHADER_SOURCES
     heap_probe.comp
     heap_probe.vert heap_probe.frag
     shadow.vert shadow.frag post.vert post.frag fxaa.frag
+    # the inverted hull: a second copy of the model expanded along its normals and drawn with the front
+    # faces culled, into the SAME G-buffer the surface writes (see docs/zzz_shading.md). Its pipeline is
+    # the runtime's own, like the gbuffer one - it writes the same five targets with the same state.
+    outline.vert outline.frag
 )
 set(VR_SHADER_OUTPUTS "")
 # --target-env=vulkan1.3 on EVERY shader, not just the ray-traced one. glslc defaults to vulkan1.0, and

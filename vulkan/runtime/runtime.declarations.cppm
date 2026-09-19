@@ -8,7 +8,7 @@
 // ============================================================================
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.73.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.74.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -354,6 +354,11 @@ namespace vulkan {
         // id/AO/flags go into core::gbuffer_* (1x targets + the pass's own 1x depth), so the opaque
         // pass runs at 1x.
         std::optional<vk_pipeline> gbuffer_pipeline = std::nullopt;
+        // The OUTLINE hull's pipeline (runtime::make_outline_pipeline): the G-buffer pipeline's state and its
+        // five targets with the hull's own two stages, so a hull writes into the same G-buffer the surface
+        // does and is lit/shadowed/tonemapped with it (see docs/zzz_shading.md). Optional like the G-buffer
+        // one: without it no hull is drawn at all.
+        std::optional<vk_pipeline> outline_pipeline = std::nullopt;
         // whether the opaque pass writes the G-buffer this frame (see set_gbuffer_debug). Only
         // takes effect once the needed pipelines exist, so the flags can be set before setup ends.
         bool gbuffer_debug = false;
@@ -815,6 +820,11 @@ namespace vulkan {
         // the view-space rim added on top. Copied into light_state.npr_shadow/npr_rim every frame.
         glm::vec3 toon_shadow_tint = glm::vec3(1.0f);
         float toon_rim = 0.0f;
+        // The OUTLINE (runtime::set_outline; see docs/zzz_shading.md): the hull's colour and its width in
+        // world units. 0 width = no hull is recorded at all, which is the compiled default and what keeps a
+        // frame that does not ask for an outline byte-identical to one recorded before it existed.
+        glm::vec3 outline_color = glm::vec3(0.0f);
+        float outline_width = 0.0f;
         // bloom parameters (see set_bloom): blend weight into the HDR image and the bright-pass
         // threshold subtracted in linear space (0 intensity disables the effect)
 
@@ -2104,6 +2114,20 @@ namespace vulkan {
 
         /**
          * @ingroup vulkan_runtime
+         * @brief the OUTLINE: an inverted hull of the whole scene, drawn into the G-buffer in @p color
+         * @param color the line's colour, written into the G-buffer's albedo, so it is lit and tonemapped
+         *        with the surface it surrounds (clamped to 0..2 per channel)
+         * @param width the hull's expansion in WORLD units - the distance its vertex stage pushes a vertex
+         *        along its world normal (0 = the outline is off, which is the default; clamped to 0..2)
+         * @note width 0 disables it, and "disabled" means the hull commands are not recorded at all rather
+         *       than recorded and discarded: the frame's camera UBO carries the width and the scene pass
+         *       reads it to decide whether to run its hull loop.
+         * @note same timing rule as set_toon_warp: CPU-side state, copied into the light UBO every frame
+         */
+        void set_outline(glm::vec3 const& color, float width) noexcept;
+
+        /**
+         * @ingroup vulkan_runtime
          * @brief bloom amount for the post-process pass (bright-pass threshold + blend weight)
          * @param intensity how much of the blurred bright pass is added back (0 disables bloom)
          * @param threshold linear luminance subtracted in the bright pass (visible range 0..0.75:
@@ -2299,6 +2323,19 @@ namespace vulkan {
          *       default: the G-buffer pass binds it explicitly).
          */
         std::expected<void, std::string> make_gbuffer_pipeline(std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code);
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief create the OUTLINE hull's pipeline: the G-buffer pipeline's formats and state, the hull's stages
+         * @param vertex_shader_code raw SPIR-V of outline.vert
+         * @param fragment_shader_code raw SPIR-V of outline.frag
+         * @return success, or an error message on failure
+         * @note It shares make_gbuffer_pipeline's builder rather than repeating its format list: a hull writes
+         *       the five targets a surface writes, and two lists that must agree is exactly the drift this
+         *       avoids. Cull mode is NOT part of it - the hull is drawn with the front faces culled, which the
+         *       scene pass sets as dynamic state before its hull loop (see scene_pass::record_segment).
+         */
+        std::expected<void, std::string> make_outline_pipeline(std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code);
 
         /**
          * @ingroup vulkan_runtime

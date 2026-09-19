@@ -551,6 +551,9 @@ int main(int argc, char** argv) {
     }
     gui.toon_softness = settings.render.toon_softness;
     runtime.set_toon_warp(glm::vec3(settings.render.toon_shadow_tint[0], settings.render.toon_shadow_tint[1], settings.render.toon_shadow_tint[2]), settings.render.toon_rim);
+    // ... and the OUTLINE ([render] outline_color / outline_width): the inverted hull, whose width 0 default
+    // means the scene pass records no hull commands at all (see docs/zzz_shading.md)
+    runtime.set_outline(glm::vec3(settings.render.outline_color[0], settings.render.outline_color[1], settings.render.outline_color[2]), settings.render.outline_width);
 
     // ---- authored (glTF) punctual lights -> the editable gui light slots ----
     // KHR_lights_punctual lights load straight into the gui slots (up to

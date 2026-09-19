@@ -222,6 +222,26 @@ namespace app_config {
                     settings.render.toon_rim = static_cast<float>(std::clamp(*value, 0.0, 2.0));
                 }
             }
+            // ---- the outline (see docs/zzz_shading.md): the hull's colour and its width in world units,
+            //      clamped to the bounds runtime::set_outline applies (0 width = no hull at all).
+            if (toml::node const* node = render->get("outline_color")) {
+                if (toml::array const* color = node->as_array()) {
+                    std::size_t i = 0;
+                    for (toml::node const& element : *color) {
+                        if (i >= settings.render.outline_color.size()) {
+                            break;
+                        }
+                        if (std::optional<double> const channel = element.value<double>()) {
+                            settings.render.outline_color[i++] = static_cast<float>(std::clamp(*channel, 0.0, 2.0));
+                        }
+                    }
+                }
+            }
+            if (toml::node const* node = render->get("outline_width")) {
+                if (std::optional<double> const value = node->value<double>()) {
+                    settings.render.outline_width = static_cast<float>(std::clamp(*value, 0.0, 2.0));
+                }
+            }
             if (toml::node const* node = render->get("clustered_lights")) {
                 if (std::optional<bool> const value = node->value<bool>()) {
                     settings.render.clustered_lights = *value;

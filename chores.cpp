@@ -227,6 +227,16 @@ namespace chores {
             if (!gbuffer_result) {
                 utility::log("gbuffer pipeline disabled: {}", gbuffer_result.error());
             } else {
+                // The OUTLINE hull's pipeline (see docs/zzz_shading.md), created only when the G-buffer
+                // pipeline is: a hull writes the G-buffer, so a frame that shades forward has nowhere to put
+                // one. Optional like its G-buffer sibling - without it, runtime::set_outline has no effect and
+                // the scene pass records no hulls.
+                load_shader(shaders_dir, "outline.vert.spv", vertex_code);
+                load_shader(shaders_dir, "outline.frag.spv", fragment_code);
+                auto const outline_result = runtime.make_outline_pipeline(vertex_code, fragment_code);
+                if (!outline_result) {
+                    utility::log("outline pipeline disabled: {}", outline_result.error());
+                }
                 // The debug view is a PASS (vulkan.pass.geometry_buffer_debug): the app registers its two shaders and the
                 // pass builds its pipeline, which is all it owns. The samplers those declarations
                 // choose between are the device root's now (`core::create_samplers`).
