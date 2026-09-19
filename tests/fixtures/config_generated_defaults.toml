@@ -60,6 +60,8 @@ ssao_samples = 8
 # ---- [render] cel/toon + ZZZ-style NPR (see docs/zzz_shading.md) ----
 exposure = 1.0
 sun_intensity = 1.0
+unlit_gain = 1.3
+face_nose_strength = 1.0
 toon_steps = 0
 toon_softness = 0.15
 toon_shadow_tint = [1.0, 1.0, 1.0]

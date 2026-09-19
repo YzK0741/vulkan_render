@@ -25,6 +25,8 @@ ssao_samples = 4
 # these four keys (the generated-defaults fixture cannot, because three of its values are neutral).
 exposure = 0.75
 sun_intensity = 0.8
+unlit_gain = 1.15
+face_nose_strength = 0.4
 toon_steps = 5
 toon_softness = 0.05
 toon_shadow_tint = [0.55, 0.5, 0.75]

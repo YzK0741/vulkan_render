@@ -176,6 +176,8 @@ def write_toml(path: str, cfg: dict) -> None:
         "# ---- [render] cel/toon + ZZZ-style NPR (see docs/zzz_shading.md) ----",
         f"exposure = {cfg['exposure']}",
         f"sun_intensity = {cfg['sun_intensity']}",
+        f"unlit_gain = {cfg['unlit_gain']}",
+        f"face_nose_strength = {cfg['face_nose_strength']}",
         f"toon_steps = {cfg['toon_steps']}",
         f"toon_softness = {cfg['toon_softness']}",
         "toon_shadow_tint = [{0}, {1}, {2}]".format(*cfg["toon_shadow_tint"]),
@@ -288,6 +290,20 @@ def ask_all(output_dir: str) -> dict:
         0.0,
         3.0,
         hint="a scale on the sun's radiance; 1.0 = the shading path's constant 7.5 unchanged",
+    )
+    unlit_gain = ask_float(
+        "render.unlit_gain",
+        1.3,
+        0.0,
+        3.0,
+        hint="the painted face's gain on its albedo (the sun scale cannot move the face - see docs/zzz_shading.md)",
+    )
+    face_nose_strength = ask_float(
+        "render.face_nose_strength",
+        1.0,
+        0.0,
+        1.0,
+        hint="how far the redrawn nose mark darkens toward black at its centre (0 = no mark)",
     )
     exposure = ask_float(
         "render.exposure",
@@ -421,6 +437,8 @@ def ask_all(output_dir: str) -> dict:
         "ssao_samples": ssao_samples,
         "exposure": exposure,
         "sun_intensity": sun_intensity,
+        "unlit_gain": unlit_gain,
+        "face_nose_strength": face_nose_strength,
         "toon_steps": toon_steps,
         "toon_softness": toon_softness,
         "toon_shadow_tint": toon_shadow_tint,

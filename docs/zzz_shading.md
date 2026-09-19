@@ -282,14 +282,35 @@ Measured, and the reason it is worth doing rather than a matter of taste: the fa
 sRGB max-minus-min over the skin mask) sits at 38.3 with the painted path against the reference's 31.1,
 where the lit face had 24.6 - the lit path was losing a third of the painting's colour to the lighting.
 
-**The nose mark.** The texture already paints one - a ~10x20 texel dot at uv (0.5000, 0.5073) in this
+**The nose mark.** (Its brightness knob is the NON-PBR coefficient below.) The texture already paints one - a ~10x20 texel dot at uv (0.5000, 0.5073) in this
 model's 2048 atlas - but this render puts the whole face into about a hundred pixels, so a texel-true mark
 is sub-pixel and invisible. It is redrawn as an ellipse in UV SPACE at the painted mark's own position and
 shape (`face_nose_uv` / `face_nose_radius` / `face_nose_strength` in shading.glsl): a model-specific
 constant, which is exactly what the reference's per-model face light map would have carried. Measured on a
 fixed 7x9 pixel patch at the nose tip: luma 242.2 before, 229.6 after.
 
-Two honest notes about the numbers above. `face_gain` (1.3) is a LOOK constant rather than a fitted one,
+**Where the mark has to be drawn, which a measurement rather than a reading found.** Its first version sat
+in the lighting stage, next to the gain, and did NOTHING: the offset lane's gain worked and the mark's
+strength measured as a no-op (a sweep from 1.0 to 0.0 moved 392 pixels, which is the run-to-run jitter).
+The reason is that this engine shades this model through the G-buffer, whose lighting stage has a SCREEN
+uv, not the surface's - the ellipse was being drawn at the middle of the frame, where no fragment is
+marked as face. It lives in `gather_surface` now, the pass that has the real uv, so the forward and the
+deferred path both get it.
+
+**Its size has to be measured in PIXELS, not in uv.** The painted mark is 10x20 texels of a 2048 atlas -
+half a percent of the face - and this render puts the whole face into about a hundred pixels, so a
+uv-space ellipse of the painted size covers 0.38 of ONE pixel: a whole-face probe (a 0.5 radius) proved
+the path live while the real size still measured as nothing. It is sized by `fwidth(uv)` instead, i.e. a
+constant size ON SCREEN at any zoom, which is what line art does.
+
+**And the metric had to change too.** The mark is about twelve pixels of 1,036,800, i.e. an order of
+magnitude BELOW the run-to-run jitter that a whole-frame pixel count sees, and the largest frame-wide
+differences between a marked and an unmarked frame are the debug overlay's own fps text. A region diff is
+what shows it: in the face box the mark's pixels go from (232,228,225) to (113,101,97) - a 125-luma drop -
+and a fixed patch over them measures luma 228.2 at strength 0, 225.8 at 0.5, 217.1 at 1.0.
+
+Two honest notes about the numbers above. `unlit_gain` (1.3) - the NON-PBR brightness coefficient, renamed from `face_gain` because the face is
+not the only thing it could scale: it multiplies every surface drawn from its albedo - is a LOOK constant rather than a fitted one,
 because neither metric can fit it: the skin-mask quartiles are not comparable between arms (a brighter face
 admits more of its own dark pixels, so the mean can move the wrong way - the same trap recorded above), and
 a mask-free box has to be mostly hair and background to avoid that, which makes it insensitive to the face.

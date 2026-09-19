@@ -131,7 +131,7 @@ struct surface_sample {
  *       mirrored UV layouts (glTF TANGENT.w = -1) are handled implicitly and the vertex TANGENT
  *       attribute is never consumed; a degenerate UV derivative falls back to the fine normal.
  */
-surface_sample gather_surface(vec3 world_pos, vec3 geo_normal, vec2 uv, vec3 view_normal) {
+surface_sample gather_surface(vec3 world_pos, vec3 geo_normal, vec2 uv, vec3 view_normal, float nose_strength) {
     Material mat = heap_material_tables[heap_slots_materials].materials[push.material_index];
 
     surface_sample s;
@@ -196,6 +196,30 @@ surface_sample gather_surface(vec3 world_pos, vec3 geo_normal, vec2 uv, vec3 vie
         const vec3 sphere = heap_sample(mat.sphere_index, sphere_uv).rgb;
         s.sphere_sample = sphere;
         s.albedo = sphere_mode == 1u ? s.albedo * sphere : s.albedo + sphere;
+    }
+    // ---- THE NOSE MARK, redrawn at a FIXED size in UV space. The texture paints one - a ~10x20 texel dot
+    // at uv (0.5000, 0.5073) in this model's 2048 atlas - but this render puts the whole face into about a
+    // hundred pixels, so a texel-true mark is sub-pixel and vanishes. The artist's mark is what makes a
+    // face read as anime, so it is redrawn here as an ellipse at the painted mark's own position and shape:
+    // a model-specific constant, which is exactly what the reference's per-model face light map carries.
+    //
+    // IT LIVES IN THIS PASS, NOT IN THE LIGHTING, and that is not a style choice: the mark needs the
+    // SURFACE uv, and the deferred path's lighting stage only has a screen uv - the G-buffer carries no
+    // per-surface coordinates. Its first version sat in shade_surface and drew its ellipse at the middle of
+    // the FRAME, on fragments nothing had marked as face: measured, a strength sweep from 1.0 to 0.0 moved
+    // 392 pixels, which is the run-to-run jitter. Here both the forward and the deferred path get it.
+    if ((mat.flags & 128u) != 0u && nose_strength > 0.0) {
+        const vec2 nose_uv = vec2(0.5000, 0.5073);
+        // SIZED IN PIXELS, NOT IN UV, and that is the correction a measurement forced: the painted mark is
+        // 10x20 texels of a 2048 atlas, i.e. 0.5% of the face, and this render puts the face into about a
+        // hundred pixels - so a uv-space ellipse of the painted size covers 0.38 of ONE pixel and moved
+        // nothing (a whole-face probe proved the path live, a strength sweep of the real size proved it
+        // invisible). fwidth(uv) is how many uv units one pixel spans, so the mark keeps a constant SIZE ON
+        // SCREEN at any zoom, which is what line art does.
+        const vec2 uv_per_pixel = max(fwidth(uv), vec2(1e-6));
+        const vec2 nose_radius = uv_per_pixel * 2.0; // about a 4-pixel-wide mark
+        const float nose_d = length((uv - nose_uv) / nose_radius);
+        s.albedo *= mix(1.0, mix(1.0, 0.12, smoothstep(1.0, 0.35, nose_d)), nose_strength);
     }
     return s;
 }

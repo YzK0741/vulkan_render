@@ -130,6 +130,7 @@ layout(descriptor_heap, descriptor_stride = heap_slot_stride) uniform LightUBO {
     //                  the frame's toon_shadow_band (0 = the frame-wide constant, the compiled default).
     vec4 npr_shadow;
     vec4 npr_rim;
+    vec4 npr_face;
 } light[];
 
 // Per-cluster light lists (scene set bindings 11/12), written by shaders/light_cluster.comp: one
@@ -818,8 +819,6 @@ struct shade_input {
                     // with the shading input rather than only being folded into the albedo
     float face_mask; // 1 for the face block: the reference's `- Face` group is a separate shader whose shadow
                     // is much lighter than the body's, and this carries that fact from the vertex stage
-    vec2 uv;        // the surface's texture coordinates: the face path draws the artist's nose mark by uv,
-                    // because at render scale the one painted in the atlas is sub-pixel
     vec3 emissive;  // emissive radiance, linear (added after the lighting)
     float metallic; // 0 = dielectric, 1 = metal
     float roughness; // perceptual roughness
@@ -929,28 +928,22 @@ vec3 shade_surface(shade_input s) {
 
     vec3 color = ambient + direct + specular_ibl + s.emissive;
 
-    // ---- THE FACE IS PAINTED, NOT LIT, and that is the reference's own arrangement: its `- Face` shader
+    // ---- THE NON-PBR PATH: A SURFACE DRAWN FROM ITS ALBEDO, NOT FROM THE LIGHT (the reference's own
+    // arrangement for a face: its `- Face` shader
     // reads a face light map and a `TData` mask, never the sun - which is why an anime face keeps its
     // painted eyes, blush and nose mark instead of having them lit and washed out. Face materials (the
     // converter's `mmd_face`) therefore take the albedo with a gain, and none of the stack above.
     //
-    // `face_gain` compensates for the fact that this path no longer receives the sun's radiance: measured
-    // against the in-game capture, the reference's lit face sits at luma 236 where this asset's raw albedo
-    // sits at 217, so a gain of about 1.15-1.2 is what matches it. 1.0 is the compiled default (the albedo
-    // exactly), and every frame without a face material is untouched either way.
-    const float face_gain = 1.3;
-    vec3 face_color = s.albedo * face_gain;
+    // `unlit_gain` (the light UBO's npr_face.x) compensates for the fact that this path no longer receives
+    // the sun's radiance: measured against the in-game capture, the reference's lit face sits at luma
+    // 236 where this asset's raw albedo sits at 217, so a gain above 1 is what matches it. It is a
+    // CONFIG value ([render] unlit_gain, a gui slider) because the frame's sun scale deliberately
+    // cannot reach this path - the face is painted, and it needs its own brightness knob.
+    const float unlit_gain = light[heap_light_slot].npr_face.x;
+    vec3 face_color = s.albedo * unlit_gain;
 
-    // ... AND THE NOSE MARK, drawn at a FIXED size in UV space. The texture paints one - a ~10x20 texel dot
-    // at uv (0.5000, 0.5073) in this model's 2048 atlas - but this render puts the whole face in about a
-    // hundred pixels, so a texel-true dot is sub-pixel and vanishes. The artist's mark is what makes a face
-    // read as anime, so it is redrawn here as an ellipse in uv space: a model-specific constant, which is
-    // exactly what the reference's per-model face light map would have carried. (0 strength = off.)
-    const vec2 face_nose_uv = vec2(0.5000, 0.5073);
-    const vec2 face_nose_radius = vec2(0.0045, 0.0085); // uv units, wide x tall (the painted mark's shape)
-    const float face_nose_strength = 0.75;
-    const float nose_d = length((s.uv - face_nose_uv) / face_nose_radius);
-    face_color *= mix(1.0, mix(1.0, 0.12, smoothstep(1.0, 0.35, nose_d)), s.face_mask);
+    // The nose mark is NOT here: it needs the surface uv, which this stage does not have in the deferred
+    // path, so gather_surface draws it on the albedo instead (see surface.glsl).
 
     color = mix(color, face_color, s.face_mask);
 

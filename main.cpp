@@ -557,6 +557,8 @@ int main(int argc, char** argv) {
     // ... and the sun's scale rides the same rule for the same reason: the frame loop pushes it, so a
     // config that is not seeded into the gui here would be replaced by the slider's default on frame 1.
     gui.sun_intensity = settings.render.sun_intensity;
+    gui.unlit_gain = settings.render.unlit_gain;
+    gui.face_nose_strength = settings.render.face_nose_strength;
     runtime.set_toon_warp(glm::vec3(settings.render.toon_shadow_tint[0], settings.render.toon_shadow_tint[1], settings.render.toon_shadow_tint[2]), settings.render.toon_rim, settings.render.toon_shadow_band, settings.render.toon_specular, settings.render.toon_shadow_band_gain);
     // ... and the OUTLINE ([render] outline_color / outline_width): the inverted hull, whose width 0 default
     // means the scene pass records no hull commands at all (see docs/zzz_shading.md)
@@ -768,6 +770,7 @@ int main(int argc, char** argv) {
         chores::apply_point_lights(runtime, gui, demo_lights);
         runtime.set_exposure(gui.exposure);                                                     // gui exposure slider -> linear scale (post-process pass)
         runtime.set_sun_intensity(gui.sun_intensity);                                           // gui sun slider -> the shading path's 7.5 scale
+        runtime.set_face_shading(gui.unlit_gain, gui.face_nose_strength);                       // gui face sliders -> the painted face
         runtime.set_bloom(gui.bloom_enabled ? gui.bloom_intensity : 0.0f, gui.bloom_threshold); // bloom checkbox + knobs -> post pass
         runtime.set_max_fps(config.settings.render.max_fps);                                    // 0 = uncapped (see config.example.toml)
         // FXAA: mirrored every frame like the other post-process values (the runtime clamps them and

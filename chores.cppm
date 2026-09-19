@@ -132,6 +132,10 @@ namespace chores {
         // this moves how far into the tonemapper's flat, desaturating region the lit side sits - which is
         // what decides whether a stylised model keeps its colour under a bright sun.
         float sun_intensity = 1.0f;        // sun radiance scale slider (runtime::set_sun_intensity)
+        // the painted face's own two knobs (runtime::set_face_shading). They exist BESIDE the sun because the
+        // sun cannot reach that path: the face is drawn from its albedo, so this is where its brightness is.
+        float unlit_gain = 1.3f;            // face albedo gain slider
+        float face_nose_strength = 0.75f;  // nose mark strength slider
         // bloom on/off (M9): the checkbox gates the whole chain; the intensity slider keeps its value
         // while it is off, so toggling back restores the previous look. main() mirrors it by pushing an
         // intensity of 0 when the box is clear, which is what runtime::active_features() gates the

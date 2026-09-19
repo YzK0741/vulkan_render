@@ -8,7 +8,7 @@
 // ============================================================================
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.81.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.82.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -839,6 +839,11 @@ namespace vulkan {
         // brightness had no knob at all and a lit surface landed at albedo/pi * 7.5 = 2.4x its albedo,
         // deep in the tonemapper's flat, desaturating region. 1.0 = the constant as it always was.
         float sun_intensity = 1.0f;
+        // The painted face's own look (runtime::set_face_shading): its gain on the albedo and the strength
+        // of the redrawn nose mark. The face does not read the sun, so these ARE its brightness controls;
+        // copied into light_state.npr_face every frame.
+        float unlit_gain = 1.3f;
+        float face_nose_strength = 1.0f;
         // The OUTLINE (runtime::set_outline; see docs/zzz_shading.md): the hull's colour and its width in
         // world units. 0 width = no hull is recorded at all, which is the compiled default and what keeps a
         // frame that does not ask for an outline byte-identical to one recorded before it existed.
@@ -2147,6 +2152,18 @@ namespace vulkan {
          *       albedo/pi * 7.5 = 2.4x its albedo, deep in the tonemapper's flat, desaturating region
          */
         void set_sun_intensity(float scale) noexcept;
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief the painted face's gain on its albedo, and the strength of the redrawn nose mark
+         * @param gain multiplies the face materials' albedo (the face path adds no light of its own);
+         *        1 = the albedo exactly, and the compiled default is 1.3
+         * @param nose_strength how far the nose mark darkens towards black at its centre; 0 removes it
+         * @note the SUN SCALE DELIBERATELY CANNOT MOVE THE FACE: face materials take the albedo and none of
+         *       the lighting stack (see docs/zzz_shading.md), which is the reference's own arrangement - so
+         *       a frame that brightens its lit objects with set_sun_intensity needs this for the face
+         */
+        void set_face_shading(float gain, float nose_strength) noexcept;
 
         /**
          * @ingroup vulkan_runtime

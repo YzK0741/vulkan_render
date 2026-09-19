@@ -27,6 +27,8 @@ namespace {
         // neutral in the generated defaults, so a parser that ignored them would read the same values).
         CHECK(settings.render.exposure > 0.749f && settings.render.exposure < 0.751f);
         CHECK(settings.render.sun_intensity > 0.799f && settings.render.sun_intensity < 0.801f);
+        CHECK(settings.render.unlit_gain > 1.149f && settings.render.unlit_gain < 1.151f);
+        CHECK(settings.render.face_nose_strength > 0.399f && settings.render.face_nose_strength < 0.401f);
         CHECK(settings.render.toon_steps == 5);
         CHECK(settings.render.toon_softness > 0.049f && settings.render.toon_softness < 0.051f);
         CHECK(settings.render.toon_shadow_tint[0] > 0.549f && settings.render.toon_shadow_tint[0] < 0.551f);
@@ -165,6 +167,8 @@ namespace {
         // leaves the shading plain PBR (see docs/zzz_shading.md and the light UBO's npr_ lanes).
         CHECK(settings.render.exposure == 1.0f);
         CHECK(settings.render.sun_intensity == 1.0f);
+        CHECK(settings.render.unlit_gain > 1.29f && settings.render.unlit_gain < 1.31f);
+        CHECK(settings.render.face_nose_strength > 0.99f && settings.render.face_nose_strength < 1.01f);
         CHECK(settings.render.toon_steps == 0);
         CHECK(settings.render.toon_softness > 0.14f && settings.render.toon_softness < 0.16f);
         CHECK(settings.render.toon_shadow_tint[0] == 1.0f && settings.render.toon_shadow_tint[1] == 1.0f && settings.render.toon_shadow_tint[2] == 1.0f);

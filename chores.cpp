@@ -496,6 +496,11 @@ namespace chores {
         // path's constant 7.5, 0 = no sun at all (what furnace mode forces). main pushes it every frame
         // like the exposure above.
         panel.push_back(std::make_unique<vulkan::gui::slider_widget>("sun intensity", &bindings.sun_intensity, 0.0f, 3.0f));
+        // ... and the painted face's own two, which the sun cannot reach: the face takes its albedo and none
+        // of the lighting stack (see docs/zzz_shading.md), so without these a brightened frame brightens
+        // everything except the face.
+        panel.push_back(std::make_unique<vulkan::gui::slider_widget>("unlit gain", &bindings.unlit_gain, 0.0f, 3.0f));
+        panel.push_back(std::make_unique<vulkan::gui::slider_widget>("nose mark", &bindings.face_nose_strength, 0.0f, 1.0f));
         // bloom (bright-pass threshold + blend weight); 0 intensity disables it
         // the useful ranges: a threshold above ~0.75 leaves almost no pixel over it (so nothing
         // glows), and the intensity needed for a visible glow grows with the threshold - keeping
