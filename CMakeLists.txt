@@ -172,7 +172,6 @@ target_sources(vulkancorekit
         vulkan/core/vma/vma.cpp
         vulkan/core/descriptor_heap/descriptor_heap.cpp
         vulkan/core/handles/handles.cpp
-        vulkan/core/init_utils/init_util.cpp
         vulkan/init_utils/init_utils.cpp
         vulkan/core/pipeline/pipeline.cpp
         vulkan/math/math.cpp

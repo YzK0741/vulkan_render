@@ -3,8 +3,10 @@ module;
 #include <GLFW/glfw3.h>
 #include <vulkan/vulkan.h>
 
-export module vulkan.core.init_utils;
+export module vulkan.core:init_utils;
 export import vstd;
+import utility;
+import vulkan.constant_init;
 
 /**
  * @file init_utils.cppm
@@ -370,3 +372,776 @@ export VkImageView create_image_view(VkImage image, VkFormat format, VkImageAspe
  *       face.
  */
 export VkImageView create_image_view(VkImage image, VkFormat format, VkImageAspectFlags aspect_flags, VkDevice device, VkImageViewType view_type, uint32_t layer_count) noexcept;
+
+[[maybe_unused]] VKAPI_ATTR VkBool32 VKAPI_CALL
+debug_callback(
+    VkDebugUtilsMessageSeverityFlagBitsEXT const message_severity,
+    [[maybe_unused]] VkDebugUtilsMessageTypeFlagsEXT message_type,
+    VkDebugUtilsMessengerCallbackDataEXT const* callback_data,
+    [[maybe_unused]] void* user_data) noexcept {
+    if (message_severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) {
+        // Errors go through error(): Debug prints red to stderr, Release writes to the log file
+        utility::error(callback_data->pMessage);
+    } else if (message_severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT) {
+        utility::log("[WARNING] {}", callback_data->pMessage);
+    } else if (message_severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT) {
+        utility::log("[INFO] {}", callback_data->pMessage);
+    } else {
+        utility::log("[VERBOSE] {}", callback_data->pMessage);
+    }
+
+    return VK_FALSE; // VK_FALSE means not terminate this function call
+}
+
+bool check_validation_layer_support(std::vector<char const*> const& validation_layers) noexcept {
+    uint32_t layer_count;
+    vkEnumerateInstanceLayerProperties(&layer_count, nullptr);
+    std::vector<VkLayerProperties> available_layers(layer_count);
+    vkEnumerateInstanceLayerProperties(&layer_count, available_layers.data());
+
+    std::unordered_set<std::string> available_names;
+    for (auto const& layer : available_layers) {
+        available_names.insert(layer.layerName);
+    }
+
+    return std::ranges::all_of(validation_layers,
+                               [&](char const* name) { return available_names.contains(name); });
+}
+
+bool check_device_extension_support(
+    VkPhysicalDevice physical_device,
+    std::vector<char const*> const& required_extensions) noexcept {
+    uint32_t extension_count;
+    vkEnumerateDeviceExtensionProperties(physical_device, nullptr, &extension_count, nullptr);
+    std::vector<VkExtensionProperties> available_extensions(extension_count);
+    vkEnumerateDeviceExtensionProperties(physical_device, nullptr, &extension_count,
+                                         available_extensions.data());
+
+    std::set<std::string> required_set(required_extensions.begin(), required_extensions.end());
+    for (auto const& [extension_name, spec_version] : available_extensions) {
+        required_set.erase(extension_name);
+    }
+
+    return required_set.empty();
+}
+
+void device_capabilities::query(VkPhysicalDevice const physical_device, uint32_t const api_version) noexcept {
+    // ---- Ray tracing first, because it decides whether two structs join the chains below: the
+    //      feature structs of an extension that is not enabled must not be in the vkCreateDevice
+    //      chain, and the device may support the extensions without the features (or vice versa). ----
+    uint32_t extension_count = 0;
+    vkEnumerateDeviceExtensionProperties(physical_device, nullptr, &extension_count, nullptr);
+    std::vector<VkExtensionProperties> available_extensions(extension_count);
+    vkEnumerateDeviceExtensionProperties(physical_device, nullptr, &extension_count, available_extensions.data());
+    auto const has_extension = [&available_extensions](char const* name) {
+        return std::any_of(available_extensions.begin(), available_extensions.end(), [name](VkExtensionProperties const& entry) {
+            return std::string_view(entry.extensionName) == name;
+        });
+    };
+    bool const ray_tracing_extensions = has_extension(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME) && has_extension(VK_KHR_RAY_QUERY_EXTENSION_NAME) &&
+                                        has_extension(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
+    // The RT pipeline needs the acceleration-structure set as well (it traces the same structures), and
+    // the micromap needs the pipeline (its state is consumed by a traced ray, not by a query).
+    bool const ray_tracing_pipeline_extensions = ray_tracing_extensions && has_extension(VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME) &&
+                                                 has_extension(VK_KHR_RAY_TRACING_MAINTENANCE_1_EXTENSION_NAME);
+    bool const opacity_micromap_extension = ray_tracing_pipeline_extensions && has_extension(VK_EXT_OPACITY_MICROMAP_EXTENSION_NAME);
+    // DESCRIPTOR HEAP, and it is an extension of the BINDING MODEL rather than of ray tracing: it replaces
+    // descriptor sets with descriptors the application writes into a buffer, so it shares nothing with the two
+    // conditions above and joins the chains as their FIRST extension link rather than after them.
+    //
+    // It also REQUIRES one of two other extensions to be enabled with it (VK_KHR_extended_flags or
+    // VK_KHR_maintenance5), which validation reported as VUID-vkCreateDevice-ppEnabledExtensionNames-01387 the
+    // first time the heap was enabled without one - so the dependency is resolved here and the NAME is kept
+    // for the device-creation list rather than being re-derived there.
+    char const* const descriptor_heap_dependency = has_extension(VK_KHR_MAINTENANCE_5_EXTENSION_NAME)    ? VK_KHR_MAINTENANCE_5_EXTENSION_NAME
+                                                   : has_extension(VK_KHR_EXTENDED_FLAGS_EXTENSION_NAME) ? VK_KHR_EXTENDED_FLAGS_EXTENSION_NAME
+                                                                                                         : nullptr;
+    bool const descriptor_heap_extension = has_extension(VK_EXT_DESCRIPTOR_HEAP_EXTENSION_NAME) && descriptor_heap_dependency != nullptr;
+    // ... and the heap's SHADERS need one more extension and feature, which nothing declared until the
+    // heap-native probe did: GL_EXT_descriptor_heap compiles every `descriptor_heap` declaration to an UNTYPED
+    // POINTER (SPIR-V UntypedPointersKHR), and validation refuses such a module unless
+    // VK_KHR_shader_untyped_pointers is enabled AND its feature is on ("SPIR-V Capability UntypedPointersKHR was
+    // declared, but ... shaderUntypedPointers" - measured, on the probe's first run). It hangs off the heap's own
+    // link because a device without the heap has no heap shaders to compile.
+    bool const untyped_pointers_extension = descriptor_heap_extension && has_extension(VK_KHR_SHADER_UNTYPED_POINTERS_EXTENSION_NAME);
+
+    // ---- Feature pNext chain: features_2 -> 1_1 -> 1_2 -> 1_3 -> 1_4 (truncated by api_version),
+    //      then the extension features when the device has them. The TAIL is tracked rather than
+    //      assumed, and that is not defensive style: the engine queries at API 1.3, so features_1_4 is
+    //      not in the chain at all - a struct hung off it is never reached, and an unreached feature
+    //      struct reads back as zeros. That is exactly how "this device has ray queries" turned into
+    //      "not available" the first time this was written. ----
+    features_2.pNext = api_version >= VK_API_VERSION_1_1 ? &features_1_1 : nullptr;
+    features_1_1.pNext = api_version >= VK_API_VERSION_1_2 ? &features_1_2 : nullptr;
+    features_1_2.pNext = api_version >= VK_API_VERSION_1_3 ? &features_1_3 : nullptr;
+    features_1_3.pNext = api_version >= VK_API_VERSION_1_4 ? &features_1_4 : nullptr;
+    features_1_4.pNext = nullptr;
+    void* feature_tail = &features_2;
+    if (api_version >= VK_API_VERSION_1_1) {
+        feature_tail = &features_1_1;
+    }
+    if (api_version >= VK_API_VERSION_1_2) {
+        feature_tail = &features_1_2;
+    }
+    if (api_version >= VK_API_VERSION_1_3) {
+        feature_tail = &features_1_3;
+    }
+    if (api_version >= VK_API_VERSION_1_4) {
+        feature_tail = &features_1_4;
+    }
+    // (the cast is what the newer headers need: a concrete feature struct's pNext is void*, while
+    // VkBaseOutStructure's own pNext is typed - and the tail is reached through the base type)
+    // THE DESCRIPTOR HEAP IS THE FIRST EXTENSION LINK, ahead of the ray-tracing chain, because the two are
+    // independent: a device can have the heap without ray tracing and the other way round, and each unlink
+    // below therefore cuts only its OWN link rather than everything downstream of it.
+    static_cast<VkBaseOutStructure*>(feature_tail)->pNext = descriptor_heap_extension ? reinterpret_cast<VkBaseOutStructure*>(&descriptor_heap_features) : nullptr;
+    descriptor_heap_features.pNext = ray_tracing_extensions ? reinterpret_cast<VkBaseOutStructure*>(&acceleration_structure_features) : nullptr;
+    acceleration_structure_features.pNext = ray_tracing_extensions ? &ray_query_features : nullptr;
+    // ... and the rest of the ray-tracing chain hangs off ray query, each link present only when its own
+    // extensions are: an extension feature struct whose extension is NOT enabled must not appear in the
+    // vkCreateDevice chain at all.
+    ray_query_features.pNext = ray_tracing_pipeline_extensions ? reinterpret_cast<VkBaseOutStructure*>(&ray_tracing_pipeline_features) : nullptr;
+    ray_tracing_pipeline_features.pNext = ray_tracing_pipeline_extensions ? &ray_tracing_maintenance1_features : nullptr;
+    ray_tracing_maintenance1_features.pNext = opacity_micromap_extension ? reinterpret_cast<VkBaseOutStructure*>(&opacity_micromap_features) : nullptr;
+    opacity_micromap_features.pNext = untyped_pointers_extension ? reinterpret_cast<VkBaseOutStructure*>(&untyped_pointers_features) : nullptr;
+    untyped_pointers_features.pNext = nullptr;
+    vkGetPhysicalDeviceFeatures2(physical_device, &features_2);
+
+    // Both feature bits have to be true for the two structs to be worth keeping in the chain: the
+    // extensions can be advertised by a device that does not actually support ray queries. Unlinking
+    // here is what keeps "enabled at device creation" and "available to the renderer" the same thing.
+    ray_query_available = ray_tracing_extensions && acceleration_structure_features.accelerationStructure == VK_TRUE && ray_query_features.rayQuery == VK_TRUE;
+    ray_tracing_pipeline_available = ray_tracing_pipeline_extensions && ray_query_available && ray_tracing_pipeline_features.rayTracingPipeline == VK_TRUE;
+    opacity_micromap_available = opacity_micromap_extension && ray_tracing_pipeline_available && opacity_micromap_features.micromap == VK_TRUE;
+    descriptor_heap_available = descriptor_heap_extension && descriptor_heap_features.descriptorHeap == VK_TRUE;
+    untyped_pointers_available = untyped_pointers_extension && untyped_pointers_features.shaderUntypedPointers == VK_TRUE;
+    this->untyped_pointers_dependency = untyped_pointers_available ? VK_KHR_SHADER_UNTYPED_POINTERS_EXTENSION_NAME : nullptr;
+    this->descriptor_heap_dependency = descriptor_heap_available ? descriptor_heap_dependency : nullptr; // the member, set from the local of the same name
+    // Unlink every struct whose feature came back false: the extension may be advertised by a device
+    // that does not actually support it, and an enabled-but-unsupported struct is a device-creation error.
+    if (!opacity_micromap_available) {
+        ray_tracing_maintenance1_features.pNext = nullptr;
+    }
+    if (!ray_tracing_pipeline_available) {
+        ray_query_features.pNext = nullptr;
+    }
+    if (!ray_query_available) {
+        descriptor_heap_features.pNext = nullptr; // cuts only the ray-tracing chain the heap link was holding
+        acceleration_structure_features.pNext = nullptr;
+    }
+    if (!descriptor_heap_available) {
+        // The heap is the FIRST link, so dropping it has to hand the tail to whatever it was pointing at -
+        // setting the tail to null here would silently take the ray-tracing chain with it.
+        static_cast<VkBaseOutStructure*>(feature_tail)->pNext = ray_query_available ? reinterpret_cast<VkBaseOutStructure*>(&acceleration_structure_features) : nullptr;
+    }
+    if (!untyped_pointers_available) {
+        opacity_micromap_features.pNext = nullptr; // the untyped-pointers link is the LAST one, so this cuts only it
+    }
+
+    // ---- Property pNext chain: properties_2 -> driver -> subgroup -> descriptor indexing -> maintenance4
+    //      -> acceleration structure (only when available) ----
+    properties_2.pNext = &driver_properties;
+    driver_properties.pNext = &subgroup_properties;
+    subgroup_properties.pNext = &descriptor_indexing_properties;
+    descriptor_indexing_properties.pNext = &maintenance4_properties;
+    maintenance4_properties.pNext = descriptor_heap_extension ? reinterpret_cast<VkBaseOutStructure*>(&descriptor_heap_properties) : nullptr;
+    descriptor_heap_properties.pNext = ray_query_available ? &acceleration_structure_properties : nullptr;
+    acceleration_structure_properties.pNext = opacity_micromap_available ? reinterpret_cast<VkBaseOutStructure*>(&opacity_micromap_properties) : nullptr;
+    opacity_micromap_properties.pNext = ray_tracing_pipeline_available ? reinterpret_cast<VkBaseOutStructure*>(&ray_tracing_pipeline_properties) : nullptr;
+    ray_tracing_pipeline_properties.pNext = nullptr;
+    vkGetPhysicalDeviceProperties2(physical_device, &properties_2);
+
+    // ---- Feature policy: pass through driver support except explicitly disabled ones (take most features except ray tracing) ----
+    features_1_1.protectedMemory = VK_FALSE; // protected memory not needed for now
+}
+
+void const* device_capabilities::device_pnext() const noexcept {
+    // Chain head is the VkPhysicalDeviceFeatures2 struct: its .features member carries the
+    // Vulkan 1.0 core features (fullDrawIndexUint32 etc.) that must be enabled via the pNext
+    // chain when pEnabledFeatures is NULL. The 1.1/1.2/... structs hang off its pNext.
+    return &this->features_2;
+}
+
+namespace {
+    // Append names of enabled (VK_TRUE) members to the output string, return the enabled count
+    template <typename T>
+    size_t append_enabled_features(std::string& out, T const& features,
+                                   std::initializer_list<std::pair<char const*, VkBool32 T::*>> const& entries) {
+        size_t count = 0;
+        for (auto const& [name, member] : entries) {
+            if (features.*member == VK_TRUE) {
+                if (!out.empty()) {
+                    out += ", ";
+                }
+                out += name;
+                ++count;
+            }
+        }
+        return count;
+    }
+
+    // Wrap output at the given width, indenting continuation lines
+    void print_wrapped(std::string const& text, int const width, std::string_view const indent) {
+        std::string current(indent);
+        size_t start = 0;
+        while (start < text.size()) {
+            size_t const comma = text.find(", ", start);
+            size_t const token_end = comma == std::string::npos ? text.size() : comma;
+            std::string_view const token(text.data() + start, token_end - start);
+            if (current.size() > indent.size() && current.size() + token.size() + 2 > static_cast<size_t>(width)) {
+                utility::log("{}", current);
+                current = std::string(indent);
+            }
+            if (current.size() > indent.size()) {
+                current += ", ";
+            }
+            current += token;
+            if (comma == std::string::npos) {
+                break;
+            }
+            start = comma + 2;
+        }
+        if (!text.empty()) {
+            utility::log("{}", current);
+        }
+    }
+} // namespace
+
+void print_device_capabilities(device_capabilities const& capabilities) {
+    constexpr std::string_view box_line = "================================================";
+    constexpr std::string_view sep_line = "------------------------------------------------";
+
+    utility::log("{}", box_line);
+    utility::log(" Vulkan device capabilities");
+    utility::log("{}", box_line);
+
+    static constexpr std::array<char const*, 5> device_type_names = {
+        "other",
+        "integrated gpu",
+        "discrete gpu",
+        "virtual gpu",
+        "cpu",
+    };
+    uint32_t const device_type = static_cast<uint32_t>(capabilities.properties_2.properties.deviceType);
+    char const* type_name = device_type < device_type_names.size() ? device_type_names[device_type] : "unknown";
+
+    utility::log(" driver        : {} {}", capabilities.driver_properties.driverName, capabilities.driver_properties.driverInfo);
+    utility::log(" api version   : {}.{}.{}",
+                 VK_API_VERSION_MAJOR(capabilities.properties_2.properties.apiVersion),
+                 VK_API_VERSION_MINOR(capabilities.properties_2.properties.apiVersion),
+                 VK_API_VERSION_PATCH(capabilities.properties_2.properties.apiVersion));
+    utility::log(" device        : {} ({})", capabilities.properties_2.properties.deviceName, type_name);
+    utility::log("{}", sep_line);
+
+    using feature_1_1 = VkPhysicalDeviceVulkan11Features;
+    using feature_1_2 = VkPhysicalDeviceVulkan12Features;
+    using feature_1_3 = VkPhysicalDeviceVulkan13Features;
+
+    std::string enabled_1_1;
+    size_t const count_1_1 = append_enabled_features(enabled_1_1, capabilities.features_1_1, {
+                                                                                                 {"storageBuffer16BitAccess", &feature_1_1::storageBuffer16BitAccess},
+                                                                                                 {"uniformAndStorageBuffer16BitAccess", &feature_1_1::uniformAndStorageBuffer16BitAccess},
+                                                                                                 {"storagePushConstant16", &feature_1_1::storagePushConstant16},
+                                                                                                 {"storageInputOutput16", &feature_1_1::storageInputOutput16},
+                                                                                                 {"multiview", &feature_1_1::multiview},
+                                                                                                 {"multiviewGeometryShader", &feature_1_1::multiviewGeometryShader},
+                                                                                                 {"multiviewTessellationShader", &feature_1_1::multiviewTessellationShader},
+                                                                                                 {"variablePointersStorageBuffer", &feature_1_1::variablePointersStorageBuffer},
+                                                                                                 {"variablePointers", &feature_1_1::variablePointers},
+                                                                                                 {"protectedMemory", &feature_1_1::protectedMemory},
+                                                                                                 {"samplerYcbcrConversion", &feature_1_1::samplerYcbcrConversion},
+                                                                                                 {"shaderDrawParameters", &feature_1_1::shaderDrawParameters},
+                                                                                             });
+    utility::log(" vulkan 1.1 features ({})", count_1_1);
+    print_wrapped(enabled_1_1, 100, "   ");
+
+    std::string enabled_1_2;
+    size_t const count_1_2 = append_enabled_features(enabled_1_2, capabilities.features_1_2, {
+                                                                                                 {"samplerMirrorClampToEdge", &feature_1_2::samplerMirrorClampToEdge},
+                                                                                                 {"drawIndirectCount", &feature_1_2::drawIndirectCount},
+                                                                                                 {"storageBuffer8BitAccess", &feature_1_2::storageBuffer8BitAccess},
+                                                                                                 {"uniformAndStorageBuffer8BitAccess", &feature_1_2::uniformAndStorageBuffer8BitAccess},
+                                                                                                 {"storagePushConstant8", &feature_1_2::storagePushConstant8},
+                                                                                                 {"shaderBufferInt64Atomics", &feature_1_2::shaderBufferInt64Atomics},
+                                                                                                 {"shaderSharedInt64Atomics", &feature_1_2::shaderSharedInt64Atomics},
+                                                                                                 {"shaderFloat16", &feature_1_2::shaderFloat16},
+                                                                                                 {"shaderInt8", &feature_1_2::shaderInt8},
+                                                                                                 {"descriptorIndexing", &feature_1_2::descriptorIndexing},
+                                                                                                 {"shaderInputAttachmentArrayDynamicIndexing", &feature_1_2::shaderInputAttachmentArrayDynamicIndexing},
+                                                                                                 {"shaderUniformTexelBufferArrayDynamicIndexing", &feature_1_2::shaderUniformTexelBufferArrayDynamicIndexing},
+                                                                                                 {"shaderStorageTexelBufferArrayDynamicIndexing", &feature_1_2::shaderStorageTexelBufferArrayDynamicIndexing},
+                                                                                                 {"shaderUniformBufferArrayNonUniformIndexing", &feature_1_2::shaderUniformBufferArrayNonUniformIndexing},
+                                                                                                 {"shaderSampledImageArrayNonUniformIndexing", &feature_1_2::shaderSampledImageArrayNonUniformIndexing},
+                                                                                                 {"shaderStorageBufferArrayNonUniformIndexing", &feature_1_2::shaderStorageBufferArrayNonUniformIndexing},
+                                                                                                 {"shaderStorageImageArrayNonUniformIndexing", &feature_1_2::shaderStorageImageArrayNonUniformIndexing},
+                                                                                                 {"shaderInputAttachmentArrayNonUniformIndexing", &feature_1_2::shaderInputAttachmentArrayNonUniformIndexing},
+                                                                                                 {"shaderUniformTexelBufferArrayNonUniformIndexing", &feature_1_2::shaderUniformTexelBufferArrayNonUniformIndexing},
+                                                                                                 {"shaderStorageTexelBufferArrayNonUniformIndexing", &feature_1_2::shaderStorageTexelBufferArrayNonUniformIndexing},
+                                                                                                 {"descriptorBindingUniformBufferUpdateAfterBind", &feature_1_2::descriptorBindingUniformBufferUpdateAfterBind},
+                                                                                                 {"descriptorBindingSampledImageUpdateAfterBind", &feature_1_2::descriptorBindingSampledImageUpdateAfterBind},
+                                                                                                 {"descriptorBindingStorageImageUpdateAfterBind", &feature_1_2::descriptorBindingStorageImageUpdateAfterBind},
+                                                                                                 {"descriptorBindingStorageBufferUpdateAfterBind", &feature_1_2::descriptorBindingStorageBufferUpdateAfterBind},
+                                                                                                 {"descriptorBindingUniformTexelBufferUpdateAfterBind", &feature_1_2::descriptorBindingUniformTexelBufferUpdateAfterBind},
+                                                                                                 {"descriptorBindingStorageTexelBufferUpdateAfterBind", &feature_1_2::descriptorBindingStorageTexelBufferUpdateAfterBind},
+                                                                                                 {"descriptorBindingUpdateUnusedWhilePending", &feature_1_2::descriptorBindingUpdateUnusedWhilePending},
+                                                                                                 {"descriptorBindingPartiallyBound", &feature_1_2::descriptorBindingPartiallyBound},
+                                                                                                 {"descriptorBindingVariableDescriptorCount", &feature_1_2::descriptorBindingVariableDescriptorCount},
+                                                                                                 {"runtimeDescriptorArray", &feature_1_2::runtimeDescriptorArray},
+                                                                                                 {"samplerFilterMinmax", &feature_1_2::samplerFilterMinmax},
+                                                                                                 {"scalarBlockLayout", &feature_1_2::scalarBlockLayout},
+                                                                                                 {"imagelessFramebuffer", &feature_1_2::imagelessFramebuffer},
+                                                                                                 {"uniformBufferStandardLayout", &feature_1_2::uniformBufferStandardLayout},
+                                                                                                 {"shaderSubgroupExtendedTypes", &feature_1_2::shaderSubgroupExtendedTypes},
+                                                                                                 {"separateDepthStencilLayouts", &feature_1_2::separateDepthStencilLayouts},
+                                                                                                 {"hostQueryReset", &feature_1_2::hostQueryReset},
+                                                                                                 {"timelineSemaphore", &feature_1_2::timelineSemaphore},
+                                                                                                 {"bufferDeviceAddress", &feature_1_2::bufferDeviceAddress},
+                                                                                                 {"bufferDeviceAddressCaptureReplay", &feature_1_2::bufferDeviceAddressCaptureReplay},
+                                                                                                 {"bufferDeviceAddressMultiDevice", &feature_1_2::bufferDeviceAddressMultiDevice},
+                                                                                                 {"vulkanMemoryModel", &feature_1_2::vulkanMemoryModel},
+                                                                                                 {"vulkanMemoryModelDeviceScope", &feature_1_2::vulkanMemoryModelDeviceScope},
+                                                                                                 {"vulkanMemoryModelAvailabilityVisibilityChains", &feature_1_2::vulkanMemoryModelAvailabilityVisibilityChains},
+                                                                                                 {"shaderOutputViewportIndex", &feature_1_2::shaderOutputViewportIndex},
+                                                                                                 {"shaderOutputLayer", &feature_1_2::shaderOutputLayer},
+                                                                                                 {"subgroupBroadcastDynamicId", &feature_1_2::subgroupBroadcastDynamicId},
+                                                                                             });
+    utility::log(" vulkan 1.2 features ({})", count_1_2);
+    print_wrapped(enabled_1_2, 100, "   ");
+
+    std::string enabled_1_3;
+    size_t const count_1_3 = append_enabled_features(enabled_1_3, capabilities.features_1_3, {
+                                                                                                 {"robustImageAccess", &feature_1_3::robustImageAccess},
+                                                                                                 {"inlineUniformBlock", &feature_1_3::inlineUniformBlock},
+                                                                                                 {"descriptorBindingInlineUniformBlockUpdateAfterBind", &feature_1_3::descriptorBindingInlineUniformBlockUpdateAfterBind},
+                                                                                                 {"pipelineCreationCacheControl", &feature_1_3::pipelineCreationCacheControl},
+                                                                                                 {"privateData", &feature_1_3::privateData},
+                                                                                                 {"shaderDemoteToHelperInvocation", &feature_1_3::shaderDemoteToHelperInvocation},
+                                                                                                 {"shaderTerminateInvocation", &feature_1_3::shaderTerminateInvocation},
+                                                                                                 {"subgroupSizeControl", &feature_1_3::subgroupSizeControl},
+                                                                                                 {"computeFullSubgroups", &feature_1_3::computeFullSubgroups},
+                                                                                                 {"synchronization2", &feature_1_3::synchronization2},
+                                                                                                 {"textureCompressionASTC_HDR", &feature_1_3::textureCompressionASTC_HDR},
+                                                                                                 {"shaderZeroInitializeWorkgroupMemory", &feature_1_3::shaderZeroInitializeWorkgroupMemory},
+                                                                                                 {"dynamicRendering", &feature_1_3::dynamicRendering},
+                                                                                                 {"shaderIntegerDotProduct", &feature_1_3::shaderIntegerDotProduct},
+                                                                                                 {"maintenance4", &feature_1_3::maintenance4},
+                                                                                             });
+    utility::log(" vulkan 1.3 features ({})", count_1_3);
+    print_wrapped(enabled_1_3, 100, "   ");
+
+    // ---- Ray tracing: whether the optional extension features joined the chain (see query) ----
+    if (capabilities.ray_query_available) {
+        utility::log(" ray tracing   : ray query available (VK_KHR_acceleration_structure + VK_KHR_ray_query)");
+        if (capabilities.ray_tracing_pipeline_available) {
+            utility::log("   sbt         : handle {} B, base alignment {}, handle alignment {}, max recursion {}",
+                         capabilities.ray_tracing_pipeline_properties.shaderGroupHandleSize,
+                         capabilities.ray_tracing_pipeline_properties.shaderGroupBaseAlignment,
+                         capabilities.ray_tracing_pipeline_properties.shaderGroupHandleAlignment,
+                         capabilities.ray_tracing_pipeline_properties.maxRayRecursionDepth);
+        }
+        utility::log("                 {} / opacity micromap {}",
+                     capabilities.ray_tracing_pipeline_available ? "ray pipeline available (VK_KHR_ray_tracing_pipeline + maintenance1)" : "ray pipeline NOT available",
+                     capabilities.opacity_micromap_available ? std::format("available (VK_EXT_opacity_micromap, max subdivision level {} 2-state / {} 4-state)", capabilities.opacity_micromap_properties.maxOpacity2StateSubdivisionLevel, capabilities.opacity_micromap_properties.maxOpacity4StateSubdivisionLevel) : "not available");
+        utility::log("   limits      : {} instances, {} geometries, scratch alignment {}",
+                     capabilities.acceleration_structure_properties.maxInstanceCount,
+                     capabilities.acceleration_structure_properties.maxGeometryCount,
+                     capabilities.acceleration_structure_properties.minAccelerationStructureScratchOffsetAlignment);
+    } else {
+        utility::log(" ray tracing   : not available (ray-traced shadows and GI stay off)");
+    }
+
+    // ---- Descriptor heap: independent of ray tracing, so it reports outside that block ----
+    if (capabilities.descriptor_heap_available) {
+        utility::log(" descriptor heap: available (VK_EXT_descriptor_heap, revision 1)");
+        utility::log("   descriptors : buffer {} B (align {}), image {} B (align {}), sampler {} B (align {})",
+                     capabilities.descriptor_heap_properties.bufferDescriptorSize,
+                     capabilities.descriptor_heap_properties.bufferDescriptorAlignment,
+                     capabilities.descriptor_heap_properties.imageDescriptorSize,
+                     capabilities.descriptor_heap_properties.imageDescriptorAlignment,
+                     capabilities.descriptor_heap_properties.samplerDescriptorSize,
+                     capabilities.descriptor_heap_properties.samplerDescriptorAlignment);
+        utility::log("   heaps       : resource max {} MiB (alignment {}), sampler max {} KiB (alignment {})",
+                     capabilities.descriptor_heap_properties.maxResourceHeapSize / (1024 * 1024),
+                     capabilities.descriptor_heap_properties.resourceHeapAlignment,
+                     capabilities.descriptor_heap_properties.maxSamplerHeapSize / 1024,
+                     capabilities.descriptor_heap_properties.samplerHeapAlignment);
+        utility::log("   reserved    : {} KiB resource, {} KiB sampler with embedded samplers, {} embedded samplers max, push data {} B",
+                     capabilities.descriptor_heap_properties.minResourceHeapReservedRange / 1024,
+                     capabilities.descriptor_heap_properties.minSamplerHeapReservedRangeWithEmbedded / 1024,
+                     capabilities.descriptor_heap_properties.maxDescriptorHeapEmbeddedSamplers,
+                     capabilities.descriptor_heap_properties.maxPushDataSize);
+    } else {
+        utility::log(" descriptor heap: not available (the heap is the only binding model this renderer has)");
+    }
+
+    utility::log("{}", box_line);
+}
+
+logical_device create_logical_device(
+    VkPhysicalDevice const physical_device, // NOLINT(*-misplaced-const)
+    device_creation_info const& create_info) noexcept {
+    if (!create_info.queue_families.is_complete()) {
+        utility::error("Queue families not complete");
+        utility::panic("Queue families not complete");
+    }
+
+    if (!create_info.queue_families.compute_family || !create_info.queue_families.graphics_family || !create_info.queue_families.present_family) {
+        utility::panic("queue family is empty");
+    }
+
+    // Use a set to collect unique queue family indices
+    std::set<uint32_t> unique_queue_families = {
+        create_info.queue_families.graphics_family.value(),
+        create_info.queue_families.present_family.value(),
+    };
+
+    // Optional: add more queue families
+    if (create_info.queue_families.compute_family) {
+        unique_queue_families.insert(create_info.queue_families.compute_family.value());
+    }
+    if (create_info.queue_families.transfer_family) {
+        unique_queue_families.insert(create_info.queue_families.transfer_family.value());
+    }
+
+    // Create queue infos
+    std::vector<VkDeviceQueueCreateInfo> queue_create_infos;
+    constexpr float queue_priority = 1.0f;
+
+    for (uint32_t queue_family : unique_queue_families) {
+        queue_create_infos.push_back(vulkan::make_device_queue_info(queue_family, &queue_priority));
+    }
+
+    VkPhysicalDevicePresentModeFifoLatestReadyFeaturesKHR fifo_latest_ready_features = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_MODE_FIFO_LATEST_READY_FEATURES_KHR,
+        .pNext = nullptr,
+        .presentModeFifoLatestReady = VK_FALSE,
+    };
+    VkPhysicalDeviceFeatures2 probe_features = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+        .pNext = &fifo_latest_ready_features,
+        .features = {},
+    };
+    vkGetPhysicalDeviceFeatures2(physical_device, &probe_features);
+
+    // Create the device
+    VkDeviceCreateInfo device_create_info = {};
+    device_create_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
+    device_create_info.queueCreateInfoCount = static_cast<uint32_t>(queue_create_infos.size());
+    device_create_info.pQueueCreateInfos = queue_create_infos.data();
+    // Features go through the pNext chain (headed by VkPhysicalDeviceFeatures2, provided by the
+    // caller through create_info.pNext - see device_capabilities::device_pnext(), which carries
+    // the 1.0 core features in features_2.features plus the 1.1/1.2/... structs behind it).
+    // pEnabledFeatures must be NULL: with VkPhysicalDeviceFeatures2 / VkPhysicalDeviceVulkan11Features
+    // in the chain, setting it violates VUID-VkDeviceCreateInfo-pNext-04748 / -02829.
+    device_create_info.pEnabledFeatures = nullptr;
+
+    // Extensions - must handle empty vectors correctly
+    device_create_info.enabledExtensionCount = static_cast<uint32_t>(create_info.extensions.size());
+    device_create_info.ppEnabledExtensionNames =
+        create_info.extensions.empty() ? nullptr : create_info.extensions.data();
+
+    // Validation layers - modern Vulkan usually doesn't enable them at device level
+    device_create_info.enabledLayerCount = static_cast<uint32_t>(create_info.validation_layers.size());
+    device_create_info.ppEnabledLayerNames =
+        create_info.validation_layers.empty() ? nullptr : create_info.validation_layers.data();
+
+    // Assemble the pNext chain: the caller's feature chain (VkPhysicalDeviceFeatures2 head, which
+    // carries the queried 1.0 core + 1.1/1.2/... features) is the device chain. The optional
+    // FifoLatestReady extension feature (not part of the caller's chain) is prepended when the
+    // device exposes it, keeping the caller's Features2 head in the chain afterwards.
+    void const* chain_head = create_info.pNext;
+    if (fifo_latest_ready_features.presentModeFifoLatestReady == VK_TRUE) {
+        fifo_latest_ready_features.pNext = const_cast<void*>(chain_head);
+        chain_head = &fifo_latest_ready_features;
+    }
+    device_create_info.pNext = chain_head;
+
+    VkDevice device = {};
+    VkResult const result = vkCreateDevice(physical_device, &device_create_info, nullptr, &device);
+    if (result != VK_SUCCESS) {
+        utility::panic(std::source_location::current(), "Failed to create logical device: {}", std::to_string(result));
+    }
+
+    // Get queues
+    logical_device logical_device;
+    logical_device.device = device;
+    logical_device.graphics_family_index = create_info.queue_families.graphics_family.value();
+    logical_device.present_family_index = create_info.queue_families.present_family.value();
+
+    vkGetDeviceQueue(device, logical_device.graphics_family_index, 0,
+                     &logical_device.graphics_queue);
+    vkGetDeviceQueue(device, logical_device.present_family_index, 0,
+                     &logical_device.present_queue);
+
+    return logical_device;
+}
+
+queue_family_indices find_queue_families(VkPhysicalDevice device, VkSurfaceKHR surface) noexcept { // NOLINT(*-function-cognitive-complexity)
+    queue_family_indices indices;
+
+    // Get queue family properties
+    uint32_t queue_family_count = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(device, &queue_family_count, nullptr);
+
+    std::vector<VkQueueFamilyProperties> queue_families(queue_family_count);
+    vkGetPhysicalDeviceQueueFamilyProperties(device, &queue_family_count, queue_families.data());
+
+    // Find a suitable queue family
+    for (uint32_t i = 0; i < queue_family_count; ++i) {
+        auto const& queue_family = queue_families[i];
+
+        // Check graphics support
+        if ((queue_family.queueFlags & VK_QUEUE_GRAPHICS_BIT) && !indices.graphics_family.has_value()) {
+            indices.graphics_family = i;
+        }
+
+        // Check compute support (non-graphics queue)
+        if ((queue_family.queueFlags & VK_QUEUE_COMPUTE_BIT) &&
+            !indices.compute_family.has_value() &&
+            !(queue_family.queueFlags & VK_QUEUE_GRAPHICS_BIT)) {
+            indices.compute_family = i;
+        }
+
+        // Check transfer support (non-graphics/compute queue)
+        if ((queue_family.queueFlags & VK_QUEUE_TRANSFER_BIT) &&
+            !indices.transfer_family.has_value() &&
+            !(queue_family.queueFlags & VK_QUEUE_GRAPHICS_BIT) &&
+            !(queue_family.queueFlags & VK_QUEUE_COMPUTE_BIT)) {
+            indices.transfer_family = i;
+        }
+
+        // Check present support (requires a surface)
+        if (surface != VK_NULL_HANDLE) {
+            VkBool32 present_support = false;
+            vkGetPhysicalDeviceSurfaceSupportKHR(device, i, surface, &present_support);
+            if (present_support && !indices.present_family.has_value()) {
+                indices.present_family = i;
+            }
+        }
+
+        // Early-exit if only graphics support is required
+        if (surface == VK_NULL_HANDLE && indices.graphics_family.has_value()) {
+            break;
+        }
+
+        // Early-exit once all required queues are found
+        if (surface == VK_NULL_HANDLE) {
+            if (indices.graphics_family.has_value()) {
+                break;
+            }
+        } else if (indices.is_complete()) {
+            break;
+        }
+    }
+
+    // Fallback: if no dedicated compute/transfer queue was found, use the graphics queue
+    if (!indices.compute_family.has_value() && indices.graphics_family.has_value()) {
+        indices.compute_family = indices.graphics_family;
+    }
+
+    if (!indices.transfer_family.has_value()) {
+        // Prefer the graphics queue; if none exists, use the first available queue
+        if (indices.graphics_family.has_value()) {
+            indices.transfer_family = indices.graphics_family;
+        } else {
+            if (queue_family_count > 0) {
+                indices.transfer_family = {0};
+            } else {
+                indices.transfer_family = std::nullopt;
+            }
+        }
+    }
+
+    return indices;
+}
+
+VkPhysicalDevice pick_suitable_device(VkInstance instance, VkSurfaceKHR surface) noexcept {
+    uint32_t device_count = 0;
+    vkEnumeratePhysicalDevices(instance, &device_count, nullptr);
+    if (device_count == 0) {
+        utility::panic("Failed to find GPUs with Vulkan support");
+    }
+
+    std::vector<VkPhysicalDevice> devices(device_count);
+    vkEnumeratePhysicalDevices(instance, &device_count, devices.data());
+
+    for (auto const& device : devices) {
+        VkPhysicalDeviceProperties device_properties;
+        VkPhysicalDeviceFeatures device_features;
+        vkGetPhysicalDeviceProperties(device, &device_properties);
+        vkGetPhysicalDeviceFeatures(device, &device_features);
+
+        // The engine requires Vulkan 1.3: dynamic rendering (frame recording, the depth-only
+        // shadow pass, the ImGui overlay) is core 1.3 - there is no classic render-pass fallback.
+        if (device_properties.apiVersion < VK_API_VERSION_1_3) {
+            continue;
+        }
+
+        if (queue_family_indices indices = find_queue_families(device, surface); !indices.is_complete()) {
+            continue;
+        }
+
+        // Check extension support
+        std::vector<char const*> const required_extensions = {
+            VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+        };
+        if (!check_device_extension_support(device, required_extensions)) {
+            continue;
+        }
+
+        return device; // suitable device found
+    }
+
+    utility::panic("Failed to find a suitable GPU (Vulkan 1.3 required)!");
+}
+
+swap_chain_support_details query_swap_chain_support(VkPhysicalDevice device, VkSurfaceKHR surface) noexcept {
+    swap_chain_support_details details = {};
+
+    // 1. Query surface capabilities
+    vkGetPhysicalDeviceSurfaceCapabilitiesKHR(device, surface, &details.capabilities);
+
+    // 2. Query surface formats
+    uint32_t format_count;
+    vkGetPhysicalDeviceSurfaceFormatsKHR(device, surface, &format_count, nullptr);
+    if (format_count != 0) {
+        details.formats.resize(format_count);
+        vkGetPhysicalDeviceSurfaceFormatsKHR(device, surface, &format_count, details.formats.data());
+    }
+
+    // 3. Query present modes
+    uint32_t present_mode_count = 0;
+    vkGetPhysicalDeviceSurfacePresentModesKHR(device, surface, &present_mode_count, nullptr);
+    if (present_mode_count != 0) {
+        details.present_modes.resize(present_mode_count);
+        vkGetPhysicalDeviceSurfacePresentModesKHR(device, surface, &present_mode_count, details.present_modes.data());
+    }
+
+    utility::log("present modes count: {}", details.present_modes.size());
+
+    return details;
+}
+
+VkPresentModeKHR choose_swap_present_mode(std::vector<VkPresentModeKHR> const& available_present_modes, bool const vsync) noexcept {
+    if (vsync) {
+        // FIFO_LATEST_READY when the surface offers it (the core enables the extension only when the
+        // device has it): vsync-locked like FIFO, but it presents the newest ready image at each
+        // vblank instead of queueing, so a fast application does not pay FIFO's added latency. FIFO
+        // is mandated by the spec, so it is always the fallback.
+        if (std::ranges::find(available_present_modes, present_mode_fifo_latest_ready) != available_present_modes.end()) {
+            return present_mode_fifo_latest_ready;
+        }
+        return VK_PRESENT_MODE_FIFO_KHR;
+    }
+    // Prefer MAILBOX (low latency), else fall back to FIFO (mandated by the Vulkan spec)
+    if (std::ranges::find(available_present_modes, VK_PRESENT_MODE_MAILBOX_KHR) != available_present_modes.end()) {
+        return VK_PRESENT_MODE_MAILBOX_KHR;
+    }
+    return VK_PRESENT_MODE_FIFO_KHR;
+}
+
+VkSurfaceFormatKHR choose_swap_surface_format(std::vector<VkSurfaceFormatKHR> const& available_formats) noexcept {
+    for (auto const& available_format : available_formats) {
+        if (available_format.format == VK_FORMAT_B8G8R8A8_SRGB && available_format.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
+            return available_format;
+        }
+    }
+    return available_formats[0];
+}
+
+VkExtent2D choose_swap_extent(VkSurfaceCapabilitiesKHR capabilities, GLFWwindow* window) noexcept {
+    if (capabilities.currentExtent.width != std::numeric_limits<uint32_t>::max()) {
+        return capabilities.currentExtent;
+    }
+    int width;
+    int height;
+    glfwGetFramebufferSize(window, &width, &height);
+
+    // Ensure width and height are non-zero
+    width = std::max(width, 1);
+    height = std::max(height, 1);
+
+    VkExtent2D actual_extent = {
+        .width = static_cast<uint32_t>(width),
+        .height = static_cast<uint32_t>(height),
+    };
+
+    actual_extent.width = std::clamp(actual_extent.width,
+                                     capabilities.minImageExtent.width,
+                                     capabilities.maxImageExtent.width);
+    actual_extent.height = std::clamp(actual_extent.height,
+                                      capabilities.minImageExtent.height,
+                                      capabilities.maxImageExtent.height);
+
+    return actual_extent;
+}
+
+uint32_t find_memory_type(uint32_t type_filter, VkMemoryPropertyFlags properties, VkPhysicalDevice physical_device) noexcept {
+    // Get the physical device's memory properties
+    VkPhysicalDeviceMemoryProperties mem_properties;
+    vkGetPhysicalDeviceMemoryProperties(physical_device, &mem_properties);
+
+    // Iterate over all memory types
+    for (uint32_t i = 0; i < mem_properties.memoryTypeCount; i++) {
+        // Check whether the memory type satisfies the filter
+        // type_filter is a bitmask; each bit corresponds to a memory type
+        if ((type_filter & (1 << i)) &&
+            // Check whether the memory properties meet the requirements
+            (mem_properties.memoryTypes[i].propertyFlags & properties) == properties) {
+            return i; // return the found memory type index
+        }
+    }
+    utility::panic("failed to find suitable memory type");
+}
+
+VkFormat find_depth_format(VkPhysicalDevice physical_device) noexcept {
+    // Try to find a supported depth format, in order of preference
+    std::vector<VkFormat> const candidates = {
+        VK_FORMAT_D32_SFLOAT_S8_UINT,
+        VK_FORMAT_D32_SFLOAT,
+        VK_FORMAT_D24_UNORM_S8_UINT,
+        VK_FORMAT_D16_UNORM_S8_UINT,
+        VK_FORMAT_D16_UNORM,
+    };
+
+    for (VkFormat format : candidates) {
+        VkFormatProperties props;
+        vkGetPhysicalDeviceFormatProperties(physical_device, format, &props);
+
+        // Check whether the format supports depth attachments
+        if (props.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT) {
+            return format;
+        }
+    }
+
+    utility::panic("failed to find supported depth format!");
+}
+
+VkImageView create_image_view(VkImage image, VkFormat format, VkImageAspectFlags aspect_flags, VkDevice device) noexcept {
+    return create_image_view(image, format, aspect_flags, device, VK_IMAGE_VIEW_TYPE_2D);
+}
+
+VkImageView create_image_view(VkImage image, VkFormat format, VkImageAspectFlags aspect_flags, VkDevice device, VkImageViewType view_type) noexcept {
+    // identity swizzle, one mip + one layer (see vulkan::make_image_view_info); only the
+    // dimensionality differs between callers
+    VkImageViewCreateInfo const view_info = vulkan::make_image_view_info(image, format, view_type, aspect_flags, 1, 1);
+
+    VkImageView image_view;
+    if (vkCreateImageView(device, &view_info, nullptr, &image_view) != VK_SUCCESS) {
+        utility::panic("failed to create image view!");
+    }
+
+    return image_view;
+}
+VkImageView create_image_view(VkImage image, VkFormat format, VkImageAspectFlags aspect_flags, VkDevice device, VkImageViewType view_type, uint32_t layer_count) noexcept {
+    // identity swizzle, one mip, and the caller''s layer count: the sixth parameter is the whole reason this
+    // overload exists (a cube view covers six layers, and the other two overloads fix it at one)
+    VkImageViewCreateInfo const view_info = vulkan::make_image_view_info(image, format, view_type, aspect_flags, 1, layer_count);
+
+    VkImageView image_view;
+    if (vkCreateImageView(device, &view_info, nullptr, &image_view) != VK_SUCCESS) {
+        utility::panic("failed to create image view!");
+    }
+
+    return image_view;
+}

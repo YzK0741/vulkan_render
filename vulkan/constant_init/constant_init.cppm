@@ -25,7 +25,7 @@ export module vulkan.constant_init;
  *        fills the same way everywhere.
  *
  * Top-level module (sibling of vulkan.core): it depends on nothing but the Vulkan headers, so
- * any Vulkan module can use it. The name sets it apart from vulkan.core.init_utils - that
+ * any Vulkan module can use it. The name sets it apart from vulkan.core:init_utils - that
  * module performs the initialization PROCEDURES (instance/device/swapchain), while this one
  * holds the compile-time CONSTANTS of those calls: the fixed field values ("constant init").
  *

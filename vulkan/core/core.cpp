@@ -15,7 +15,7 @@ module;
 #include <glm/glm.hpp>
 module vulkan.core;
 import vulkan.core.pipeline;
-import vulkan.core.init_utils;
+import :init_utils;
 import vulkan.constant_init;
 
 namespace vulkan {

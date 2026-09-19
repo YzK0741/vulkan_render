@@ -3,7 +3,7 @@
 // module version: 0.1.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // The runtime's initialization utilities: the resource-creation patterns its init
-// functions repeat. Sister module: vulkan.core.init_utils holds the DEVICE-side
+// functions repeat. Sister module: vulkan.core:init_utils holds the DEVICE-side
 // equivalents (device/queue/swapchain selection, memory-type and format queries);
 // this one holds the RENDERER-side ones - the host-visible buffers, the recording
 // pools and the uploaded textures the runtime's members are made of - and imports

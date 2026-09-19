@@ -35,7 +35,7 @@ module vulkan.core:constructor;
 import :declarations;
 import utility;
 import vulkan.core.pipeline;
-import vulkan.core.init_utils;
+import :init_utils;
 import vulkan.constant_init;
 
 namespace vulkan {
