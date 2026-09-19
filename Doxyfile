@@ -1031,12 +1031,13 @@ INPUT                  = ./shaders \
 				./vulkan \
 				./utility \
 				./gltf_loader \
-				./app_config \
+				./application_configuration \
 				./main.cpp \
 				./chores.cppm \
 				./vstd \
 				./docs/mainpage.md \
-				./docs/shaders.md
+				./docs/shaders.md \
+				./docs/conventions.md
 
 # This tag can be used to specify the character encoding of the source files
 # that Doxygen parses. Internally Doxygen uses the UTF-8 encoding. Doxygen uses
