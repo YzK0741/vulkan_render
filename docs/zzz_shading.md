@@ -13,6 +13,19 @@ reproduction of *Zenless Zone Zero*'s character shading, `XIYAG-ZZZ-Shader - Bas
 there, and the shader source says so where the warp is implemented (`shaders/shading.glsl`,
 `diffuse_warp`).
 
+### The model the numbers were taken on, and its terms
+
+Every measurement in this file is of **千夏 (Sunna)**, an MMD model by **观海子** (BiliBili), distributed
+through 模之屋. Its readme grants modification - recolouring, fixing weights and physics, adding sphere
+(`spa`) and toon textures - and forbids redistribution, extracting its parts into other models, commercial
+use, and use in adult or offensive works; the final rights are miHoYo's.
+
+So the model itself is NOT in this repository, and neither is anything converted from it: the PMX lives on
+the author's disk, `scripts/pmx_to_glb.py` turns it into a GLB in a gitignored build directory or a temp
+directory, and `git ls-files` finds no model asset of any kind here (the tracked `gltf_model/` files are the
+glTF sample assets the render gate uses, and they are unrelated). The captures this file quotes are local
+renders of that model; the numbers, not the asset, are what is published.
+
 ## What the reference does, and what each part is here
 
 | the reference | where it lives here | status |
