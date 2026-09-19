@@ -139,7 +139,7 @@ ILM light map, no vertex colours). The substitutions, each named in the code:
 | --- | --- |
 | `ShadowColor1..5` | derived from the material's albedo: a ramp from a vibrance+darken transform of it to WHITE, which is the reference's own lit end |
 | `MData.x` (light-map band) | `runtime::toon_shadow_band`, one frame-wide value (0 = the deepest shadow colour) |
-| `MData.z` (specular mask) | not ported yet - the specular cascade is the next slice |
+| `MData.z` (specular mask) | `[render] toon_specular`, one frame-wide value (0 = the highlight term off) |
 | the vertex-colour shadow mask | 1 (a PMX has no vertex colours) |
 | `Eff_MatCap` | the model's own MMD sphere map when it has one, otherwise no matcap |
 | `Stocking` / `LUT` | not ported: the first is a per-model gradient the texture already carries here, the second needs a LUT image the template does not ship |
