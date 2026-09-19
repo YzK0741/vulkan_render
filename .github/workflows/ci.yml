@@ -23,10 +23,10 @@ name: ci
 
 on:
   push:
-    # TEMPORARY, and the only reason this list has a second entry: CI only ran on master, so the
-    # toolchain pin (update: false) could not be TESTED without merging first. Remove npr-zzz-shading
-    # from this list once the ASan+UBSan job is confirmed green.
-    branches: [master]
+    # TEMPORARY, and the only reason this list has a second entry: CI otherwise runs on master alone, so a
+    # change to this file cannot be TESTED before it is merged. Remove npr-zzz-shading once both jobs are
+    # confirmed green.
+    branches: [master, npr-zzz-shading]
   pull_request:
 
 jobs:
@@ -43,13 +43,16 @@ jobs:
         uses: msys2/setup-msys2@v2
         with:
           msystem: clang64
-          # update: false - PINNED DELIBERATELY. This project is C++23 modules on clang+libc++ and its STL module is
-          # byte-bound to that libc++ (see vstd/README.md), so a CI that silently upgrades its toolchain tests a
-          # different toolchain than the one this project is developed against. Measured: with update: true the
-          # ASan+UBSan job returned ctest exit code 8 - eight failed tests, i.e. EVERY test aborting at start-up -
-          # while the same commands on the pinned local clang 22.1.8 pass 8/8. The sanitizer runtime ships with
-          # the toolchain, so pinning the toolchain is the fix.
-          update: false
+          # update: true - deliberately CURRENT, and measured rather than assumed. This project is C++23 modules
+          # on clang+libc++ whose STL module (vstd/vstd.cppm) is byte-bound to libc++ (see vstd/README.md), so what
+          # matters is which libc++ the runner resolves; with update: true it is exactly the one this project is
+          # developed against - measured on run 35441060587: clang 22.1.8-3, libc++ 22.1.8-1, vulkan-headers
+          # 1.4.357, i.e. this machine's set. update: false does NOT pin that set: it freezes the runner at the
+          # image's OLDER one (clang 22.1.7, headers 1.4.350, measured on run 35442034147), which is a larger
+          # drift - and it is the one that broke the build there, on an extension name 1.4.350 does not define
+          # while 1.4.357 does (VK_KHR_EXTENDED_FLAGS_EXTENSION_NAME). Nothing was ever fixed by pinning: see the
+          # ASan job's build-step note for what actually turned that job red.
+          update: true
           install: >-
             mingw-w64-clang-x86_64-clang
             mingw-w64-clang-x86_64-clang-tools-extra
@@ -120,13 +123,16 @@ jobs:
         uses: msys2/setup-msys2@v2
         with:
           msystem: clang64
-          # update: false - PINNED DELIBERATELY. This project is C++23 modules on clang+libc++ and its STL module is
-          # byte-bound to that libc++ (see vstd/README.md), so a CI that silently upgrades its toolchain tests a
-          # different toolchain than the one this project is developed against. Measured: with update: true the
-          # ASan+UBSan job returned ctest exit code 8 - eight failed tests, i.e. EVERY test aborting at start-up -
-          # while the same commands on the pinned local clang 22.1.8 pass 8/8. The sanitizer runtime ships with
-          # the toolchain, so pinning the toolchain is the fix.
-          update: false
+          # update: true - deliberately CURRENT, and measured rather than assumed. This project is C++23 modules
+          # on clang+libc++ whose STL module (vstd/vstd.cppm) is byte-bound to libc++ (see vstd/README.md), so what
+          # matters is which libc++ the runner resolves; with update: true it is exactly the one this project is
+          # developed against - measured on run 35441060587: clang 22.1.8-3, libc++ 22.1.8-1, vulkan-headers
+          # 1.4.357, i.e. this machine's set. update: false does NOT pin that set: it freezes the runner at the
+          # image's OLDER one (clang 22.1.7, headers 1.4.350, measured on run 35442034147), which is a larger
+          # drift - and it is the one that broke the build there, on an extension name 1.4.350 does not define
+          # while 1.4.357 does (VK_KHR_EXTENDED_FLAGS_EXTENSION_NAME). Nothing was ever fixed by pinning: see the
+          # ASan job's build-step note for what actually turned that job red.
+          update: true
           install: >-
             mingw-w64-clang-x86_64-clang
             mingw-w64-clang-x86_64-lld
@@ -177,7 +183,10 @@ jobs:
       - name: Build the headless tests
         # This list must stay equal to CMakeLists.txt's VR_TEST_TARGETS: ctest below runs every test
         # that build registers (all eight), and a target missing here is a missing executable, which
-        # ctest reports as a failure - the job goes red for a reason that looks like a test bug.
+        # ctest reports as "Not Run" - the job goes red for a reason that looks like a test bug. That is
+        # exactly what made this job red on master, twice (runs 34844586370 and 35441060587): the last
+        # two targets were absent from this list, ctest could not find either executable, and every test
+        # it DID run passed. No sanitizer has ever reported anything in this job.
         run: >-
           cmake --build build-asan --target
           test_app_config test_utility test_math test_animation test_gltf_loader test_shadow_fit
