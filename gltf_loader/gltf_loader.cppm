@@ -1,6 +1,6 @@
 // ============================================================================
 // module: gltf_loader
-// module version: 0.4.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.5.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // Pure-CPU glTF / GLB loader (vendored fastgltf + stb): drawable stream, retained
 // node tree, animations / skins / morph targets / cameras / punctual lights.
@@ -251,6 +251,9 @@ namespace gltf {
         // this material is part of the model's FACE block (the PMX converter marks it by name);
         // the reference shades the face with a separate shader whose shadow is much lighter
         bool mmd_face = false;
+        // ... and this material is PAINTED: drawn from its albedo, not from the lighting stack. The face
+        // block is one such set, and so are the head's own props (the ears, the head wear)
+        bool mmd_unlit = false;
     };
 
     /**
@@ -799,6 +802,9 @@ namespace gltf {
         // this material is part of the model's FACE block (the PMX converter marks it by name); the
         // reference shades the face with a separate shader whose shadow is much lighter
         bool mmd_face = false;
+        // ... and this material is PAINTED: drawn from its albedo, not from the lighting stack. The face
+        // block is one such set, and so are the head's own props (the ears, the head wear)
+        bool mmd_unlit = false;
     };
 
     /**

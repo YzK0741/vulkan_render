@@ -270,6 +270,36 @@ large effect in the wrong direction, when the fixed patches show a small effect 
 through a mask are fine for comparing two renders against a fixed benchmark; they are not fine for deciding
 which way a knob moves.
 
+### The painted set is wider than the face: the ears are in it too
+
+The face is not the only thing on this model that should be DRAWN rather than lit. 千夏's ears live in the
+material `头饰`, and the geometry says so without any guessing: its vertices reach y 18.842, the tallest thing
+in the model and 0.7 above the hair, and an ear lit like a surface reads as a lump of plastic where a drawn
+ear should read as a shape. The converter's painted set is therefore the face block PLUS the ear/head-wear
+names (`耳`, `头饰`), and the two facts are two flags rather than one:
+
+- **bit7 = PAINTED**, which is what the lighting reads out of the G-buffer's one-byte material channel - so it
+  has to be bit7 for the same reason the face bit did - and which decides that a material takes its albedo
+  times `unlit_gain` instead of the lighting stack;
+- **bit8 = FACE**, which only the G-buffer pass can see, and that is enough: the one thing that needs it is
+  the redrawn nose mark, which is drawn on the albedo there.
+
+Measured with the non-PBR coefficient, on fixed patches, `unlit_gain` 1.3 -> 2.5:
+
+| patch | gain 1.3 | gain 2.5 |
+| --- | --- | --- |
+| ear | 195.6 | 203.7 |
+| face | 187.5 | 201.6 |
+| hair | 178.1 | 178.1 |
+| shirt | 222.8 | 222.8 |
+
+The painted materials move and the lit ones are bit for bit where they were, which is the property the user
+asked for and the reason the coefficient is named for what it is rather than for the face.
+
+Two pieces of code became MOOT in the same change and were removed rather than left: the face's band offset
+and its cast-shadow retention. Both tuned a lighting result that a painted material now discards entirely -
+their measurements stand above, and the band still serves every material that IS lit.
+
 ### The face is PAINTED, not lit - and its nose mark is redrawn
 
 The reference's `- Face` shader reads a face light map and a `TData` mask, and never the sun. That is not an

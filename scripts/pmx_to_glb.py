@@ -403,8 +403,16 @@ def write_glb(out_path: Path, model: dict) -> dict:
         "眉",  # brows
         "目",  # eyes (iris, highlight, shadow)
         "白目",  # ... and the eye whites, which start with 白 rather than 目
-        "白",
         "淚",  # tears
+    )
+
+    # The materials this engine draws from their ALBEDO rather than from the lighting stack: the
+    # reference's `- Face` treatment, generalised to the head's own painted props. 千夏's ears live in
+    # `头饰` - its geometry reaches y 18.842, the tallest thing in the model and above the hair - and an
+    # ear lit like a surface reads as a lump of plastic where a drawn ear should read as a shape.
+    MMD_UNLIT_MATERIAL_PREFIXES = MMD_FACE_MATERIAL_PREFIXES + (
+        "耳",  # ears
+        "头饰",  # ... and the head wear they are modelled in on this asset
     )
 
     gltf_materials = []
@@ -437,6 +445,10 @@ def write_glb(out_path: Path, model: dict) -> dict:
                 # lashes, brows, eyes, eye shadow) - checked against this asset's 22 materials, where they
                 # select 0..11 and nothing else.
                 "mmd_face": any(m["name"].startswith(prefix) for prefix in MMD_FACE_MATERIAL_PREFIXES),
+                # ... and the wider PAINTED set: everything drawn from its albedo, which is the face block
+                # plus the ear/head-wear materials above. A separate flag because the nose mark belongs to
+                # the face alone, while "no lighting" applies to all of them.
+                "mmd_unlit": any(m["name"].startswith(prefix) for prefix in MMD_UNLIT_MATERIAL_PREFIXES),
                 "mmd_toon_name": model["textures"][m["toon_index"]] if m["toon_flag"] == 0 and 0 <= m["toon_index"] < len(model["textures"]) else None,
             },
         }

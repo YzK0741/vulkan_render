@@ -112,9 +112,8 @@ struct surface_sample {
     vec3 sphere_sample; // the material's MMD sphere/matcap lookup, or 0 when it has none: the reference's
                         // Matcap combine needs the SAMPLE and the light factor together, so the lookup is
                         // kept here rather than only folded into the albedo (see reference_matcap_combine)
-    float face_mask; // 1 for the model's FACE block (see the converter's mmd_face), 0 otherwise: the
-                     // reference shades the face with a separate shader, and what that changes here is the
-                     // shadow's depth (see the band derivation in shading.glsl)
+    float painted_mask; // 1 when this material is PAINTED (the converter's mmd_unlit): drawn from its albedo,
+                        // not from the lighting stack. The face block is, and so are the head's props
 };
 
 /**
@@ -186,7 +185,7 @@ surface_sample gather_surface(vec3 world_pos, vec3 geo_normal, vec2 uv, vec3 vie
     //      instead) is NOT implemented; no material in the asset this was built for uses it, and pretending
     //      otherwise would sample a texture with the wrong coordinates.
     const uint sphere_mode = (mat.flags >> 8u) & 3u;
-    s.face_mask = (mat.flags & 128u) != 0u ? 1.0 : 0.0;
+    s.painted_mask = (mat.flags & 128u) != 0u ? 1.0 : 0.0; // record bit7
     s.sphere_sample = vec3(0.0);
     if (sphere_mode == 1u || sphere_mode == 2u) {
         const vec3 sphere_normal = normalize(view_normal);
@@ -208,7 +207,8 @@ surface_sample gather_surface(vec3 world_pos, vec3 geo_normal, vec2 uv, vec3 vie
     // per-surface coordinates. Its first version sat in shade_surface and drew its ellipse at the middle of
     // the FRAME, on fragments nothing had marked as face: measured, a strength sweep from 1.0 to 0.0 moved
     // 392 pixels, which is the run-to-run jitter. Here both the forward and the deferred path get it.
-    if ((mat.flags & 128u) != 0u && nose_strength > 0.0) {
+    if ((mat.flags & 256u) != 0u && nose_strength > 0.0) { // record bit8: the FACE block alone
+
         const vec2 nose_uv = vec2(0.5000, 0.5073);
         // SIZED IN PIXELS, NOT IN UV, and that is the correction a measurement forced: the painted mark is
         // 10x20 texels of a 2048 atlas, i.e. 0.5% of the face, and this render puts the face into about a

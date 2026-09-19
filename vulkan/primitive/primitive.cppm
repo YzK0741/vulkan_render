@@ -3,7 +3,7 @@
 //         GPU primitives that live in the scene-tree leaves, plus the GPU
 //         material / camera / light UBO records of the scene block; versioned in
 //         lock-step with vulkan.runtime, see that module's banner)
-// module version: 0.14.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.15.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // GPU scene contents (namespace vulkan):
 //   - vulkan::primitive (owns geometry buffers + material push constants,
@@ -266,6 +266,9 @@ namespace vulkan {
         // this material is part of the model's FACE block (the PMX converter marks it by name);
         // the reference shades the face with a separate shader whose shadow is much lighter
         bool mmd_face = false;
+        // ... and this material is PAINTED: drawn from its albedo, not from the lighting stack. The face
+        // block is one such set, and so are the head's own props (the ears, the head wear)
+        bool mmd_unlit = false;
     };
 
     /**

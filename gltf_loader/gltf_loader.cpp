@@ -334,6 +334,7 @@ namespace {
         // 3 sub-texture. `sphere_texture` is the glTF texture index the converter embedded it at.
         uint32_t sphere_texture = 0;
         int sphere_mode = 0;
+        bool unlit = false;
         bool face = false;
     };
 
@@ -396,6 +397,10 @@ namespace {
         if (extras->at_key("mmd_face").get_bool().get(face) == simdjson::SUCCESS) {
             entry.face = face;
         }
+        bool unlit = false;
+        if (extras->at_key("mmd_unlit").get_bool().get(unlit) == simdjson::SUCCESS) {
+            entry.unlit = unlit;
+        }
     }
 
     gltf::material load_material(fastgltf::Material const& material, mmd_extras const* const extras) {
@@ -427,6 +432,7 @@ namespace {
             result.factors.mmd_sphere_mode = extras->sphere_mode;
         }
         result.factors.mmd_face = extras != nullptr && extras->face;
+        result.factors.mmd_unlit = extras != nullptr && extras->unlit;
         result.double_sided = material.doubleSided;
         result.texture_indices = get_texture_indices(material);
         return result;
@@ -1614,6 +1620,7 @@ namespace gltf {
             out.factors.mmd_sphere_index = mat.factors.mmd_sphere_index;
             out.factors.mmd_sphere_mode = mat.factors.mmd_sphere_mode;
             out.factors.mmd_face = mat.factors.mmd_face;
+            out.factors.mmd_unlit = mat.factors.mmd_unlit;
             out.double_sided = mat.double_sided;
             for (int i = 0; i < 5; ++i) {
                 auto const it = mat.texture_indices.find(std::string(slot_names[i]));

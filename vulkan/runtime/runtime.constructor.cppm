@@ -937,13 +937,21 @@ namespace vulkan {
         // MODE rides two flag bits, so the record keeps its size and every shader copy keeps its layout.
         // 0 = none, 1 = multiply, 2 = add, 3 = sub-texture.
         record.sphere_index = info.factors.mmd_sphere_index;
+        if (info.factors.mmd_unlit) {
+            // bit7 is the PAINTED flag the lighting stage reads out of the G-buffer's one-byte material
+            // channel, so it has to be bit7 for the same reason the face bit did: a shading flag only
+            // reaches the deferred lighting stage if it fits inside that byte.
+            record.flags |= 128u;
+        }
         if (info.factors.mmd_face) {
             // bit7, NOT a higher bit: the deferred path's only channel for material flags is ONE BYTE in the
             // G-buffer (out_material.a), and the shading stage reads the face there rather than from the
             // record - so the face bit has to live inside that byte. The sphere MODE moved up to bits 8-9 for
             // the same reason, and it loses nothing: the stage that applies the sphere (the G-buffer pass)
             // reads the record directly.
-            record.flags |= 128u; // bit7: this material is part of the model's FACE block
+            // ... while the FACE flag rides bit8, which only the G-buffer PASS can see - and that is enough,
+            // because the one thing needing it (the redrawn nose mark) is drawn on the albedo there.
+            record.flags |= 256u; // bit8: this material is part of the model's FACE block
         }
         record.flags |= static_cast<uint32_t>(std::clamp(info.factors.mmd_sphere_mode, 0, 3)) << 8u;
 

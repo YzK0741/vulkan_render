@@ -529,7 +529,7 @@ vec3 fresnel_schlick(float cos_theta, vec3 f0) {
  *       multiscatter compensation, Lambert diffuse irradiance) - the GUI preset switch is an honest
  *       direct-light A/B, not a whole-scene model comparison.
  */
-vec3 evaluate_direct_light(vec3 n, vec3 v, vec3 base_color, float metallic, float roughness, vec3 f0, vec3 light_dir, vec3 light_radiance, vec3 matcap_sample, float face_mask) {
+vec3 evaluate_direct_light(vec3 n, vec3 v, vec3 base_color, float metallic, float roughness, vec3 f0, vec3 light_dir, vec3 light_radiance, vec3 matcap_sample) {
     vec3 l = normalize(light_dir);
     // Half vector: normalize(v + l) is NaN when the light sits exactly behind the fragment
     // along the view ray (v + l == 0, e.g. a point light placed at the camera). Fall back to
@@ -599,22 +599,13 @@ vec3 evaluate_direct_light(vec3 n, vec3 v, vec3 base_color, float metallic, floa
     vec3 radiance;
     if (warp) {
         const float ndotl_falloff = smoothstep(0.0, 0.25, raw_ndotl);
-        // ---- THE FLAT FACE (the reference's `- Face` group), which is a separate path there for exactly
-        // this reason: a face is nearly flat and its shading is PAINTED, so the reference does not let the
-        // surface normals shade it at all. Its mechanism is a face light map (R = a signed distance) whose
-        // value is compared against the light direction expressed in a HEAD frame, with a +/-0.025 window
-        // and a mirrored UV so the edge is symmetric.
-        //
-        // What this port keeps is that SHAPE of the mechanism; what it substitutes is the two inputs a PMX
-        // does not carry. There is no face SDF, so the "distance" collapses to a pair of thresholds, and
-        // there is no head bone in the shader, so the head frame is the VIEW's - the face of a portrait
-        // points at the camera. The result is ONE scalar for the whole face, which is the property the
-        // measurement was after: the reference's face spreads 36.4 luma between its p10 and p90 skin pixels
-        // while its own hair spreads 69.6, and the normal-driven face this engine had spread 63.3 - as
-        // shaded as the hair. `face_mask` is 0 or 1, so the non-face path is untouched bit for bit.
-        const vec3 face_forward = normalize(v); // v points from the surface at the eye: a portrait's face forward
-        const float face_light = smoothstep(-0.15, 0.35, dot(face_forward, l));
-        const float light_factor = mix(ndotl_falloff, face_light, face_mask);
+        // The falloff is the reference's own narrow Light Factor. NOTE: an earlier version swapped it for a
+        // single head-frame scalar for face materials (its `- Face` mechanism, with the VIEW standing in for
+        // the head frame). It measured as a NO-OP on this asset - this sun puts every face normal past the
+        // reference's own 0.25 threshold - and it is moot now that painted materials discard this whole
+        // result: the flatness comes from the albedo override at the end of shade_surface, which is a
+        // stronger version of the same idea. The measurement stands in docs/zzz_shading.md.
+        const float light_factor = ndotl_falloff;
         // THE BAND FACTOR, per texel where the reference's light map would supply it. A PMX has no light map,
         // so the band is derived from the surface's OWN albedo luminance - a darker material takes a deeper
         // shadow - which is the direction a painted light map goes, and the frame's toon_shadow_band_gain
@@ -627,19 +618,11 @@ vec3 evaluate_direct_light(vec3 n, vec3 v, vec3 base_color, float metallic, floa
         // (196.7 / 0.157) above 0.3 - no single value serves both. The luminance split reproduces that
         // direction: the hair's albedo is mid-dark (linear luma 0.42), the skin's is pale (0.53).
         const float albedo_luma = dot(base_color, vec3(0.2126, 0.7152, 0.0722));
-        // THE FACE's own band. The reference shades the face with a separate shader - a light map, an SDF and
-        // a mirrored UV - precisely because a face is nearly flat and its shading is painted rather than lit;
-        // this asset carries no such map, so what is ported is the one part that changes the picture
-        // measurably: its shadow is far LIGHTER than the body's. Sweeping the band on this asset put the
-        // face's own best arm above 0.3 against the hair's 0.15 (docs/zzz_shading.md), so materials the
-        // converter marked as face take that offset. `face_mask` is 0 or 1.
-        // The offset itself is a CONSTANT rather than a [render] key, because the reference has no such
-        // parameter - its face group is a hard-coded shader - and this is the port's substitute for the
-        // light map that shader reads. 0.2 was tuned on this asset (see docs/zzz_shading.md); it becomes
-        // a key the moment a second model wants a different one.
-        const float face_band_offset = 0.2;
-        float band = clamp(shadow_band + light[heap_light_slot].npr_rim.w * albedo_luma, 0.0, 1.0);
-        band = mix(band, min(band + face_band_offset, 1.0), face_mask);
+        const float band = clamp(shadow_band + light[heap_light_slot].npr_rim.w * albedo_luma, 0.0, 1.0);
+        // NOTE: this path's result is DISCARDED for a painted material (see the albedo override at the end of
+        // shade_surface), so the face's own band offset and cast-shadow retention that used to be mixed in
+        // here are gone: they tuned a lighting result nothing reads any more. Their measurements stand in
+        // docs/zzz_shading.md, and the band itself still serves every material that IS lit.
         // the reference's own composition, in its own order: the base colour goes through the per-channel
         // Matcap combine, THAT is multiplied by the shadow multiplier, and the stepped highlight is added on
         // top of it, masked by the reference's `MData.z` (a per-material value the game reads from its ILM
@@ -817,8 +800,8 @@ struct shade_input {
     vec3 sphere_sample; // the material's MMD sphere/matcap lookup, or 0 when it has none: the reference's
                     // Matcap combine needs the sample and the light factor together, so the lookup travels
                     // with the shading input rather than only being folded into the albedo
-    float face_mask; // 1 for the face block: the reference's `- Face` group is a separate shader whose shadow
-                    // is much lighter than the body's, and this carries that fact from the vertex stage
+    float painted_mask; // 1 when this material is PAINTED: drawn from its albedo rather than from the
+                    // lighting stack (the converter's mmd_unlit - the face block and the head's props)
     vec3 emissive;  // emissive radiance, linear (added after the lighting)
     float metallic; // 0 = dielectric, 1 = metal
     float roughness; // perceptual roughness
@@ -870,17 +853,7 @@ vec3 shade_surface(shade_input s) {
         } else if (light[heap_light_slot].shadow_enabled > 0.5) {
             shadow = calc_shadow(s.world_pos, s.normal);
         }
-        // ---- THE FACE KEEPS ONLY PART OF THE CAST SHADOW, and that is what "flat" turned out to mean here.
-        // Measured on this asset with the skin mask's own p10..p90 spread: the whole face spreads 63.3 luma
-        // with the shadow map on and 10.9 with it off, i.e. the face's shading is almost ENTIRELY the hair's
-        // cast shadow on it - not the normals, not the diffuse falloff (changing those moved the number not
-        // at all). The reference's face spreads 36.4, in between, because its face path takes its factor
-        // from a painted light map rather than from the shadow map - the bangs do not paint a shadow on an
-        // anime face. So face materials retain `face_shadow_retain` of it: not all (that would overshoot
-        // flatter than the reference) and not none of the reference's own soft variation.
-        const float face_shadow_retain = 0.6;
-        const float sun_shadow = mix(shadow, 1.0, s.face_mask * (1.0 - face_shadow_retain));
-        direct += evaluate_direct_light(s.normal, v, s.albedo, s.metallic, s.roughness, f0, light[heap_light_slot].light_dir.xyz, vec3(7.5 * light[heap_light_slot].sun_intensity) * sun_shadow, s.sphere_sample, s.face_mask);
+        direct += evaluate_direct_light(s.normal, v, s.albedo, s.metallic, s.roughness, f0, light[heap_light_slot].light_dir.xyz, vec3(7.5 * light[heap_light_slot].sun_intensity) * shadow, s.sphere_sample);
     }
     // punctual lights (point/spot, no shadow casting in this version): inverse-square falloff
     // (well-behaved at zero distance) with an optional smooth range cutoff; spots add a soft
@@ -905,7 +878,7 @@ vec3 shade_surface(shade_input s) {
         float dist;
         const vec3 radiance = punctual_light_radiance(pl, s.world_pos, dir, dist);
         if (radiance != vec3(0.0)) {
-            direct += evaluate_direct_light(s.normal, v, s.albedo, s.metallic, s.roughness, f0, dir, radiance, s.sphere_sample, s.face_mask);
+            direct += evaluate_direct_light(s.normal, v, s.albedo, s.metallic, s.roughness, f0, dir, radiance, s.sphere_sample);
         }
     }
 
@@ -940,12 +913,12 @@ vec3 shade_surface(shade_input s) {
     // CONFIG value ([render] unlit_gain, a gui slider) because the frame's sun scale deliberately
     // cannot reach this path - the face is painted, and it needs its own brightness knob.
     const float unlit_gain = light[heap_light_slot].npr_face.x;
-    vec3 face_color = s.albedo * unlit_gain;
+    vec3 painted_color = s.albedo * unlit_gain;
 
     // The nose mark is NOT here: it needs the surface uv, which this stage does not have in the deferred
     // path, so gather_surface draws it on the albedo instead (see surface.glsl).
 
-    color = mix(color, face_color, s.face_mask);
+    color = mix(color, painted_color, s.painted_mask);
 
     // The scene target is HDR: this stage writes linear radiance. Exposure, ACES tonemapping and
     // gamma happen once in the post-process pass (post.frag), which also gives the bloom chain a
