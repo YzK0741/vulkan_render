@@ -23,6 +23,14 @@ namespace {
         CHECK(settings.render.ssao_radius > 1.49f && settings.render.ssao_radius < 1.51f);
         CHECK(settings.render.ssao_intensity > 0.49f && settings.render.ssao_intensity < 0.51f);
         CHECK(settings.render.ssao_samples == 4);
+        // ZZZ-style NPR: this fixture is the one that proves the four keys are READ (three of them are
+        // neutral in the generated defaults, so a parser that ignored them would read the same values).
+        CHECK(settings.render.toon_steps == 5);
+        CHECK(settings.render.toon_softness > 0.049f && settings.render.toon_softness < 0.051f);
+        CHECK(settings.render.toon_shadow_tint[0] > 0.549f && settings.render.toon_shadow_tint[0] < 0.551f);
+        CHECK(settings.render.toon_shadow_tint[1] > 0.499f && settings.render.toon_shadow_tint[1] < 0.501f);
+        CHECK(settings.render.toon_shadow_tint[2] > 0.749f && settings.render.toon_shadow_tint[2] < 0.751f);
+        CHECK(settings.render.toon_rim > 0.799f && settings.render.toon_rim < 0.801f);
         CHECK(settings.render.rt_shadows);                                                       // fixture: the ray-traced sun shadows
         CHECK(!settings.render.rt_mask_bake);                                                    // fixture: the bake off (the A/B)
         CHECK(settings.render.rt_skin_bake);                                                     // fixture: the per-frame skin refit on
@@ -141,6 +149,13 @@ namespace {
         CHECK(settings.render.ssao_radius > 0.49f && settings.render.ssao_radius < 0.51f);
         CHECK(settings.render.ssao_intensity > 0.99f && settings.render.ssao_intensity < 1.01f);
         CHECK(settings.render.ssao_samples == 8);
+        // [render] cel/toon + ZZZ-style NPR: the generator writes all four, and every one of its defaults
+        // is the NEUTRAL value - which is the property that matters here, because a neutral value is what
+        // leaves the shading plain PBR (see docs/zzz_shading.md and the light UBO's npr_ lanes).
+        CHECK(settings.render.toon_steps == 0);
+        CHECK(settings.render.toon_softness > 0.14f && settings.render.toon_softness < 0.16f);
+        CHECK(settings.render.toon_shadow_tint[0] == 1.0f && settings.render.toon_shadow_tint[1] == 1.0f && settings.render.toon_shadow_tint[2] == 1.0f);
+        CHECK(settings.render.toon_rim == 0.0f);
         // [render] ray tracing: written by the generator like every other switch, so it round-trips
         CHECK(!settings.render.rt_shadows);
         CHECK(!settings.render.rt_mask_bake);         // default: the mask bake is off (see the generated-defaults fixture)

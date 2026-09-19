@@ -1,6 +1,6 @@
 // ============================================================================
 // module: app_config
-// module version: 0.29.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.30.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // Startup configuration: TOML file (config.toml / --config) merged with argv.
 // Pure CPU, no Vulkan dependency.
@@ -124,6 +124,18 @@ namespace app_config {
         // same two values as sliders.
         float shadow_bias_constant = 0.0f;
         float shadow_bias_slope = 1.5f;
+        // ---- ZZZ-style NPR ([render] toon_steps / toon_softness / toon_shadow_tint / toon_rim): the
+        // cel/toon path plus the two knobs that XIYAG's ZZZ shader adds to it - a diffuse WARP towards a
+        // tinted shadow colour, and a view-space rim (see docs/zzz_shading.md for the credit and for
+        // what this engine's version leaves out). EVERY DEFAULT HERE IS THE NEUTRAL VALUE: 0 steps, a
+        // (1,1,1) tint, a 0 rim - so a config that omits all four shades exactly as the renderer did
+        // before these keys existed, which is what the gate's references rely on. `toon_steps` is
+        // matched into the band counts the overlay offers (main.cpp), so a value the combo does not
+        // offer lands on the nearest one.
+        int toon_steps = 0;
+        float toon_softness = 0.15f;
+        std::array<float, 3> toon_shadow_tint = {1.0f, 1.0f, 1.0f};
+        float toon_rim = 0.0f;
         // Clustered light culling ([render] clustered_lights, M5): the punctual lights are sorted
         // into a screen-tile x depth-slice grid once per frame and the shading stage loops only its
         // own cluster's list. false = the brute-force loop over every active light - the reference

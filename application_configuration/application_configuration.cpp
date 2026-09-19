@@ -190,6 +190,38 @@ namespace app_config {
                     settings.render.shadow_bias_slope = static_cast<float>(*value);
                 }
             }
+            // ---- ZZZ-style NPR (see docs/zzz_shading.md). The bounds are the runtime setters' own
+            //      (set_toon_shading / set_toon_warp), so a config cannot ask for a value the renderer
+            //      would clamp anyway; the NEUTRAL values (0 steps, (1,1,1) tint, 0 rim) are what leave
+            //      the shading plain PBR.
+            if (toml::node const* node = render->get("toon_steps")) {
+                if (std::optional<int64_t> const value = node->value<int64_t>()) {
+                    settings.render.toon_steps = static_cast<int>(std::clamp<int64_t>(*value, 0, 8));
+                }
+            }
+            if (toml::node const* node = render->get("toon_softness")) {
+                if (std::optional<double> const value = node->value<double>()) {
+                    settings.render.toon_softness = static_cast<float>(std::clamp(*value, 0.01, 0.5));
+                }
+            }
+            if (toml::node const* node = render->get("toon_shadow_tint")) {
+                if (toml::array const* tint = node->as_array()) {
+                    std::size_t i = 0;
+                    for (toml::node const& element : *tint) {
+                        if (i >= settings.render.toon_shadow_tint.size()) {
+                            break;
+                        }
+                        if (std::optional<double> const channel = element.value<double>()) {
+                            settings.render.toon_shadow_tint[i++] = static_cast<float>(std::clamp(*channel, 0.0, 2.0));
+                        }
+                    }
+                }
+            }
+            if (toml::node const* node = render->get("toon_rim")) {
+                if (std::optional<double> const value = node->value<double>()) {
+                    settings.render.toon_rim = static_cast<float>(std::clamp(*value, 0.0, 2.0));
+                }
+            }
             if (toml::node const* node = render->get("clustered_lights")) {
                 if (std::optional<bool> const value = node->value<bool>()) {
                     settings.render.clustered_lights = *value;

@@ -155,6 +155,11 @@ namespace vulkan {
             this->light_state.light_count.y = this->exposure_scale;
             this->light_state.light_count.z = this->toon_steps;
             this->light_state.light_count.w = this->toon_softness;
+            // the ZZZ-style half of the same path (see docs/zzz_shading.md). The rim's exponent is a
+            // constant here rather than a knob: the reference has no such parameter either, because its
+            // rim is a matcap lookup whose falloff the artist authored in the texture.
+            this->light_state.npr_shadow = glm::vec4(this->toon_shadow_tint, 0.0f);
+            this->light_state.npr_rim = glm::vec4(this->toon_rim, 3.0f, 0.0f, 0.0f);
             // Ray-traced sun shadows: composed HERE rather than in set_rt_shadows, because the light UBO
             // is rebuilt from light_state every frame and a later enable_shadows() (main.cpp calls it
             // after the settings are applied, which is where this flag was first lost) resets fields of

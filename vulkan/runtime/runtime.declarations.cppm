@@ -8,7 +8,7 @@
 // ============================================================================
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.72.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.73.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -809,6 +809,12 @@ namespace vulkan {
         // copied into light_state.light_count.z/w every frame like the exposure lane
         float toon_steps = 0.0f;
         float toon_softness = 0.15f;
+        // ZZZ-style NPR (runtime::set_toon_warp; see docs/zzz_shading.md): the colour the shadowed end
+        // of the cel ramp lerps towards - (1,1,1) is the warp OFF, and the compiled default, so a frame
+        // that does not ask for it shades exactly as it did before this existed - and the strength of
+        // the view-space rim added on top. Copied into light_state.npr_shadow/npr_rim every frame.
+        glm::vec3 toon_shadow_tint = glm::vec3(1.0f);
+        float toon_rim = 0.0f;
         // bloom parameters (see set_bloom): blend weight into the HDR image and the bright-pass
         // threshold subtracted in linear space (0 intensity disables the effect)
 
@@ -2081,6 +2087,20 @@ namespace vulkan {
          * @note same timing rule as set_exposure: CPU-side, copied into the light UBO every frame
          */
         void set_toon_shading(float steps, float softness) noexcept;
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief the ZZZ-style NPR half of the toon path: a diffuse WARP towards a tinted shadow colour
+         *        and a view-space rim, both off at their neutral value
+         * @param shadow_tint the colour the shadowed end of the cel ramp lerps towards, as a multiplier
+         *        of each material's base colour. (1,1,1) = OFF, which is the default and what keeps the
+         *        gate's references valid; the reference shader's five ShadowColor values are this one
+         *        tint walked across the bands (see docs/zzz_shading.md, and @ref set_toon_shading for
+         *        the band count it is walked over - the warp without bands is a smooth lerp).
+         * @param rim rim strength added along the silhouette (0 = off; clamped to 0..2)
+         * @note same timing rule as set_toon_shading: CPU-side, copied into the light UBO every frame
+         */
+        void set_toon_warp(glm::vec3 const& shadow_tint, float rim) noexcept;
 
         /**
          * @ingroup vulkan_runtime

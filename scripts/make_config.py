@@ -173,6 +173,12 @@ def write_toml(path: str, cfg: dict) -> None:
         f"ssao_intensity = {cfg['ssao_intensity']}",
         f"ssao_samples = {cfg['ssao_samples']}",
         "",
+        "# ---- [render] cel/toon + ZZZ-style NPR (see docs/zzz_shading.md) ----",
+        f"toon_steps = {cfg['toon_steps']}",
+        f"toon_softness = {cfg['toon_softness']}",
+        "toon_shadow_tint = [{0}, {1}, {2}]".format(*cfg["toon_shadow_tint"]),
+        f"toon_rim = {cfg['toon_rim']}",
+        "",
         "# ---- [render] ray-traced effects ----",
         f"rt_shadows = {str(cfg['rt_shadows']).lower()}",
         f"rt_mask_bake = {str(cfg['rt_mask_bake']).lower()}",
@@ -268,6 +274,26 @@ def ask_all(output_dir: str) -> dict:
     ssao_intensity = ask_float("render.ssao_intensity", 1.0, 0.0, 1.0, hint="1 = full occlusion, 0 = off")
     ssao_samples = ask_int("render.ssao_samples", 8, 1, 16, hint="samples per pixel")
 
+    print("\n-- render (cel/toon + ZZZ-style NPR; see docs/zzz_shading.md) --")
+    toon_steps = ask_int(
+        "render.toon_steps",
+        0,
+        0,
+        8,
+        hint="cel-shading bands (0 = plain PBR); main.cpp matches this onto the band counts the overlay offers",
+    )
+    toon_softness = ask_float(
+        "render.toon_softness", 0.15, 0.01, 0.5, hint="band edge width; smaller = harder cel edges"
+    )
+    toon_shadow_tint = ask_float3(
+        "render.toon_shadow_tint (RGB multipliers; the colour the shadowed end of the ramp lerps"
+        " towards, (1,1,1) = the warp is OFF)",
+        (1.0, 1.0, 1.0),
+    )
+    toon_rim = ask_float(
+        "render.toon_rim", 0.0, 0.0, 2.0, hint="rim strength along the silhouette (0 = off)"
+    )
+
     print("\n-- render (ray-traced effects) --")
     furnace = ask_bool(
         "render.furnace",
@@ -345,6 +371,10 @@ def ask_all(output_dir: str) -> dict:
         "ssao_radius": ssao_radius,
         "ssao_intensity": ssao_intensity,
         "ssao_samples": ssao_samples,
+        "toon_steps": toon_steps,
+        "toon_softness": toon_softness,
+        "toon_shadow_tint": toon_shadow_tint,
+        "toon_rim": toon_rim,
         "rt_shadows": rt_shadows,
         "rt_mask_bake": rt_mask_bake,
         "rt_skin_bake": rt_skin_bake,

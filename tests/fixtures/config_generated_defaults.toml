@@ -57,6 +57,12 @@ ssao_radius = 0.5
 ssao_intensity = 1.0
 ssao_samples = 8
 
+# ---- [render] cel/toon + ZZZ-style NPR (see docs/zzz_shading.md) ----
+toon_steps = 0
+toon_softness = 0.15
+toon_shadow_tint = [1.0, 1.0, 1.0]
+toon_rim = 0.0
+
 # ---- [render] ray-traced effects ----
 rt_shadows = false
 rt_mask_bake = false

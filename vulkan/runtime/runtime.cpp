@@ -944,6 +944,17 @@ namespace vulkan {
         this->toon_softness = std::clamp(softness, 0.01f, 0.5f);
     }
 
+    void runtime::set_toon_warp(glm::vec3 const& shadow_tint, float const rim) noexcept {
+        // Both are "off" at their neutral value, and that is deliberate rather than a convenience: the
+        // shader branches on `tint != (1,1,1)` and on `rim > 0`, so a stock config compiles and records
+        // exactly the frame it recorded before this path existed (the gate's references are the proof).
+        // The tint is a diffuse multiplier, so values above 1 brighten the shadowed side instead of
+        // darkening it - allowed, and what a stylised model sometimes wants; the clamp only keeps it
+        // from leaving the range a shadow colour can plausibly live in.
+        this->toon_shadow_tint = glm::clamp(shadow_tint, glm::vec3(0.0f), glm::vec3(2.0f));
+        this->toon_rim = std::clamp(rim, 0.0f, 2.0f);
+    }
+
     void runtime::set_bloom(float const intensity, float const threshold) noexcept {
         this->bloom_intensity = std::clamp(intensity, 0.0f, 4.0f);
         // above ~0.75 the scene has almost no pixel brighter than the threshold, so nothing

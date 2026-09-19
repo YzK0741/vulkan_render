@@ -3,7 +3,7 @@
 //         GPU primitives that live in the scene-tree leaves, plus the GPU
 //         material / camera / light UBO records of the scene block; versioned in
 //         lock-step with vulkan.runtime, see that module's banner)
-// module version: 0.8.1  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.9.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // GPU scene contents (namespace vulkan):
 //   - vulkan::primitive (owns geometry buffers + material push constants,
@@ -170,6 +170,15 @@ namespace vulkan {
         //   cluster_depth x = near view depth, y = far view depth the slices span (z/w unused)
         glm::vec4 cluster_grid = {};
         glm::vec4 cluster_depth = {};
+        // ---- ZZZ-style NPR (the Diffuse Warp and the matcap rim of XIYAG's ZZZ shader; see
+        //      shaders/shading.glsl and docs/zzz_shading.md). APPENDED after the cluster lanes so every
+        //      offset above keeps its value, and both default to "off" - which is what keeps the gate's
+        //      references valid, because a frame that does not ask for the warp never takes that path.
+        //   npr_shadow xyz = the colour the shadowed end of the toon ramp lerps towards, as a MULTIPLIER
+        //                    of the material's base colour; (1,1,1) means the warp is off. w unused.
+        //   npr_rim    x = rim strength (0 = off), y = rim exponent; z/w unused.
+        glm::vec4 npr_shadow = glm::vec4(1.0f, 1.0f, 1.0f, 0.0f);
+        glm::vec4 npr_rim = glm::vec4(0.0f, 3.0f, 0.0f, 0.0f);
     };
     // std140 layout guard against the GLSL LightUBO: four cascade matrices (256 B), the direction,
     // the two per-cascade vec4s (304 B), four floats, light_count (a glm::vec4 whose x carries the
@@ -182,7 +191,7 @@ namespace vulkan {
     static_assert(offsetof(light_ubo, punctual_lights) == max_shadow_cascades * sizeof(glm::mat4) + 6 * sizeof(glm::vec4));
     static_assert(offsetof(light_ubo, cluster_grid) == max_shadow_cascades * sizeof(glm::mat4) + 6 * sizeof(glm::vec4) + max_punctual_lights * sizeof(point_light));
     static_assert(offsetof(light_ubo, cluster_depth) == max_shadow_cascades * sizeof(glm::mat4) + 7 * sizeof(glm::vec4) + max_punctual_lights * sizeof(point_light));
-    static_assert(sizeof(light_ubo) == max_shadow_cascades * sizeof(glm::mat4) + 8 * sizeof(glm::vec4) + max_punctual_lights * sizeof(point_light));
+    static_assert(sizeof(light_ubo) == max_shadow_cascades * sizeof(glm::mat4) + 10 * sizeof(glm::vec4) + max_punctual_lights * sizeof(point_light));
     static_assert(sizeof(light_ubo) <= 16384, "the light UBO must stay inside the guaranteed maxUniformBufferRange (16 KB)");
     static_assert(sizeof(point_light) == 64);
 

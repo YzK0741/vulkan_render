@@ -115,6 +115,18 @@ layout(descriptor_heap, descriptor_stride = heap_slot_stride) uniform LightUBO {
     //                 used by the cluster pass only)
     vec4 cluster_grid;
     vec4 cluster_depth;
+    // ---- ZZZ-style NPR (the Diffuse Warp and the matcap rim of XIYAG's ZZZ shader, see
+    //      shaders/shading.glsl's diffuse_warp below and docs/zzz_shading.md). APPENDED after the
+    //      cluster lanes, so every offset above keeps its value and a stage that declares the block
+    //      without these two still matches the buffer.
+    //   npr_shadow xyz = the colour the shadowed END of the toon ramp lerps towards, as a MULTIPLIER
+    //                    of the material's base colour: the reference's five ShadowColor values are
+    //                    this one tint walked across the five bands, and (1,1,1) means the warp is
+    //                    OFF - which is the compiled default, so a stock frame is unchanged.
+    //                    w unused.
+    //   npr_rim    x = rim strength (0 = off), y = rim exponent (its falloff in view space), z/w unused.
+    vec4 npr_shadow;
+    vec4 npr_rim;
 } light[];
 
 // Per-cluster light lists (scene set bindings 11/12), written by shaders/light_cluster.comp: one
@@ -158,6 +170,26 @@ float toon_band(float x, float steps, float softness) {
     float frac = scaled - base;
     float edge = smoothstep(0.5 - softness, 0.5 + softness, frac);
     return (base + edge) / steps;
+}
+
+/**
+ * @brief ZZZ's Diffuse Warp: the shadowed side of a surface takes a TINTED colour rather than a
+ *        darkened base colour (XIYAG's ZZZ shader - see docs/zzz_shading.md for the credit and for
+ *        what this engine's version leaves out)
+ * @param base_color the material's albedo (factor x texture)
+ * @param ramp the quantized diffuse falloff in [0,1]: the band index the cel path produced
+ * @param shadow_tint the reference's ShadowColor, as a MULTIPLIER of the base colour
+ * @return the colour the diffuse term uses in place of the base colour
+ *
+ * This is the mechanism that makes the reference's look what it is. A cel ramp on its own darkens the
+ * base colour by the band, which on a stylised model reads as grey plastic; the reference instead
+ * interpolates between an AUTHORED shadow colour and the base colour, and the authored one is usually
+ * lower in value but higher in saturation - often rotated towards the cool end. The five ShadowColor
+ * values the reference exposes per material are this lerp sampled at the five band edges, so a 5-step
+ * ramp walks exactly those five colours.
+ */
+vec3 diffuse_warp(vec3 base_color, float ramp, vec3 shadow_tint) {
+    return mix(base_color * shadow_tint, base_color, ramp);
 }
 
 /**
@@ -410,7 +442,10 @@ vec3 evaluate_direct_light(vec3 n, vec3 v, vec3 base_color, float metallic, floa
 
     vec3 kd = (1.0 - f) * (1.0 - metallic);
     float ndotv = max(dot(n, v), 0.0);
-    float ndotl = max(dot(n, l), 0.0);
+    // The UNQUANTIZED falloff is kept for the rim below: the rim is a silhouette term, and a band edge
+    // cutting it would be visible as a step in it.
+    const float raw_ndotl = max(dot(n, l), 0.0);
+    float ndotl = raw_ndotl;
 
     // ---- cel/toon shading (no-op when LightUBO.toon_steps < 1): quantize the diffuse falloff
     //      into bands and turn the specular lobe into a single hard highlight block. The
@@ -423,15 +458,47 @@ vec3 evaluate_direct_light(vec3 n, vec3 v, vec3 base_color, float metallic, floa
         specular *= smoothstep(highlight_threshold - light[heap_light_slot].toon_softness, highlight_threshold + light[heap_light_slot].toon_softness, ndoth);
     }
 
+    // ---- ZZZ's diffuse WARP (no-op while LightUBO.npr_shadow.rgb is (1,1,1), which is the compiled
+    //      default). In this style the ramp IS the light term rather than a scale on top of one: the
+    //      colour it interpolates towards is already the shadowed result, so multiplying by ndotl as
+    //      well would darken the shadow side twice. That, and not the tint alone, is why the warp
+    //      takes the light factor over.
+    const vec3 shadow_tint = light[heap_light_slot].npr_shadow.rgb;
+    const bool warp = any(notEqual(shadow_tint, vec3(1.0)));
+
     // ---- Diffuse by the selected model (LightUBO.diffuse_model): Lambert (default) or the
-    //      roughness-dependent Oren-Nayar approximation (0 -> Lambert).
-    vec3 diffuse;
-    if (int(light[heap_light_slot].diffuse_model + 0.5) == 1) {
-        diffuse = kd * base_color * oren_nayar_diffuse(n, v, l, roughness, ndotv, ndotl);
+    //      roughness-dependent Oren-Nayar approximation (0 -> Lambert). The WARP takes the diffuse over
+    //      entirely, and the specular is the one thing it does NOT: a highlight belongs where the sun
+    //      reaches the surface, so it keeps the unquantized falloff in both paths. Handing the specular
+    //      the ramp's light factor as well is what made this path read as blown out the first time it
+    //      was captured - the whole surface, unlit side included, collected the sun's full specular.
+    vec3 radiance;
+    if (warp) {
+        const vec3 warped = kd * diffuse_warp(base_color, ndotl, shadow_tint) / PI;
+        radiance = (warped + specular * raw_ndotl) * light_radiance;
     } else {
-        diffuse = kd * base_color / PI;
+        vec3 diffuse;
+        if (int(light[heap_light_slot].diffuse_model + 0.5) == 1) {
+            diffuse = kd * base_color * oren_nayar_diffuse(n, v, l, roughness, ndotv, ndotl);
+        } else {
+            diffuse = kd * base_color / PI;
+        }
+        radiance = (diffuse + specular) * (light_radiance * ndotl);
     }
-    return (diffuse + specular) * (light_radiance * ndotl);
+
+    // ---- the rim (no-op at strength 0, the compiled default). The reference takes it from the matcap
+    //      half of its sphere - "CombineMESphere" is the model's own MMD sphere texture combined with an
+    //      authored matcap - so it is a VIEW-space term rather than a light one. This is that term with
+    //      the texture left out (the tinted sphere sample is the next slice; see docs/zzz_shading.md);
+    //      it is added rather than multiplied because it is emitted light, scaled by the unquantized
+    //      falloff so the rim does not wrap onto the unlit side, and carried by the sun's radiance so it
+    //      cannot glow through a cast shadow.
+    const float rim_strength = light[heap_light_slot].npr_rim.x;
+    if (rim_strength > 0.0) {
+        const float rim = pow(1.0 - ndotv, light[heap_light_slot].npr_rim.y);
+        radiance += light_radiance * (rim * rim_strength * raw_ndotl);
+    }
+    return radiance;
 }
 
 /// @brief IBL: split-sum approximation (ported from glTF-Sample-Renderer's ibl.glsl); the ambient
