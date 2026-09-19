@@ -109,8 +109,9 @@ struct surface_sample {
     float metallic;  // metallic_factor * metallic-roughness texture .b
     float ao;        // mix(1, occlusion texture .r, occlusion_strength)
     uint flags;      // the material record's flag bits (see Material)
-    float face_mask; // 1 for the model's FACE block: it shades from its own flattened normal below, and
-                     // the lighting gives it a lighter cast shadow (see shade_surface)
+    float face_mask; // 1 for the model's FACE block: the lighting flattens its shading normal and gives it
+                     // a lighter cast shadow (see shade_surface). NOT flattened here: this pass writes the
+                     // G-buffer, whose normal the shadow lookup, SSAO and the ray-traced passes all read
     vec3 sphere_sample; // the material's MMD sphere/matcap lookup, or 0 when it has none: the reference's
                         // Matcap combine needs the SAMPLE and the light factor together, so the lookup is
                         // kept here rather than only folded into the albedo (see reference_matcap_combine)
