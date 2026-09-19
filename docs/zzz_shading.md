@@ -270,7 +270,12 @@ large effect in the wrong direction, when the fixed patches show a small effect 
 through a mask are fine for comparing two renders against a fixed benchmark; they are not fine for deciding
 which way a knob moves.
 
-### ... and the hair, because that is where the ears are modelled
+### ... and the hair was TRIED, and rejected on sight
+
+**Outcome: reverted.** The three prefixes are out of the converter again, and the numbers stay here as
+the record of what the arm was worth. The flat hair loses the strand volume the lighting was giving it
+and reads as one pale mass; the ear shells it was aimed at are simply part of the hair.
+
 
 千夏's ear SHELLS are not a material of their own: the flags channel shows them carrying the hair's byte, and
 the hair mesh is 81 connected fragments, so there is no clean ear island to split off. The converter's
