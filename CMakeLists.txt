@@ -118,6 +118,7 @@ target_sources(vulkancorekit
         FILE_SET CXX_MODULES
         FILES
         vulkan/core/core.cppm
+    vulkan/core/core.decl.cppm
         vulkan/core/filter/filters.cppm
         vulkan/core/vma/vma.cppm
         vulkan/core/descriptor_heap/descriptor_heap.cppm
@@ -462,7 +463,7 @@ if(VR_BUILD_TESTS)
     # source root for fixture/model paths (tests no longer assume the repo root is the cwd)
     target_compile_definitions(test_app_config PRIVATE VR_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
     target_compile_definitions(test_gltf_loader PRIVATE VR_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
-    # test_render_resources reads shaders/heap_slots.glsl and vulkan/core/core.cppm to compare the slot grid's two
+    # test_render_resources reads shaders/heap_slots.glsl and vulkan/core/core.decl.cppm to compare the slot grid's two
     # sources of truth (see the last block of that test): both are text, neither is generated from the other.
     target_compile_definitions(test_render_resources PRIVATE VR_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 
@@ -675,7 +676,7 @@ set(VR_SHADER_INCLUDES
     # ibl_specular.glsl is included by shading.glsl, so it belongs here for the same reason the three above
     # do: editing it alone must not leave stale SPIR-V behind.
     "${VR_SHADER_SRC_DIR}/ibl_specular.glsl"
-    # heap_slots.glsl is the SLOT GRID's shader-side source of truth (core.cppm is the host's): a shader that
+    # heap_slots.glsl is the SLOT GRID's shader-side source of truth (core.decl.cppm is the host's): a shader that
     # includes it and is not rebuilt after it changes would index the heap by stale numbers, which validation
     # cannot see. The C++ side is compared against it by a test (see test_render_resources).
     "${VR_SHADER_SRC_DIR}/heap_slots.glsl"
@@ -734,4 +735,3 @@ add_custom_command(
 add_custom_target(shaders ALL DEPENDS ${VR_SHADER_OUTPUTS} "${VR_SHADER_OUT_DIR}/.sources-copied")
 add_dependencies(vulkan_render shaders)
 message(STATUS "glslc: ${Vulkan_GLSLC_EXECUTABLE} - every build compiles shaders/*.spv into ${VR_SHADER_OUT_DIR}")
-

@@ -577,7 +577,7 @@ int main() {
         std::map<std::string, uint64_t> host_scalars;
         std::map<std::string, uint64_t> host_slots; // the members of core::heap_slots
         bool in_slots = false;
-        for (std::string const& line : read_lines(std::string(VR_TEST_SOURCE_DIR) + "/vulkan/core/core.cppm")) {
+        for (std::string const& line : read_lines(std::string(VR_TEST_SOURCE_DIR) + "/vulkan/core/core.decl.cppm")) {
             if (line.find("struct heap_slots {") != std::string::npos) {
                 in_slots = true;
                 continue;
@@ -622,9 +622,9 @@ int main() {
         // the scalars a shader bakes: the grid's base, its stride, how many slots it holds, and the sampler grid's
         CHECK(!shader_scalars.empty());
         CHECK(!host_scalars.empty());
-        CHECK_MSG(shader_scalars == host_scalars, "the grid's scalar constants differ between shaders/heap_slots.glsl and core.cppm");
+        CHECK_MSG(shader_scalars == host_scalars, "the grid's scalar constants differ between shaders/heap_slots.glsl and core.decl.cppm");
         CHECK_MSG(shader_slots.size() == host_slots.size(), "the grid has a different number of arrays on the two sides");
-        CHECK_MSG(shader_slots == host_slots, "a grid array's slot differs between shaders/heap_slots.glsl and core.cppm");
+        CHECK_MSG(shader_slots == host_slots, "a grid array's slot differs between shaders/heap_slots.glsl and core.decl.cppm");
         // ---- ... and every slot the header names must be one the HOST actually WRITES ----
         //
         // The comparison above keeps the two tables equal; this keeps them MEANINGFUL. A slot no host code ever
