@@ -323,6 +323,17 @@ looks the same: the lit half's saturation is 0.104 against the reference's 0.102
 measured 0.080 - lighting the face back up is what puts that saturation there.
 
 The two constants (`face_normal_flatten` 0.85, `face_shadow_retain` 0.35) are documented in place; they are
+
+**And the face takes NO shadow map at all**, which is the fix for the grey speckle a user reported and
+diagnosed ("the shadow computed wrongly, and the cause is the normal"): the shadow lookup offsets its
+sample along the normal (`world_pos + normal * 2 texels`), so a face nearly PARALLEL to the light samples
+the map at a grazing angle - and the earlier retention KEPT 35% of that result. Measured in this repo's own
+scene, where the sun is in front: the face's spread falls from 12.8 to 1.5 and its luma rises from 222.3 to
+232.2, i.e. that residual variation WAS the shadow map. Toon practice agrees - GDC's 3D Toon Rendering talk
+puts it as "shadow shapes are determined by NdotL except for the face"
+(https://gdcvault.com/play/1034330/3D-Toon-Rendering-in-Hi) - because a face's shadow shape is the
+artist's. A frame that wants the bangs' cast shadow on the face has [render] shadow_bias_constant /
+shadow_bias_slope to widen the offset instead.
 the obvious next pair of knobs, alongside the ones the panel already has.
 
 **And the flattening must NOT happen in the G-buffer pass**, which the first version got wrong and a user's

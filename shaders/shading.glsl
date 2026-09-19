@@ -878,12 +878,16 @@ vec3 shade_surface(shade_input s) {
         } else if (light[heap_light_slot].shadow_enabled > 0.5) {
             shadow = calc_shadow(s.world_pos, s.normal);
         }
-        // ---- THE FACE KEEPS ONLY PART OF THE CAST SHADOW. Measured when the face was first flattened: its
-        // shading variation was almost ENTIRELY the hair's shadow falling on it (a spread of 63.3 with the
-        // shadow map on and 10.9 with it off), i.e. the bangs painting a shadow across a face - which is what
-        // the reference's face path does not do, because it takes its factor from a light map.
-        const float face_shadow_retain = 0.35;
-        const float sun_shadow = mix(shadow, 1.0, s.face_mask * (1.0 - face_shadow_retain));
+        // ---- THE FACE TAKES NO SHADOW MAP AT ALL. Two reasons, and the second is the one a user found:
+        // (1) the reference's face path reads a light map, not the shadow map - toon rendering puts the
+        // face's shadow shape under the artist's control and the body's under NdotL (GDC's 3D Toon
+        // Rendering talk puts it as "shadow shapes are determined by NdotL except for the face");
+        // (2) the shadow lookup offsets its sample along the NORMAL (`world_pos + normal * 2 texels`), so a
+        // face that is nearly PARALLEL to the light - exactly what a face looks like from below or in front
+        // of a low sun - samples the map at a grazing angle, and the acne that produces was being KEPT at
+        // 35% by the earlier mix. That is the grey speckle a user reported and diagnosed as "the shadow
+        // computed wrongly, and the cause is the normal".
+        const float sun_shadow = mix(shadow, 1.0, s.face_mask);
         direct += evaluate_direct_light(shading_normal, v, s.albedo, s.metallic, s.roughness, f0, light[heap_light_slot].light_dir.xyz, vec3(7.5 * light[heap_light_slot].sun_intensity) * sun_shadow, s.sphere_sample);
     }
     // punctual lights (point/spot, no shadow casting in this version): inverse-square falloff
