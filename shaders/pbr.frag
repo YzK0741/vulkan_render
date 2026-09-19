@@ -43,7 +43,7 @@ layout(location = 0) out vec4 out_color;
  * unexpectedly translucent. BLEND keeps base_color.a.
  */
 void main() {
-    const surface_sample s = gather_surface(v_world_pos, v_normal, v_uv, mat3(camera[heap_camera_slot].view) * v_normal, light[heap_light_slot].npr_face.y, camera[heap_camera_slot].camera_pos - v_world_pos);
+    const surface_sample s = gather_surface(v_world_pos, v_normal, v_uv, mat3(camera[heap_camera_slot].view) * v_normal, light[heap_light_slot].npr_face.y);
 
     shade_input si;
     si.pixel = ivec2(gl_FragCoord.xy); // the cluster grid's tile coordinate (see shade_input)

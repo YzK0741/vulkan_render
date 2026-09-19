@@ -846,6 +846,20 @@ vec3 shade_surface(shade_input s) {
     const vec3 f0 = mix(vec3(0.04), s.albedo, s.metallic);
 
     vec3 direct = vec3(0.0);
+    // ---- THE FACE'S FLATTENED SHADING NORMAL (the reference's `- Face` group exists for this): a face is
+    // nearly flat and its shading should follow the HEAD, not the nose, the lips and the cheeks - those
+    // normals are what put a gradient across a face that has none in the art. It is blended towards the
+    // direction the face is facing (at the eye, in a portrait), which leaves the face LIT while the
+    // per-feature shading goes away.
+    //
+    // IT IS USED FOR THE LIGHTING ONLY. s.normal stays the GEOMETRIC one for everything that is not a
+    // shading input: the shadow lookup above, the screen-space occlusion that runs before this stage, and
+    // the G-buffer the other passes read. A normal bent towards the eye used for the shadow comparison
+    // self-shadows (the offset no longer matches the surface) and one used for SSAO occludes the face
+    // against itself - both measured as a face going grey on a turned head.
+    const float face_normal_flatten = 0.85;
+    const vec3 shading_normal = mix(s.normal, normalize(v), s.face_mask * face_normal_flatten);
+
     // directional sun: shadow factor attenuates only this light; IBL ambient stays unshadowed
     {
         // A ray-traced override wins over both: it IS the shadow, already resolved per pixel.
@@ -861,7 +875,7 @@ vec3 shade_surface(shade_input s) {
         // the reference's face path does not do, because it takes its factor from a light map.
         const float face_shadow_retain = 0.35;
         const float sun_shadow = mix(shadow, 1.0, s.face_mask * (1.0 - face_shadow_retain));
-        direct += evaluate_direct_light(s.normal, v, s.albedo, s.metallic, s.roughness, f0, light[heap_light_slot].light_dir.xyz, vec3(7.5 * light[heap_light_slot].sun_intensity) * sun_shadow, s.sphere_sample);
+        direct += evaluate_direct_light(shading_normal, v, s.albedo, s.metallic, s.roughness, f0, light[heap_light_slot].light_dir.xyz, vec3(7.5 * light[heap_light_slot].sun_intensity) * sun_shadow, s.sphere_sample);
     }
     // punctual lights (point/spot, no shadow casting in this version): inverse-square falloff
     // (well-behaved at zero distance) with an optional smooth range cutoff; spots add a soft
@@ -886,14 +900,14 @@ vec3 shade_surface(shade_input s) {
         float dist;
         const vec3 radiance = punctual_light_radiance(pl, s.world_pos, dir, dist);
         if (radiance != vec3(0.0)) {
-            direct += evaluate_direct_light(s.normal, v, s.albedo, s.metallic, s.roughness, f0, dir, radiance, s.sphere_sample);
+            direct += evaluate_direct_light(shading_normal, v, s.albedo, s.metallic, s.roughness, f0, dir, radiance, s.sphere_sample);
         }
     }
 
     // ---- IBL (split-sum): diffuse irradiance + prefiltered specular ----
-    vec3 ibl_diffuse = get_diffuse_light(s.normal);
-    vec3 ibl_specular = ibl_specular_radiance(s.normal, v, s.roughness);
-    vec3 fresnel_ibl = ibl_specular_fresnel(s.normal, v, s.roughness, f0, 1.0);
+    vec3 ibl_diffuse = get_diffuse_light(shading_normal);
+    vec3 ibl_specular = ibl_specular_radiance(shading_normal, v, s.roughness);
+    vec3 fresnel_ibl = ibl_specular_fresnel(shading_normal, v, s.roughness, f0, 1.0);
 
     // Metals have no diffuse term: diffuse ambient is scaled by (1 - metallic),
     // metal color comes entirely from specular environment (matches the official mix(dielectric, metal, metallic))

@@ -325,6 +325,15 @@ measured 0.080 - lighting the face back up is what puts that saturation there.
 The two constants (`face_normal_flatten` 0.85, `face_shadow_retain` 0.35) are documented in place; they are
 the obvious next pair of knobs, alongside the ones the panel already has.
 
+**And the flattening must NOT happen in the G-buffer pass**, which the first version got wrong and a user's
+screenshot caught: the face went grey on a turned head. The G-buffer's normal is not a shading input - the
+SHADOW lookup, the screen-space occlusion and the ray-traced passes all read it - so storing a normal bent
+towards the eye made every one of them wrong: the shadow comparison's offset no longer matched the surface
+(self-shadowing) and SSAO occluded the face against itself. `gather_surface` writes the GEOMETRIC normal
+again and `shade_surface` derives the flattened one locally, where a normal is a shading input and nothing
+else. Measured after the fix, the frontal face is unchanged (cheek 196.9 against 197.3, i.e. jitter) and
+the sun still moves it (196.9 -> 180.9 at `sun_intensity` 0.5).
+
 ### The painted set is wider than the face: the ears are in it too
 
 The face is not the only thing on this model that should be DRAWN rather than lit. 千夏's ears live in the

@@ -132,7 +132,7 @@ struct surface_sample {
  *       mirrored UV layouts (glTF TANGENT.w = -1) are handled implicitly and the vertex TANGENT
  *       attribute is never consumed; a degenerate UV derivative falls back to the fine normal.
  */
-surface_sample gather_surface(vec3 world_pos, vec3 geo_normal, vec2 uv, vec3 view_normal, float nose_strength, vec3 face_normal) {
+surface_sample gather_surface(vec3 world_pos, vec3 geo_normal, vec2 uv, vec3 view_normal, float nose_strength) {
     Material mat = heap_material_tables[heap_slots_materials].materials[push.material_index];
 
     surface_sample s;
@@ -179,16 +179,12 @@ surface_sample gather_surface(vec3 world_pos, vec3 geo_normal, vec2 uv, vec3 vie
     if ((mat.flags & 8u) != 0u && !gl_FrontFacing) {
         s.normal = -s.normal;
     }
-    // ---- THE FACE'S OWN SHADING NORMAL (the reference's `- Face` group exists for this): a face is nearly
-    // flat and its shading should follow the HEAD, not the nose, the lips and the cheeks - those normals
-    // are what put a gradient across a face that has none in the art. The normal is blended towards the
-    // direction the face is facing (at the eye, in a portrait), which leaves the face LIT - it still
-    // brightens and darkens as the light moves - while the per-feature shading goes away. A blend rather
-    // than a replacement, because the edges of the head still need their own normals.
-    if ((mat.flags & 128u) != 0u) {
-        const float face_normal_flatten = 0.85;
-        s.normal = normalize(mix(s.normal, normalize(face_normal), face_normal_flatten));
-    }
+    // NOTE: the face's flattened SHADING normal is NOT applied here, and that is a fix rather than an
+    // omission. This pass writes the G-buffer, whose normal is read by the SHADOW lookup, by SSAO and by
+    // the ray-traced passes - so a normal bent towards the eye makes all of them wrong: measured on a
+    // turned head, the face went grey because the screen-space occlusion was computed against a normal that
+    // pointed at the camera. The flattening happens in shade_surface instead, where a normal is a shading
+    // input and nothing else.
 
     // ---- MMD's SPHERE map (see docs/zzz_shading.md), which is where a model like this gets its saturation:
     //      the diffuse texture is authored pale and the sphere map is combined on top of it. The lookup is
