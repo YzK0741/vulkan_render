@@ -24,15 +24,19 @@
  * it softens fine detail; the debug overlay is therefore drawn AFTER this pass, not before.
  *
  * Requires the pipeline built by runtime::make_fxaa_pipeline() (post.vert + this file, the
- * swapchain color format, the post set layout).
+ * swapchain color format).
  */
 
 layout(location = 0) in vec2 v_uv;
 layout(location = 0) out vec4 out_color;
 
-// binding 5 = the gamma-encoded LDR image (see the post set layout; binding 0 is the HDR target the
-// composite reads, which this pass has no use for).
-layout(set = 0, binding = 5) uniform sampler2D display_color;
+// binding 5 = the gamma-encoded LDR image, HEAP-NATIVE now: a resource heap image plus a sampler from the sampler
+// heap. The sampler matters less here than it looks - FXAA's taps are exact texel centres, and at a centre a LINEAR
+// and a NEAREST filter return the same texel - so this uses the post chain's sampler, exactly as before.
+#extension GL_EXT_descriptor_heap : require
+#extension GL_EXT_nonuniform_qualifier : enable
+#include "heap_slots.glsl"
+layout(descriptor_heap, descriptor_stride = heap_slot_stride) uniform texture2D display_texture[];
 
 // Same block as post.frag / post.vert (the pipeline layout shares one push-constant range); only the
 // FXAA lanes are read here, the rest exist so the offsets stay identical.
@@ -42,21 +46,14 @@ layout(push_constant) uniform PostPush {
     float bloom_threshold;
     float mode;
     float encode_gamma;
-    // Declared but unused here: post.frag's composite puts the screen-space GI weight in this slot,
-    // and the two shaders share this push block (and the post pipeline layout). A stage may declare
-    // FEWER members than the CPU writes, but not a different layout up to the ones it uses - without
-    // this line fxaa_subpixel would land on gi_intensity's offset and read the GI weight instead.
-    float gi_intensity;
-    // ... and the GI upsample's five terms, unused here for the same reason and with the same trap:
-    // they sit between gi_intensity and the FXAA lanes, so leaving them out would shift both lanes.
-    float gi_depth_scale;
-    float gi_depth_offset;
-    float gi_depth_sigma;
-    float gi_normal_power;
-    float gi_upsample;
     float fxaa_subpixel;      // 0 = pure directional blend, up to 1 = also blend away single-pixel aliasing
     float fxaa_edge_threshold; // relative luma contrast below which a pixel counts as flat (0.166 = FXAA default)
+    // THE HEAP INDICES (see heap_slots.glsl), at the END so every field above keeps its offset.
+    uint frame_slot;
+    uint image_index;
 } pc;
+#define heap_frame_slot (pc.frame_slot)
+#define heap_image_index (pc.image_index)
 
 const float FXAA_EDGE_THRESHOLD_MIN = 0.0833; // absolute floor for the contrast test (dark areas)
 const float FXAA_DIR_STEP_CAP = 8.0;          // max length of the edge-direction step, in texels
@@ -96,13 +93,13 @@ vec3 srgb_to_linear(vec3 color) {
  * single-pixel aliasing that survives on near-axis-aligned edges.
  */
 void main() {
-    vec2 texel = 1.0 / vec2(textureSize(display_color, 0));
+    vec2 texel = 1.0 / vec2(textureSize(sampler2D(display_texture[heap_slots_display_color + heap_image_index], heap_samplers[heap_sampler_post]), 0));
 
-    vec3 rgb_m = texture(display_color, v_uv).rgb;
-    vec3 rgb_nw = texture(display_color, v_uv + vec2(-1.0, -1.0) * texel).rgb;
-    vec3 rgb_ne = texture(display_color, v_uv + vec2(1.0, -1.0) * texel).rgb;
-    vec3 rgb_sw = texture(display_color, v_uv + vec2(-1.0, 1.0) * texel).rgb;
-    vec3 rgb_se = texture(display_color, v_uv + vec2(1.0, 1.0) * texel).rgb;
+    vec3 rgb_m = heap_texel(display_texture[heap_slots_display_color + heap_image_index], heap_sampler_post, v_uv).rgb;
+    vec3 rgb_nw = heap_texel(display_texture[heap_slots_display_color + heap_image_index], heap_sampler_post, v_uv + vec2(-1.0, -1.0) * texel).rgb;
+    vec3 rgb_ne = heap_texel(display_texture[heap_slots_display_color + heap_image_index], heap_sampler_post, v_uv + vec2(1.0, -1.0) * texel).rgb;
+    vec3 rgb_sw = heap_texel(display_texture[heap_slots_display_color + heap_image_index], heap_sampler_post, v_uv + vec2(-1.0, 1.0) * texel).rgb;
+    vec3 rgb_se = heap_texel(display_texture[heap_slots_display_color + heap_image_index], heap_sampler_post, v_uv + vec2(1.0, 1.0) * texel).rgb;
 
     float luma_m = luma_of(rgb_m);
     float luma_nw = luma_of(rgb_nw);
@@ -131,10 +128,10 @@ void main() {
 
     // two-step search along the edge: a near pair and a far pair; pick the far pair unless its luma
     // already left the neighbourhood's range (that would mean the blend ran into another feature)
-    vec3 rgb_a = 0.5 * (texture(display_color, v_uv + dir * (1.0 / 3.0 - 0.5)).rgb +
-                        texture(display_color, v_uv + dir * (2.0 / 3.0 - 0.5)).rgb);
-    vec3 rgb_b = rgb_a * 0.5 + 0.25 * (texture(display_color, v_uv + dir * -0.5).rgb +
-                                       texture(display_color, v_uv + dir * 0.5).rgb);
+    vec3 rgb_a = 0.5 * (heap_texel(display_texture[heap_slots_display_color + heap_image_index], heap_sampler_post, v_uv + dir * (1.0 / 3.0 - 0.5)).rgb +
+                        heap_texel(display_texture[heap_slots_display_color + heap_image_index], heap_sampler_post, v_uv + dir * (2.0 / 3.0 - 0.5)).rgb);
+    vec3 rgb_b = rgb_a * 0.5 + 0.25 * (heap_texel(display_texture[heap_slots_display_color + heap_image_index], heap_sampler_post, v_uv + dir * -0.5).rgb +
+                                       heap_texel(display_texture[heap_slots_display_color + heap_image_index], heap_sampler_post, v_uv + dir * 0.5).rgb);
     float luma_b = luma_of(rgb_b);
     vec3 rgb_result = (luma_b < luma_min || luma_b > luma_max) ? rgb_a : rgb_b;
 

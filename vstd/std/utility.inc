@@ -16,7 +16,7 @@ export namespace std {
 
   // [forward], forward/move
   using std::forward;
-#if _LIBCPP_STD_VER >= 23
+#if VSTD_STD_VER >= 23
   using std::forward_like;
 #endif
   using std::move;
@@ -39,13 +39,13 @@ export namespace std {
 
   using std::in_range;
 
-#if _LIBCPP_STD_VER >= 23
+#if VSTD_STD_VER >= 23
   // [utility.underlying], to_underlying
   using std::to_underlying;
 
   // [utility.unreachable], unreachable
   using std::unreachable;
-#endif // _LIBCPP_STD_VER >= 23
+#endif // VSTD_STD_VER >= 23
 
   // [intseq], compile-time integer sequences
   using std::index_sequence;
@@ -59,7 +59,7 @@ export namespace std {
   // [pairs], class template pair
   using std::pair;
 
-#if _LIBCPP_STD_VER >= 23
+#if VSTD_STD_VER >= 23
   using std::basic_common_reference;
   using std::common_type;
 #endif

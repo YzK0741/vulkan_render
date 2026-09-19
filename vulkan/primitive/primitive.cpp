@@ -1,11 +1,32 @@
 module;
 
+#include <cstddef>
+#include <cstdio>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+#include <span>
 #include <vulkan/vulkan.h>
 
 module vulkan.primitive;
+
+import utility; // DIAGNOSTIC only (see normal_draw_primitive::draw): this app is a GUI-subsystem binary, so
+                // stdout/stderr go nowhere and every traceable line has to come through utility::log.
+
 namespace vulkan {
+    namespace {
+        /// Send this draw's stage block to the pipeline it is about to draw with.
+        ///
+        /// A block is DATA now: no pipeline in this renderer has a layout (`vkCmdPushConstants` would have
+        /// nothing to push to), and a heap-native shader reads `vkCmdPushDataEXT` exactly as it read push
+        /// constants. The environment's endpoint appends the two heap indices - the frame slot and the swapchain
+        /// image - as the block's last fields, so what is pushed here is the block alone. See
+        /// `render_environment::push_block` and shaders/heap_slots.glsl.
+        void push_stage_block(render_environment const& env, auto const& block) {
+            if (env.push_block != nullptr) {
+                [[maybe_unused]] bool const pushed = env.push_block(env.push_owner, env.command_buffer, std::as_bytes(std::span(&block, 1)), 0u);
+            }
+        }
+    } // namespace
     void primitive::set_world(glm::mat4 const& world) {
         // the accumulated world transform written by a scene tree walk (scene_tree::primitive
         // interface); draw() pushes push.model verbatim, so this is all the leaf needs
@@ -23,12 +44,7 @@ namespace vulkan {
         vkCmdBindVertexBuffers(command_buffer, 0, 1, &this->vertex_detail->buffer, &vertex_offset);
         vkCmdBindIndexBuffer(command_buffer, this->index_detail->buffer, 0, this->index_type);
 
-        vkCmdPushConstants(command_buffer,
-                           env.layout,
-                           VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                           0,
-                           sizeof(this->push),
-                           &this->push);
+        push_stage_block(env, this->push);
     }
 
     // Default-semantics draws (normal / instanced / static): request the recording session's
@@ -38,6 +54,15 @@ namespace vulkan {
     // leaves disable depth writes so they blend onto whatever is behind them. All commands
     // record onto env.command_buffer.
     void normal_draw_primitive::draw(render_environment& env) const {
+        // DIAGNOSTIC (temporary): an indexed geometry draw that rasterises nothing can simply have no indices, and
+        // no shader-side experiment can tell that apart from a draw that never happens at all.
+        {
+            static int logged = 0;
+            if (logged < 4) {
+                ++logged;
+                utility::log("[diag] normal draw: index_count={} vertex_count={} vertex_detail={} index_detail={}", this->index_count, this->vertex_count, static_cast<void const*>(this->vertex_detail) != nullptr, static_cast<void const*>(this->index_detail) != nullptr);
+            }
+        }
         env.bind_default();
         env.set_depth_write(!this->transparent);
         VkCommandBuffer const command_buffer = env.command_buffer;
@@ -75,12 +100,7 @@ namespace vulkan {
         vkCmdBindVertexBuffers(command_buffer, 0, 1, &geometry_source.vertex_detail->buffer, &vertex_offset);
         vkCmdBindIndexBuffer(command_buffer, geometry_source.index_detail->buffer, 0, geometry_source.index_type);
 
-        vkCmdPushConstants(command_buffer,
-                           env.layout,
-                           VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                           0,
-                           sizeof(this->push),
-                           &this->push);
+        push_stage_block(env, this->push);
         vkCmdDrawIndexed(command_buffer, geometry_source.index_count, this->instance_count, 0, 0, 0);
     }
 
@@ -104,7 +124,7 @@ namespace vulkan {
 
         // chunked: per chunk set the cull mode + material_index (push.material_index is the
         // first field, so only that slice needs re-pushing; model stays from the base push).
-        // The chunk table is validated at make_static_draw() time (in-range index windows and
+        // The chunk table is validated when a static draw is built (in-range index windows and
         // vertex references), so no draw can go out of bounds.
         for (chunk_record const& chunk : this->chunks) {
             env.set_cull_mode(chunk.double_sided);
@@ -113,12 +133,7 @@ namespace vulkan {
                 p.material_index = chunk.material_index;
                 return p;
             }();
-            vkCmdPushConstants(command_buffer,
-                               env.layout,
-                               VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                               0,
-                               sizeof(chunk_push),
-                               &chunk_push);
+            push_stage_block(env, chunk_push);
             vkCmdDrawIndexed(command_buffer,
                              chunk.index_count,
                              1,
@@ -142,7 +157,7 @@ namespace vulkan {
 
     bool static_draw_primitive::is_valid() const noexcept {
         if (this->vertex_detail == nullptr || this->index_detail == nullptr || this->chunks.empty()) {
-            return false; // a validated, non-empty chunk table is required (see make_static_draw)
+            return false; // a validated, non-empty chunk table is required (see the static-draw builder)
         }
         return std::ranges::all_of(this->chunks, [](chunk_record const& c) { return c.index_count != 0; });
     }

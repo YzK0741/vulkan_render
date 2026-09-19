@@ -1,4 +1,4 @@
-// module version: 0.1.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.2.0  (independent of the app version in CMakeLists project(VERSION))
 
 /**
  * @file vulkan/pass/scene.cppm
@@ -84,6 +84,18 @@ export namespace vulkan::pass {
         /// record the segments in parallel through the renderer's task pool (same reason as above)
         void (*run_tasks)(void* owner, std::span<std::function<void()>> tasks) = nullptr;
         void* owner = nullptr;
+        /**
+         * Fill the two heap bind infos a SECONDARY command buffer must INHERIT (see
+         * descriptor_heap::bind_infos and runtime::fill_heap_bind).
+         *
+         * A SECONDARY IS VALIDATED ON ITS OWN, so the heap bound on the primary does not reach it, and validation
+         * refuses the draws with "The shader uses resource descriptors, but
+         * VkCommandBufferInheritanceDescriptorHeapInfoEXT::pResourceHeapBindInfo is NULL"
+         * (VUID-vkCmdDrawIndexed-None-11308). A CALLBACK RATHER THAN THE HEAP, for the reason `make_environment`
+         * and `push_block` are: the heap is the renderer's, and a pass that held it could take over an image
+         * family.
+         */
+        void (*fill_heap_bind)(void* owner, VkBindHeapInfoEXT& resource, VkBindHeapInfoEXT& sampler) = nullptr;
         /// the attachments a SECONDARY must inherit (dynamic rendering): formats in attachment order + depth
         std::span<VkFormat const> color_formats = {};
         VkFormat depth_format = VK_FORMAT_UNDEFINED;
@@ -97,7 +109,7 @@ export namespace vulkan::pass {
      * @brief the frame's scene: the primitives, drawn into the surface targets the declaration names
      *
      * The instance it opens covers EXACTLY this pass - the lighting stage, the transparent pass, the resolve
-     * and the GI chain all run after it ends, each opening its own - which is why it can own the whole thing.
+     * and the lighting chain all run after it ends, each opening its own - which is why it can own the whole thing.
      */
     class scene_pass final : public frame_pass {
     public:
@@ -134,8 +146,8 @@ export namespace vulkan::pass {
 
         /// begin one secondary with the instance's attachment inheritance, or report that it could not
         [[nodiscard]] bool begin_segment(VkCommandBuffer command_buffer) const;
-        /// one segment's content: the shared scene set, then every leaf of that segment through its draw path
-        void record_segment(VkCommandBuffer command_buffer, VkDescriptorSet scene_set, std::span<primitive const* const> leaves) const;
+        /// one segment's content: every leaf of that segment through its draw path (the heaps are already bound)
+        void record_segment(VkCommandBuffer command_buffer, std::span<primitive const* const> leaves) const;
 
         scene_frame frame_ = {};
     };

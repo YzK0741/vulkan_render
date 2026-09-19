@@ -55,41 +55,6 @@ namespace vulkan {
 
     /**
      * @ingroup vulkan_handles
-     * @brief raii wrapper of VkDescriptorSet
-     * @note
-     *     - use operator* or get() to get naked handle
-     *     - sole ownership
-     */
-    export class vk_descriptor_set {
-        VkDescriptorSet descriptor_set = VK_NULL_HANDLE;
-        VkDevice device = VK_NULL_HANDLE;
-        VkDescriptorPool descriptor_pool = VK_NULL_HANDLE;
-
-    public:
-        [[nodiscard]] VkDescriptorSet const& get() const noexcept;
-        [[nodiscard]] VkDescriptorSet const& operator*() const noexcept;
-        void release() noexcept;
-        vk_descriptor_set() noexcept = default;
-        explicit vk_descriptor_set(VkDescriptorSet descriptor_set, VkDevice device, VkDescriptorPool descriptor_pool) noexcept;
-        ~vk_descriptor_set() noexcept;
-
-        explicit vk_descriptor_set(vk_descriptor_set& descriptor_set) = delete;
-        vk_descriptor_set(vk_descriptor_set&& other) noexcept;
-        vk_descriptor_set& operator=(vk_descriptor_set& other) = delete;
-        vk_descriptor_set& operator=(vk_descriptor_set&& other) noexcept;
-    };
-
-    /**
-     * @ingroup vulkan_handles
-     * @param device valid VkDevice
-     * @param descriptor_pool valid VkDescriptorPool
-     * @param layout valid VkDescriptorSetLayout
-     * @return raii wrapper of VkDescriptorSet
-     */
-    export vk_descriptor_set make_descriptor_set(VkDevice device, VkDescriptorPool descriptor_pool, VkDescriptorSetLayout layout) noexcept;
-
-    /**
-     * @ingroup vulkan_handles
      * @brief raii wrapper of VkShaderModule
      * @note
      *     - use operator* or get() to get naked handle
@@ -133,20 +98,17 @@ namespace vulkan {
      */
     export struct vk_pipeline {
         VkPipeline pipeline = VK_NULL_HANDLE;
-        // non-owning: every pipeline is created against the shared core::scene_pipeline_layout
-        // (flat indexed set layout + fixed push constant block), so a single descriptor set
-        // works with all pipelines and no per-pipeline layout objects exist
-        VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
+        // every pipeline is heap-native and is created with VK_NULL_HANDLE as its layout (the heap flag
+        // requires it), so no pipeline layout object exists to keep here
         VkDevice device = VK_NULL_HANDLE;
 
         // Per-pipeline viewport/scissor (dynamic state; vkCmdSetViewport/Scissor required before drawing)
         VkViewport viewport = {};
         VkRect2D scissor = {};
 
-        explicit vk_pipeline(VkPipeline pipeline, VkPipelineLayout pipeline_layout, VkDevice device) noexcept;
+        explicit vk_pipeline(VkPipeline pipeline, VkDevice device) noexcept;
         ~vk_pipeline();
         [[nodiscard]] VkPipeline get_pipeline() const noexcept;
-        [[nodiscard]] VkPipelineLayout get_pipeline_layout() const noexcept;
 
         /**
          * @ingroup vulkan_handles

@@ -56,10 +56,20 @@ jobs:
             mingw-w64-clang-x86_64-shaderc
 
       - name: Configure (Release, Ninja)
-        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+        # VR_NATIVE_ARCH=OFF: this job UPLOADS the executable as an artifact, and -march=native would
+        # tune it for the runner's CPU - a binary that can SIGILL on an older machine, which is the
+        # opposite of what a single-file Release build is for. Local builds keep the native default.
+        run: >-
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          -DVR_NATIVE_ARCH=OFF -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 
       - name: Build all targets (incl. tests + vulkan_render.exe)
         run: cmake --build build
+
+      # README claims this target exists "for CI"; until now nothing called it, so a formatting
+      # regression could only be caught by a human noticing the next auto-format diff.
+      - name: clang-format (dry run, warnings are errors)
+        run: cmake --build build --target clang-format-check
 
       - name: Run headless unit tests
         run: ctest --test-dir build --output-on-failure
@@ -153,9 +163,9 @@ jobs:
         # This list must stay equal to CMakeLists.txt's VR_TEST_TARGETS: ctest below runs every test
         # that build registers (all eight), and a target missing here is a missing executable, which
         # ctest reports as "Not Run" - the job goes red for a reason that looks like a test bug. That is
-        # exactly what made this job red, twice (runs 34844586370 and 35441060587): the last two targets
-        # were absent from this list, ctest could not find either executable, and every test it DID run
-        # passed. No sanitizer has ever reported anything in this job.
+        # exactly what made this job red on master, twice (runs 34844586370 and 35441060587): the last
+        # two targets were absent from this list, ctest could not find either executable, and every test
+        # it DID run passed. No sanitizer has ever reported anything in this job.
         run: >-
           cmake --build build-asan --target
           test_app_config test_utility test_math test_animation test_gltf_loader test_shadow_fit
@@ -166,7 +176,7 @@ jobs:
         # fails the job instead of scrolling past. Two deliberate omissions:
         #   - `detect_leaks` is NOT set: LeakSanitizer does not exist on Windows and passing the
         #     option makes EVERY run abort with "detect_leaks is not supported on this platform"
-        #     (measured here - a CI job carrying it would go red on all eight tests, reporting the
+        #     (measured here - a CI job carrying it would go red on all six tests, reporting the
         #     flag rather than a bug). It is off by default on this platform anyway.
         #   - `abort_on_error` stays 0, so a finding produces a non-zero exit code from the test
         #     binary (which is what ctest reads) rather than a crash dump.

@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.constant_init
-// module version: 0.9.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.9.1  (independent of the app version in CMakeLists project(VERSION))
 //
 // Compile-time Vulkan info-struct conventions: constexpr factories + constinit
 // "transition" defaults for the structs the engine fills identically everywhere
@@ -25,7 +25,7 @@ export module vulkan.constant_init;
  *        fills the same way everywhere.
  *
  * Top-level module (sibling of vulkan.core): it depends on nothing but the Vulkan headers, so
- * any Vulkan module can use it. The name sets it apart from vulkan.core.init_utils - that
+ * any Vulkan module can use it. The name sets it apart from vulkan.core:init_utils - that
  * module performs the initialization PROCEDURES (instance/device/swapchain), while this one
  * holds the compile-time CONSTANTS of those calls: the fixed field values ("constant init").
  *
@@ -42,6 +42,29 @@ export module vulkan.constant_init;
  */
 export namespace vulkan {
     // ---- Object create infos (one line per object; fields fixed by engine convention) ----
+
+    /**
+     * @brief whether a colour format's attachment write path encodes linear -> sRGB in HARDWARE
+     *
+     * WHY IT IS HERE rather than in the renderer that used to own it: two PASSES need the answer (the composite
+     * and FXAA, which push the same block's `encode_gamma` lane) and a third thing needs it for the same reason
+     * (the swapchain's own format decides whether the display transfer function is hardware's or the shader's).
+     * Writing a gamma-encoded value into one of these formats double-encodes it, and writing it into a UNORM
+     * target under-encodes it - so the question is asked on every post frame, and a second copy of the switch is a
+     * second place for the list of formats to fall behind.
+     */
+    [[nodiscard]] constexpr bool is_srgb_format(VkFormat const format) noexcept {
+        switch (format) {
+        case VK_FORMAT_B8G8R8A8_SRGB:
+        case VK_FORMAT_R8G8B8A8_SRGB:
+        case VK_FORMAT_A8B8G8R8_SRGB_PACK32:
+        case VK_FORMAT_R8G8B8_SRGB:
+        case VK_FORMAT_B8G8R8_SRGB:
+            return true;
+        default:
+            return false;
+        }
+    }
 
     /**
      * @brief command pool that allows per-buffer reset (the engine resets/re-records buffers)
@@ -688,9 +711,9 @@ export namespace vulkan {
     /** @brief depth attachment -> SHADER_READ_ONLY_OPTIMAL, sampled read (the shadow map back to the
      *         main pass, and the G-buffer depth to everything that reconstructs from it).
      * @note BOTH consumer stages are named: the G-buffer images have had a COMPUTE consumer since the
-     *       screen-space GI passes started reading the stored surface directly (see
-     *       build_gbuffer_debug, whose set layout declares FRAGMENT|COMPUTE for the same reason), and
-     *       a layout transition has to name every stage that reads the image afterwards. */
+     *       screen-space GI passes started reading the stored surface directly (shaders/megalights_trace.comp
+     *       and megalights_temporal.comp name the gbuffer slots from a compute stage), and a layout transition
+     *       has to name every stage that reads the image afterwards. */
     inline constexpr VkImageMemoryBarrier2 shadow_map_sampling_transition = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
         .pNext = nullptr,
@@ -764,10 +787,9 @@ export namespace vulkan {
     /** @brief SHADER_READ_ONLY_OPTIMAL -> GENERAL: an image that is read as a sample going back to being
      *         written as a compute storage image, KEEPING its contents.
      * @note the opposite of general_to_sampling_transition, and the reason it exists rather than the
-     *       write simply claiming UNDEFINED (which is legal and cheaper): the GI resolve is READ across
-     *       frames - the tracer samples the previous frame's copy at a hit, which is what makes the
-     *       estimator multi-bounce (see shaders/ssgi.comp) - so a write that discarded its contents
-     *       would throw away exactly the image the feedback exists to read.
+     *       write simply claiming UNDEFINED (which is legal and cheaper): a history image is READ across
+     *       frames, so a write that discarded its contents would throw away exactly what the next frame's
+     *       reader needs.
      * @note the reading stages are named on the src side and COMPUTE on the dst: the previous frame's
      *       resolve is sampled by the tracer and by the spatial filter (COMPUTE), and by the composite
      *       (FRAGMENT). */
@@ -786,8 +808,7 @@ export namespace vulkan {
         .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
     };
     /** @brief GENERAL -> GENERAL: one compute storage-image write followed by another dispatch that
-     *         reads it and writes again - the ping-pong of the world-space probe cache, whose two grid
-     *         images stay in GENERAL for a whole update.
+     *         reads it and writes again - a ping-pong's two images, which stay in GENERAL for a whole update.
      * @note a SAME-layout barrier, which is not a no-op: it is the memory dependency between two
      *       dispatches that touch the same image, and consecutive vkCmdDispatch calls in one command
      *       buffer have none. The layout is named anyway so the barrier reads like every other one here.

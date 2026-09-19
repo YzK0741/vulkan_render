@@ -13,9 +13,8 @@ export import vulkan.core.handles;
  * @note
  *      - make_pipeline() builds a full pipeline from raw SPIR-V binary
  *      - the vertex input layout is parsed from the SPIR-V itself, no user-defined structure needed
- *      - the descriptor set layout and push constant block are NOT parsed: all pipelines share
- *        the agreed flat scene layout owned by core (see core::init_scene_layouts), so no
- *        per-pipeline layout objects exist and one descriptor set works with every pipeline
+ *      - the descriptor set layout and push constant block are NOT parsed: every stage is heap-native and the
+ *        pipeline is created with a NULL layout, so a pass reaches its descriptors through the frame's heap bind
  *      - returns std::expected<vk_pipeline, std::string_view>, errors carry a message
  */
 namespace vulkan {
@@ -23,7 +22,6 @@ namespace vulkan {
      * @ingroup vulkan_pipeline
      * @brief create a graphics pipeline directly from raw SPIR-V binary
      * @param device the logical device
-     * @param pipeline_layout the shared scene pipeline layout (owned by core, not the pipeline)
      * @param color_format swapchain color attachment format (VK_FORMAT_UNDEFINED for depth-only
      *        pipelines with no color attachment)
      * @param depth_format depth attachment format
@@ -42,7 +40,6 @@ namespace vulkan {
      */
     export std::expected<vk_pipeline, std::string_view> make_pipeline(
         VkDevice device,
-        VkPipelineLayout pipeline_layout,
         VkFormat color_format,
         VkFormat depth_format,
         std::span<unsigned char const> vertex_shader_code,
@@ -79,7 +76,6 @@ namespace vulkan {
      */
     export std::expected<vk_pipeline, std::string_view> make_pipeline(
         VkDevice device,
-        VkPipelineLayout pipeline_layout,
         std::span<VkFormat const> color_formats,
         VkFormat depth_format,
         std::span<unsigned char const> vertex_shader_code,

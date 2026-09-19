@@ -1,4 +1,4 @@
-// module version: 0.1.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.1.1  (independent of the app version in CMakeLists project(VERSION))
 
 /**
  * @file vulkan/pass/transparent.cppm
@@ -18,7 +18,7 @@
  * to near, which is the order alpha blending needs.
  *
  * WHAT IT USES, exactly like the scene pass and for the same reasons: the pipeline registry (through the draw
- * state the renderer builds), the shared scene set, the per-slot secondary command buffer, and the leaves
+ * state the renderer builds), the shared scene block, the per-slot secondary command buffer, and the leaves
  * themselves. Its input is the same `scene_frame` shape with three fields different (one segment, the forward
  * default, one colour format).
  */
@@ -50,6 +50,9 @@ export namespace vulkan::pass {
         /// the draw state builder (see scene_frame::make_environment: the registry is the renderer's)
         render_environment (*make_environment)(void* owner, VkCommandBuffer command_buffer, bool gbuffer) = nullptr;
         void* owner = nullptr;
+        /// the heap bind infos this secondary must inherit (see scene_frame::fill_heap_bind: a secondary is
+        /// validated on its own, so the primary's heap bind does not reach it)
+        void (*fill_heap_bind)(void* owner, VkBindHeapInfoEXT& resource, VkBindHeapInfoEXT& sampler) = nullptr;
         /// the ONE colour attachment the secondary inherits, plus the depth format
         VkFormat color_format = VK_FORMAT_UNDEFINED;
         VkFormat depth_format = VK_FORMAT_UNDEFINED;

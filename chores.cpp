@@ -3,7 +3,7 @@ module;
 // The global-module-fragment include below is load-bearing, not stylistic: with -fno-exceptions
 // and the vendored std module, a chores implementation unit that instantiates std::vector (this
 // file does, in load_shader) sees TWO 'operator new(size_t, align_val_t)' declarations - module
-// std's and the textual libc++ copy baked into utility.data_block.pcm (data_block is the one
+// std's and the textual libc++ copy baked into utility:data_block.pcm (data_block is the one
 // module that never imports std; it includes libc++ headers in its own GMF). The result is
 // 'call to operator new is ambiguous' at allocate.h. Textually including glm here (the same
 // trick vulkan/animation/controller.cpp uses) makes clang merge the two copies, so
@@ -42,19 +42,33 @@ namespace chores {
             utility::panic("cannot find shaders/ directory. run the program from the project root, pass shaders_dir in config.toml, or use a cmake-build-* directory.");
         }
 
-        // 3. Pick the model file: settings.model when configured/argv-given; else the default model
-        //    under settings.paths.model_dir (or the auto-located gltf_model/).
-        if (!settings.model.empty()) {
+        // 3. Pick the model file: `model = "ask"` opens the platform's own file dialog first (the config's
+        //    way of saying "let me choose at startup"); otherwise settings.model when configured/argv-given;
+        //    else the default model under settings.paths.model_dir (or the auto-located gltf_model/).
+        if (app_config::wants_model_dialog(settings)) {
+            // A CANCELLED DIALOG IS NOT AN ERROR, and neither is a build with no way to ask: both fall
+            // through to the same default chain an empty model takes, so the app still starts with
+            // something on screen. The two are logged apart inside ask_open_file, because "I said no" and
+            // "nobody could ask me" are different answers and only one of them is the user's decision.
+            if (std::optional<std::filesystem::path> const chosen = utility::ask_open_file("choose a glTF/GLB model to render", "*.glb;*.gltf")) {
+                config.model_path = chosen->string();
+            } else {
+                utility::log("model: 'ask' produced no file, using the default model");
+            }
+        } else if (!settings.model.empty()) {
             config.model_path = settings.model;
-        } else if (!settings.paths.model_dir.empty()) {
+        }
+        if (config.model_path.empty() && !settings.paths.model_dir.empty()) {
             config.model_path = (std::filesystem::path(settings.paths.model_dir) / "DamagedHelmet.gltf").string();
             if (!std::filesystem::is_regular_file(config.model_path)) {
                 utility::panic(std::source_location::current(), "cannot find model '{}' under configured model_dir '{}'.", "DamagedHelmet.gltf", settings.paths.model_dir);
             }
-        } else if (std::optional<std::filesystem::path> const located = locate_model_file()) {
-            config.model_path = located->string();
-        } else {
-            utility::panic("cannot find gltf_model/DamagedHelmet.gltf. run the program from the project root or pass a model path as argv[1]");
+        } else if (config.model_path.empty()) {
+            if (std::optional<std::filesystem::path> const located = locate_model_file()) {
+                config.model_path = located->string();
+            } else {
+                utility::panic("cannot find gltf_model/DamagedHelmet.gltf. run the program from the project root or pass a model path as argv[1]");
+            }
         }
 
         return config;
@@ -88,7 +102,11 @@ namespace chores {
         std::filesystem::path current = std::filesystem::current_path();
         for (int depth = 0; depth < 4; ++depth) {
             std::filesystem::path candidate = current / "shaders";
-            if (std::filesystem::is_directory(candidate)) {
+            // The SAME probe as the executable-relative check above, deliberately: a directory named
+            // `shaders` that holds no compiled SPIR-V (the source tree's own, since the build writes
+            // the .spv into the build tree) is not the answer this function is looking for - returning
+            // it only moves the failure into a much less clear "cannot open shader file" panic.
+            if (std::filesystem::is_regular_file(candidate / "pbr.vert.spv")) {
                 return candidate;
             }
             std::filesystem::path const parent = current.parent_path();
@@ -149,49 +167,37 @@ namespace chores {
         load_and_create_pipeline(runtime, shaders_dir, "unlit", "pbr.vert.spv", "unlit.frag.spv");
 
         {
-            // Post-process pipeline (HDR scene target -> exposure + ACES + gamma -> swapchain):
-            // the forward passes render into an HDR offscreen target, so this pass is required to
-            // present anything meaningful. Panic on failure like the skybox.
+            // The post chain is a PASS PAIR now (vulkan.pass.post): the composite owns the chain's two pipelines,
+            // and the four bloom levels record with them. So the app REGISTERS the two shaders the pass builds
+            // from (post.vert's synthetic triangle and post.frag, whose `mode` lane selects the stage) and the pass
+            // does the rest in create_passes() below.
+            //
+            // THE SAMPLERS ARE THE DEVICE ROOT'S (`core::create_samplers`), so there is nothing to create here any
+            // more - the app registers the two shaders the post chain's passes build from.
             std::vector<unsigned char> vertex_code;
             std::vector<unsigned char> fragment_code;
             load_shader(shaders_dir, "post.vert.spv", vertex_code);
             load_shader(shaders_dir, "post.frag.spv", fragment_code);
-            auto const post_result = runtime.make_post_pipeline(vertex_code, fragment_code);
-            if (!post_result) {
-                utility::panic(std::source_location::current(), "failed to create post-process pipeline: {}", post_result.error());
-            }
-            utility::log("SUCCESS: post-process pipeline created (HDR -> exposure/tonemap -> swapchain)");
-        }
-        {
-            // FXAA pipeline (gamma-encoded LDR image -> anti-aliased swapchain). Optional: it
-            // reuses post.vert and the post set layout, so it must come after the post pipeline.
-            // Failure is not fatal - FXAA simply stays unavailable and runtime::set_fxaa() logs it.
-            std::vector<unsigned char> vertex_code;
-            std::vector<unsigned char> fragment_code;
-            load_shader(shaders_dir, "post.vert.spv", vertex_code);
+            runtime.register_shader("post.vert.spv", vertex_code);
+            runtime.register_shader("post.frag.spv", fragment_code);
+            // ... and FXAA's, whose pass builds its own pipeline from its fragment shader and post.vert - which is
+            // why this registration sits HERE, before create_passes(), and not after it: the pass is created with
+            // every other pass now, and the ordering constraint the old make_fxaa_pipeline() call needed is gone
+            // with the call.
             load_shader(shaders_dir, "fxaa.frag.spv", fragment_code);
-            auto const fxaa_result = runtime.make_fxaa_pipeline(vertex_code, fragment_code);
-            if (!fxaa_result) {
-                utility::log("fxaa pipeline disabled: {}", fxaa_result.error());
-            } else {
-                utility::log("SUCCESS: fxaa pipeline created (LDR -> anti-aliased swapchain)");
-            }
+            runtime.register_shader("fxaa.frag.spv", fragment_code);
         }
 
         {
-            // Shadow pass pipeline (depth-only): renders the scene from the light into the shadow
-            // map. Created once; enable_shadows() activates the pass after the scene import.
-            // Failure is not fatal - the scene simply renders without shadows.
+            // The shadow pass is a PASS (vulkan.pass.shadow): the app REGISTERS its two shaders and the pass builds
+            // the depth-only pipeline itself, from them and the context's depth format - which is why there is no
+            // make_* here any more. Optional: without the pipeline the scene simply renders without shadows.
             std::vector<unsigned char> vertex_code;
             std::vector<unsigned char> fragment_code;
             load_shader(shaders_dir, "shadow.vert.spv", vertex_code);
             load_shader(shaders_dir, "shadow.frag.spv", fragment_code);
-            auto const shadow_result = runtime.make_shadow_pipeline(vertex_code, fragment_code);
-            if (!shadow_result) { // NOLINT(bugprone-branch-clone): CLion FP - the branches log different messages
-                utility::log("shadow pipeline disabled: {}", shadow_result.error());
-            } else {
-                utility::log("SUCCESS: shadow pipeline created (directional shadow map pass)");
-            }
+            runtime.register_shader("shadow.vert.spv", vertex_code);
+            runtime.register_shader("shadow.frag.spv", fragment_code);
         }
 
         {
@@ -199,163 +205,134 @@ namespace chores {
             // lights into the screen-tile x depth-slice grid the shading stage then reads. Optional -
             // without it (or with [render] clustered_lights = false) shade_surface() loops every
             // active light, which is the brute-force reference the clustered path is verified on.
+            // IT IS A PASS: the app registers the shader and the pass builds its own compute pipeline from it (see
+            // vulkan.pass.cluster) - create_passes() below runs that step, and
+            // the pass logs its own outcome. It has to be registered HERE, before that call, because a pass
+            // created before its shader exists builds nothing and says so.
             std::vector<unsigned char> compute_code;
             load_shader(shaders_dir, "light_cluster.comp.spv", compute_code);
-            auto const cluster_result = runtime.make_cluster_pipeline(compute_code);
-            if (!cluster_result) {
-                utility::log("clustered light culling disabled: {}", cluster_result.error());
-            } else {
-                utility::log("SUCCESS: cluster compute pipeline created (clustered light culling)");
-            }
+            runtime.register_shader("light_cluster.comp.spv", compute_code);
         }
 
         {
             // G-buffer pair (the deferred path's first half): the surface-writing pipeline the
             // opaque pass binds when it writes the G-buffer, and the fullscreen debug view that
             // turns one stored channel into a visible image. Both optional - without them
-            // runtime::set_gbuffer_debug() has no effect and the forward path keeps running.
+            // runtime::set_gbuffer_debug() has no effect and the opaque pass shades into the HDR target directly.
             std::vector<unsigned char> vertex_code;
             std::vector<unsigned char> fragment_code;
-            load_shader(shaders_dir, "pbr.vert.spv", vertex_code); // the vertex stage is the forward one
+            load_shader(shaders_dir, "pbr.vert.spv", vertex_code); // the G-buffer vertex stage (instancing/skinning/morphing)
             load_shader(shaders_dir, "gbuffer.frag.spv", fragment_code);
             auto const gbuffer_result = runtime.make_gbuffer_pipeline(vertex_code, fragment_code);
             if (!gbuffer_result) {
                 utility::log("gbuffer pipeline disabled: {}", gbuffer_result.error());
             } else {
-                // the debug view is a FULLSCREEN pass: it needs post.vert's synthetic triangle, not
-                // the scene vertex stage (which declares vertex inputs, instancing/skin/morph
-                // descriptors and the scene push block - all of which the debug pass has no use for)
+                // The debug view is a PASS (vulkan.pass.geometry_buffer_debug): the app registers its two shaders and the
+                // pass builds its pipeline, which is all it owns. The samplers those declarations
+                // choose between are the device root's now (`core::create_samplers`).
                 load_shader(shaders_dir, "post.vert.spv", vertex_code);
                 load_shader(shaders_dir, "gbuffer_debug.frag.spv", fragment_code);
-                auto const debug_result = runtime.make_gbuffer_debug_pipeline(vertex_code, fragment_code);
-                if (!debug_result) {
-                    utility::log("gbuffer debug view disabled: {}", debug_result.error());
-                } else {
-                    // the deferred lighting stage reads the G-buffer through the debug view's set
-                    // layout, so it must be created after it
+                runtime.register_shader("post.vert.spv", vertex_code);
+                runtime.register_shader("gbuffer_debug.frag.spv", fragment_code);
+                // The deferred lighting stage is a PASS (vulkan.pass.deferred): the app REGISTERS the two
+                    // shaders it builds from and the pass builds its own pipeline from them, which is why one
+                    // register call for each replaces the old `make_deferred_pipeline(vertex_code, fragment_code)`
+                    // call here.
+                    load_shader(shaders_dir, "post.vert.spv", vertex_code);
                     load_shader(shaders_dir, "deferred.frag.spv", fragment_code);
-                    auto const deferred_result = runtime.make_deferred_pipeline(vertex_code, fragment_code);
-                    if (!deferred_result) {
-                        utility::log("deferred lighting disabled: {}", deferred_result.error());
-                    } else {
-                        // TAA resolve (deferred-only). IT IS A PASS: the app registers the two shaders and
-                        // the pass builds its own set layout, pipeline layout and pipeline (see
-                        // vulkan.pass.taa) - the create_passes() call below is what runs that step, for
-                        // every pass at once. The vertex stage is post.vert's synthetic triangle, the same
-                        // one the debug view and the post chain use.
-                        load_shader(shaders_dir, "post.vert.spv", vertex_code);
-                        load_shader(shaders_dir, "taa.frag.spv", fragment_code);
-                        runtime.register_shader("post.vert.spv", vertex_code);
-                        runtime.register_shader("taa.frag.spv", fragment_code);
-                        utility::log("SUCCESS: gbuffer + deferred pipelines created (surface write, debug view, deferred lighting)");
-                    }
-                }
+                    runtime.register_shader("post.vert.spv", vertex_code);
+                    runtime.register_shader("deferred.frag.spv", fragment_code);
+                    // TAA resolve (deferred-only). IT IS A PASS TOO: the app registers the two shaders and the
+                    // pass builds its own pipeline from them (see vulkan.pass.taa) - the create_passes() call
+                    // below is what runs that step, for every pass at once. The vertex
+                    // stage is post.vert's synthetic triangle, the same one the debug view and the post chain use.
+                    //
+                    // NOTE WHERE THESE TWO REGISTRATIONS SIT: they used to be in the ELSE branch of the deferred
+                    // pipeline's creation, so a machine where that failed silently lost TAA as well. They are
+                    // gated on the DEBUG pipeline now, which is what they actually need (post.vert), and the
+                    // lighting stage's own shaders are registered above it.
+                    load_shader(shaders_dir, "taa.frag.spv", fragment_code);
+                    runtime.register_shader("taa.frag.spv", fragment_code);
+                    utility::log("SUCCESS: gbuffer pipelines created (surface write, debug view)");
             }
         }
 
         {
-            // Screen-space global illumination tracer: one bounce of diffuse indirect, marched against
-            // the depth buffer. Optional - without it set_ssgi(true) does nothing, and the frame is
-            // exactly what it was before GI existed (the composite's GI weight is 0).
-            std::vector<unsigned char> compute_code;
-            load_shader(shaders_dir, "ssgi.comp.spv", compute_code);
-            auto const ssgi_result = runtime.make_ssgi_pipeline(compute_code);
-            if (!ssgi_result) {
-                utility::log("screen-space GI disabled: {}", ssgi_result.error());
-            } else {
-                utility::log("SUCCESS: ssgi compute pipeline created (screen-space global illumination)");
-            }
-            // The denoiser's temporal resolve, next to the tracer it denoises. Required, not optional:
-            // the composite samples the FILTERED image, so GI with any pass of the chain missing has
-            // nothing to show and runtime::ssgi_active() stays false.
-            std::vector<unsigned char> temporal_code;
-            load_shader(shaders_dir, "ssgi_temporal.comp.spv", temporal_code);
-            auto const temporal_result = runtime.make_ssgi_temporal_pipeline(temporal_code);
-            if (!temporal_result) {
-                utility::log("GI temporal denoiser disabled (screen-space GI will stay off): {}", temporal_result.error());
-            } else {
-                utility::log("SUCCESS: GI temporal denoiser created (history accumulation)");
-            }
-            // ... and the spatial half: the joint-bilateral filter that removes the grain the temporal
-            // clamp leaves behind, which is the last GI pass (its output is what the composite reads).
-            std::vector<unsigned char> spatial_code;
-            load_shader(shaders_dir, "ssgi_spatial.comp.spv", spatial_code);
-            auto const spatial_result = runtime.make_ssgi_spatial_pipeline(spatial_code);
-            if (!spatial_result) {
-                utility::log("GI spatial filter disabled (screen-space GI will stay off): {}", spatial_result.error());
-            } else {
-                utility::log("SUCCESS: GI spatial filter created (joint-bilateral, depth + normal edge stops)");
-            }
-            // The glossy lobe (shaders/ssgi_spec.comp). OPTIONAL, like the probe cache and for the same
-            // reason: without it the lighting stage's split-sum specular ambient stands, which is what
-            // every frame before this feature existed looked like - and runtime::ssgi_specular_active()
-            // then keeps the frame from even recording the pass, so the knob-off frame is byte-identical
-            // by construction.
-            std::vector<unsigned char> spec_code;
-            load_shader(shaders_dir, "ssgi_spec.comp.spv", spec_code);
-            auto const spec_result = runtime.make_ssgi_spec_pipeline(spec_code);
-            if (!spec_result) {
-                utility::log("glossy GI disabled (reflections stay the environment's): {}", spec_result.error());
-            } else {
-                utility::log("SUCCESS: glossy GI pipeline created (a traced reflection, one GGX lobe per ray)");
-            }
-            // The world-space probe cache. OPTIONAL, unlike the three above: it is what answers for a hit
-            // the screen cannot resolve (off screen or hidden), where the tracer otherwise falls back to
-            // the far-field environment probe - so a build without it renders exactly as it did before it
-            // existed, and runtime::gi_probe_active() keeps the tracer from sampling a grid that is not
-            // there.
+            // Stochastic punctual lighting (docs/megalights.md): sample a few of each pixel's clustered lights
+            // and trace one visibility ray per sample. OPTIONAL - without it the lighting stage's raster
+            // punctual loop stands, which is the unshadowed path every frame before this feature existed had,
+            // and `runtime::megalights_active()` then keeps the frame from recording the pass (so the knob-off
+            // frame is byte-identical by construction: the gate's scenarios were verified to that).
             //
-            // IT IS A PASS, so there is no make_* here any more: the app loads the shader and hands the bytes
-            // over, then asks the runtime to run the passes' create step - and the pass builds its own set
-            // layout, pipeline layout and pipeline, and logs its own outcome. The app's job is the file (it
-            // knows the shader directory); the pass's job is the pipeline.
-            std::vector<unsigned char> probe_code;
-            load_shader(shaders_dir, "gi_probe.comp.spv", probe_code);
-            runtime.register_shader("gi_probe.comp.spv", probe_code);
+            // IT IS A PASS: the app registers the shader and the pass builds its own compute pipeline
+            // from it (see vulkan.pass.megalights_trace) - `create_passes()` below runs that step.
+            std::vector<unsigned char> megalights_code;
+            load_shader(shaders_dir, "megalights_trace.comp.spv", megalights_code);
+            runtime.register_shader("megalights_trace.comp.spv", megalights_code);
+            // ... and the chain's temporal resolve, required for the reason any two-pass chain requires its
+            // second: what the lighting stage adds is the ACCUMULATION, so a chain whose resolve is missing has
+            // nothing to add and runtime::megalights_active() stays false.
+            std::vector<unsigned char> megalights_temporal_code;
+            load_shader(shaders_dir, "megalights_temporal.comp.spv", megalights_temporal_code);
+            runtime.register_shader("megalights_temporal.comp.spv", megalights_temporal_code);
 
-            // ... and now that every pass's shaders are registered, run the passes' create steps. This is the
-            // ONE call that builds what the passes own (their set layouts, pipeline layouts and pipelines),
-            // and it happens here rather than inside each block above because a pass must be created AFTER
-            // its shaders exist and the shared set layouts do.
-            runtime.create_passes();
+            // Ray-traced sun shadows: one ray per pixel against the scene's acceleration structures. IT IS A
+            // PASS, so its shaders have to be registered BEFORE create_passes() below - the pass builds its own
+            // ray-tracing pipeline from them (see vulkan.pass.ray_traced_shadow), and a pass created
+            // before its shaders exist builds nothing and says so. Optional, and the builder refuses on a device
+            // without a ray-tracing pipeline: without it the cascaded shadow maps keep running.
+            std::vector<unsigned char> rt_shadow_raygen_code;
+            load_shader(shaders_dir, "rt_shadow.rgen.spv", rt_shadow_raygen_code);
+            runtime.register_shader("rt_shadow.rgen.spv", rt_shadow_raygen_code);
+            std::vector<unsigned char> rt_shadow_closest_hit_code;
+            load_shader(shaders_dir, "rt_shadow.rchit.spv", rt_shadow_closest_hit_code);
+            runtime.register_shader("rt_shadow.rchit.spv", rt_shadow_closest_hit_code);
+            std::vector<unsigned char> rt_shadow_miss_code;
+            load_shader(shaders_dir, "rt_shadow.rmiss.spv", rt_shadow_miss_code);
+            runtime.register_shader("rt_shadow.rmiss.spv", rt_shadow_miss_code);
+            // The any-hit stage: the second stage of the SAME hit group, and the only place an alphaMode MASK
+            // surface can be told apart from its bounding triangles (see shaders/rt_shadow.rahit).
+            std::vector<unsigned char> rt_shadow_any_hit_code;
+            load_shader(shaders_dir, "rt_shadow.rahit.spv", rt_shadow_any_hit_code);
+            runtime.register_shader("rt_shadow.rahit.spv", rt_shadow_any_hit_code);
 
-            // Ray-traced sun shadows: one ray per pixel against the scene's acceleration structures.
-            // Created only on a device with ray queries (the builder says so as an error otherwise), and
-            // optional even there: without it the cascaded shadow maps keep running.
-            std::vector<unsigned char> rt_shadow_code;
-            load_shader(shaders_dir, "rt_shadow.comp.spv", rt_shadow_code);
-            auto const rt_shadow_result = runtime.make_rt_shadow_pipeline(rt_shadow_code);
-            if (!rt_shadow_result) {
-                utility::log("ray-traced shadows unavailable: {}", rt_shadow_result.error());
-            } else {
-                utility::log("SUCCESS: ray-traced sun shadow pipeline created (one ray per pixel, terminated on first hit)");
-            }
 
-            // The alphaMode MASK bake (shaders/mask_bake.comp), created here for the same reason and with
-            // the same optionality: without it a MASK surface is solid to a ray. It runs once, inside the
-            // command buffer that builds the bottom level structures, and the structures of masked casters
-            // are built from the expanded, mask-baked copy of their vertices instead of the original ones.
+            // The alphaMode MASK bake (shaders/mask_bake.comp) and the compute skinning job
+            // (shaders/compute_skin.comp) are TWO JOBS rather than frame passes - one runs once inside the
+            // command buffer that builds the bottom level structures (without it a MASK surface is solid to
+            // a ray), the other re-skins the casters and refits their structures per frame (without it a
+            // skinned caster's traced shadow is cast by its BIND POSE). Both are built by `create_passes()`
+            // below, from the SAME context and the same resource channel every pass gets (see
+            // vulkan.pass.mask_bake and vulkan.pass.compute_skin), so their shaders are registered here too.
             std::vector<unsigned char> mask_bake_code;
             load_shader(shaders_dir, "mask_bake.comp.spv", mask_bake_code);
-            auto const mask_bake_result = runtime.make_mask_bake_pipeline(mask_bake_code);
-            if (!mask_bake_result) {
-                utility::log("alphaMode MASK bake unavailable: {} (masked geometry stays solid to a ray)", mask_bake_result.error());
-            } else {
-                utility::log("SUCCESS: alphaMode MASK bake pipeline created (the mask is collapsed into the structures)");
-            }
-
-            // The compute skinning pass (shaders/compute_skin.comp), created here and optional the same
-            // way: without it a skinned caster's traced shadow is cast by its BIND POSE. The pass does not
-            // run until [render] rt_skin_bake says so (set_rt_skin_bake), which is what makes the two arms
-            // of the L2.2b measurement the same binary and the same scene.
+            runtime.register_shader("mask_bake.comp.spv", mask_bake_code);
             std::vector<unsigned char> compute_skin_code;
             load_shader(shaders_dir, "compute_skin.comp.spv", compute_skin_code);
-            auto const compute_skin_result = runtime.make_compute_skin_pipeline(compute_skin_code);
-            if (!compute_skin_result) {
-                utility::log("skinned shadow refit unavailable: {} (a traced shadow keeps the bind pose)", compute_skin_result.error());
-            } else {
-                utility::log("SUCCESS: compute skinning pipeline created (skinned casters can be refitted per frame)");
-            }
+            runtime.register_shader("compute_skin.comp.spv", compute_skin_code);
+
+            // The HEAP-NATIVE PROBE (shaders/heap_probe.comp): registered like the jobs above, and for a purpose
+            // of the same kind - it is not part of any frame, it runs once at scene setup in a command buffer of
+            // its own (runtime::run_heap_probe) and its answer is a log line. It exists because the migration's
+            // four assumptions about the native path (a heap-flagged pipeline with NO layout, `descriptor_heap`
+            // declarations, a sampler taken from the sampler heap, parameters through vkCmdPushDataEXT) cannot be
+            // tested by a picture until the whole frame is converted.
+            std::vector<unsigned char> heap_probe_code;
+            load_shader(shaders_dir, "heap_probe.comp.spv", heap_probe_code);
+            runtime.register_shader("heap_probe.comp.spv", heap_probe_code);
+            // ... and its GRAPHICS half: the same read through a graphics pipeline, which is a different question
+            // (a fragment stage reading the heap, and a pipeline created with the flag and no layout).
+            std::vector<unsigned char> heap_probe_vertex_code;
+            load_shader(shaders_dir, "heap_probe.vert.spv", heap_probe_vertex_code);
+            runtime.register_shader("heap_probe.vert.spv", heap_probe_vertex_code);
+            std::vector<unsigned char> heap_probe_fragment_code;
+            load_shader(shaders_dir, "heap_probe.frag.spv", heap_probe_fragment_code);
+            runtime.register_shader("heap_probe.frag.spv", heap_probe_fragment_code);
+
+            // ... and now that every pass's and every job's shaders are registered, the pipelines can be built.
+            // This block is where the SHADERS come from and nothing else: the ONE create step that builds what the
+            // passes and the jobs own (a pipeline each) runs in main(), after the application has handed its chain
+            // over (`render_start_demo`) - see `runtime::create_passes`, which logs each object's own outcome.
         }
     }
 
@@ -428,21 +405,58 @@ namespace chores {
             clustered->visible_when = [&runtime] { return runtime.feature_available("clustered"); }; // offered whenever the compute pass exists (it works in either path)
             panel.push_back(std::move(clustered));
         }
-        // screen-space ambient occlusion (M6): the deferred lighting stage traces the G-buffer, so
-        // the whole group (switch + its three knobs) is offered only while the deferred path is on.
-        // The sliders edit the radius (world units), the applied intensity and the sample count.
+        // screen-space ambient occlusion (M6): the deferred lighting stage traces the G-buffer, so the
+        // whole group (switch + its three knobs) is offered only in a session whose G-buffer pipelines
+        // exist - an AVAILABILITY question, which is what visible_when asks (a widget never gates on
+        // feature_active: that is the runner's per-frame "this stage ran", so gating on it made the group
+        // vanish the moment the user switched to unlit). The knobs then follow the switch's OWN state,
+        // which is what they are attached to. The sliders edit the radius (world units), the applied
+        // intensity and the sample count.
         {
             auto ssao = std::make_unique<vulkan::gui::checkbox_widget>("ssao", &bindings.ssao_enabled);
-            ssao->visible_when = [&runtime] { return runtime.feature_available("deferred") && runtime.feature_active("ssao"); }; // deferred-only, via the feature registry
+            ssao->visible_when = [&runtime] { return runtime.feature_available("deferred"); }; // deferred-only, via the feature registry
             panel.push_back(std::move(ssao));
             auto make_ssao_slider = [&](std::string label, float* value, float lo, float hi) {
                 auto slider = std::make_unique<vulkan::gui::slider_widget>(std::move(label), value, lo, hi);
-                slider->visible_when = [&runtime] { return runtime.feature_active("ssao"); };
+                slider->visible_when = [&bindings] { return bindings.ssao_enabled; };
                 panel.push_back(std::move(slider));
             };
             make_ssao_slider("ssao radius", &bindings.ssao_radius, 0.05f, 3.0f);
             make_ssao_slider("ssao intensity", &bindings.ssao_intensity, 0.0f, 1.0f);
             make_ssao_slider("ssao samples", &bindings.ssao_samples, 1.0f, 16.0f);
+        }
+        // stochastic punctual lighting: the shadows the point and spot lights never had (docs/megalights.md).
+        // The SWITCH is offered whenever the chain exists this session (an availability fact, and NOT the
+        // switch's own value - see the note below); the knobs follow the switch. Mirrored into the runtime
+        // every frame by main like the rest.
+        // The SAMPLE COUNT is the estimator's ray budget per half-resolution pixel: cost and noise both scale
+        // with it, which is why it sits next to the switch rather than in the config alone.
+        {
+            auto megalights = std::make_unique<vulkan::gui::checkbox_widget>("megalights", &bindings.megalights_enabled);
+            // the SWITCH is gated on AVAILABILITY, never on its own value: the checkbox writes the field its
+            // predicate reads, so gating it on bindings.megalights_enabled hides the only way back - the
+            // feature defaults off (app_config's render_settings::megalights, and the panel is the only UI
+            // that sets it), so the panel would offer megalights exactly never.
+            megalights->visible_when = [&runtime] { return runtime.feature_available("megalights"); };
+            panel.push_back(std::move(megalights));
+            auto samples = std::make_unique<vulkan::gui::slider_widget>("ml samples", &bindings.megalights_samples, 1.0f, 4.0f);
+            auto ml_frames = std::make_unique<vulkan::gui::slider_widget>("ml history", &bindings.megalights_frames, 1.0f, 12.0f);
+            auto ml_tol = std::make_unique<vulkan::gui::slider_widget>("ml tol", &bindings.megalights_history_tolerance, 0.0f, 0.5f);
+            auto ml_bias = std::make_unique<vulkan::gui::slider_widget>("ml bias", &bindings.megalights_bias, 0.0f, 16.0f);
+            auto ml_emitter = std::make_unique<vulkan::gui::slider_widget>("ml emitter", &bindings.megalights_light_angle, 0.0f, 0.1f);
+            ml_emitter->visible_when = [&bindings] { return bindings.megalights_enabled; };
+            panel.push_back(std::move(ml_emitter));
+            ml_bias->visible_when = [&bindings] { return bindings.megalights_enabled; };
+            panel.push_back(std::move(ml_bias));
+            ml_tol->visible_when = [&bindings] { return bindings.megalights_enabled; };
+            panel.push_back(std::move(ml_tol));
+            ml_frames->visible_when = [&bindings] { return bindings.megalights_enabled; };
+            panel.push_back(std::move(ml_frames));
+            auto ml_sigma = std::make_unique<vulkan::gui::slider_widget>("ml sigma", &bindings.megalights_spatial_sigma, 0.0f, 4.0f);
+            ml_sigma->visible_when = [&bindings] { return bindings.megalights_enabled; };
+            panel.push_back(std::move(ml_sigma));
+            samples->visible_when = [&bindings] { return bindings.megalights_enabled; };
+            panel.push_back(std::move(samples));
         }
         // render mode: pbr (lit) vs unlit (flat base color, no shading). Default-semantics leaves
         // draw with the runtime's default pipeline, so this only records a combo selection here;
@@ -492,7 +506,7 @@ namespace chores {
             // the knobs only matter while FXAA is on (and while the fxaa pipeline exists at all)
             auto make_fxaa_slider = [&](std::string label, float* value, float lo, float hi) {
                 auto slider = std::make_unique<vulkan::gui::slider_widget>(std::move(label), value, lo, hi);
-                slider->visible_when = [&runtime] { return runtime.feature_active("fxaa"); };
+                slider->visible_when = [&bindings] { return bindings.fxaa_enabled; };
                 panel.push_back(std::move(slider));
             };
             make_fxaa_slider("fxaa subpixel", &bindings.fxaa_subpixel, 0.0f, 1.0f);
@@ -509,7 +523,7 @@ namespace chores {
                 "gbuffer channel",
                 std::vector<std::string>{"albedo", "normal", "roughness", "metallic", "ao", "material id", "depth", "flags", "motion"},
                 &bindings.gbuffer_channel);
-            channel->visible_when = [&runtime] { return runtime.feature_active("gbuffer-debug"); };
+            channel->visible_when = [&bindings] { return bindings.gbuffer_debug; };
             panel.push_back(std::move(channel));
         }
         // TAA: the engine's anti-aliasing (there is no MSAA on a G-buffer), with the two
@@ -519,11 +533,11 @@ namespace chores {
         // ghosting).
         {
             auto taa = std::make_unique<vulkan::gui::checkbox_widget>("taa", &bindings.taa_enabled);
-            taa->visible_when = [&runtime] { return runtime.feature_available("taa") && runtime.feature_active("taa"); }; // deferred-only, via the feature registry
+            taa->visible_when = [&runtime] { return runtime.feature_available("taa"); }; // deferred-only, via the feature registry
             panel.push_back(std::move(taa));
             auto make_taa_slider = [&](std::string label, float* value, float lo, float hi) {
                 auto slider = std::make_unique<vulkan::gui::slider_widget>(std::move(label), value, lo, hi);
-                slider->visible_when = [&runtime] { return runtime.feature_active("taa"); };
+                slider->visible_when = [&bindings] { return bindings.taa_enabled; };
                 panel.push_back(std::move(slider));
             };
             make_taa_slider("taa history (static)", &bindings.taa_blend_static, 0.0f, 0.98f);
@@ -542,27 +556,71 @@ namespace chores {
         // ---- punctual lights (demo lights; see apply_point_lights): the widgets edit
         //      bindings.point_lights live and main() pushes the enabled set once per frame.
         //      Each slot is a point light or - with `spot` checked - a cone light -------
+        // WHICH SLOT THE GROUP BELOW EDITS: the combo doubles as the group's header, so "which light am I
+        // looking at" and "how tall is this group" are both answered here instead of by scrolling past
+        // thirty-six rows to find the one light that is on.
+        {
+            std::vector<std::string> light_items;
+            light_items.reserve(std::size(bindings.point_lights));
+            for (std::size_t i = 0; i < std::size(bindings.point_lights); ++i) {
+                light_items.push_back(std::format("punctual light {}", i + 1));
+            }
+            panel.push_back(std::make_unique<vulkan::gui::combo_widget>("punctual light", std::move(light_items), &bindings.active_light));
+        }
         for (std::size_t i = 0; i < std::size(bindings.point_lights); ++i) {
             gui_bindings::light_slot& slot = bindings.point_lights[i];
-            panel.push_back(std::make_unique<vulkan::gui::checkbox_widget>(
-                std::format("point light {}", i + 1), &slot.enabled));
-            panel.push_back(std::make_unique<vulkan::gui::vec3_widget>(
-                std::format("  position {}", i + 1), slot.position, 0.1f));
-            panel.push_back(std::make_unique<vulkan::gui::vec3_widget>(
-                std::format("  color {}", i + 1), slot.color, 0.02f));
-            panel.push_back(std::make_unique<vulkan::gui::slider_widget>(
-                std::format("  intensity {}", i + 1), &slot.intensity, 0.0f, 50.0f));
-            panel.push_back(std::make_unique<vulkan::gui::slider_widget>(
-                std::format("  range {}", i + 1), &slot.range, 0.1f, 100.0f));
-            // spot cone editing (ignored while the slot stays a point light)
-            panel.push_back(std::make_unique<vulkan::gui::checkbox_widget>(
-                std::format("  spot {}", i + 1), &slot.spot));
-            panel.push_back(std::make_unique<vulkan::gui::vec3_widget>(
-                std::format("  direction {}", i + 1), slot.direction, 0.1f));
-            panel.push_back(std::make_unique<vulkan::gui::slider_widget>(
-                std::format("  inner cone deg {}", i + 1), &slot.inner_cone_deg, 0.0f, 89.0f));
-            panel.push_back(std::make_unique<vulkan::gui::slider_widget>(
-                std::format("  outer cone deg {}", i + 1), &slot.outer_cone_deg, 1.0f, 89.0f));
+            // ONE SLOT AT A TIME, chosen by the combo above: every widget of every slot is built once (the
+            // panel is a fixed list), but a slot only draws while it is the selected one - four slots of nine
+            // controls each was thirty-six rows of panel for a feature most frames leave off, which buried
+            // everything below it. The cone knobs go one step further and appear only for a slot that is
+            // actually a spot, so an omni slot is seven rows and a cone slot ten.
+            auto const selected = [&bindings, i] { return bindings.active_light == static_cast<int>(i); };
+            auto const selected_spot = [&bindings, &slot, i] { return bindings.active_light == static_cast<int>(i) && slot.spot; };
+            {
+                auto w = std::make_unique<vulkan::gui::checkbox_widget>("  enabled", &slot.enabled);
+                w->visible_when = selected;
+                panel.push_back(std::move(w));
+            }
+            {
+                auto w = std::make_unique<vulkan::gui::vec3_widget>("  position", slot.position, 0.1f);
+                w->visible_when = selected;
+                panel.push_back(std::move(w));
+            }
+            {
+                auto w = std::make_unique<vulkan::gui::vec3_widget>("  color", slot.color, 0.02f);
+                w->visible_when = selected;
+                panel.push_back(std::move(w));
+            }
+            {
+                auto w = std::make_unique<vulkan::gui::slider_widget>("  intensity", &slot.intensity, 0.0f, 50.0f);
+                w->visible_when = selected;
+                panel.push_back(std::move(w));
+            }
+            {
+                auto w = std::make_unique<vulkan::gui::slider_widget>("  range", &slot.range, 0.1f, 100.0f);
+                w->visible_when = selected;
+                panel.push_back(std::move(w));
+            }
+            {
+                auto w = std::make_unique<vulkan::gui::checkbox_widget>("  spot", &slot.spot);
+                w->visible_when = selected;
+                panel.push_back(std::move(w));
+            }
+            {
+                auto w = std::make_unique<vulkan::gui::vec3_widget>("  direction", slot.direction, 0.1f);
+                w->visible_when = selected_spot;
+                panel.push_back(std::move(w));
+            }
+            {
+                auto w = std::make_unique<vulkan::gui::slider_widget>("  inner cone deg", &slot.inner_cone_deg, 0.0f, 89.0f);
+                w->visible_when = selected_spot;
+                panel.push_back(std::move(w));
+            }
+            {
+                auto w = std::make_unique<vulkan::gui::slider_widget>("  outer cone deg", &slot.outer_cone_deg, 1.0f, 89.0f);
+                w->visible_when = selected_spot;
+                panel.push_back(std::move(w));
+            }
         }
         // camera orbit target: dragging it moves what the camera looks at / orbits around
         // (camera.target is a glm::vec3, i.e. three contiguous floats; the runtime rebuilds the

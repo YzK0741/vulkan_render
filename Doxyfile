@@ -1,3 +1,23 @@
+# HOW TO REGENERATE THE REFERENCE MANUAL (this file is the Doxyfile at the repo root)
+#
+#   doxygen Doxyfile        -> docs/html (browsable) and docs/latex (LaTeX sources). ~17 s here.
+#
+# DOXYGEN DOES NOT BUILD THE PDF. It writes the LaTeX; the PDF needs a LaTeX toolchain, and on this
+# machine that is MiKTeX, installed but NOT on PATH:
+#
+#   cd docs/latex
+#   "<MiKTeX>/pdflatex.exe"  -interaction=nonstopmode refman.tex
+#   "<MiKTeX>/makeindex.exe" refman.idx          (the index - only if refman.idx was produced)
+#   "<MiKTeX>/pdflatex.exe"  -interaction=nonstopmode refman.tex
+#
+# The second pdflatex pass is what settles the table of contents and the cross-references. `latexmk` is
+# shipped by MiKTeX too and FAILS in this tree for its own reasons, so the explicit sequence above is
+# the one that works.
+#
+# BOTH OUTPUT TREES ARE GITIGNORED, on purpose: the reference is a local build product, and the source
+# of truth is the doc comments in the tree. Regenerate after changing them, or the manual will describe
+# the code as it used to be - Doxygen cannot be newer than the comments it renders.
+#
 # Doxyfile 1.15.0
 
 # This file describes the settings to be used by the documentation system
@@ -1011,12 +1031,13 @@ INPUT                  = ./shaders \
 				./vulkan \
 				./utility \
 				./gltf_loader \
-				./app_config \
+				./application_configuration \
 				./main.cpp \
 				./chores.cppm \
 				./vstd \
 				./docs/mainpage.md \
-				./docs/shaders.md
+				./docs/shaders.md \
+				./docs/conventions.md
 
 # This tag can be used to specify the character encoding of the source files
 # that Doxygen parses. Internally Doxygen uses the UTF-8 encoding. Doxygen uses

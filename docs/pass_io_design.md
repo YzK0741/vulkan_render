@@ -1,18 +1,30 @@
 # `vulkan.pass_io`: describing a pass's inputs and outputs the way Vulkan already does
 
-The design for the layer that `docs/runtime_split.md` names as the precondition of per-pass modules. It is
-written before any code, and it is a DESIGN: nothing below is implemented yet.
+The layer every pass in this renderer describes its inputs and outputs with, and the design the code
+implements: the types below live in `vulkan/render_resource`, and the per-pass declarations are its consumers.
+
+**STATUS NOTE, because this document's premise is now half history.** It is built around descriptor
+sets - "a pass's inputs and outputs are ALREADY descriptor sets", below - and those are gone: the
+renderer is heap-native, and `vkCreateDescriptorSetLayout` / `vkCreateDescriptorPool` /
+`vkAllocateDescriptorSets` / `vkCreatePipelineLayout` / `vkCmdBindDescriptorSets` appear zero times in
+the tree. What this document argues FOR is what survived: ONE declaration per pass, from which the
+renderer derives what it needs, instead of the same interface written twice by hand. What it argues
+AGAINST - the parallel array of views, the parallel array of `VkDescriptorImageInfo`, the ternaries
+deciding storage-vs-sampler, the hand-written set layouts in `pipelines.cppm` and the `ensure_*` writes
+in `runtime.cpp` - is exactly what the deletion removed. So read the sections below as the reasoning
+that produced the declaration layer, not as a description of how a pass's resources reach the GPU
+today: they reach it through the frame's bound heap, addressed by the slot the stage pushes.
 
 ## 1. Why this shape, and what it is not
 
 A pass's inputs and outputs in this renderer are ALREADY descriptor sets - the G-buffer set is the interface
-between the G-buffer pass, the lighting stage, the GI chain, the probe cache and post; the scene set is the
-substrate; each pass's private family (TAA 4 bindings, post 9, probe 9, the temporal resolve 7) is its own I/O.
-What exists today is that interface written TWICE BY HAND and kept in agreement by discipline:
+between the G-buffer pass, the lighting stage, the stochastic punctual lighting chain and post; the scene set
+is the substrate; each pass's private family (TAA 4 bindings, post 9, the lighting chain's temporal resolve 5)
+is its own I/O. What exists today is that interface written TWICE BY HAND and kept in agreement by discipline:
 
-* the layout, in `vulkan/pipelines/pipelines.cppm` (`build_ssgi_temporal` builds a 7-binding layout with a loop
-  whose storage case is `b == 4u`, `build_gbuffer_debug` a 16-binding one whose storage cases are enumerated);
-* the descriptor WRITES, in `vulkan/runtime.cpp`'s `ensure_*_descriptors()`, as a parallel array of views, a
+* the layout, in `vulkan/pipelines/pipelines.cppm` (`build_resolve_pipeline` builds a 5-binding layout with a
+  loop whose storage case is `b == 4u`, `build_gbuffer_debug` a 16-binding one whose storage cases are enumerated);
+* the descriptor WRITES, in `vulkan/runtime/runtime.cpp`'s `ensure_*_descriptors()`, as a parallel array of views, a
   parallel array of `VkDescriptorImageInfo`, and ternaries that decide storage-vs-sampler and which sampler.
 
 Both drifts this pair can have are already in this project's history, and both were found by the validation
@@ -59,7 +71,7 @@ mirrors the module's suffix (`namespace vulkan::bindings`), types are `snake_cas
 | `resource_kind` | `enum class : uint8_t` | `image2d` / `image3d` / `image_cube` / `buffer` / `accel_struct` | decides the descriptor type together with `binding_kind` |
 | `binding_kind` | `enum class : uint8_t` | `sampled_image` / `storage_image` / `sampler` / `uniform_buffer` / `storage_buffer` / `input_attachment` | 1:1 with `VkDescriptorType`; named after the Vulkan concept rather than "read/write" because the DESCRIPTOR is what the layout is built from |
 | `binding_access` | `enum class : uint8_t` | `read` / `write` / `read_write` | the access is NOT derivable from the descriptor type (the spatial filter only READS its `gi_input` storage image), and it is what a later barrier stage keys on |
-| `sampler_hint` | `enum class : uint8_t` | `gbuffer` / `probe_grid` / `taa` / `post` / `nearest` / `shadow` | this renderer creates SIX samplers today (`gbuffer_sampler`, `gi_probe_sampler`, `taa_sampler`, `post_sampler`, `post_nearest_sampler`, `shadow_sampler`) and which one a binding gets is currently a ternary; naming the choices makes it a field |
+| `sampler_hint` | `enum class : uint8_t` | `gbuffer` / `taa` / `post` / `nearest` / `shadow` | this renderer creates FIVE samplers today (`gbuffer_sampler`, `taa_sampler`, `post_sampler`, `post_nearest_sampler`, `shadow_sampler`) and which one a binding gets is currently a ternary; naming the choices makes it a field |
 | `pass_binding` | `struct` | `{ uint32_t set; uint32_t binding; binding_kind kind; resource_id resource; uint16_t element; uint16_t descriptor_count; binding_access access; sampler_hint sampler; image_layout layout; VkShaderStageFlags stages; }` | **the heart**: one binding, one use. `binding` alone would collide with the `vulkan.bindings` module, hence the `pass_` prefix |
 | `image_layout` | `enum class : uint8_t` | `sampled` (SHADER_READ_ONLY_OPTIMAL) / `general` / `color_attachment` (COLOR_ATTACHMENT_OPTIMAL) | ADDED AFTER THE FIRST CONVERSION, because the layout is NOT derivable from the kind: the probe cache keeps all nine of its own bindings in GENERAL (both ping-pong sides and the per-geometry, so the propagation's barriers stay same-layout ones), and a descriptor claiming SHADER_READ for a sampled one of those would be a lie validation rejects. The validator now requires a storage image to declare GENERAL. `color_attachment` came with the render targets: no descriptor declares it, but a pass that renders into an image leaves it there, so the one enum keeps one mapping |
 | `render_target` | `struct` | `{ resource_id resource; uint16_t element; }` | an image a pass RENDERS INTO. Not a binding, and the distinction is not cosmetic: a binding is a descriptor, the layout generator walks that list, and a colour attachment has no `VkDescriptorType` at all - it is bound by `vkCmdBeginRendering`. The load op and clear value are deliberately NOT declared: the pass that renders into the image is the one that opens the rendering instance, so it is the one that says whether the old contents matter |
@@ -69,7 +81,7 @@ mirrors the module's suffix (`namespace vulkan::bindings`), types are `snake_cas
 | `set_pool_requirements` | function | per-`VkDescriptorType` counts for one set | the number that had to equal the layout by hand and did not once |
 | `write_set` | function | `expected<void, std::string> write_set(VkDevice, pass_io const&, uint32_t set, VkDescriptorSet, span<VkImageView const>, span<VkBuffer const>, sampler_set const&)` | replaces the parallel arrays and ternaries in `ensure_*_descriptors` |
 | `resource_views` | `struct` | the owner hands in the actual `VkImageView`/`VkBuffer` per `resource_id` for one (image_index, slot) | the one thing that must stay with the resource's owner; it is why this layer needs no `runtime&` |
-| `validate` | function | `expected<void, std::string> validate(pass_io const&, spirv_reflection const&)` | checks the declaration against what the SHADER actually declares, using the existing `vulkan.core.pipeline.spirv_parser` |
+| `validate` | function | `expected<void, std::string> validate(pass_io const&, spirv_reflection const&)` | checks the declaration against what the SHADER actually declares, using the existing `vulkan.core.pipeline:spirv_parser` |
 
 Names considered and rejected: `vulkan.graph` (implies order derivation, which is a later stage and not what
 this module is), `vulkan.descriptors` / `vulkan.sets` (the repository already has `vulkan.bindings`, which owns
@@ -81,8 +93,8 @@ set OWNERSHIP and pool lifetime; this module owns DECLARATION), `vulkan.resource
 **Step 1 - the declaration type and the layout generator.** `pass_io.cppm` exports the types above plus
 `make_set_layout`. The generator is a loop: `VkDescriptorSetLayoutBinding{ binding = b.binding, descriptorType =
 to_vk(b.kind), descriptorCount = 1, stageFlags = b.stages }`, then `vkCreateDescriptorSetLayout`. Converted
-first: the passes whose layouts are built in `pipelines.cppm` with a hand-written loop - `build_ssgi_temporal`
-(7 bindings) and `build_gi_probe` (9). Acceptance: the generated layout is indistinguishable, which the
+first: the passes whose layouts are built in `pipelines.cppm` with a hand-written loop - `build_resolve_pipeline`
+(5 bindings) and `build_gbuffer_debug` (16). Acceptance: the generated layout is indistinguishable, which the
 byte-exact capture gate proves; plus a startup log of the descriptor counts per set, which step 2 consumes.
 
 **Step 2 - the write generator and the pool counts.** `set_pool_requirements` and `write_set`. The writes become
@@ -103,7 +115,8 @@ that a DELIBERATELY wrong declaration fails - that test is part of the step, not
 `resource_scope` are what make it possible: a storage WRITE needs `GENERAL`, a sampled READ needs
 `SHADER_READ_ONLY_OPTIMAL`, and the FIRST use of each resource in a generation needs the `UNDEFINED ->` form.
 THE LAYOUT IS NOT DERIVABLE FROM THE KIND, which step 2's first real conversion established: the probe cache
-keeps every one of its nine own bindings in GENERAL because its ping-pong sides stay there for the whole update,
+(removed since, with the traced-GI chain) kept every one of its nine own bindings in GENERAL because its
+ping-pong sides stayed there for the whole update,
 so a rule of the form "storage means GENERAL and sampled means SHADER_READ" is wrong for a real pass - which is
 why the declaration carries an explicit `image_layout` per binding and why stage 4 must read it rather than
 infer it. The three cases that are NOT mechanical must be expressible as explicit overrides, because they are

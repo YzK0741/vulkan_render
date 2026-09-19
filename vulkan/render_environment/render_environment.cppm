@@ -1,5 +1,7 @@
 module;
 
+#include <cstddef>         // std::byte: the push block is bytes now (see push_block below)
+#include <span>            // std::span: what the endpoint takes
 #include <vulkan/vulkan.h> // VkCommandBuffer / VkPipelineLayout handle typedefs only
 
 export module vulkan.render_environment;
@@ -36,15 +38,15 @@ namespace vulkan {
      *   pipeline for the shadow pass) - the fallback a default-semantics primitive wants
      * - bind: injected binding action; takes the pipeline name and records the real
      *   vkCmdBindPipeline (+ any per-bind dynamic state) on this session's command buffer
-     * - layout: the shared scene pipeline layout (every pipeline shares it; push constants
-     *   record against it, independent of which pipeline is bound)
+     * - push_owner / push_block: how a draw sends its push block, which travels as DATA
+     *   through vkCmdPushDataEXT because no heap-native pipeline has a layout
      * - bound: the pipeline name currently bound in this session (empty = nothing bound yet)
      * - two_sided: force two-sided rasterization on this session (the shadow pass; see below)
      *
      * A "default-semantics" primitive (normal / instanced / static draw) does:
      * @code
      * if (!env.in_default_pipeline()) { env.bind_default(); }
-     * // ... bind geometry, push constants via env.layout(), draw on env.command_buffer ...
+     * // ... bind geometry, push its block via env.push_block, draw on env.command_buffer ...
      * @endcode
      * A custom primitive stores its pipeline name and does:
      * @code
@@ -57,7 +59,22 @@ namespace vulkan {
         std::function<void(VkCommandBuffer, std::string_view)> bind = {};       // injected binder
         std::function<void(VkCommandBuffer, VkBool32)> set_depth_write_fn = {}; // injected depth-write setter
         VkPipelineLayout layout = VK_NULL_HANDLE;                               // shared scene layout
-        std::string_view bound = {};                                            // currently bound name
+        /**
+         * HOW A DRAW SENDS ITS PUSH BLOCK, now that no pipeline has a layout (see
+         * `pass::resolved_io::push_endpoint`, which is the same pair for a pass).
+         *
+         * `vkCmdPushConstants` needs a layout to push to, and every heap-native pipeline is created with
+         * `layout = VK_NULL_HANDLE`, so a stage block travels as DATA through `vkCmdPushDataEXT` instead - read
+         * by the shader exactly as it always read push constants. A primitive's draw() has no access to the
+         * heap, and this session object is what it does have, so the runtime fills these two where it fills
+         * `layout`, and the endpoint appends the heap's two indices (frame slot, swapchain image) to the block.
+         *
+         * NOT a `std::function`: this is copied into every worker's session every frame, and a raw owner plus a
+         * function pointer is what a per-draw call can afford.
+         */
+        void* push_owner = nullptr;
+        bool (*push_block)(void* owner, VkCommandBuffer command_buffer, std::span<std::byte const> bytes, uint32_t extra_lane) = nullptr;
+        std::string_view bound = {}; // currently bound name
         // injected cull-mode setter (core dynamic state since Vulkan 1.3, so one pipeline serves
         // single- and double-sided materials)
         std::function<void(VkCommandBuffer, VkCullModeFlags)> set_cull_mode_fn = {};

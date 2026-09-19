@@ -39,13 +39,18 @@ export namespace std {
   using std::compare_three_way;
 
   // [cmp.alg], comparison algorithms
-  inline namespace __cpo {
-    using std::__cpo::compare_partial_order_fallback;
-    using std::__cpo::compare_strong_order_fallback;
-    using std::__cpo::compare_weak_order_fallback;
-    using std::__cpo::partial_order;
-    using std::__cpo::strong_order;
-    using std::__cpo::weak_order;
-  } // namespace __cpo
+  //
+  // PORTABILITY LAYER (vstd/vstd_compat.inc): this block used to re-export libc++'s INTERNAL spelling
+  // inside `inline namespace __cpo` - six `using std::__cpo::...` lines, the one place in the whole
+  // partition set that named something below the standard's own surface. `__cpo` is an inline
+  // namespace in libc++, so `std::partial_order` and `std::__cpo::partial_order` are the same entity:
+  // naming the standard spelling here exports exactly what it exported before on libc++, and it is the
+  // spelling every other standard library provides.
+  using std::compare_partial_order_fallback;
+  using std::compare_strong_order_fallback;
+  using std::compare_weak_order_fallback;
+  using std::partial_order;
+  using std::strong_order;
+  using std::weak_order;
 
 } // namespace std

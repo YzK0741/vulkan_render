@@ -173,28 +173,11 @@ def write_toml(path: str, cfg: dict) -> None:
         f"ssao_intensity = {cfg['ssao_intensity']}",
         f"ssao_samples = {cfg['ssao_samples']}",
         "",
-        "# ---- [render] screen-space global illumination ----",
-        f"ssgi = {str(cfg['ssgi']).lower()}",
-        f"ssgi_intensity = {cfg['ssgi_intensity']}",
-        f"ssgi_radius = {cfg['ssgi_radius']}",
-        f"ssgi_rays = {cfg['ssgi_rays']}",
-        f"ssgi_steps = {cfg['ssgi_steps']}",
-        f"ssgi_spatial_sigma = {cfg['ssgi_spatial_sigma']}",
-        f"ssgi_upsample = {str(cfg['ssgi_upsample']).lower()}",
+        "# ---- [render] ray-traced effects ----",
         f"rt_shadows = {str(cfg['rt_shadows']).lower()}",
         f"rt_mask_bake = {str(cfg['rt_mask_bake']).lower()}",
         f"rt_skin_bake = {str(cfg['rt_skin_bake']).lower()}",
         f"animation_time = {cfg['animation_time']}",
-        f"ssgi_ray_tracing = {str(cfg['ssgi_ray_tracing']).lower()}",
-        f"ssgi_bounce = {cfg['ssgi_bounce']}",
-        f"ssgi_probes = {str(cfg['ssgi_probes']).lower()}",
-        f"ssgi_probe_rate = {cfg['ssgi_probe_rate']}",
-        f"ssgi_probe_rounds = {cfg['ssgi_probe_rounds']}",
-        f"ssgi_probe_gain = {cfg['ssgi_probe_gain']}",
-        f"ssgi_hit_shading = {str(cfg['ssgi_hit_shading']).lower()}",
-        f"ssgi_specular = {str(cfg['ssgi_specular']).lower()}",
-        f"ssgi_specular_rays = {cfg['ssgi_specular_rays']}",
-        f"ssgi_specular_radius = {cfg['ssgi_specular_radius']}",
         f"furnace = {str(cfg['furnace']).lower()}",
         "",
         "# ---- [gui] debug overlay ----",
@@ -285,83 +268,7 @@ def ask_all(output_dir: str) -> dict:
     ssao_intensity = ask_float("render.ssao_intensity", 1.0, 0.0, 1.0, hint="1 = full occlusion, 0 = off")
     ssao_samples = ask_int("render.ssao_samples", 8, 1, 16, hint="samples per pixel")
 
-    print("\n-- render (screen-space global illumination) --")
-    # These are the SHIPPED defaults, not the "no effect" ones: the traced chain with shaded hits is
-    # what the engine renders a stock config with, and `ssgi_intensity` moves with `ssgi_ray_tracing`
-    # (1.0 on the traced path, which REPLACES the lighting stage's ambient; a marched chain is an
-    # addition to the probe and wants ~0.7). Answering "false" here is how a user gets the pre-GI frame.
-    ssgi = ask_bool("render.ssgi", True, hint="screen-space GI: one bounce of diffuse indirect, temporally denoised (the shipped default)")
-    ssgi_intensity = ask_float("render.ssgi_intensity", 1.0, 0.0, 4.0, hint="scales the traced indirect against the IBL probe it overlaps (1.0 = use the traced estimate, which is the traced path's value; a MARCHED chain wants ~0.7)")
-    ssgi_radius = ask_float("render.ssgi_radius", 0.12, 0.0, 2.0, hint="ray length, as a FRACTION of the scene radius")
-    ssgi_rays = ask_int("render.ssgi_rays", 2, 0, 16, hint="rays per pixel per frame (the resolve accumulates them)")
-    ssgi_steps = ask_int("render.ssgi_steps", 6, 0, 64, hint="depth samples per ray")
-    ssgi_spatial_sigma = ask_float(
-        "render.ssgi_spatial_sigma",
-        2.0,
-        0.0,
-        8.0,
-        hint="GI spatial filter width in GI texels; 0 = off (temporal accumulation only)",
-    )
-    ssgi_upsample = ask_bool(
-        "render.ssgi_upsample",
-        True,
-        hint="joint-bilateral upsample of the half-res GI (false = plain bilinear, for measurement)",
-    )
-    ssgi_ray_tracing = ask_bool(
-        "render.ssgi_ray_tracing",
-        True,
-        hint="trace the GI rays against the acceleration structures (needs ray queries; else marched - "
-             "which is why the default is safe: the fallback is the same estimator with a worse oracle)",
-    )
-    ssgi_bounce = ask_float(
-        "render.ssgi_bounce",
-        0.0,
-        hint="re-emit this fraction of the previous frame's indirect at a GI hit (0 = single bounce)",
-    )
-    ssgi_probes = ask_bool(
-        "render.ssgi_probes",
-        False,
-        hint="world-space probe cache: answers GI rays the screen cannot resolve (needs ssgi)",
-    )
-    ssgi_probe_rate = ask_float(
-        "render.ssgi_probe_rate",
-        0.08,
-        hint="how much of a cell one frame's observation replaces (0.01 - 0.5)",
-    )
-    ssgi_probe_rounds = ask_int(
-        "render.ssgi_probe_rounds",
-        2,
-        hint="propagation rounds per frame (0 = injection only, 1 - 4)",
-    )
-    ssgi_probe_gain = ask_float(
-        "render.ssgi_probe_gain",
-        1.0,
-        hint="how much of the cache's answer to add (0 = run it but never sample it; NEGATIVE = the same "
-             "gain with the cell looked up along the opposite ray direction, the direction A/B)",
-    )
-    ssgi_hit_shading = ask_bool(
-        "render.ssgi_hit_shading",
-        True,
-        hint="shade the surface a GI ray hit instead of sampling the screen (needs traced GI + ray tracing; "
-             "this is what makes the indirect light a fact about the scene rather than about the frame)",
-    )
-    ssgi_specular = ask_bool(
-        "render.ssgi_specular",
-        True,
-        hint="trace a glossy reflection ray per pixel, replacing the environment's specular ambient "
-             "(needs traced GI + hit shading; where a ray finds nothing the frame is unchanged)",
-    )
-    ssgi_specular_rays = ask_int(
-        "render.ssgi_specular_rays",
-        1,
-        hint="glossy rays per pixel (1 - 8; one is the feature's definition and its measured cost)",
-    )
-    ssgi_specular_radius = ask_float(
-        "render.ssgi_specular_radius",
-        0.5,
-        hint="how far a glossy ray reaches, as a fraction of the scene radius (its own reach: the shared "
-             "ssgi_radius is pinned low by the marched path's step size; the measured knee is 0.5)",
-    )
+    print("\n-- render (ray-traced effects) --")
     furnace = ask_bool(
         "render.furnace",
         False,
@@ -438,27 +345,10 @@ def ask_all(output_dir: str) -> dict:
         "ssao_radius": ssao_radius,
         "ssao_intensity": ssao_intensity,
         "ssao_samples": ssao_samples,
-        "ssgi": ssgi,
-        "ssgi_intensity": ssgi_intensity,
-        "ssgi_radius": ssgi_radius,
-        "ssgi_rays": ssgi_rays,
-        "ssgi_steps": ssgi_steps,
-        "ssgi_spatial_sigma": ssgi_spatial_sigma,
-        "ssgi_upsample": ssgi_upsample,
         "rt_shadows": rt_shadows,
         "rt_mask_bake": rt_mask_bake,
         "rt_skin_bake": rt_skin_bake,
         "animation_time": animation_time,
-        "ssgi_ray_tracing": ssgi_ray_tracing,
-        "ssgi_bounce": ssgi_bounce,
-        "ssgi_probes": ssgi_probes,
-        "ssgi_probe_rate": ssgi_probe_rate,
-        "ssgi_probe_rounds": ssgi_probe_rounds,
-        "ssgi_probe_gain": ssgi_probe_gain,
-        "ssgi_hit_shading": ssgi_hit_shading,
-        "ssgi_specular": ssgi_specular,
-        "ssgi_specular_rays": ssgi_specular_rays,
-        "ssgi_specular_radius": ssgi_specular_radius,
         "furnace": furnace,
         "gui_show": gui_show,
         "panel_width": panel_width,

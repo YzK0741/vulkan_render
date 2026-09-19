@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.animation
-// module version: 0.1.1a  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.1.2a  (independent of the app version in CMakeLists project(VERSION))
 //
 // Keyframe playback / skinning / morph targets, format-neutral and runtime-agnostic:
 // driven through an injected `backend` surface and structural `source` concepts -
@@ -40,7 +40,7 @@ import vulkan.primitive;  // GPU leaf primitive + scene capacity constants the r
  * touches the source afterwards.
  *
  * Contract summary (mirrors make_primitive / import_scene / set_ibl):
- *   - init() registers materials/geometry state and writes every scene set's shared buffers,
+ *   - init() registers materials/geometry state and writes every scene block's shared buffers,
  *     so call it before the first frame, or only while the runtime is idle.
  *   - update(dt) writes the paced frame slot's skin/morph buffers and scene node locals, so
  *     call it after the host paced a frame slot and before it records (after the slot's

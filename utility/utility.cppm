@@ -1,6 +1,6 @@
 // ============================================================================
 // module: utility
-// module version: 0.6.0a  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.7.0a  (independent of the app version in CMakeLists project(VERSION))
 //
 // Pure-CPU toolkit: data_block, BVH, thread_pool, frame_clock / frame_stats,
 // better_pmr (mimalloc routing), content hashing. Standalone - no Vulkan or app
@@ -19,12 +19,12 @@ export import vstd;
 // (frame_clock / frame_stats are the frame-loop time + fps helpers; data_block /
 // bvh / better_pmr / thread_pool cover the rest). Submodules stay individually
 // importable for callers that want only one of them.
-export import utility.data_block;
-export import utility.bvh;
-export import utility.better_pmr;
-export import utility.frame_clock;
-export import utility.frame_stats;
-export import utility.thread_pool;
+export import :data_block;
+export import :bvh;
+export import :better_pmr;
+export import :frame_clock;
+export import :frame_stats;
+export import :thread_pool;
 
 /**
  * @file utility.cppm
@@ -600,6 +600,23 @@ namespace utility {
      *       resolved through PATH).
      */
     export std::filesystem::path executable_directory();
+
+    /**
+     * @brief ask the user for an existing file with the platform's own open dialog
+     * @param title window/prompt title; a backend that builds a command line refuses a shell-hostile one
+     * @param filter_patterns `;`-separated glob patterns, e.g. "*.glb;*.gltf"; empty means all files
+     * @return the chosen path, or std::nullopt when the user cancelled OR no backend could ask
+     * @ingroup utility
+     *
+     * This exists for the config's `model = "ask"`. The model is resolved before the window is created,
+     * which rules out an in-app picker (that would need the overlay and a frame loop, and the scene is
+     * imported before either), so the question goes to the platform: GetOpenFileNameW on Windows, zenity
+     * or kdialog on Linux, osascript on macOS, and "nobody could ask" everywhere else.
+     * @note the two nullopt cases are logged apart, because they are different news: a cancelled dialog is
+     *       a decision and the caller quietly falls back to its default model, while an unavailable backend
+     *       is a limitation the user should hear about rather than guess at.
+     */
+    export std::optional<std::filesystem::path> ask_open_file(std::string_view title, std::string_view filter_patterns = {});
 
     /**
      * @brief xxh3_128bits hash function

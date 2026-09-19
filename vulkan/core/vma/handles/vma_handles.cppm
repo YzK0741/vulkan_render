@@ -2,7 +2,7 @@ module;
 
 #include <cstdint> // ::uint64_t (used unqualified below)
 
-export module vulkan.core.vma.handles;
+export module vulkan.core:vma_handles;
 
 import vstd;
 
@@ -19,11 +19,11 @@ import vstd;
  *   - destroying one releases exactly one reference (the release callback; the allocator
  *     really destroys the GPU object when the count reaches zero).
  * The retain/release callbacks are injected by vma_allocator when it creates the wrapper
- * (see vulkan.core.vma), which lets the allocator keep free/retain private - there is no
+ * (see vulkan.core:vma), which lets the allocator keep free/retain private - there is no
  * public raw-handle release path left to misuse.
  *
  * vk_buffer / vk_image deliberately know nothing about vma_allocator (they only store the
- * handle + the two callbacks), so this module does not depend on vulkan.core.vma.
+ * handle + the two callbacks), so this module does not depend on vulkan.core:vma.
  */
 namespace vulkan {
     /**

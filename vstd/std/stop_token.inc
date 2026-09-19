@@ -8,7 +8,7 @@
 //===----------------------------------------------------------------------===//
 
 export namespace std {
-#if _LIBCPP_HAS_THREADS
+#if VSTD_HAS_THREADS
   // [stoptoken], class stop_­token
   using std::stop_token;
 
@@ -21,5 +21,5 @@ export namespace std {
 
   // [stopcallback], class template stop_­callback
   using std::stop_callback;
-#endif // _LIBCPP_HAS_THREADS
+#endif // VSTD_HAS_THREADS
 } // namespace std

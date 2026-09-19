@@ -22,7 +22,7 @@ export namespace std {
   using std::terminate;
   using std::terminate_handler;
   using std::throw_with_nested;
-#ifdef _LIBCPP_ENABLE_CXX20_REMOVED_UNCAUGHT_EXCEPTION
+#ifdef VSTD_ENABLE_CXX20_REMOVED_UNCAUGHT_EXCEPTION
   using std::uncaught_exception;
 #endif
   using std::uncaught_exceptions;

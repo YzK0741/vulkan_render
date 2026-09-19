@@ -26,16 +26,7 @@ namespace vulkan::pass {
     }
 
     void taa_pass::release_owned() noexcept {
-        // The order they were made: the set layout first, the pipeline layout FROM it, the pipeline from that.
         this->pipeline_.reset();
-        if (this->pipeline_layout_ != VK_NULL_HANDLE && this->device_ != VK_NULL_HANDLE) {
-            vkDestroyPipelineLayout(this->device_, this->pipeline_layout_, nullptr);
-            this->pipeline_layout_ = VK_NULL_HANDLE;
-        }
-        if (this->set_layout_ != VK_NULL_HANDLE && this->device_ != VK_NULL_HANDLE) {
-            vkDestroyDescriptorSetLayout(this->device_, this->set_layout_, nullptr);
-            this->set_layout_ = VK_NULL_HANDLE;
-        }
     }
 
     render_resource::pass_io const& taa_pass::io() const noexcept {
@@ -58,12 +49,16 @@ namespace vulkan::pass {
         return this->pipeline_.has_value() ? this->pipeline_->get_pipeline() : VK_NULL_HANDLE;
     }
 
-    VkPipelineLayout taa_pass::pipeline_layout() const noexcept {
-        return this->pipeline_layout_;
-    }
-
     bool taa_pass::wrote_history() const noexcept {
         return this->wrote_history_;
+    }
+
+    void taa_pass::set_blend(float const static_weight, float const min_weight) noexcept {
+        // The clamps came with the parameters, because they are the same fact: a static weight of 1 would never
+        // accept the current frame, and a floor above the static weight would make the moving case trust the
+        // history MORE than the still one, which is the opposite of what the two are for.
+        this->blend_static_ = std::clamp(static_weight, 0.0f, 0.99f);
+        this->blend_min_ = std::clamp(min_weight, 0.0f, this->blend_static_);
     }
 
     void taa_pass::reset_history() noexcept {
@@ -74,12 +69,8 @@ namespace vulkan::pass {
 
     void taa_pass::on_swapchain_recreated(pass_host const&) {
         // THE PASS'S OWN GENERATION RESET, and the framework's `recreate_stage` is what guarantees it happens:
-        // the family is retired (its pool may still be named by a recorded command buffer, so it is retired
-        // rather than destroyed), the histories belong to images that no longer exist, and the cached
-        // generation fingerprint is exactly the thing that identifies the OLD generation.
-        this->family_.retire_all();
+        // the histories belong to images that no longer exist.
         this->history_valid_.assign(this->history_valid_.size(), false);
-        this->generation_views_valid_ = false;
         this->wrote_history_ = false;
     }
 
@@ -91,8 +82,7 @@ namespace vulkan::pass {
             this->release_owned();
         }
         this->device_ = context.device;
-        this->samplers_ = context.samplers;
-        if (this->set_layout_ != VK_NULL_HANDLE) {
+        if (this->pipeline_.has_value()) {
             return; // already built for this device
         }
         std::span<unsigned char const> const vertex_spirv = context.shader != nullptr ? context.shader(context.owner, vertex_shader_name) : std::span<unsigned char const>{};
@@ -101,29 +91,20 @@ namespace vulkan::pass {
             utility::log("taa disabled: the owner has no {} or {}", vertex_shader_name, fragment_shader_name);
             return;
         }
-        std::expected<VkDescriptorSetLayout, std::string> const layout = bindings::make_set_layout(context.device, render_resource::taa_io, render_resource::taa_io.own_set);
-        if (!layout.has_value()) {
-            utility::log("taa disabled: {}", layout.error());
-            return;
-        }
-        this->set_layout_ = *layout;
-        // The pipeline layout is built from the DECLARATION's own set and the DECLARATION's push range, so
-        // the range the driver is told about is the one the host composes into.
-        auto built = pipelines::build_taa(context.device, this->set_layout_, render_resource::taa_io.push->size, vertex_spirv, fragment_spirv);
+        auto built = pipelines::build_taa(context.device, vertex_spirv, fragment_spirv);
         if (!built) {
             utility::log("taa disabled: {}", built.error());
             this->release_owned();
             return;
         }
-        this->pipeline_layout_ = built->pipeline_layout;
         this->pipeline_ = std::move(built->resolve);
         utility::log("SUCCESS: TAA resolve pipeline created (history reprojection over the deferred path)");
     }
 
     void taa_pass::record(resolved_io const& io) {
         this->wrote_history_ = false;
-        if (io.own.size() < own_binding_count || io.targets.empty() || io.push.size() < sizeof(push_constants) || this->set_layout_ == VK_NULL_HANDLE) {
-            return; // the runner resolves all of this or skips the pass
+        if (io.own.size() < own_binding_count || io.targets.empty() || io.extent.width == 0 || io.extent.height == 0) {
+            return; // the runner resolves all of this or skips the pass (see frame_pass::resolve)
         }
         uint32_t const index = io.frame.image_index;
         if (this->history_valid_.size() != io.frame.image_count) {
@@ -134,40 +115,6 @@ namespace vulkan::pass {
         }
         bool const history_valid = this->history_valid_[index];
 
-        // THE GENERATION FINGERPRINT: the family must rebind when the swapchain was rebuilt, and the views of
-        // the image being resolved RIGHT NOW are the wrong thing to compare - they differ every frame, which
-        // would make the family rewrite every set (and rewriting a set a pending frame names is a validation
-        // error). One image's views identify the generation, so the first frame after a recreation caches
-        // them, and `on_swapchain_recreated` is what drops them.
-        if (!this->generation_views_valid_) {
-            for (uint32_t b = 0; b < own_binding_count; ++b) {
-                this->generation_views_[b] = io.own[b].view;
-            }
-            this->generation_views_valid_ = true;
-        }
-        // One list of four views is the whole fingerprint: the four inputs are one KIND of thing as far as the
-        // family is concerned (it compares what the sets point at, and every set points at one image's four).
-        auto const write_sets = [&io, this](uint32_t const /*image_index*/, std::span<VkDescriptorSet const> const sets) {
-            // The four views are all this lambda decides: everything else - the binding numbers, the
-            // descriptor type, the count, the SHADER_READ layout each declares and the sampler the
-            // declaration chose - is generated from the pass's own declaration by `bindings::write_set`.
-            std::array<VkImageView, own_binding_count> const views = {io.own[0].view, io.own[1].view, io.own[2].view, io.own[3].view};
-            auto const written = bindings::write_set(this->device_, render_resource::taa_io, render_resource::taa_io.own_set, sets[0], views, {}, this->samplers_);
-            if (!written) {
-                utility::log("taa: {}", written.error());
-            }
-        };
-        uint32_t const descriptors_per_set = render_resource::descriptor_counts_for(render_resource::taa_io, render_resource::taa_io.own_set).total();
-        if (!this->family_.ensure(this->device_, this->set_layout_, io.frame.image_count, 1u, descriptors_per_set, std::span<VkImageView const>(this->generation_views_), write_sets)) {
-            utility::log("taa: descriptor sets unavailable - TAA skipped");
-            return;
-        }
-        VkDescriptorSet const set = this->family_.set(index, 0);
-        if (set == VK_NULL_HANDLE) {
-            utility::log("taa: no descriptor set - the frame is shown unresolved");
-            return;
-        }
-
         // Layouts, all before vkCmdBeginRendering: this frame's colour, the motion vectors and (on its first
         // use for this image) the history become inputs, and the HDR target - still untouched this frame -
         // becomes the resolve's attachment. The history is left in SHADER_READ_ONLY by the previous frame's
@@ -175,9 +122,16 @@ namespace vulkan::pass {
         std::array<VkImageMemoryBarrier2, 4> barriers = {};
         barriers[0] = vulkan::hdr_sampling_transition; // scene_color: COLOR_ATTACHMENT -> SHADER_READ
         barriers[0].image = io.own[0].image;
-        barriers[1] = vulkan::hdr_sampling_transition; // velocity: the same transition, COLOR aspect
-        barriers[1].image = io.own[2].image;
-        uint32_t barrier_count = 2;
+        // THE MOTION VECTORS ARE NOT THIS PASS'S BARRIER ANY MORE, and they were the bug: this batch used to
+        // transition io.own[2] unconditionally, on the assumption that the TAA resolve is the frame's first
+        // sampler of the velocity (the assumption `require_velocity_publish`'s call site documents). Once an
+        // EARLIER stage publishes it - the stochastic punctual lighting chain's resolve samples it too, and its
+        // stage runs before this one - the unconditional transition claims a COLOR_ATTACHMENT old layout the
+        // image is no longer in, and the validation layer invalidates the command buffer
+        // (VUID-VkImageMemoryBarrier2-oldLayout-01197). The host now publishes it through
+        // `ensure_velocity_sampled`, which transitions only while the G-buffer's flag is still armed and
+        // consumes it, so the first sampler in the frame publishes and the rest are no-ops.
+        uint32_t barrier_count = 1;
         if (!history_valid) {
             barriers[barrier_count] = vulkan::undefined_to_sampling_transition;
             barriers[barrier_count].image = io.own[1].image;
@@ -205,19 +159,28 @@ namespace vulkan::pass {
         VkRenderingInfo const rendering_info = make_rendering_info(0, {{0, 0}, io.extent}, true, &color_attachment, nullptr);
         vkCmdBeginRendering(io.cmd, &rendering_info);
         vkCmdSetCullMode(io.cmd, VK_CULL_MODE_NONE);
-        VkDescriptorSet const draw_set = set;
-        vkCmdBindDescriptorSets(io.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, io.pipeline_layout, 0, 1, &draw_set, 0, nullptr);
+        // No set to bind: the history and the surface are heap slots, one pair per swapchain image, and the frame
+        // bound the heaps for this command buffer (see begin_recording).
+        // THE PUSH BLOCK IS THE PASS'S OWN (S3): every lane of it is a fact this pass has - its two blend
+        // weights, the texel size of the extent it was resolved at, the projection's two depth terms (which
+        // arrive as frame CONSTANTS, the channel that exists for exactly this) and the history flag it maintains
+        // per image. The renderer used to compose it and hand it over as raw bytes.
         push_constants push = {};
-        std::memcpy(&push, io.push.data(), sizeof(push));
-        push.history_valid = history_valid ? 1.0f : 0.0f; // the pass's own lane, not the owner's value
-        vkCmdPushConstants(io.cmd, io.pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), &push);
+        push.blend_static = this->blend_static_;
+        push.blend_min = this->blend_min_;
+        push.texel_size_x = 1.0f / static_cast<float>(io.extent.width);
+        push.texel_size_y = 1.0f / static_cast<float>(io.extent.height);
+        push.depth_scale = io.constants.proj[2][2];
+        push.depth_offset = io.constants.proj[3][2];
+        push.history_valid = history_valid ? 1.0f : 0.0f;
+        [[maybe_unused]] bool const pushed = io.push_block(io.cmd, pass::push_bytes(push));
         vkCmdDraw(io.cmd, 3, 1, 0, 0);
         vkCmdEndRendering(io.cmd);
 
         // ---- the resolved frame becomes the next frame's history ----
         // A copy rather than a ping-pong: the resolve necessarily writes the image the post chain reads, so
-        // the history has to be a separate image, and copying into it keeps every descriptor set in the frame
-        // stable (no per-frame rewrites). The barriers move the HDR target out to TRANSFER_SRC and back - the
+        // the history has to be a separate image, and copying into it keeps every heap slot in the frame
+        // stable (no per-frame descriptor rewrites). The barriers move the HDR target out to TRANSFER_SRC and back - the
         // post chain still finds it in COLOR_ATTACHMENT_OPTIMAL, exactly where it expects it.
         std::array<VkImageMemoryBarrier2, 2> copy_barriers = {};
         copy_barriers[0] = vulkan::color_attachment_to_transfer_transition; // HDR -> TRANSFER_SRC

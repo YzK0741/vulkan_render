@@ -27,13 +27,14 @@ namespace vulkan::pass {
     }
 
     std::string_view transparent_pass::feature() const noexcept {
-        // ALWAYS; the renderer's resolver skips the pass on a frame whose culling left nothing blended (the
-        // early return this pass used to make inside its own body).
-        return {};
+        // THE RENDERER'S GATE, as a feature name (see the scene pass): a frame whose culling left nothing blended
+        // is a frame this pass is INACTIVE on - which is what the runner checks before it resolves anything, so
+        // the pass neither records nor resolves and costs nothing on those frames.
+        return "transparent";
     }
 
     void transparent_pass::create(pass_context const&) {
-        // Nothing to build: no own set (everything is in the shared scene set) and no pipeline (the leaves name
+        // Nothing to build: no own set (everything is in the shared scene block) and no pipeline (the leaves name
         // theirs). See the scene pass.
     }
 
@@ -68,18 +69,31 @@ namespace vulkan::pass {
 
         // The leaves go into the frame slot's transparent secondary, with inheritance matching the instance
         // below: ONE colour attachment at 1x. A secondary does not inherit state from its primary, so it binds
-        // the shared scene set for itself - the same bind the scene pass's segments make.
+        // the shared scene block for itself - the same bind the scene pass's segments make.
         std::array<VkFormat, 1> const color_formats = {this->frame_.color_format};
         VkCommandBufferInheritanceRenderingInfo const inheritance =
             make_inheritance_rendering_info(color_formats.data(), 1, this->frame_.depth_format, VK_SAMPLE_COUNT_1_BIT);
-        VkCommandBufferInheritanceInfo const secondary_inherit = make_inheritance_info(&inheritance);
+        // The heaps are inherited (see scene.cpp's segment begin): a secondary is validated on its own, so the
+        // primary's heap bind does not reach it.
+        VkBindHeapInfoEXT resource_bind = {};
+        VkBindHeapInfoEXT sampler_bind = {};
+        bool const inherit_heaps = this->frame_.fill_heap_bind != nullptr;
+        if (inherit_heaps) {
+            this->frame_.fill_heap_bind(this->frame_.owner, resource_bind, sampler_bind);
+        }
+        VkCommandBufferInheritanceDescriptorHeapInfoEXT const heap_inheritance = {
+            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_DESCRIPTOR_HEAP_INFO_EXT,
+            .pNext = &inheritance,
+            .pSamplerHeapBindInfo = inherit_heaps ? &sampler_bind : nullptr,
+            .pResourceHeapBindInfo = inherit_heaps ? &resource_bind : nullptr,
+        };
+        VkCommandBufferInheritanceInfo const secondary_inherit = make_inheritance_info(&heap_inheritance);
         VkCommandBufferBeginInfo const secondary_begin = make_command_buffer_begin_info(VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT, &secondary_inherit);
         bool recorded = false;
         if (vkBeginCommandBuffer(this->frame_.secondary, &secondary_begin) == VK_SUCCESS) {
             render_environment env = this->frame_.make_environment(this->frame_.owner, this->frame_.secondary, /*gbuffer=*/false);
-            if (io.shared.scene != VK_NULL_HANDLE && env.layout != VK_NULL_HANDLE) {
-                vkCmdBindDescriptorSets(this->frame_.secondary, VK_PIPELINE_BIND_POINT_GRAPHICS, env.layout, 0, 1, &io.shared.scene, 0, nullptr);
-            }
+            // No set to bind (see scene_pass::record_segment): every slot these leaves read comes from the heaps,
+            // which the runtime binds on this same secondary before executing it.
             for (primitive const* const leaf : this->frame_.leaves) {
                 leaf->draw(env);
             }

@@ -27,10 +27,10 @@ export namespace std {
   using std::string_view;
   using std::u16string_view;
   using std::u32string_view;
-#if _LIBCPP_HAS_CHAR8_T
+#if VSTD_HAS_CHAR8_T
   using std::u8string_view;
 #endif
-#if _LIBCPP_HAS_WIDE_CHARACTERS
+#if VSTD_HAS_WIDE_CHARACTERS
   using std::wstring_view;
 #endif
 

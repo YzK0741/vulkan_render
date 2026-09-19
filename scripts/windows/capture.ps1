@@ -16,13 +16,19 @@
 # means the run you are about to read is the run you already have.
 #
 # Usage:
-#   pwsh -File scripts/windows/capture.ps1 -Base my.toml -Tag exp1 -Overrides "ssgi_spatial_sigma=0"
+#   pwsh -File scripts/windows/capture.ps1 -Base my.toml -Tag exp1 -Overrides "ssao_radius=2.0"
 #   pwsh -File scripts/windows/capture.ps1 -Base my.toml -Tag wide -Camera "90,0,6.41,0,-18.548,0" -Frames 120
 #   pwsh -File scripts/windows/capture.ps1 -Base my.toml -Tag asan -BuildDir build-asan
 #
 # -Base is resolved relative to the WORK directory (see -WorkDir), which is where the configs and the
 # captures live; -Camera "" leaves the pose to the scene's own `camera_fit`, which is deterministic for
 # a static scene and is what a scene with no pinned pose resolves to (the run's log prints it).
+#
+# TWO CAPTURES ARE ONLY COMPARABLE AT THE SAME POSE, which is worth stating because getting it wrong does
+# not look like a mistake: comparing a capture that passed -Camera against one that did not reads as a
+# whole-frame mean|d| of tens and a difference everywhere, i.e. exactly like a rendering bug. A rendering
+# change's signature is small numbers concentrated where the change is. The log's `capture camera:` line is
+# the record of which pose a capture was taken at, and two captures are comparable when those lines match.
 #
 # The captures land beside the build (`<BuildDir>/gi-probe/`), NOT in the repository: they are 4 MB of
 # scratch per frame and belong with the binaries they came from. That is also why the instruments they

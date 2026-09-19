@@ -34,10 +34,10 @@ export namespace std {
   using std::string;
   using std::u16string;
   using std::u32string;
-#if _LIBCPP_HAS_CHAR8_T
+#if VSTD_HAS_CHAR8_T
   using std::u8string;
 #endif
-#if _LIBCPP_HAS_WIDE_CHARACTERS
+#if VSTD_HAS_WIDE_CHARACTERS
   using std::wstring;
 #endif
 
@@ -51,7 +51,7 @@ export namespace std {
   using std::stoul;
   using std::stoull;
   using std::to_string;
-#if _LIBCPP_HAS_WIDE_CHARACTERS
+#if VSTD_HAS_WIDE_CHARACTERS
   using std::to_wstring;
 #endif
 
@@ -60,10 +60,10 @@ export namespace std {
     using std::pmr::string;
     using std::pmr::u16string;
     using std::pmr::u32string;
-#if _LIBCPP_HAS_CHAR8_T
+#if VSTD_HAS_CHAR8_T
     using std::pmr::u8string;
 #endif
-#if _LIBCPP_HAS_WIDE_CHARACTERS
+#if VSTD_HAS_WIDE_CHARACTERS
     using std::pmr::wstring;
 #endif
   } // namespace pmr

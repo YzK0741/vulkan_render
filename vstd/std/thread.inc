@@ -8,7 +8,7 @@
 //===----------------------------------------------------------------------===//
 
 export namespace std {
-#if _LIBCPP_HAS_THREADS
+#if VSTD_HAS_THREADS
   // [thread.thread.class], class thread
   using std::thread;
 
@@ -29,14 +29,14 @@ export namespace std {
   // [thread.thread.id]
   using std::operator==;
   using std::operator<=>;
-#  if _LIBCPP_HAS_LOCALIZATION
+#  if VSTD_HAS_LOCALIZATION
   using std::operator<<;
-#  endif // _LIBCPP_HAS_LOCALIZATION
+#  endif // VSTD_HAS_LOCALIZATION
 
-#  if _LIBCPP_STD_VER >= 23
+#  if VSTD_STD_VER >= 23
   using std::formatter;
 #  endif
 
   using std::hash;
-#endif // _LIBCPP_HAS_THREADS
+#endif // VSTD_HAS_THREADS
 } // namespace std

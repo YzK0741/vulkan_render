@@ -52,22 +52,41 @@ namespace vulkan {
         // Cubemap face mapping: direction -> (face, u, v) with u/v in [-1, 1]. This is the one owner of
         // the convention (cube_face_direction() above is its inverse) and every sampler here goes
         // through it, so the bakes cannot drift apart from each other or from the GPU's own lookup.
+        //
+        // THE MAJOR-AXIS DIVIDE IS WHAT MAKES IT THE INVERSE: cube_face_direction() normalizes its
+        // result, so the reverse mapping has to divide the two minor components by the major one (the
+        // standard cubemap "sc/|ma|, tc/|ma|" rule) - for a +X-major direction, u = -dir.z / |dir.x|,
+        // not -dir.z. Without the divide the mapping is not the inverse of the direction function at
+        // all: for a unit direction |major| <= 1, so the lookup lands at u_correct * |major| - every
+        // fetch is pulled toward its face centre and the six faces stop agreeing at the seams. That
+        // warps the irradiance and prefilter bakes (the CPU samplers below are the only consumers),
+        // i.e. exactly the environment the shaders then sample with the GPU's own correct convention.
         void cube_face_uv(glm::vec3 const& dir, int& face, float& u, float& v) {
             float const ax = std::abs(dir.x);
             float const ay = std::abs(dir.y);
             float const az = std::abs(dir.z);
+            float major = 0.0f;
             if (ax >= ay && ax >= az) {
                 face = dir.x >= 0.0f ? 0 : 1;
                 u = face == 0 ? -dir.z : dir.z;
                 v = -dir.y;
+                major = ax;
             } else if (ay >= ax && ay >= az) {
                 face = dir.y >= 0.0f ? 2 : 3;
                 u = dir.x;
                 v = face == 2 ? dir.z : -dir.z;
+                major = ay;
             } else {
                 face = dir.z >= 0.0f ? 4 : 5;
                 u = face == 4 ? dir.x : -dir.x;
                 v = -dir.y;
+                major = az;
+            }
+            // major is 0 only for a null direction, which no caller passes: leave (u, v) at the face
+            // centre instead of dividing by zero.
+            if (major > 0.0f) {
+                u /= major;
+                v /= major;
             }
         }
 

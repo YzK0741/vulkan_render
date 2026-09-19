@@ -4,6 +4,7 @@ module;
 #include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <deque>
 #include <expected>
 #include <glm/glm.hpp>
 #include <memory>
@@ -110,10 +111,47 @@ namespace vulkan::acceleration_structure {
         VkAccelerationStructureGeometryKHR geometry = {};
         geometry.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
         geometry.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
-        // OPAQUE for every geometry, including alphaMode MASK ones: an inline ray query has no any-hit
-        // shader to run the material's discard in (see the module docs).
-        geometry.flags = VK_GEOMETRY_OPAQUE_BIT_KHR;
+        // NO OPAQUE FLAG, which is a deliberate reversal of what this module shipped with. OPAQUE on a geometry
+        // DECLARES that this geometry has no any-hit work to do - "any-hit shaders must not be invoked here" -
+        // so setting it on every geometry, which is what this line used to do, is a statement that an
+        // alpha-tested surface is as solid as its bounding triangles. Whether a geometry is opaque is a property
+        // of its MATERIAL and this module is handed vertex and index addresses rather than materials, so the
+        // per-material decision belongs to the step that adds the alpha test.
+        //
+        // MEASURED, because the flag's effect is not what the declaration suggests: on an NVIDIA RTX 4060
+        // (591.59.0.0) the ray-tracing shadow's any-hit stage is invoked even WITH this flag set (and even with
+        // the raygen's `gl_RayFlagsOpaqueEXT` set as well), so lifting it does not change the image - three
+        // capture arms with the closest-hit stage silenced all produced the correct frame, differing by 0.01
+        // whole-frame mean, which is this flag changing the BUILT structure and with it the traversal order.
+        // It is lifted anyway because the alpha test must not depend on a driver over-invoking a stage that two
+        // declarations say must not run: a conforming driver would skip it and the alpha test would silently do
+        // nothing. The cost is the opaque-traversal shortcut, and the per-material decision can restore it.
+        geometry.flags = 0;
         geometry.geometry.triangles = triangles;
+        if (source.opacity_micromap != VK_NULL_HANDLE && source.opacity_index_address != 0) {
+            // THE OPACITY MICROMAP CHAINED INTO THIS GEOMETRY. Both structs live in a container whose elements
+            // never move, because geometry.pNext points at them and the build reads them later, at RECORD time -
+            // a container that reallocates (or an entry that gets copied) would leave that pointer dangling, and
+            // the failure mode is a traversal that consults freed memory rather than a compile error.
+            this->micromap_geometries.push_back(micromap_attachment{});
+            micromap_attachment& slot = this->micromap_geometries.back();
+            slot.usage = source.opacity_usage;
+            slot.attachment.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_TRIANGLES_OPACITY_MICROMAP_EXT;
+            slot.attachment.pNext = nullptr;
+            slot.attachment.indexType = source.opacity_index_type;
+            slot.attachment.indexBuffer.deviceAddress = source.opacity_index_address;
+            slot.attachment.indexStride = source.opacity_index_stride;
+            slot.attachment.baseTriangle = 0;
+            slot.attachment.usageCountsCount = 1;
+            slot.attachment.pUsageCounts = &slot.usage;
+            slot.attachment.micromap = source.opacity_micromap;
+            // IT CHAINS INTO THE TRIANGLES DATA, not into the geometry: VkAccelerationStructureGeometryKHR's own
+            // pNext accepts only the micromap-DATA struct (the KHR way of BUILDING a micromap, which this does not
+            // use - it builds through vkCmdBuildMicromapsEXT), and validation named exactly that when this was
+            // first attached in the wrong place. The union member was copied from `triangles` above, so this edits
+            // the copy the build will read.
+            geometry.geometry.triangles.pNext = &slot.attachment;
+        }
         item.geometries.push_back(geometry);
 
         VkAccelerationStructureBuildGeometryInfoKHR size_info = {};
@@ -423,6 +461,9 @@ namespace vulkan::acceleration_structure {
             if (this->functions->create(vk.device, &create, nullptr, &target.handle) != VK_SUCCESS) {
                 return std::unexpected(std::string("acceleration structures: the top level structure could not be created"));
             }
+            // KEPT because a heap descriptor for it is an address RANGE that must carry a real size (see
+            // top_level_structure::structure_size): the size query above is the only place that number exists.
+            target.structure_size = create.size;
             target.capacity = wanted;
             target.scratch_size = sizes.buildScratchSize;
             this->stats.structure_bytes += sizes.accelerationStructureSize;

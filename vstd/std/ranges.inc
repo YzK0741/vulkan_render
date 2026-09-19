@@ -9,23 +9,24 @@
 
 export namespace std {
   namespace ranges {
-    inline namespace __cpo {
-      // [range.access], range access
-      using std::ranges::__cpo::begin;
-      using std::ranges::__cpo::cbegin;
-      using std::ranges::__cpo::cend;
-      using std::ranges::__cpo::crbegin;
-      using std::ranges::__cpo::crend;
-      using std::ranges::__cpo::end;
-      using std::ranges::__cpo::rbegin;
-      using std::ranges::__cpo::rend;
+    // PORTABILITY LAYER (vstd/vstd_compat.inc): this block was `inline namespace __cpo { using
+    // std::ranges::__cpo::... }`. libc++ declares the range-access CPOs in an INLINE namespace, so the
+    // public spelling names the same entities - and it is what every other standard library spells.
+    // [range.access], range access
+    using std::ranges::begin;
+    using std::ranges::cbegin;
+    using std::ranges::cend;
+    using std::ranges::crbegin;
+    using std::ranges::crend;
+    using std::ranges::end;
+    using std::ranges::rbegin;
+    using std::ranges::rend;
 
-      using std::ranges::__cpo::cdata;
-      using std::ranges::__cpo::data;
-      using std::ranges::__cpo::empty;
-      using std::ranges::__cpo::size;
-      using std::ranges::__cpo::ssize;
-    } // namespace __cpo
+    using std::ranges::cdata;
+    using std::ranges::data;
+    using std::ranges::empty;
+    using std::ranges::size;
+    using std::ranges::ssize;
 
     // [range.range], ranges
     using std::ranges::range;
@@ -83,7 +84,7 @@ export namespace std {
     // [range.dangling], dangling iterator handling
     using std::ranges::dangling;
 
-#if _LIBCPP_STD_VER >= 23
+#if VSTD_STD_VER >= 23
     // [range.elementsof], class template elements_­of
     using std::ranges::elements_of;
 #endif
@@ -92,7 +93,7 @@ export namespace std {
 
     using std::ranges::borrowed_subrange_t;
 
-#if _LIBCPP_STD_VER >= 23
+#if VSTD_STD_VER >= 23
     // [range.utility.conv], range conversions
     using std::ranges::to;
 #endif
@@ -116,32 +117,32 @@ export namespace std {
 
     namespace views {
       using std::ranges::views::iota;
-#if _LIBCPP_STD_VER >= 26
+#if VSTD_STD_VER >= 26
       using std::ranges::views::indices;
 #endif
     } // namespace views
 
-#if _LIBCPP_STD_VER >= 23
+#if VSTD_STD_VER >= 23
     // [range.repeat], repeat view
     using std::ranges::repeat_view;
 
     namespace views {
       using std::ranges::views::repeat;
     } // namespace views
-#endif // _LIBCPP_STD_VER >= 23
+#endif // VSTD_STD_VER >= 23
 
-#if _LIBCPP_HAS_LOCALIZATION
+#if VSTD_HAS_LOCALIZATION
     // [range.istream], istream view
     using std::ranges::basic_istream_view;
     using std::ranges::istream_view;
-#  if _LIBCPP_HAS_WIDE_CHARACTERS
+#  if VSTD_HAS_WIDE_CHARACTERS
     using std::ranges::wistream_view;
 #  endif
 
     namespace views {
       using std::ranges::views::istream;
     }
-#endif // _LIBCPP_HAS_LOCALIZATION
+#endif // VSTD_HAS_LOCALIZATION
 
     // Note: This declaration not in the synopsis or explicitly in the wording.
     // However it is needed for the range adaptors.
@@ -154,8 +155,16 @@ export namespace std {
     //   undefined if overload resolution selects a program-defined operator|
     //   function.
     // This is used internally in C++20 mode.
+#if VSTD_IMPLEMENTATION_LIBCXX
+    // LIBC++-ONLY BY NECESSITY, not by preference: libc++ declares this operator in std::ranges and
+    // it can be named, while libstdc++ implements it as a HIDDEN FRIEND of its range-adaptor closure
+    // type - measured, `using std::views::operator|;` and `using std::ranges::operator|;` both fail
+    // there, and a hidden friend is reachable by ADL only and cannot be re-exported by name at all.
+    // Pipelines still work on that toolchain (`views::a | views::b`); what cannot be done there is to
+    // NAME std::ranges::operator|.
     using std::ranges::operator|;
-#if _LIBCPP_STD_VER >= 23
+#endif
+#if VSTD_STD_VER >= 23
     // [range.adaptor.object], range adaptor objects
     using std::ranges::range_adaptor_closure;
 #endif
@@ -172,14 +181,14 @@ export namespace std {
     // [range.owning.view], owning view
     using std::ranges::owning_view;
 
-#if _LIBCPP_STD_VER >= 23
+#if VSTD_STD_VER >= 23
     // [range.as.rvalue], as rvalue view
     using std::ranges::as_rvalue_view;
 
     namespace views {
       using std::ranges::views::as_rvalue;
     } // namespace views
-#endif // _LIBCPP_STD_VER >= 23
+#endif // VSTD_STD_VER >= 23
 
     // [range.filter], filter view
     using std::ranges::filter_view;
@@ -229,14 +238,14 @@ export namespace std {
       using std::ranges::views::join;
     } // namespace views
 
-#if _LIBCPP_STD_VER >= 23
+#if VSTD_STD_VER >= 23
     // [range.join.with]
     using std::ranges::join_with_view;
 
     namespace views {
       using std::ranges::views::join_with;
     } // namespace views
-#endif // _LIBCPP_STD_VER >= 23
+#endif // VSTD_STD_VER >= 23
 
     using std::ranges::lazy_split_view;
 
@@ -287,7 +296,7 @@ export namespace std {
       using std::ranges::views::values;
     } // namespace views
 
-#if _LIBCPP_STD_VER >= 23
+#if VSTD_STD_VER >= 23
     // [range.zip], zip view
     using std::ranges::zip_view;
 
@@ -315,7 +324,7 @@ export namespace std {
       using std::ranges::views::pairwise_transform;
     } // namespace views
 
-#endif // _LIBCPP_STD_VER >= 23
+#endif // VSTD_STD_VER >= 23
 
 #if 0
     using std::ranges::chunk_view;
@@ -333,14 +342,14 @@ export namespace std {
     }
 #endif
 
-#if _LIBCPP_STD_VER >= 23
+#if VSTD_STD_VER >= 23
     // [range.chunk.by], chunk by view
     using std::ranges::chunk_by_view;
 
     namespace views {
       using std::ranges::views::chunk_by;
     }
-#endif // _LIBCPP_STD_VER >= 23
+#endif // VSTD_STD_VER >= 23
 
 #if 0
     // [range.stride], stride view
@@ -363,8 +372,8 @@ export namespace std {
   using std::tuple_element;
   using std::tuple_size;
 
-#if _LIBCPP_STD_VER >= 23
+#if VSTD_STD_VER >= 23
   using std::from_range;
   using std::from_range_t;
-#endif // _LIBCPP_STD_VER >= 23
+#endif // VSTD_STD_VER >= 23
 } // namespace std

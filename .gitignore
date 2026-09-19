@@ -15,7 +15,7 @@ docs/latex/
 #never hand-synced with their .glsl sources - editing a shader and rebuilding is the whole workflow
 *.spv
 
-#runtime artifacts (flushed logs + Dear ImGui panel-layout persistence)
+#runtime artifacts (flushed logs; the Dear ImGui layout file is no longer written - io.IniFilename is null - but it stays ignored so a stale one cannot be committed)
 debug.log
 debug.log.old
 imgui_layout.ini

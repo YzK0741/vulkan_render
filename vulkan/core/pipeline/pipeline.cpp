@@ -3,7 +3,7 @@ module;
 #include <vulkan/vulkan.h>
 
 module vulkan.core.pipeline;
-import vulkan.core.pipeline.spirv_parser;
+import :spirv_parser;
 import vulkan.constant_init;
 
 namespace {
@@ -32,7 +32,6 @@ namespace {
 namespace vulkan {
     std::expected<vk_pipeline, std::string_view> make_pipeline(
         VkDevice device,
-        VkPipelineLayout const pipeline_layout, // shared scene layout (fixed set 0 + push block); not owned
         VkFormat const color_format,
         VkFormat const depth_format,
         std::span<unsigned char const> const vertex_shader_code,
@@ -52,7 +51,6 @@ namespace vulkan {
         std::span<VkFormat const> const color_formats = has_color_attachment ? std::span<VkFormat const>(single_format) : std::span<VkFormat const>{};
         std::span<VkPipelineColorBlendAttachmentState const> const blend_attachments = has_color_attachment ? std::span<VkPipelineColorBlendAttachmentState const>(single_blend) : std::span<VkPipelineColorBlendAttachmentState const>{};
         return make_pipeline(device,
-                             pipeline_layout,
                              color_formats,
                              depth_format,
                              vertex_shader_code,
@@ -67,7 +65,6 @@ namespace vulkan {
 
     std::expected<vk_pipeline, std::string_view> make_pipeline( // NOLINT(*-function-cognitive-complexity)
         VkDevice device,
-        VkPipelineLayout const pipeline_layout, // shared scene layout (fixed set 0 + push block); not owned
         std::span<VkFormat const> const color_formats,
         VkFormat const depth_format,
         std::span<unsigned char const> const vertex_shader_code,
@@ -179,16 +176,26 @@ namespace vulkan {
         // pass + subpass. Depth-only pipelines (has_color_attachment == false, e.g. the shadow
         // pass) declare no color attachment format.
         VkPipelineRenderingCreateInfo const rendering_create_info = make_rendering_create_info(color_formats.data(), static_cast<uint32_t>(color_formats.size()), depth_format);
+        // THE HEAP FLAG AND THE NULL LAYOUT (see docs/descriptor_heap_migration.md): every stage is heap-native now,
+        // and validation's rule is explicit - a shader that declares heap resources cannot also be given a pipeline
+        // layout ("either set the layout to NULL or remove the heaps from the shader"). The flag is a flags2 bit, so
+        // it arrives through VkPipelineCreateFlags2CreateInfo, which chains ahead of the rendering info this
+        // pipeline already carries.
+        VkPipelineCreateFlags2CreateInfo heap_flags = {};
+        heap_flags.sType = VK_STRUCTURE_TYPE_PIPELINE_CREATE_FLAGS_2_CREATE_INFO;
+        heap_flags.pNext = &rendering_create_info;
+        heap_flags.flags = VK_PIPELINE_CREATE_2_DESCRIPTOR_HEAP_BIT_EXT;
+
         VkGraphicsPipelineCreateInfo pipeline_create_info = {};
         pipeline_create_info.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-        pipeline_create_info.pNext = &rendering_create_info;
+        pipeline_create_info.pNext = &heap_flags;
         pipeline_create_info.renderPass = VK_NULL_HANDLE; // dynamic rendering: no render pass
         pipeline_create_info.pInputAssemblyState = &input_assembly_state_create_info;
         pipeline_create_info.pViewportState = &viewport_state_create_info;
         pipeline_create_info.pDepthStencilState = &depth_stencil_state_create_info;
         pipeline_create_info.pColorBlendState = &color_blend_state_create_info;
         pipeline_create_info.pVertexInputState = &vertex_input_state_create_info;
-        pipeline_create_info.layout = pipeline_layout;
+        pipeline_create_info.layout = VK_NULL_HANDLE; // the heap flag REQUIRES it (see the note above)
         pipeline_create_info.pRasterizationState = &rasterization_state_create_info;
         pipeline_create_info.pMultisampleState = &multisample_state_create_info;
         pipeline_create_info.pDynamicState = &dynamic_state_create_info;
@@ -202,8 +209,7 @@ namespace vulkan {
         }
 
         // ---- 8. Success: transfer ownership to vk_pipeline; guard no longer cleans up ----
-        //      (the pipeline layout is shared and owned by core, not by the pipeline)
-        vk_pipeline result(guard.pipeline, pipeline_layout, device);
+        vk_pipeline result(guard.pipeline, device);
         guard.release();
         return result;
     }

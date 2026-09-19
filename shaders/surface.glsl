@@ -26,8 +26,10 @@
 #define VULKAN_RENDER_SURFACE_GLSL
 
 // The runtime's texture array: every material's image lives in one bindless array, indexed by the
-// material record (descriptor indexing: partially bound + non-uniform index).
-layout(set = 0, binding = 1) uniform sampler2D textures[];
+// material record. HEAP-NATIVE (see docs/descriptor_heap_migration.md): the array IS the heap - one 64 B slot per
+// texture, starting at heap_slots_textures - and the sampler is SEPARATE, because a combined image sampler cannot
+// be declared this way at all: every fetch constructs one, `sampler2D(heap_textures[i], heap_samplers[s])`.
+#include "heap_slots.glsl"
 
 // One entry of the material table; layout matches material_record in vulkan/primitive.cppm
 // (std430, 80 bytes). Field order and the flag bits are a CPU/GPU contract - see register_material.
@@ -45,7 +47,21 @@ struct Material {
     uint flags; // bit0: normal map, bit1: occlusion map, bit2: emissive map, bit3: double-sided,
                 // bit4: alphaMode MASK, bit5: alphaMode BLEND
 };
-layout(set = 0, binding = 5) readonly buffer Materials { Material materials[]; };
+// The ARRAY name carries the HEAP slot and the block member carries the record index: two index spaces, which is
+// why a lookup is `heap_material_tables[heap_slots_materials].materials[push.material_index]`.
+layout(descriptor_heap, descriptor_stride = heap_slot_stride) readonly buffer Materials { Material materials[]; } heap_material_tables[];
+
+/**
+ * @brief one fetch from the bindless array, with the sampler the descriptor-set path used to bind for it
+ * @param texture_index the texture's own index (its slot is heap_slots_textures + this)
+ * @param uv the coordinate
+ * @note THE TWO HALVES OF A FETCH ARE SEPARATE IN A HEAP: the image comes from the resource heap at its slot, the
+ *       sampler from the SAMPLER heap at heap_sampler_texture (linear, repeat, mips - exactly what the set path
+ *       bound), and a combined image sampler cannot be declared at all, so every fetch says both.
+ */
+vec4 heap_sample(uint texture_index, vec2 uv) {
+    return texture(sampler2D(heap_textures[heap_slots_textures + texture_index], heap_samplers[heap_sampler_texture]), uv);
+}
 
 // Push constant block: must mirror the vertex stages and material_push_constants in the runtime
 // (seven uint fields first, then the aligned mat4) so member offsets agree across stages and with
@@ -60,7 +76,16 @@ layout(push_constant) uniform PushConstants {
     uint morph_vertices; // vertex count of this primitive (morph block stride)
     uint instance_base;  // mat4 start of this instanced primitive's transforms (unused here)
     mat4 model;          // per-model world transform (kept out of the shared camera UBO; unused here)
+    // THE HEAP INDICES (see heap_slots.glsl), shared by every stage that includes this file: which frame slot and
+    // which swapchain image it runs for. LAST on purpose, so every field above keeps its offset, and delivered
+    // through vkCmdPushDataEXT because a heap pipeline has no layout to hold push constants.
+    uint frame_slot;
+    uint image_index;
 } push;
+
+// ... and the two names the shared slot macros use (heap_slots.glsl says why these are macros and not constants).
+#define heap_frame_slot (push.frame_slot)
+#define heap_image_index (push.image_index)
 
 /**
  * @brief everything the lighting code needs to know about one surface point
@@ -93,10 +118,10 @@ struct surface_sample {
  *       attribute is never consumed; a degenerate UV derivative falls back to the fine normal.
  */
 surface_sample gather_surface(vec3 world_pos, vec3 geo_normal, vec2 uv) {
-    Material mat = materials[push.material_index];
+    Material mat = heap_material_tables[heap_slots_materials].materials[push.material_index];
 
     surface_sample s;
-    const vec4 base_color = mat.base_color_factor * texture(textures[mat.tex_indices.x], uv);
+    const vec4 base_color = mat.base_color_factor * heap_sample(mat.tex_indices.x, uv);
     // alphaMode MASK (record flag bit4): discard fragments below the cutoff (base_color.a is
     // factor.a * albedo.a) - glTF alphaCutoff semantics
     if ((mat.flags & 16u) != 0u && base_color.a < mat.alpha_cutoff) {
@@ -105,12 +130,12 @@ surface_sample gather_surface(vec3 world_pos, vec3 geo_normal, vec2 uv) {
 
     s.albedo = base_color.rgb;
     s.alpha = base_color.a;
-    s.metallic = mat.metallic_factor * texture(textures[mat.tex_indices.y], uv).b;
-    s.roughness = mat.roughness_factor * texture(textures[mat.tex_indices.y], uv).g;
+    s.metallic = mat.metallic_factor * heap_sample(mat.tex_indices.y, uv).b;
+    s.roughness = mat.roughness_factor * heap_sample(mat.tex_indices.y, uv).g;
     // occlusion: sampled AO modulated by occlusion_strength; without an occlusion map the slot is
     // the white fallback (ao = 1) and the strength has no effect
-    s.ao = mix(1.0, texture(textures[mat.tex_indices.w], uv).r, mat.occlusion_strength);
-    s.emissive = mat.emissive_factor.rgb * texture(textures[mat.emissive_index], uv).rgb;
+    s.ao = mix(1.0, heap_sample(mat.tex_indices.w, uv).r, mat.occlusion_strength);
+    s.emissive = mat.emissive_factor.rgb * heap_sample(mat.emissive_index, uv).rgb;
     s.flags = mat.flags;
 
     // ---- normal: optional tangent-space normal map, else the interpolated normal ----
@@ -126,7 +151,7 @@ surface_sample gather_surface(vec3 world_pos, vec3 geo_normal, vec2 uv) {
         } else {
             const vec3 sdir = (duv2.y * dp1 - duv1.y * dp2) / denom; // world tangent direction
             const vec3 tdir = (duv1.x * dp2 - duv2.x * dp1) / denom; // world bitangent direction
-            vec3 tbn_normal = texture(textures[mat.tex_indices.z], uv).rgb * 2.0 - 1.0;
+            vec3 tbn_normal = heap_sample(mat.tex_indices.z, uv).rgb * 2.0 - 1.0;
             tbn_normal.xy *= mat.normal_scale;
             tbn_normal = normalize(tbn_normal);
             s.normal = normalize(mat3(normalize(sdir), normalize(tdir), normal) * tbn_normal);

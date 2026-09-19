@@ -8,7 +8,7 @@
 //===----------------------------------------------------------------------===//
 
 export namespace std {
-#if _LIBCPP_HAS_THREADS
+#if VSTD_HAS_THREADS
   using std::future_errc;
   using std::future_status;
   using std::launch;
@@ -51,5 +51,5 @@ export namespace std {
 
   // [futures.async], function template async
   using std::async;
-#endif // _LIBCPP_HAS_THREADS
+#endif // VSTD_HAS_THREADS
 } // namespace std

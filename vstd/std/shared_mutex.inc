@@ -8,7 +8,7 @@
 //===----------------------------------------------------------------------===//
 
 export namespace std {
-#if _LIBCPP_HAS_THREADS
+#if VSTD_HAS_THREADS
   // [thread.sharedmutex.class], class shared_­mutex
   using std::shared_mutex;
   // [thread.sharedtimedmutex.class], class shared_­timed_­mutex
@@ -16,5 +16,5 @@ export namespace std {
   // [thread.lock.shared], class template shared_­lock
   using std::shared_lock;
   using std::swap;
-#endif // _LIBCPP_HAS_THREADS
+#endif // VSTD_HAS_THREADS
 } // namespace std

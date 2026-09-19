@@ -36,9 +36,10 @@ export namespace std {
 
   // [concept.swappable], concept swappable
   namespace ranges {
-    inline namespace __cpo {
-      using std::ranges::__cpo::swap;
-    }
+    // PORTABILITY LAYER (vstd/vstd_compat.inc): this was `inline namespace __cpo { using
+    // std::ranges::__cpo::swap; }`. libc++ declares the CPO in an INLINE namespace, so the public
+    // spelling names the same entity - and it is the spelling every other standard library provides.
+    using std::ranges::swap;
   } // namespace ranges
 
   using std::swappable;

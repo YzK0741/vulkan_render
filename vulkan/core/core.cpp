@@ -4,1427 +4,21 @@ module;
 #include <GLFW/glfw3.h>
 #include <vulkan/vulkan.h>
 
+// LOAD-BEARING, and it is the same trap chores.cpp documents at length: with -fno-exceptions and the vendored
+// std module, a TU that instantiates std::vector sees TWO 'operator new(size_t, align_val_t)' declarations -
+// module std's and the textual libc++ copy baked into utility:data_block.pcm - and resolves neither, which is
+// "call to operator new is ambiguous" at allocate.h. This file instantiates plenty of std::vector (the device
+// extension-name list, the descriptor pool sizes), and it began seeing both the moment vulkan.core gained an
+// import edge it did not have before: descriptor_heap, whose own module carries a textual Vulkan header in its
+// global module fragment. Textually including glm here makes clang MERGE the two copies, exactly as it does for
+// chores.cpp and vulkan/animation/controller.cpp. Do not remove this include to "clean up".
+#include <glm/glm.hpp>
 module vulkan.core;
 import vulkan.core.pipeline;
-import vulkan.core.init_utils;
+import :init_utils;
 import vulkan.constant_init;
 
-// core
 namespace vulkan {
-    core::core()
-        : core(core_create_info{}) {
-    }
-
-    core::core(core_create_info const& options)
-        : create_options{options} {
-        if (options.window.has_value()) {
-            // caller-provided window: bind to it as-is - no glfwInit / glfwCreateWindow here and
-            // no glfwDestroyWindow cleanup (ownership stays with the caller; see
-            // core_create_info::window)
-            window = *options.window;
-        } else {
-            init_window(options.window_width, options.window_height, options.window_title);
-        }
-        init_instance();
-        init_surface();
-        init_device_and_queue();
-        init_swap_chain();
-        init_image_views();
-        create_depth_resources();
-        color_format = swap_chain_image_format;
-        create_render_targets(); // the scene's render targets: the post-process pass input
-        create_command_pool();
-        create_descriptor_pool();
-        init_scene_layouts();
-        create_sync_objects();
-        create_timestamp_query_pool(); // GPU pass timings (a no-op on devices that cannot timestamp)
-
-        vma.init(this->instance, this->device, this->physical_device, this->graphics_queue, this->graphics_family_index);
-        this->register_cleanup([this] {
-            vma.destroy();
-        });
-    };
-
-    core::~core() {
-        vkDeviceWaitIdle(this->device);
-        this->do_cleanup();
-    }
-
-    // self-owned window path: only taken when core_create_info::window is empty (a caller-provided
-    // window skips glfwInit/glfwCreateWindow entirely and registers no destroy cleanup)
-    void core::init_window(int const width, int const height, std::string_view const window_name) noexcept {
-        glfwInit();
-
-        glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-        glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE); // resizing recreates the swapchain via render_frame's OUT_OF_DATE handling
-
-        window = glfwCreateWindow(
-            width,
-            height,
-            window_name.empty() ? "vulkan" : window_name.data(),
-            nullptr,
-            nullptr);
-
-        register_cleanup([this] {
-            if (window) {
-                glfwDestroyWindow(window);
-            }
-        });
-    }
-
-    void core::init_instance() noexcept {
-        VkApplicationInfo app_info = {};
-        app_info.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
-        app_info.pApplicationName = "vulkan render";
-        // version injected by CMake (project(VERSION) in CMakeLists.txt) - the single source
-        app_info.applicationVersion = VK_MAKE_VERSION(VULKAN_RENDER_VERSION_MAJOR, VULKAN_RENDER_VERSION_MINOR, VULKAN_RENDER_VERSION_PATCH);
-        app_info.pEngineName = "";
-        app_info.engineVersion = VK_MAKE_VERSION(VULKAN_RENDER_VERSION_MAJOR, VULKAN_RENDER_VERSION_MINOR, VULKAN_RENDER_VERSION_PATCH);
-        app_info.apiVersion = VK_API_VERSION_1_3;
-
-        VkInstanceCreateInfo create_info = {};
-        create_info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
-        create_info.pApplicationInfo = &app_info;
-
-        // get and set GLFW required extensions
-        uint32_t glfw_extension_count = 0;
-        char const** glfw_extensions = glfwGetRequiredInstanceExtensions(&glfw_extension_count);
-
-        std::vector<char const*> extensions(glfw_extensions, glfw_extensions + glfw_extension_count);
-
-        // validation layers + debug messenger: runtime switch from create_options (app_config's
-        // [render] validation_layers; Debug defaults on, Release off - both overridable)
-        bool const enable_validation = this->create_options.validation_layers;
-
-        if (enable_validation) {
-            extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
-            utility::log("add debug extension: {}", VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
-        }
-
-        // print all extensions
-        utility::log("required instance extension ({}):", extensions.size());
-        for (auto const& ext : extensions) {
-            utility::log("  - {}", ext);
-        }
-
-        create_info.enabledExtensionCount = static_cast<uint32_t>(extensions.size());
-        create_info.ppEnabledExtensionNames = extensions.data();
-
-        // enable validation_layers
-        std::vector<char const*> validation_layers;
-
-        if (enable_validation) {
-            validation_layers = {
-                "VK_LAYER_KHRONOS_validation",
-            };
-
-            // Check validation layer support
-            if (check_validation_layer_support(validation_layers)) {
-                create_info.enabledLayerCount = static_cast<uint32_t>(validation_layers.size());
-                create_info.ppEnabledLayerNames = validation_layers.data();
-                utility::log("validation layers enabled ( {} )", validation_layers.size());
-                for (auto const& layer : validation_layers) {
-                    utility::log("  - {}", layer);
-                }
-            } else {
-                utility::log("warning: VK_LAYER_KHRONOS_validation disabled");
-                create_info.enabledLayerCount = 0;
-            }
-        } else {
-            utility::log("validation layers disabled (config [render] validation_layers = false)");
-            create_info.enabledLayerCount = 0;
-        }
-
-        if (VkResult result = vkCreateInstance(&create_info, nullptr, &this->instance); result != VK_SUCCESS) {
-            // Provide more detailed error info
-            std::string error_msg = "can not create vulkan instance, error code is: ";
-            switch (result) {
-            case VK_ERROR_OUT_OF_HOST_MEMORY:
-                error_msg += "VK_ERROR_OUT_OF_HOST_MEMORY";
-                break;
-            case VK_ERROR_OUT_OF_DEVICE_MEMORY:
-                error_msg += "VK_ERROR_OUT_OF_DEVICE_MEMORY";
-                break;
-            case VK_ERROR_INITIALIZATION_FAILED:
-                error_msg += "VK_ERROR_INITIALIZATION_FAILED";
-                break;
-            case VK_ERROR_LAYER_NOT_PRESENT:
-                error_msg += "VK_ERROR_LAYER_NOT_PRESENT";
-                break;
-            case VK_ERROR_EXTENSION_NOT_PRESENT:
-                error_msg += "VK_ERROR_EXTENSION_NOT_PRESENT";
-                break;
-            case VK_ERROR_INCOMPATIBLE_DRIVER:
-                error_msg += "VK_ERROR_INCOMPATIBLE_DRIVER";
-                break;
-            default:
-                error_msg += std::to_string(static_cast<int>(result));
-                break;
-            }
-            utility::panic(error_msg);
-        }
-        utility::log("instance init succeeded");
-        utility::log("instance handler is 0x{:x}", reinterpret_cast<uint64_t>(this->instance));
-
-        // register instance destruction first, then the messenger cleanup INSIDE the
-        // validation branch below: cleanup runs LIFO, so the messenger (when created) is
-        // destroyed before the instance it belongs to
-        this->register_cleanup([this] {
-            vkDestroyInstance(this->instance, nullptr);
-        });
-
-        if (enable_validation) {
-            // get function pointer
-            auto vkCreateDebugUtilsMessengerEXT = reinterpret_cast<PFN_vkCreateDebugUtilsMessengerEXT>(vkGetInstanceProcAddr(
-                instance, "vkCreateDebugUtilsMessengerEXT"));
-            auto vkDestroyDebugUtilsMessengerEXT = reinterpret_cast<PFN_vkDestroyDebugUtilsMessengerEXT>(vkGetInstanceProcAddr(
-                instance, "vkDestroyDebugUtilsMessengerEXT"));
-
-            if ((vkCreateDebugUtilsMessengerEXT == nullptr) || (vkDestroyDebugUtilsMessengerEXT == nullptr)) {
-                utility::panic("Failed to get debug utils function pointers");
-            }
-            VkDebugUtilsMessengerCreateInfoEXT debug_info = {};
-            debug_info.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
-            debug_info.messageSeverity =
-                VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT |
-                VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT |
-                VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
-                VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
-            debug_info.messageType =
-                VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
-                VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
-                VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
-            debug_info.pfnUserCallback = debug_callback;
-            debug_info.pUserData = nullptr;
-
-            if (vkCreateDebugUtilsMessengerEXT(instance, &debug_info, nullptr, &debug_messenger) != VK_SUCCESS) {
-                utility::error("create debug messenger failed");
-            } else {
-                utility::log("create debug messenger succeeded");
-            }
-            this->register_cleanup([vkDestroyDebugUtilsMessengerEXT, this] {
-                vkDestroyDebugUtilsMessengerEXT(this->instance, this->debug_messenger, nullptr);
-            });
-        }
-    }
-
-    void core::init_surface() noexcept {
-        if (glfwCreateWindowSurface(this->instance, this->window, nullptr, &this->surface) != VK_SUCCESS) {
-            utility::panic("can not init surface");
-        }
-
-        this->register_cleanup([this] {
-            vkDestroySurfaceKHR(this->instance, this->surface, nullptr);
-        });
-    }
-
-    void core::init_device_and_queue() noexcept {
-        this->physical_device = pick_suitable_device(this->instance, this->surface);
-
-        // Collect device capabilities: one query through the feature/property pNext chains (see device_capabilities)
-        device_capabilities capabilities;
-        capabilities.query(this->physical_device);
-        print_device_capabilities(capabilities);
-        // keep the plain properties around (limits such as timestampPeriod drive renderer
-        // decisions like the GPU pass timings) - the capabilities query already fetched them
-        this->device_properties = capabilities.properties_2.properties;
-
-        // Dynamic rendering (Vulkan 1.3 core) is mandatory: pick_suitable_device only accepts
-        // apiVersion >= 1.3 devices, and frames always record through vkCmdBeginRendering - no
-        // render pass / framebuffer objects exist. Double-check the feature bit anyway (a
-        // conformant 1.3 driver must expose it).
-        if (capabilities.features_1_3.dynamicRendering != VK_TRUE) {
-            utility::panic("dynamic rendering (Vulkan 1.3) is required but not supported by the device");
-        }
-
-        device_creation_info creation_info;
-
-        creation_info.queue_families = find_queue_families(this->physical_device, this->surface);
-
-        // Spelled as a string rather than the header macro so the build does not depend on how new the
-        // Vulkan headers are; it is only ever pushed when the device advertises it.
-        constexpr char const* fifo_latest_ready_extension = "VK_EXT_present_mode_fifo_latest_ready";
-
-        creation_info.extensions = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
-
-        // VK_EXT_present_mode_fifo_latest_ready is asked for only when the device has it, so the
-        // extension is never enabled blindly and the present mode that needs it is only ever chosen
-        // from the surface's own list (see choose_swap_present_mode).
-        if (check_device_extension_support(physical_device, std::vector<char const*>{fifo_latest_ready_extension})) {
-            creation_info.extensions.push_back(fifo_latest_ready_extension);
-        }
-
-        // Ray tracing is optional and opt-in per feature, not per build: the extensions are enabled
-        // when the device has them, and the two feature structs are already in the pNext chain from
-        // the capabilities query - query() leaves them out when either feature is missing, so
-        // "enabled" and "available" cannot disagree. A device without them runs the raster paths
-        // exactly as before, with ray_query_available false and the RT features refusing to turn on.
-        constexpr std::array<char const*, 3> ray_tracing_extensions = {
-            VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME,
-            VK_KHR_RAY_QUERY_EXTENSION_NAME,
-            VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME, // required by the AS extension itself
-        };
-        if (capabilities.ray_query_available) {
-            for (char const* extension : ray_tracing_extensions) {
-                creation_info.extensions.push_back(extension);
-            }
-        }
-
-        if (!check_device_extension_support(physical_device, creation_info.extensions)) {
-            utility::panic("Required device extensions not supported");
-        }
-
-        // Features go through the pNext chain (device_capabilities query result, incl. all 1.1/1.2/1.3 supported features)
-        creation_info.pNext = capabilities.device_pnext();
-
-        auto const [device, graphics_family_index, present_family_index, graphics_queue, present_queue] = create_logical_device(physical_device, creation_info); // NOLINT(*-misplaced-const)
-
-        this->device = device;
-        this->graphics_queue = graphics_queue;
-        this->present_queue = present_queue;
-        this->graphics_family_index = graphics_family_index;
-        this->present_family_index = present_family_index;
-
-        // What the device ended up with, for the passes that need it (see the members: the ray-traced
-        // paths are skipped rather than broken on a device without them).
-        this->ray_query_available = capabilities.ray_query_available;
-        this->acceleration_structure_properties = capabilities.acceleration_structure_properties;
-
-        utility::log("device and queue init succeeded");
-
-        register_cleanup([this] {
-            if (this->device != VK_NULL_HANDLE) {
-                vkDestroyDevice(this->device, nullptr);
-            }
-        });
-    }
-
-    void core::init_swap_chain() noexcept {
-        auto const [capabilities, formats, present_modes] = query_swap_chain_support(this->physical_device, this->surface);
-
-        // Add checks:
-        if (formats.empty() || present_modes.empty()) {
-            utility::panic("Swap chain not adequately supported");
-        }
-
-        auto const [format, color_space] = choose_swap_surface_format(formats);
-        VkPresentModeKHR const present_mode = choose_swap_present_mode(present_modes, this->create_options.vsync);
-        {
-            char const* name = "other";
-            if (present_mode == present_mode_fifo_latest_ready) {
-                name = "fifo-latest-ready";
-            } else if (present_mode == VK_PRESENT_MODE_MAILBOX_KHR) {
-                name = "mailbox";
-            } else if (present_mode == VK_PRESENT_MODE_FIFO_KHR) {
-                name = "fifo";
-            } else if (present_mode == VK_PRESENT_MODE_IMMEDIATE_KHR) {
-                name = "immediate";
-            }
-            // Logged because it decides whether the fps counter can be believed: with a vsync mode the
-            // presented rate is the display's, not the renderer's.
-            utility::log("swapchain: present mode {} (vsync {}, {} modes offered)", name, this->create_options.vsync, present_modes.size());
-        }
-
-        VkExtent2D const extent = choose_swap_extent(capabilities, this->window);
-
-        uint32_t image_count = capabilities.minImageCount + 1;
-
-        if (capabilities.maxImageCount > 0 && image_count > capabilities.maxImageCount) {
-            image_count = capabilities.maxImageCount;
-        }
-
-        image_count = std::max(image_count, capabilities.minImageCount);
-
-        VkSwapchainCreateInfoKHR create_info = {};
-        create_info.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
-        create_info.surface = surface;
-
-        create_info.minImageCount = image_count;
-        create_info.imageFormat = format;
-        create_info.imageColorSpace = color_space;
-        create_info.imageExtent = extent;
-        create_info.imageArrayLayers = 1;
-        create_info.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-        // The F12 screenshot read-back copies FROM a swapchain image (vkCmdCopyImageToBuffer), which
-        // requires the image to have been created with TRANSFER_SRC usage
-        // (VUID-vkCmdCopyImageToBuffer-srcImage-00186). Ask for it when the surface supports it -
-        // imageUsage has to stay a subset of the surface's supportedUsageFlags - and remember the
-        // answer so the screenshot path can disable itself instead of performing an illegal copy on a
-        // surface that does not.
-        this->swapchain_transfer_src_supported = (capabilities.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) != 0;
-        if (this->swapchain_transfer_src_supported) {
-            create_info.imageUsage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
-        } else {
-            utility::log("swapchain: surface does not support VK_IMAGE_USAGE_TRANSFER_SRC_BIT - screenshots disabled");
-        }
-
-        queue_family_indices const indices = find_queue_families(this->physical_device, this->surface);
-        if (!indices.compute_family || !indices.graphics_family || !indices.present_family) {
-            utility::panic("find queue family index failed");
-        }
-
-        uint32_t const queue_family_indices[] = {indices.graphics_family.value(), indices.present_family.value()};
-
-        if (indices.graphics_family != indices.present_family) {
-            create_info.imageSharingMode = VK_SHARING_MODE_CONCURRENT;
-            create_info.queueFamilyIndexCount = 2;
-            create_info.pQueueFamilyIndices = queue_family_indices;
-        } else {
-            create_info.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
-            create_info.queueFamilyIndexCount = 0;     // Optional
-            create_info.pQueueFamilyIndices = nullptr; // Optional
-        }
-
-        create_info.preTransform = capabilities.currentTransform;
-        create_info.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
-        create_info.presentMode = present_mode;
-        create_info.clipped = VK_TRUE;
-        create_info.oldSwapchain = VK_NULL_HANDLE;
-
-        if (vkCreateSwapchainKHR(device, &create_info, nullptr, &this->swap_chain) != VK_SUCCESS) {
-            utility::panic("failed to create swap chain!");
-        }
-
-        vkGetSwapchainImagesKHR(device, this->swap_chain, &image_count, nullptr);
-        this->swap_chain_images.resize(image_count);
-        vkGetSwapchainImagesKHR(device, this->swap_chain, &image_count, this->swap_chain_images.data());
-
-        this->swap_chain_image_format = format;
-        this->swap_chain_extent = extent;
-
-        register_cleanup([this] {
-            if (swap_chain != VK_NULL_HANDLE) {
-                vkDestroySwapchainKHR(device, swap_chain, nullptr);
-                swap_chain = VK_NULL_HANDLE;
-            }
-        });
-    }
-
-    void core::init_image_views() noexcept {
-
-        this->swap_chain_image_views.resize(this->swap_chain_images.size());
-        for (size_t i = 0; i < this->swap_chain_images.size(); i++) {
-            VkImageViewCreateInfo const create_info = make_image_view_info(this->swap_chain_images[i], swap_chain_image_format, VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_ASPECT_COLOR_BIT, 1, 1);
-            if (vkCreateImageView(device, &create_info, nullptr, &this->swap_chain_image_views[i]) != VK_SUCCESS) {
-                utility::panic("failed to create image views!");
-            }
-        }
-        register_cleanup([this] {
-            for (auto const& image_view : this->swap_chain_image_views) {
-                vkDestroyImageView(device, image_view, nullptr);
-            }
-            this->swap_chain_image_views.clear();
-        });
-    }
-
-    void core::create_depth_image(VkImage& image, VkDeviceMemory& image_memory, VkImageView& image_view) const noexcept {
-        // Use the swapchain size stored in the class
-        auto const& [width, height] = this->swap_chain_extent;
-
-        // 1. Create images
-        VkImageCreateInfo image_info = {};
-        image_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-        image_info.imageType = VK_IMAGE_TYPE_2D;
-        image_info.extent = {width, height, 1};
-        image_info.mipLevels = 1;
-        image_info.arrayLayers = 1;
-        image_info.format = this->depth_format;
-        image_info.tiling = VK_IMAGE_TILING_OPTIMAL;
-        image_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        image_info.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
-        image_info.samples = VK_SAMPLE_COUNT_1_BIT;
-        image_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-
-        if (vkCreateImage(device, &image_info, nullptr, &image) != VK_SUCCESS) {
-            vkDestroyImage(device, image, nullptr);
-            utility::panic("failed to create depth image!");
-        }
-
-        // 2. Allocate memory
-        VkMemoryRequirements mem_requirements;
-        vkGetImageMemoryRequirements(device, image, &mem_requirements);
-
-        VkMemoryAllocateInfo alloc_info = {};
-        alloc_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        alloc_info.allocationSize = mem_requirements.size;
-        alloc_info.memoryTypeIndex = find_memory_type(mem_requirements.memoryTypeBits,
-                                                      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, this->physical_device);
-
-        if (vkAllocateMemory(device, &alloc_info, nullptr, &image_memory) != VK_SUCCESS) {
-            utility::panic("failed to allocate depth image memory!");
-        }
-
-        vkBindImageMemory(device, image, image_memory, 0);
-
-        // 3. Create image views
-        VkImageViewCreateInfo const view_info = make_image_view_info(image, this->depth_format, VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_ASPECT_DEPTH_BIT, 1, 1);
-
-        if (vkCreateImageView(device, &view_info, nullptr, &image_view) != VK_SUCCESS) {
-            utility::panic("failed to create depth image view!");
-        }
-    }
-
-    void core::create_depth_resources() noexcept {
-
-        depth_format = find_depth_format(this->physical_device);
-
-        // First test whether the depth format is valid
-        if (depth_format == VK_FORMAT_UNDEFINED) {
-            utility::panic("can't find supported depth format");
-        }
-
-        // Single-sampled, always: the scene renders into a 1x G-buffer whose depth is its own, and
-        // this main depth image is what the no-G-buffer fallback instance (and nothing else) uses.
-        // There is no sample count to resolve here - the [render] msaa setting went with the forward
-        // path, which was its only consumer.
-
-        depth_images.resize(swap_chain_image_views.size());
-        depth_image_views.resize(swap_chain_image_views.size());
-        depth_image_memories.resize(swap_chain_image_views.size()); // make sure memory is allocated
-
-        for (size_t i = 0; i < swap_chain_image_views.size(); i++) {
-            // Call create_depth_image directly, but make sure the arguments are correct
-            create_depth_image(depth_images[i], depth_image_memories[i], depth_image_views[i]);
-        }
-
-        register_cleanup([this] {
-            for (auto const& view : depth_image_views) {
-                vkDestroyImageView(device, view, nullptr);
-            }
-            for (auto const& image : depth_images) {
-                vkDestroyImage(device, image, nullptr);
-            }
-            for (auto const& memory : depth_image_memories) {
-                vkFreeMemory(device, memory, nullptr);
-            }
-            depth_image_views.clear();
-            depth_images.clear();
-            depth_image_memories.clear();
-        });
-    }
-
-    void core::create_render_targets() {
-        // One HDR scene target per swapchain image: the lighting stage (or the TAA resolve, when TAA
-        // is on) writes it and the post-process pass samples it. TRANSFER_SRC as well, because the TAA
-        // resolve copies the frame it wrote here into the history image (vkCmdCopyImage requires the
-        // source to carry the usage flag).
-        hdr_images.resize(swap_chain_image_views.size());
-        hdr_image_memories.resize(swap_chain_image_views.size());
-        hdr_image_views.resize(swap_chain_image_views.size());
-
-        for (size_t i = 0; i < swap_chain_image_views.size(); i++) {
-            create_target_image(
-                swap_chain_extent.width,
-                swap_chain_extent.height,
-                hdr_format,
-                VK_IMAGE_TILING_OPTIMAL,
-                VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                hdr_images[i],
-                hdr_image_memories[i]);
-
-            hdr_image_views[i] = create_image_view(
-                hdr_images[i],
-                hdr_format,
-                VK_IMAGE_ASPECT_COLOR_BIT,
-                device);
-        }
-
-        // Display-referred (LDR) targets, one per swapchain image, same size and lifetime as the
-        // HDR ones: the post composite renders into them when FXAA is enabled and the FXAA pass
-        // samples them. Format is hdr_format (R16F) on purpose - the values are display range but
-        // stored gamma-encoded so FXAA can threshold them without a per-tap decode.
-        ldr_images.resize(swap_chain_image_views.size());
-        ldr_image_memories.resize(swap_chain_image_views.size());
-        ldr_image_views.resize(swap_chain_image_views.size());
-        for (size_t i = 0; i < swap_chain_image_views.size(); i++) {
-            create_target_image(
-                swap_chain_extent.width,
-                swap_chain_extent.height,
-                hdr_format,
-                VK_IMAGE_TILING_OPTIMAL,
-                VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                ldr_images[i],
-                ldr_image_memories[i]);
-
-            ldr_image_views[i] = create_image_view(
-                ldr_images[i],
-                hdr_format,
-                VK_IMAGE_ASPECT_COLOR_BIT,
-                device);
-        }
-
-        // ---- G-buffer targets (see gbuffer_formats) + the pass's own 1x depth image ----
-        // One set per swapchain image, single-sampled: a G-buffer cannot be multisampled without
-        // per-sample shading, which is the trade that makes TAA the engine's anti-aliasing.
-        // COLOR_ATTACHMENT | SAMPLED because the pass writes them as attachments and the
-        // lighting/transparent/TAA/debug passes sample them.
-        for (uint32_t target = 0; target < gbuffer_target_count; ++target) {
-            std::vector<VkImage>& target_images = gbuffer_images[target];
-            std::vector<VkDeviceMemory>& target_memories = gbuffer_image_memories[target];
-            std::vector<VkImageView>& target_views = gbuffer_image_views[target];
-            target_images.resize(swap_chain_image_views.size());
-            target_memories.resize(swap_chain_image_views.size());
-            target_views.resize(swap_chain_image_views.size());
-
-            for (size_t i = 0; i < swap_chain_image_views.size(); i++) {
-                create_target_image(
-                    swap_chain_extent.width,
-                    swap_chain_extent.height,
-                    gbuffer_formats[target],
-                    VK_IMAGE_TILING_OPTIMAL,
-                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                    target_images[i],
-                    target_memories[i]);
-
-                target_views[i] = create_image_view(
-                    target_images[i],
-                    gbuffer_formats[target],
-                    VK_IMAGE_ASPECT_COLOR_BIT,
-                    device);
-            }
-        }
-
-        // Motion vectors + the TAA working image (the scene color the resolve reads): same extent and
-        // lifetime as the G-buffer targets, single-sampled, written as attachments and sampled
-        // afterwards.
-        auto const create_sampled_target = [this](std::vector<VkImage>& images, std::vector<VkDeviceMemory>& memories, std::vector<VkImageView>& views, VkFormat const format) {
-            images.resize(swap_chain_image_views.size());
-            memories.resize(swap_chain_image_views.size());
-            views.resize(swap_chain_image_views.size());
-            for (size_t i = 0; i < swap_chain_image_views.size(); i++) {
-                create_target_image(
-                    swap_chain_extent.width,
-                    swap_chain_extent.height,
-                    format,
-                    VK_IMAGE_TILING_OPTIMAL,
-                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                    images[i],
-                    memories[i]);
-                views[i] = create_image_view(images[i], format, VK_IMAGE_ASPECT_COLOR_BIT, device);
-            }
-        };
-        create_sampled_target(velocity_images, velocity_image_memories, velocity_image_views, gbuffer_velocity_format);
-        create_sampled_target(scene_color_images, scene_color_image_memories, scene_color_image_views, hdr_format);
-
-        // The resolved-history image only needs TRANSFER_DST (the runtime copies the resolved frame
-        // into it) and SAMPLED (the next frame's resolve reads it).
-        taa_history_images.resize(swap_chain_image_views.size());
-        taa_history_image_memories.resize(swap_chain_image_views.size());
-        taa_history_image_views.resize(swap_chain_image_views.size());
-        for (size_t i = 0; i < swap_chain_image_views.size(); i++) {
-            create_target_image(
-                swap_chain_extent.width,
-                swap_chain_extent.height,
-                hdr_format,
-                VK_IMAGE_TILING_OPTIMAL,
-                VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                taa_history_images[i],
-                taa_history_image_memories[i]);
-
-            taa_history_image_views[i] = create_image_view(taa_history_images[i], hdr_format, VK_IMAGE_ASPECT_COLOR_BIT, device);
-        }
-
-        // The GI image (half resolution, one per swapchain image): STORAGE for the tracer's
-        // imageStore and SAMPLED for the composite's fetch. No TRANSFER_* - nothing copies it.
-        uint32_t const gi_width = std::max(1u, swap_chain_extent.width / 2u);
-        uint32_t const gi_height = std::max(1u, swap_chain_extent.height / 2u);
-        gi_images.resize(swap_chain_image_views.size());
-        gi_image_memories.resize(swap_chain_image_views.size());
-        gi_image_views.resize(swap_chain_image_views.size());
-        for (size_t i = 0; i < swap_chain_image_views.size(); i++) {
-            create_target_image(
-                gi_width,
-                gi_height,
-                hdr_format,
-                VK_IMAGE_TILING_OPTIMAL,
-                VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                gi_images[i],
-                gi_image_memories[i]);
-
-            gi_image_views[i] = create_image_view(gi_images[i], hdr_format, VK_IMAGE_ASPECT_COLOR_BIT, device);
-        }
-
-        // The denoiser's resolve target (same use as the trace target: STORAGE for the compute pass
-        // that writes it, SAMPLED for the composite) and the history it accumulates into (written by
-        // a copy and read next frame, so TRANSFER_DST | SAMPLED and nothing else).
-        gi_resolve_images.resize(swap_chain_image_views.size());
-        gi_resolve_image_memories.resize(swap_chain_image_views.size());
-        gi_resolve_image_views.resize(swap_chain_image_views.size());
-        gi_history_images.resize(swap_chain_image_views.size());
-        gi_history_image_memories.resize(swap_chain_image_views.size());
-        gi_history_image_views.resize(swap_chain_image_views.size());
-        for (size_t i = 0; i < swap_chain_image_views.size(); i++) {
-            create_target_image(
-                gi_width,
-                gi_height,
-                hdr_format,
-                VK_IMAGE_TILING_OPTIMAL,
-                VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                gi_resolve_images[i],
-                gi_resolve_image_memories[i]);
-            gi_resolve_image_views[i] = create_image_view(gi_resolve_images[i], hdr_format, VK_IMAGE_ASPECT_COLOR_BIT, device);
-
-            create_target_image(
-                gi_width,
-                gi_height,
-                hdr_format,
-                VK_IMAGE_TILING_OPTIMAL,
-                VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                gi_history_images[i],
-                gi_history_image_memories[i]);
-            gi_history_image_views[i] = create_image_view(gi_history_images[i], hdr_format, VK_IMAGE_ASPECT_COLOR_BIT, device);
-        }
-
-        // The spatial filter's output: written as a storage image like the trace target, and sampled
-        // by the composite. No TRANSFER_SRC - nothing copies out of it. The history is copied from the
-        // temporal resolve instead, which keeps the spatial filter out of the accumulation path: its
-        // result is a fresh function of this frame's accumulated image, never of last frame's filtered
-        // one, so filtering cannot compound over frames.
-        gi_spatial_images.resize(swap_chain_image_views.size());
-        gi_spatial_image_memories.resize(swap_chain_image_views.size());
-        gi_spatial_image_views.resize(swap_chain_image_views.size());
-        for (size_t i = 0; i < swap_chain_image_views.size(); i++) {
-            create_target_image(
-                gi_width,
-                gi_height,
-                hdr_format,
-                VK_IMAGE_TILING_OPTIMAL,
-                VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                gi_spatial_images[i],
-                gi_spatial_image_memories[i]);
-            gi_spatial_image_views[i] = create_image_view(gi_spatial_images[i], hdr_format, VK_IMAGE_ASPECT_COLOR_BIT, device);
-        }
-
-        // The glossy lobe's own two outputs: same extent, same format and the same usage pair as the trace
-        // target above (a compute pass writes each as a storage image, the resolve samples each back, and
-        // nothing copies out of either). They exist so that a reflection can be accumulated with a
-        // reprojection of its own instead of the diffuse signal's - see core.cppm's note beside these
-        // members and docs/gi_hit_shading.md's L2.3 motion section.
-        gi_spec_images.resize(swap_chain_image_views.size());
-        gi_spec_image_memories.resize(swap_chain_image_views.size());
-        gi_spec_image_views.resize(swap_chain_image_views.size());
-        gi_spec_reproject_images.resize(swap_chain_image_views.size());
-        gi_spec_reproject_image_memories.resize(swap_chain_image_views.size());
-        gi_spec_reproject_image_views.resize(swap_chain_image_views.size());
-        for (size_t i = 0; i < swap_chain_image_views.size(); i++) {
-            create_target_image(
-                gi_width,
-                gi_height,
-                hdr_format,
-                VK_IMAGE_TILING_OPTIMAL,
-                VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                gi_spec_images[i],
-                gi_spec_image_memories[i]);
-            gi_spec_image_views[i] = create_image_view(gi_spec_images[i], hdr_format, VK_IMAGE_ASPECT_COLOR_BIT, device);
-
-            create_target_image(
-                gi_width,
-                gi_height,
-                hdr_format,
-                VK_IMAGE_TILING_OPTIMAL,
-                VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                gi_spec_reproject_images[i],
-                gi_spec_reproject_image_memories[i]);
-            gi_spec_reproject_image_views[i] = create_image_view(gi_spec_reproject_images[i], hdr_format, VK_IMAGE_ASPECT_COLOR_BIT, device);
-        }
-
-        // The reflection's own accumulation and its history: the same pair the diffuse signal has, with the
-        // same usages and for the same reasons (see core.cppm's note beside these members).
-        gi_spec_resolve_images.resize(swap_chain_image_views.size());
-        gi_spec_resolve_image_memories.resize(swap_chain_image_views.size());
-        gi_spec_resolve_image_views.resize(swap_chain_image_views.size());
-        gi_spec_history_images.resize(swap_chain_image_views.size());
-        gi_spec_history_image_memories.resize(swap_chain_image_views.size());
-        gi_spec_history_image_views.resize(swap_chain_image_views.size());
-        for (size_t i = 0; i < swap_chain_image_views.size(); i++) {
-            create_target_image(
-                gi_width,
-                gi_height,
-                hdr_format,
-                VK_IMAGE_TILING_OPTIMAL,
-                VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                gi_spec_resolve_images[i],
-                gi_spec_resolve_image_memories[i]);
-            gi_spec_resolve_image_views[i] = create_image_view(gi_spec_resolve_images[i], hdr_format, VK_IMAGE_ASPECT_COLOR_BIT, device);
-
-            create_target_image(
-                gi_width,
-                gi_height,
-                hdr_format,
-                VK_IMAGE_TILING_OPTIMAL,
-                VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                gi_spec_history_images[i],
-                gi_spec_history_image_memories[i]);
-            gi_spec_history_image_views[i] = create_image_view(gi_spec_history_images[i], hdr_format, VK_IMAGE_ASPECT_COLOR_BIT, device);
-        }
-
-        // The world-space probe cache: EIGHT 3D images - four SH-2 coefficients per channel times the two
-        // sides of the ping-pong - one set of copies for the whole device rather than one per swapchain
-        // image (the grid is anchored to the world, so view independence is the point of it - see the
-        // member's comment). A 3D VIEW, because a sampler3D binding needs one: the same image looked at with
-        // a 2D view is a validation error the moment the tracer samples it.
-        gi_probe_images.assign(8, VK_NULL_HANDLE);
-        gi_probe_image_memories.assign(8, VK_NULL_HANDLE);
-        gi_probe_image_views.assign(8, VK_NULL_HANDLE);
-        for (size_t i = 0; i < gi_probe_images.size(); i++) {
-            create_target_image_3d(
-                gi_probe_grid_extent,
-                gi_probe_grid_extent,
-                gi_probe_grid_extent,
-                hdr_format,
-                VK_IMAGE_TILING_OPTIMAL,
-                VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                gi_probe_images[i],
-                gi_probe_image_memories[i]);
-            gi_probe_image_views[i] = create_image_view(gi_probe_images[i], hdr_format, VK_IMAGE_ASPECT_COLOR_BIT, device, VK_IMAGE_VIEW_TYPE_3D);
-        }
-
-        // The per-cell surface offset (one image: the ping-pong only applies to radiance, and this is
-        // geometry the injection OWNS rather than something propagation rewrites).
-        gi_probe_surface_images.assign(1, VK_NULL_HANDLE);
-        gi_probe_surface_image_memories.assign(1, VK_NULL_HANDLE);
-        gi_probe_surface_image_views.assign(1, VK_NULL_HANDLE);
-        create_target_image_3d(
-            gi_probe_grid_extent,
-            gi_probe_grid_extent,
-            gi_probe_grid_extent,
-            hdr_format,
-            VK_IMAGE_TILING_OPTIMAL,
-            VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-            gi_probe_surface_images[0],
-            gi_probe_surface_image_memories[0]);
-        gi_probe_surface_image_views[0] = create_image_view(gi_probe_surface_images[0], hdr_format, VK_IMAGE_ASPECT_COLOR_BIT, device, VK_IMAGE_VIEW_TYPE_3D);
-        // The furnace verification mode's constant environment (see the member comment): TRANSFER_DST because
-        // a clear is what gives it contents, SAMPLED because the IBL bindings will point at it.
-        furnace_cube_images.assign(1, VK_NULL_HANDLE);
-        furnace_cube_memories.assign(1, VK_NULL_HANDLE);
-        furnace_cube_views.assign(1, VK_NULL_HANDLE);
-        create_target_image_cube(
-            1,
-            hdr_format,
-            VK_IMAGE_TILING_OPTIMAL,
-            VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-            furnace_cube_images[0],
-            furnace_cube_memories[0]);
-        furnace_cube_views[0] = create_image_view(furnace_cube_images[0], hdr_format, VK_IMAGE_ASPECT_COLOR_BIT, device, VK_IMAGE_VIEW_TYPE_CUBE, 6);
-        // The ray-traced sun visibility: FULL resolution (one ray per screen pixel) and one per FRAME
-        // SLOT - see the member's comment for why the slot, not the swapchain image, is the right
-        // lifetime. R16F rather than RGBA16F: the pass writes a single visibility factor, and the
-        // deferred lighting stage multiplies the sun term by it. STORAGE for the compute pass that
-        // writes it, SAMPLED for the lighting stage that reads it.
-        rt_shadow_images.assign(vulkan::core::MAX_FRAMES_IN_FLIGHT, VK_NULL_HANDLE);
-        rt_shadow_image_memories.assign(vulkan::core::MAX_FRAMES_IN_FLIGHT, VK_NULL_HANDLE);
-        rt_shadow_image_views.assign(vulkan::core::MAX_FRAMES_IN_FLIGHT, VK_NULL_HANDLE);
-        for (uint32_t slot = 0; slot < vulkan::core::MAX_FRAMES_IN_FLIGHT; ++slot) {
-            create_target_image(
-                swap_chain_extent.width,
-                swap_chain_extent.height,
-                VK_FORMAT_R16_SFLOAT,
-                VK_IMAGE_TILING_OPTIMAL,
-                VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                rt_shadow_images[slot],
-                rt_shadow_image_memories[slot]);
-            rt_shadow_image_views[slot] = create_image_view(rt_shadow_images[slot], VK_FORMAT_R16_SFLOAT, VK_IMAGE_ASPECT_COLOR_BIT, device);
-        }
-
-        gbuffer_depth_images.resize(swap_chain_image_views.size());
-        gbuffer_depth_image_memories.resize(swap_chain_image_views.size());
-        gbuffer_depth_image_views.resize(swap_chain_image_views.size());
-        for (size_t i = 0; i < swap_chain_image_views.size(); i++) {
-            create_target_image(
-                swap_chain_extent.width,
-                swap_chain_extent.height,
-                depth_format,
-                VK_IMAGE_TILING_OPTIMAL,
-                VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                gbuffer_depth_images[i],
-                gbuffer_depth_image_memories[i]);
-
-            // the DEPTH aspect (a color view of a depth image is invalid) - same raw-view
-            // convention as the other per-image targets, whose destruction is registered below
-            gbuffer_depth_image_views[i] = create_image_view(gbuffer_depth_images[i], depth_format, VK_IMAGE_ASPECT_DEPTH_BIT, device);
-        }
-
-        // bloom targets: the 4-level chain (halved per level, min 1x1), same lifetime as the HDR
-        // targets; each level gets one target per swapchain image
-        for (uint32_t level = 0; level < bloom_level_count; ++level) {
-            std::vector<VkImage>& level_images = bloom_images[level];
-            std::vector<VkDeviceMemory>& level_memories = bloom_image_memories[level];
-            std::vector<VkImageView>& level_views = bloom_image_views[level];
-            uint32_t const level_width = std::max(1u, swap_chain_extent.width >> (level + 1u));
-            uint32_t const level_height = std::max(1u, swap_chain_extent.height >> (level + 1u));
-
-            level_images.resize(swap_chain_image_views.size());
-            level_memories.resize(swap_chain_image_views.size());
-            level_views.resize(swap_chain_image_views.size());
-            for (size_t i = 0; i < swap_chain_image_views.size(); i++) {
-                create_target_image(
-                    level_width,
-                    level_height,
-                    hdr_format,
-                    VK_IMAGE_TILING_OPTIMAL,
-                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                    level_images[i],
-                    level_memories[i]);
-
-                level_views[i] = create_image_view(
-                    level_images[i],
-                    hdr_format,
-                    VK_IMAGE_ASPECT_COLOR_BIT,
-                    device);
-            }
-        }
-
-        // The teardown is registered ONCE, not once per swapchain generation: this function reruns on
-        // every recreate_swap_chain(), and register_cleanup() *pushes* (LIFO), so registering
-        // unconditionally grew the cleanup stack by one identical lambda per resize. The single
-        // lambda destroys whatever the vectors hold at destruction time, which is what we want.
-        if (this->resolve_cleanup_registered) {
-            return;
-        }
-        this->resolve_cleanup_registered = true;
-
-        register_cleanup([this] {
-            for (auto const& view : hdr_image_views) {
-                vkDestroyImageView(device, view, nullptr);
-            }
-            for (auto const& memory : hdr_image_memories) {
-                vkFreeMemory(device, memory, nullptr);
-            }
-            for (auto const& image : hdr_images) {
-                vkDestroyImage(device, image, nullptr);
-            }
-            hdr_image_views.clear();
-            hdr_image_memories.clear();
-            hdr_images.clear();
-            // the LDR (FXAA input) targets share this lifetime: they are (re)created with the
-            // swapchain in exactly the same way, so they belong to the same cleanup registration
-            for (auto const& view : ldr_image_views) {
-                vkDestroyImageView(device, view, nullptr);
-            }
-            for (auto const& memory : ldr_image_memories) {
-                vkFreeMemory(device, memory, nullptr);
-            }
-            for (auto const& image : ldr_images) {
-                vkDestroyImage(device, image, nullptr);
-            }
-            ldr_image_views.clear();
-            ldr_image_memories.clear();
-            ldr_images.clear();
-            // the G-buffer targets + the pass's own depth image share this lifetime too
-            for (auto const& target_views : gbuffer_image_views) {
-                for (auto const& view : target_views) {
-                    vkDestroyImageView(device, view, nullptr);
-                }
-            }
-            for (auto const& target_memories : gbuffer_image_memories) {
-                for (auto const& memory : target_memories) {
-                    vkFreeMemory(device, memory, nullptr);
-                }
-            }
-            for (auto const& target_images : gbuffer_images) {
-                for (auto const& image : target_images) {
-                    vkDestroyImage(device, image, nullptr);
-                }
-            }
-            gbuffer_image_views = {};
-            gbuffer_image_memories = {};
-            gbuffer_images = {};
-            for (auto const& view : gbuffer_depth_image_views) {
-                vkDestroyImageView(device, view, nullptr);
-            }
-            gbuffer_depth_image_views.clear();
-            for (auto const& memory : gbuffer_depth_image_memories) {
-                vkFreeMemory(device, memory, nullptr);
-            }
-            gbuffer_depth_image_memories.clear();
-            for (auto const& image : gbuffer_depth_images) {
-                vkDestroyImage(device, image, nullptr);
-            }
-            gbuffer_depth_images.clear();
-            // motion vectors + the TAA working images share the same lifetime (see
-            // create_render_targets)
-            auto const destroy_images = [this](std::vector<VkImage>& images, std::vector<VkDeviceMemory>& memories, std::vector<VkImageView>& views) {
-                for (auto const& view : views) {
-                    vkDestroyImageView(device, view, nullptr);
-                }
-                for (auto const& memory : memories) {
-                    vkFreeMemory(device, memory, nullptr);
-                }
-                for (auto const& image : images) {
-                    vkDestroyImage(device, image, nullptr);
-                }
-                views.clear();
-                memories.clear();
-                images.clear();
-            };
-            destroy_images(velocity_images, velocity_image_memories, velocity_image_views);
-            destroy_images(scene_color_images, scene_color_image_memories, scene_color_image_views);
-            destroy_images(taa_history_images, taa_history_image_memories, taa_history_image_views);
-            destroy_images(gi_images, gi_image_memories, gi_image_views);
-            destroy_images(gi_resolve_images, gi_resolve_image_memories, gi_resolve_image_views);
-            destroy_images(gi_history_images, gi_history_image_memories, gi_history_image_views);
-            destroy_images(gi_spatial_images, gi_spatial_image_memories, gi_spatial_image_views);
-            destroy_images(gi_spec_images, gi_spec_image_memories, gi_spec_image_views);
-            destroy_images(gi_spec_reproject_images, gi_spec_reproject_image_memories, gi_spec_reproject_image_views);
-            destroy_images(gi_spec_resolve_images, gi_spec_resolve_image_memories, gi_spec_resolve_image_views);
-            destroy_images(gi_spec_history_images, gi_spec_history_image_memories, gi_spec_history_image_views);
-            destroy_images(gi_probe_images, gi_probe_image_memories, gi_probe_image_views);
-            destroy_images(gi_probe_surface_images, gi_probe_surface_image_memories, gi_probe_surface_image_views);
-            destroy_images(furnace_cube_images, furnace_cube_memories, furnace_cube_views);
-            destroy_images(rt_shadow_images, rt_shadow_image_memories, rt_shadow_image_views);
-            for (auto const& level_views : bloom_image_views) {
-                for (auto const& view : level_views) {
-                    vkDestroyImageView(device, view, nullptr);
-                }
-            }
-            for (auto const& level_memories : bloom_image_memories) {
-                for (auto const& memory : level_memories) {
-                    vkFreeMemory(device, memory, nullptr);
-                }
-            }
-            for (auto const& level_images : bloom_images) {
-                for (auto const& image : level_images) {
-                    vkDestroyImage(device, image, nullptr);
-                }
-            }
-            bloom_image_views = {};
-            bloom_image_memories = {};
-            bloom_images = {};
-        });
-    }
-
-    void core::create_command_pool() noexcept {
-        VkCommandPoolCreateInfo const pool_info = make_command_pool_info(graphics_family_index);
-
-        if (vkCreateCommandPool(device, &pool_info, nullptr, &command_pool) != VK_SUCCESS) {
-            utility::panic("failed to create command pool");
-        }
-
-        register_cleanup([this] {
-            if (command_pool != VK_NULL_HANDLE) {
-                vkDestroyCommandPool(device, command_pool, nullptr);
-            }
-        });
-    }
-
-    void core::create_target_image(
-        uint32_t width,
-        uint32_t height,
-        VkFormat format,
-        VkImageTiling tiling,
-        VkImageUsageFlags usage,
-        VkMemoryPropertyFlags properties,
-        VkImage& image,
-        VkDeviceMemory& image_memory) const noexcept {
-        VkImageCreateInfo image_info = {};
-        image_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-        image_info.imageType = VK_IMAGE_TYPE_2D;
-        image_info.extent.width = width;
-        image_info.extent.height = height;
-        image_info.extent.depth = 1;
-        image_info.mipLevels = 1;
-        image_info.arrayLayers = 1;
-        image_info.format = format;
-        image_info.tiling = tiling;
-        image_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        image_info.usage = usage;
-        image_info.samples = VK_SAMPLE_COUNT_1_BIT;
-        image_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-
-        if (vkCreateImage(device, &image_info, nullptr, &image) != VK_SUCCESS) {
-            utility::panic("can't create target image");
-        }
-
-        VkMemoryRequirements mem_requirements;
-        vkGetImageMemoryRequirements(device, image, &mem_requirements);
-
-        VkMemoryAllocateInfo alloc_info = {};
-        alloc_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        alloc_info.allocationSize = mem_requirements.size;
-        alloc_info.memoryTypeIndex = find_memory_type(
-            mem_requirements.memoryTypeBits,
-            properties,
-            physical_device);
-
-        if (vkAllocateMemory(device, &alloc_info, nullptr, &image_memory) != VK_SUCCESS) {
-            utility::panic("can't allocate target image memory");
-        }
-
-        vkBindImageMemory(device, image, image_memory, 0);
-    }
-
-    void core::create_target_image_3d(
-        uint32_t width,
-        uint32_t height,
-        uint32_t depth,
-        VkFormat format,
-        VkImageTiling tiling,
-        VkImageUsageFlags usage,
-        VkMemoryPropertyFlags properties,
-        VkImage& image,
-        VkDeviceMemory& image_memory) const noexcept {
-        VkImageCreateInfo image_info = {};
-        image_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-        image_info.imageType = VK_IMAGE_TYPE_3D; // the only field that differs from the 2D path
-        image_info.extent.width = width;
-        image_info.extent.height = height;
-        image_info.extent.depth = depth;
-        image_info.mipLevels = 1;
-        image_info.arrayLayers = 1;
-        image_info.format = format;
-        image_info.tiling = tiling;
-        image_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        image_info.usage = usage;
-        image_info.samples = VK_SAMPLE_COUNT_1_BIT;
-        image_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-
-        if (vkCreateImage(device, &image_info, nullptr, &image) != VK_SUCCESS) {
-            utility::panic("can't create 3D target image");
-        }
-
-        VkMemoryRequirements mem_requirements;
-        vkGetImageMemoryRequirements(device, image, &mem_requirements);
-
-        VkMemoryAllocateInfo alloc_info = {};
-        alloc_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        alloc_info.allocationSize = mem_requirements.size;
-        alloc_info.memoryTypeIndex = find_memory_type(
-            mem_requirements.memoryTypeBits,
-            properties,
-            physical_device);
-
-        if (vkAllocateMemory(device, &alloc_info, nullptr, &image_memory) != VK_SUCCESS) {
-            utility::panic("can't allocate 3D target image memory");
-        }
-
-        vkBindImageMemory(device, image, image_memory, 0);
-    }
-
-    void core::create_target_image_cube(
-        uint32_t size,
-        VkFormat format,
-        VkImageTiling tiling,
-        VkImageUsageFlags usage,
-        VkMemoryPropertyFlags properties,
-        VkImage& image,
-        VkDeviceMemory& image_memory) const noexcept {
-        VkImageCreateInfo image_info = {};
-        image_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-        image_info.flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT; // what makes a six-layer array a cube
-        image_info.imageType = VK_IMAGE_TYPE_2D;
-        image_info.extent.width = size;
-        image_info.extent.height = size;
-        image_info.extent.depth = 1;
-        image_info.mipLevels = 1;
-        image_info.arrayLayers = 6;
-        image_info.format = format;
-        image_info.tiling = tiling;
-        image_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        image_info.usage = usage;
-        image_info.samples = VK_SAMPLE_COUNT_1_BIT;
-        image_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-
-        if (vkCreateImage(device, &image_info, nullptr, &image) != VK_SUCCESS) {
-            utility::panic("can't create cube target image");
-        }
-
-        VkMemoryRequirements mem_requirements;
-        vkGetImageMemoryRequirements(device, image, &mem_requirements);
-
-        VkMemoryAllocateInfo alloc_info = {};
-        alloc_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        alloc_info.allocationSize = mem_requirements.size;
-        alloc_info.memoryTypeIndex = find_memory_type(
-            mem_requirements.memoryTypeBits,
-            properties,
-            physical_device);
-
-        if (vkAllocateMemory(device, &alloc_info, nullptr, &image_memory) != VK_SUCCESS) {
-            utility::panic("can't allocate cube target image memory");
-        }
-
-        vkBindImageMemory(device, image, image_memory, 0);
-    }
-
-    void core::create_descriptor_pool() noexcept {
-        std::vector<VkDescriptorPoolSize> pool_sizes;
-        // Uniform buffers: one camera UBO + one light UBO binding per scene set
-        pool_sizes.push_back({VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 128});
-        // Combined image samplers: the texture array (scene_texture_capacity per scene set)
-        // dominates; plus the IBL bindings and the shadow map per set
-        pool_sizes.push_back({VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 8 * scene_texture_capacity});
-        // Material table + instance transform storage buffers: two per scene set
-        pool_sizes.push_back({VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 128});
-        // Storage images: the scene set's binding 15 (the storage view of the ray-traced visibility
-        // image binding 14 samples, written by shaders/rt_shadow.comp) and the G-buffer set's bindings 6
-        // and 8 (the raw GI trace a compute pass writes, and the filtered GI the composite reads - see
-        // the write_sets lambda in runtime.cpp). Acceleration structures: the scene set's binding 16, the
-        // top level structure every traced pass queries, declared only on a device with ray queries.
-        //
-        // BOTH types have to be declared HERE even though every one of those bindings is
-        // unconditionally written: a pool hands out only the types it was created with, and the
-        // validation layer names them on EVERY run - first "binding 15 was created with
-        // VK_DESCRIPTOR_TYPE_STORAGE_IMAGE but VkDescriptorPool ... was not created with any
-        // VkDescriptorPoolSize::type with VK_DESCRIPTOR_TYPE_STORAGE_IMAGE", then, once that one was
-        // satisfied, the same for binding 16 and VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR. It never
-        // failed here because the driver tolerates it, but the spec does not, and an implementation that
-        // returned VK_ERROR_OUT_OF_POOL_MEMORY for it would fail the ALLOCATION rather than the frame. It
-        // also went unnoticed because the render-check harness greps the log for VUID-/[ERROR] and not
-        // [WARNING]; that pattern includes [WARNING] now (see scripts/windows/check_render.ps1).
-        //
-        // Over-provisioned like the entries above rather than computed: maxSets bounds the real total,
-        // and running out is a hard failure rather than a frame that renders slightly wrong.
-        pool_sizes.push_back({VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 128});
-        pool_sizes.push_back({VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 128});
-
-        VkDescriptorPoolCreateInfo info = {};
-        info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-        // No UPDATE_AFTER_BIND: the scene descriptor sets are static per frame slot (each slot's
-        // set always points at its own camera/shadow/skin/morph resources) and the shared
-        // bindings (textures/IBL/materials/instances/light) are written before the render loop
-        // starts. The texture array keeps PARTIALLY_BOUND so unwritten entries stay valid.
-        info.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
-        info.maxSets = 64;
-        info.poolSizeCount = static_cast<uint32_t>(pool_sizes.size());
-        info.pPoolSizes = pool_sizes.data();
-        if (vkCreateDescriptorPool(this->device, &info, nullptr, &this->descriptor_pool) != 0) {
-            utility::panic("failed in creating descriptor pool");
-        }
-        register_cleanup([this] {
-            if (descriptor_pool != VK_NULL_HANDLE) {
-                vkDestroyDescriptorPool(this->device, this->descriptor_pool, nullptr);
-            }
-        });
-    }
-
-    void core::init_scene_layouts() noexcept {
-        // ---- 1. Fixed flat descriptor set layout (see the convention docs in core.cppm) ----
-        std::array<VkDescriptorSetLayoutBinding, 17> bindings = {};
-        bindings[0] = {.binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT, .pImmutableSamplers = nullptr};
-        // 1, 2, 4 and 5 carry COMPUTE as well as FRAGMENT: the traced GI pass needs the bindless texture
-        // array, the prefiltered environment and the BRDF LUT (its IBL) and the material table (the
-        // material of the surface a ray hit) once it shades a hit itself instead of sampling the screen.
-        bindings[1] = {.binding = 1, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = scene_texture_capacity, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT, .pImmutableSamplers = nullptr};
-        bindings[2] = {.binding = 2, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT, .pImmutableSamplers = nullptr};
-        // COMPUTE as well as FRAGMENT: the traced GI pass samples the irradiance map directly (its off-screen
-        // fallback), and a binding a shader statically uses has to name that shader's stage here.
-        bindings[3] = {.binding = 3, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT, .pImmutableSamplers = nullptr};
-        bindings[4] = {.binding = 4, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT, .pImmutableSamplers = nullptr};
-        // material table: per-material texture indices + factors (see material_record in vulkan/scene_tree/scene_tree.cppm)
-        bindings[5] = {.binding = 5, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT, .pImmutableSamplers = nullptr};
-        // per-instance world transforms for instanced draws (mat4 per instance, read in pbr.vert)
-        bindings[6] = {.binding = 6, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_VERTEX_BIT, .pImmutableSamplers = nullptr};
-        // light UBO: directional sun (light-space view-proj + direction) + BRDF model ids +
-        // the punctual-light count/array (read by shadow.vert and pbr.frag)
-        bindings[7] = {.binding = 7, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT, .pImmutableSamplers = nullptr};
-        // shadow map depth texture: LINEAR min/mag with compareEnable = VK_TRUE, so one
-        // sampler2DArrayShadow texture() tap already returns the lit fraction of its own 2x2 texel
-        // footprint - the hardware does the comparison (shading.glsl averages a 3x3 grid of taps)
-        bindings[8] = {.binding = 8, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT, .pImmutableSamplers = nullptr};
-        // per-joint skin matrices (mat4 per joint; indices 0-3 are the identity block for
-        // unskinned draws; read in pbr.vert / shadow.vert, filled per frame by set_skin_matrices).
-        // COMPUTE as well as VERTEX: the compute skinning pass (shaders/compute_skin.comp) reads the same
-        // table to deform the vertices the acceleration structure is refitted against - it declares this
-        // binding itself rather than including surface.glsl, but the binding and the layout are one and
-        // the same, because a shader can only use a binding from a stage its layout names.
-        bindings[9] = {.binding = 9, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_COMPUTE_BIT, .pImmutableSamplers = nullptr};
-        // morph data (floats): per-morphable-primitive delta + weight blocks; written by the
-        // caller through the runtime's morph scratch memory (set once + per frame for weights)
-        bindings[10] = {.binding = 10, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_VERTEX_BIT, .pImmutableSamplers = nullptr};
-        // clustered light culling (M5): the per-cluster light count and the fixed-capacity index
-        // rows. Written by the cluster COMPUTE pass, read by the fragment stage - hence both stages
-        // in the flags (a binding is only usable from a stage that declares it here).
-        bindings[11] = {.binding = 11, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT, .pImmutableSamplers = nullptr};
-        bindings[12] = {.binding = 12, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT, .pImmutableSamplers = nullptr};
-        // previous-frame world matrices, one per motion slot (see scene_motion_capacity): the vertex
-        // stage reads its own entry to hand the fragment stage a previous world position, which is
-        // what gives a moving OBJECT a motion vector. Vertex-only - nothing else reads it.
-        bindings[13] = {.binding = 13, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_VERTEX_BIT, .pImmutableSamplers = nullptr};
-        // Ray-traced sun visibility (see shaders/rt_shadow.comp): 14 is the image the deferred lighting
-        // stage samples, 15 the SAME image as the storage view the compute pass writes, and 16 the top
-        // level structure the ray is traced against.
-        //
-        // 14/15 are unconditionally legal (a sampler and a storage image need no extension) and are
-        // always written: the images exist on every device, and a frame with ray-traced shadows off just
-        // leaves them in the layout the descriptors declare (see the off path in record_scene_tail) -
-        // wrapping the layout in "does this device have ray tracing" would put the branch in every
-        // consumer of the scene set to save two bindings.
-        //
-        // 16 is an ACCELERATION STRUCTURE binding, which requires the extension to be ENABLED: it is
-        // declared only when the device has it, because a layout that declares it is invalid otherwise.
-        // Nothing that does not trace rays declares the binding, so a shorter layout is invisible to
-        // them.
-        bindings[14] = {.binding = 14, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT, .pImmutableSamplers = nullptr};
-        bindings[15] = {.binding = 15, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT, .pImmutableSamplers = nullptr};
-        uint32_t binding_count = 16;
-        if (this->ray_query_available) {
-            bindings[16] = {.binding = 16, .descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT, .pImmutableSamplers = nullptr};
-            binding_count = 17;
-        }
-
-        std::array<VkDescriptorBindingFlags, 17> binding_flags = {};
-        // texture array: only written entries are valid, appended before the render loop starts;
-        // non-uniform indexing itself is a device feature, not a layout flag
-        binding_flags[1] = VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT;
-
-        VkDescriptorSetLayoutBindingFlagsCreateInfo flags_info = {};
-        flags_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
-        flags_info.bindingCount = binding_count; // must match the layout: a device without ray tracing has no binding 16
-        flags_info.pBindingFlags = binding_flags.data();
-
-        VkDescriptorSetLayoutCreateInfo layout_info = {};
-        layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        // No UPDATE_AFTER_BIND_POOL: the only binding flag left is PARTIALLY_BOUND (binding 1), which
-        // does not require the update-after-bind pool flag. The layout flag only means anything
-        // together with the pool flag - a set layout created with UPDATE_AFTER_BIND_POOL has to be
-        // allocated from a pool created with UPDATE_AFTER_BIND - and neither is needed here.
-        layout_info.bindingCount = binding_count;
-        layout_info.pBindings = bindings.data();
-        layout_info.pNext = &flags_info;
-        if (vkCreateDescriptorSetLayout(this->device, &layout_info, nullptr, &this->scene_descriptor_set_layout) != VK_SUCCESS) {
-            utility::panic("failed to create scene descriptor set layout");
-        }
-
-        // ---- 2. Fixed pipeline layout: the scene set + the agreed push constant block ----
-        // ONE range: the 96-byte per-primitive material block plus the pass-wide cascade index that
-        // follows it (see core::scene_cascade_push_offset). One range rather than two because GLSL
-        // allows a single push_constant block per stage: shadow.vert declares one block whose last
-        // member is the cascade index, and that block has to fit inside a matching range. Shaders that
-        // only need the material fields (pbr.vert/frag) still declare their 96-byte block, which is
-        // contained in this one.
-        VkPushConstantRange push_range = {};
-        // VERTEX|FRAGMENT only - NOT compute: the cluster compute shader declares no push_constant
-        // block, and every stage listed here must also be passed by each vkCmdPushConstants that
-        // touches the range (VUID-vkCmdPushConstants-offset-01796), which the graphics pushes do not.
-        push_range.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
-        push_range.offset = 0;
-        push_range.size = scene_push_constant_size + scene_cascade_push_size;
-        static_assert(scene_push_constant_size + scene_cascade_push_size <= 128, "the shared push constant range must fit the 128 bytes every Vulkan implementation guarantees");
-
-        VkPipelineLayoutCreateInfo pipeline_layout_info = {};
-        pipeline_layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-        pipeline_layout_info.setLayoutCount = 1;
-        pipeline_layout_info.pSetLayouts = &this->scene_descriptor_set_layout;
-        pipeline_layout_info.pushConstantRangeCount = 1;
-        pipeline_layout_info.pPushConstantRanges = &push_range;
-        if (vkCreatePipelineLayout(this->device, &pipeline_layout_info, nullptr, &this->scene_pipeline_layout) != VK_SUCCESS) {
-            utility::panic("failed to create scene pipeline layout");
-        }
-
-        register_cleanup([this] {
-            if (this->scene_pipeline_layout != VK_NULL_HANDLE) {
-                vkDestroyPipelineLayout(this->device, this->scene_pipeline_layout, nullptr);
-                this->scene_pipeline_layout = VK_NULL_HANDLE;
-            }
-            if (this->scene_descriptor_set_layout != VK_NULL_HANDLE) {
-                vkDestroyDescriptorSetLayout(this->device, this->scene_descriptor_set_layout, nullptr);
-                this->scene_descriptor_set_layout = VK_NULL_HANDLE;
-            }
-        });
-    }
-
-    void core::create_sync_objects() {
-        // Per frame slot: one BINARY image-available semaphore (vkAcquireNextImageKHR requires
-        // binary) + one TIMELINE semaphore that replaces the old per-slot fences and counts
-        // completed submissions. vkQueuePresentKHR also requires a binary wait, but present may
-        // run on a separate queue, so the present-ready gates are ONE BINARY PER SWAPCHAIN IMAGE
-        // (an image is only re-acquired after its present finished, which keeps the per-image
-        // gate safe across queues).
-        image_available_semaphores.resize(MAX_FRAMES_IN_FLIGHT);
-        present_ready_semaphores.resize(swap_chain_images.size());
-        frame_done_semaphores.resize(MAX_FRAMES_IN_FLIGHT);
-        frame_done_values.assign(MAX_FRAMES_IN_FLIGHT, 0);
-
-        VkSemaphoreTypeCreateInfo timeline_type = make_timeline_semaphore_type_info();
-        VkSemaphoreCreateInfo binary_info = make_binary_semaphore_info();
-
-        for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
-            if (vkCreateSemaphore(device, &binary_info, nullptr, &image_available_semaphores[i]) != VK_SUCCESS) {
-                utility::panic("failed to create image-available semaphore");
-            }
-            VkSemaphoreCreateInfo timeline_info = binary_info;
-            timeline_info.pNext = &timeline_type;
-            if (vkCreateSemaphore(device, &timeline_info, nullptr, &frame_done_semaphores[i]) != VK_SUCCESS) {
-                utility::panic("failed to create frame-done timeline semaphore");
-            }
-        }
-        for (auto& semaphore : present_ready_semaphores) {
-            if (vkCreateSemaphore(device, &binary_info, nullptr, &semaphore) != VK_SUCCESS) {
-                utility::panic("failed to create present-ready semaphore");
-            }
-        }
-
-        register_cleanup([this] {
-            for (auto const& semaphore : image_available_semaphores) {
-                vkDestroySemaphore(device, semaphore, nullptr);
-            }
-            for (auto const& semaphore : present_ready_semaphores) {
-                vkDestroySemaphore(device, semaphore, nullptr);
-            }
-            for (auto const& semaphore : frame_done_semaphores) {
-                vkDestroySemaphore(device, semaphore, nullptr);
-            }
-        });
-    }
-
-    void core::create_timestamp_query_pool() noexcept {
-        // Two device facts decide whether pass timings are possible: how wide the timestamp
-        // counter of a graphics queue is (timestampValidBits - a family that cannot write
-        // timestamps reports 0) and how long one tick takes (timestampPeriod, ns/tick).
-        uint32_t family_count = 0;
-        vkGetPhysicalDeviceQueueFamilyProperties(this->physical_device, &family_count, nullptr);
-        std::vector<VkQueueFamilyProperties> families(family_count);
-        vkGetPhysicalDeviceQueueFamilyProperties(this->physical_device, &family_count, families.data());
-        if (this->graphics_family_index < families.size()) {
-            this->timestamp_valid_bits = families[this->graphics_family_index].timestampValidBits;
-        }
-        this->timestamp_period_ns = this->device_properties.limits.timestampPeriod;
-
-        if (this->timestamp_valid_bits == 0 || this->timestamp_period_ns <= 0.0f) {
-            utility::log("gpu timing: unavailable on this queue ({} valid bits, {} ns/tick) - pass timings are off",
-                         this->timestamp_valid_bits,
-                         static_cast<double>(this->timestamp_period_ns));
-            return;
-        }
-
-        VkQueryPoolCreateInfo const pool_info = make_query_pool_info(VK_QUERY_TYPE_TIMESTAMP, static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT) * gpu_timing_mark_capacity);
-        if (vkCreateQueryPool(this->device, &pool_info, nullptr, &this->timestamp_query_pool) != VK_SUCCESS) {
-            utility::log("gpu timing: timestamp query pool creation failed - pass timings are off");
-            this->timestamp_query_pool = VK_NULL_HANDLE;
-            return;
-        }
-        this->gpu_timing_supported = true;
-        utility::log("gpu timing: {} marks/frame available ({} ns/tick, {} valid bits)",
-                     gpu_timing_mark_capacity,
-                     static_cast<double>(this->timestamp_period_ns),
-                     this->timestamp_valid_bits);
-
-        register_cleanup([this] {
-            if (this->timestamp_query_pool != VK_NULL_HANDLE) {
-                vkDestroyQueryPool(this->device, this->timestamp_query_pool, nullptr);
-            }
-        });
-    }
 
     void core::begin_gpu_timing(VkCommandBuffer const command_buffer, uint32_t const slot) noexcept {
         this->gpu_timing_marks[slot] = 0;
@@ -1515,10 +109,6 @@ namespace vulkan {
         return pool;
     }
 
-    vk_descriptor_set core::make_descriptor_set(VkDescriptorSetLayout const layout) const { // NOLINT(*-misplaced-const)
-        return ::vulkan::make_descriptor_set(this->device, this->descriptor_pool, layout);
-    }
-
     vk_image_view core::make_image_view(VkImage const image, VkFormat const format, VkImageViewType const type) const {
         VkImageViewCreateInfo const view_info = make_image_view_info(image, format, type, VK_IMAGE_ASPECT_COLOR_BIT, VK_REMAINING_MIP_LEVELS, VK_REMAINING_ARRAY_LAYERS);
         VkImageView view = VK_NULL_HANDLE;
@@ -1560,8 +150,11 @@ namespace vulkan {
         // Signal this frame slot's TIMELINE to the next value (GPU completion + host pacing,
         // see wait_frame_slot) and the image's binary present-ready semaphore (vkQueuePresentKHR
         // requires a binary wait; per-image so a separate present queue cannot race a re-signal).
-        // VUID-VkSubmitInfo-pNext-03241: with a timeline in the signal list the value count must
-        // equal the semaphore count (the value for the binary is ignored).
+        // VUID-VkSubmitInfo-pNext-03240 / -03241: with a VkTimelineSemaphoreSubmitInfo in the pNext
+        // chain BOTH counts must equal their semaphore counts - the wait side too, even though the
+        // semaphore being waited on is binary and its value is ignored. The count is what validation
+        // checks, so a zero waitSemaphoreValueCount next to waitSemaphoreCount = 1 is an error on
+        // every frame; only the signal side was handled before.
         uint32_t const slot = static_cast<uint32_t>(this->current_frame);
         // The value this submission asks the slot's timeline to take. It is recorded only once
         // vkQueueSubmit has accepted the submission (below): wait_frame_slot() waits on the RECORDED
@@ -1571,8 +164,13 @@ namespace vulkan {
         constexpr VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
         VkSemaphore signal_semaphores[2] = {this->frame_done_semaphores[slot], this->present_ready_semaphores[image_index]};
         uint64_t signal_values[2] = {signal_value, 0};
+        // The wait side's value array, for the count rule above: the element is ignored (the semaphore
+        // is binary) but the count has to be there.
+        uint64_t const wait_value = 0;
         VkTimelineSemaphoreSubmitInfo timeline_info = {};
         timeline_info.sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO;
+        timeline_info.waitSemaphoreValueCount = 1;
+        timeline_info.pWaitSemaphoreValues = &wait_value;
         timeline_info.signalSemaphoreValueCount = 2;
         timeline_info.pSignalSemaphoreValues = signal_values;
 
@@ -1606,7 +204,7 @@ namespace vulkan {
         return vkQueuePresentKHR(this->present_queue, &present_info);
     }
 
-    void core::recreate_swap_chain() {
+    bool core::recreate_swap_chain() {
         // 0. A minimized (or otherwise not-yet-sized) window reports currentExtent (0, 0). Building a
         //    swapchain and the per-image targets from that is invalid - vkCreateSwapchainKHR
         //    (VUID-VkSwapchainCreateInfoKHR-imageExtent-01689) and every vkCreateImage
@@ -1620,7 +218,7 @@ namespace vulkan {
                 this->zero_extent_recreation_logged = true;
                 utility::log("swapchain recreation deferred: the window has no drawable size yet (minimized / live resize)");
             }
-            return;
+            return false; // NOTHING was rebuilt: the caller must not invalidate the generation's state
         }
         this->zero_extent_recreation_logged = false;
 
@@ -1705,16 +303,9 @@ namespace vulkan {
         destroy_target_set(velocity_images, velocity_image_memories, velocity_image_views);
         destroy_target_set(scene_color_images, scene_color_image_memories, scene_color_image_views);
         destroy_target_set(taa_history_images, taa_history_image_memories, taa_history_image_views);
-        destroy_target_set(gi_images, gi_image_memories, gi_image_views);
-        destroy_target_set(gi_resolve_images, gi_resolve_image_memories, gi_resolve_image_views);
-        destroy_target_set(gi_history_images, gi_history_image_memories, gi_history_image_views);
-        destroy_target_set(gi_spatial_images, gi_spatial_image_memories, gi_spatial_image_views);
-        destroy_target_set(gi_spec_images, gi_spec_image_memories, gi_spec_image_views);
-        destroy_target_set(gi_spec_reproject_images, gi_spec_reproject_image_memories, gi_spec_reproject_image_views);
-        destroy_target_set(gi_spec_resolve_images, gi_spec_resolve_image_memories, gi_spec_resolve_image_views);
-        destroy_target_set(gi_spec_history_images, gi_spec_history_image_memories, gi_spec_history_image_views);
-        destroy_target_set(gi_probe_images, gi_probe_image_memories, gi_probe_image_views);
-        destroy_target_set(gi_probe_surface_images, gi_probe_surface_image_memories, gi_probe_surface_image_views);
+        destroy_target_set(ml_images, ml_image_memories, ml_image_views);
+        destroy_target_set(ml_resolve_images, ml_resolve_image_memories, ml_resolve_image_views);
+        destroy_target_set(ml_history_images, ml_history_image_memories, ml_history_image_views);
         destroy_target_set(furnace_cube_images, furnace_cube_memories, furnace_cube_views);
         destroy_target_set(rt_shadow_images, rt_shadow_image_memories, rt_shadow_image_views);
 
@@ -1785,6 +376,7 @@ namespace vulkan {
                 utility::panic("failed to recreate present-ready semaphore!");
             }
         }
+        return true; // a new generation exists: every per-image target and its state must be rebuilt
     }
 
     vk_image_view core::make_depth_image_view(VkImage const image, VkFormat const format) const {
@@ -1825,37 +417,66 @@ namespace vulkan {
         return vk_sampler(sampler, this->device);
     }
 
-    std::expected<vk_pipeline, std::string_view> core::make_pipeline(
-        std::span<unsigned char const> vertex_shader_code,
-        std::span<unsigned char const> const fragment_shader_code,
-        bool const depth_test_enabled) const {
-        auto result = vulkan::make_pipeline(
-            this->device,
-            this->scene_pipeline_layout,
-            this->swap_chain_image_format,
-            this->depth_format,
-            vertex_shader_code,
-            fragment_shader_code,
-            // 1x, always: the scene renders into a single-sampled G-buffer, so no pipeline this
-            // engine builds can rasterize multisampled. The builders keep the parameter (it is a
-            // pipeline property, not an engine setting), and this is the only value passed.
-            VK_SAMPLE_COUNT_1_BIT,
-            depth_test_enabled);
-        if (result) {
-            // Save the fullscreen viewport/scissor for the current swapchain size, used directly before draw
-            result->viewport = {
-                0.0f,
-                0.0f,
-                static_cast<float>(this->swap_chain_extent.width),
-                static_cast<float>(this->swap_chain_extent.height),
-                0.0f,
-                1.0f,
-            };
-            result->scissor = {{0, 0}, this->swap_chain_extent};
-        }
-        return result;
-    }
+    void core::create_samplers() {
+        // THEY ARE TORN DOWN BY A CLEANUP LAMBDA, not by their members' destructors, and the ordering is the whole
+        // reason: cleanup runs LIFO from the destructor BODY, and the device's own cleanup is registered before this
+        // one - while a MEMBER's destructor runs after that body, i.e. after vkDestroyDevice. The first version of
+        // this move left the samplers to their destructors and validation named exactly seven leaked objects.
+        this->register_cleanup([this] {
+            this->texture_sampler.release();
+            this->gbuffer_sampler.release();
+            this->taa_sampler.release();
+            this->post_sampler.release();
+            this->post_nearest_sampler.release();
+            this->shadow_sampler.release();
+        });
+        // The seven shared samplers, in one place: each is a device-level object a pass DECLARES by hint, so their
+        // creation belongs with the device rather than with whichever subsystem happened to need one first (see
+        // core.cppm's block for why, and for the one sampler that deliberately stays out).
+        this->texture_sampler_info = make_texture_sampler_info(VK_SAMPLER_ADDRESS_MODE_REPEAT, 12.0f);
+        this->texture_sampler = this->make_sampler(VK_SAMPLER_ADDRESS_MODE_REPEAT, 12.0f);
+        this->post_sampler = this->make_sampler(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, 1.0f);
+        this->shadow_sampler = this->make_shadow_sampler();
 
+        // NEAREST, clamp: the G-buffer's stored surface is read at exact texel centres - an interpolated normal or a
+        // filterable material id is a different surface, not a smoother one.
+        VkSamplerCreateInfo gbuffer_info = make_texture_sampler_info(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, 0.0f);
+        gbuffer_info.magFilter = VK_FILTER_NEAREST;
+        gbuffer_info.minFilter = VK_FILTER_NEAREST;
+        VkSampler gbuffer = VK_NULL_HANDLE;
+        if (vkCreateSampler(this->device, &gbuffer_info, nullptr, &gbuffer) == VK_SUCCESS) {
+            this->gbuffer_sampler = vk_sampler(gbuffer, this->device);
+        }
+
+        // ... and the same thing for the composite's GI upsample: it taps the depth and the normal at centres, and an
+        // averaged depth invents a surface between two samples, which is exactly what an edge-aware test must not see.
+        VkSampler nearest = VK_NULL_HANDLE;
+        if (vkCreateSampler(this->device, &gbuffer_info, nullptr, &nearest) == VK_SUCCESS) {
+            this->post_nearest_sampler = vk_sampler(nearest, this->device);
+        }
+
+        // The resolve upsamples the scene colour but must NOT average neighbouring history texels: linear
+        // magnification, nearest minification.
+        VkSamplerCreateInfo taa_info = make_texture_sampler_info(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, 0.0f);
+        taa_info.magFilter = VK_FILTER_LINEAR;
+        taa_info.minFilter = VK_FILTER_NEAREST;
+        VkSampler taa = VK_NULL_HANDLE;
+        if (vkCreateSampler(this->device, &taa_info, nullptr, &taa) == VK_SUCCESS) {
+            this->taa_sampler = vk_sampler(taa, this->device);
+        }
+
+        // THE HEAP'S COPY OF THESE, in the order shaders/heap_slots.glsl names them (see core.cppm's
+        // shared_sampler_infos): the heap descriptor for a sampler is the create info, and the heap itself is
+        // created later in the constructor than this function runs - so the infos are kept here and written onto
+        // the sampler grid afterwards. Recomputed rather than stored one by one because two of the six share
+        // gbuffer_info (the G-buffer read and the composite's nearest tap are the same sampler twice).
+        this->shared_sampler_infos[0] = this->texture_sampler_info;
+        this->shared_sampler_infos[1] = make_texture_sampler_info(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, 1.0f);
+        this->shared_sampler_infos[2] = gbuffer_info;
+        this->shared_sampler_infos[3] = gbuffer_info;
+        this->shared_sampler_infos[4] = taa_info;
+        this->shared_sampler_infos[5] = make_shadow_sampler_info();
+    }
     std::expected<vk_pipeline, std::string_view> core::make_gbuffer_pipeline(
         std::span<unsigned char const> const vertex_shader_code,
         std::span<unsigned char const> const fragment_shader_code) const {
@@ -1879,7 +500,6 @@ namespace vulkan {
         };
         auto result = vulkan::make_pipeline(
             this->device,
-            this->scene_pipeline_layout,
             std::span<VkFormat const>(formats),
             this->depth_format,
             vertex_shader_code,
@@ -1915,7 +535,6 @@ namespace vulkan {
         float const depth_bias_clamp) const {
         auto result = vulkan::make_pipeline(
             this->device,
-            this->scene_pipeline_layout,
             VK_FORMAT_UNDEFINED, // no color attachment
             depth_format,
             vertex_shader_code,
@@ -1929,32 +548,6 @@ namespace vulkan {
         // viewport/scissor are dynamic states set by the caller before drawing (the shadow map
         // is a fixed-size target, so core::make_pipeline's swapchain-size defaults do not apply)
         return result;
-    }
-
-    std::expected<vk_pipeline, std::string_view> core::make_cluster_pipeline(std::span<unsigned char const> const compute_shader_code) const {
-        using fail = std::unexpected<std::string_view>;
-        std::optional<vk_shader_module> const module = vulkan::make_shader_module(compute_shader_code, this->device);
-        if (!module.has_value()) {
-            return fail("failed to create the cluster compute shader module");
-        }
-        VkPipelineShaderStageCreateInfo stage_info = {};
-        stage_info.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-        stage_info.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-        stage_info.module = **module;
-        stage_info.pName = "main"; // the SPIR-V entry point, as in vulkan::make_pipeline
-
-        VkComputePipelineCreateInfo pipeline_info = {};
-        pipeline_info.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-        pipeline_info.stage = stage_info;
-        // the shared scene layout: the cluster pass reads the camera + light UBOs and writes the
-        // per-cluster buffers through the same set 0 every graphics pipeline uses
-        pipeline_info.layout = this->scene_pipeline_layout;
-
-        VkPipeline pipeline = VK_NULL_HANDLE;
-        if (vkCreateComputePipelines(this->device, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &pipeline) != VK_SUCCESS) {
-            return fail("vkCreateComputePipelines failed");
-        }
-        return vk_pipeline(pipeline, this->scene_pipeline_layout, this->device);
     }
 
     void core::wait_idle() const noexcept {

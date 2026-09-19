@@ -8,11 +8,11 @@
 //===----------------------------------------------------------------------===//
 
 export namespace std {
-#if _LIBCPP_HAS_LOCALIZATION
+#if VSTD_HAS_LOCALIZATION
   using std::basic_ostream;
 
   using std::ostream;
-#  if _LIBCPP_HAS_WIDE_CHARACTERS
+#  if VSTD_HAS_WIDE_CHARACTERS
   using std::wostream;
 #  endif
 
@@ -27,16 +27,16 @@ export namespace std {
 #  endif
   using std::operator<<;
 
-#  if _LIBCPP_STD_VER >= 23
+#  if VSTD_STD_VER >= 23
   // [ostream.formatted.print], print functions
   using std::print;
   using std::println;
 
   using std::vprint_nonunicode;
-#    if _LIBCPP_HAS_UNICODE
+#    if VSTD_HAS_UNICODE
   using std::vprint_unicode;
-#    endif // _LIBCPP_HAS_UNICODE
-#  endif   // _LIBCPP_STD_VER >= 23
+#    endif // VSTD_HAS_UNICODE
+#  endif   // VSTD_STD_VER >= 23
 
-#endif // _LIBCPP_HAS_LOCALIZATION
+#endif // VSTD_HAS_LOCALIZATION
 } // namespace std

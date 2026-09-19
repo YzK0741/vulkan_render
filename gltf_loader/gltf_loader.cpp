@@ -1579,7 +1579,12 @@ namespace gltf {
 
     image_view drawable_iterator::slot(int const i) const {
         resolved_material const* material = this->current_material();
-        return material == nullptr ? image_view{} : material->slots[i];
+        // The slot count is a fixed five (resolved_material::slots) and `i` is an arbitrary int from
+        // the caller, so the index is checked rather than trusted.
+        if (material == nullptr || i < 0 || static_cast<std::size_t>(i) >= material->slots.size()) {
+            return image_view{};
+        }
+        return material->slots[static_cast<std::size_t>(i)];
     }
 
     image_view drawable_iterator::get_albedo() const {

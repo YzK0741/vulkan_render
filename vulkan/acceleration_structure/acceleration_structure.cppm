@@ -44,13 +44,21 @@ export import vulkan.core;
  *    the uncompacted cost first (Sponza: 17.8 MiB for 262k triangles) is what makes that decision
  *    reviewable rather than assumed. It is also a BOTTOM level concern here: the top level is rebuilt
  *    every frame, and a compacted structure is rebuilt in place rather than re-compacted.
- *  - the shading a ray-traced hit needs. The instance table IS filled (see instance_record), but no
- *    shader reads it yet: the first consumer is a shadow ray, which only asks "did anything block me".
+ *  - the shading a ray-traced hit needs. The instance table IS filled (see instance_record) and its first
+ *    consumer is now the shadow's any-hit stage, which resolves a hit back to a triangle's vertices and its
+ *    material through it (see shaders/rt_shadow.rahit).
  *
  * What a hit can and cannot be told, today, is worth stating where it is decided:
- *  - every geometry is built OPAQUE. Inline ray queries have no any-hit shader, so an alphaMode MASK
- *    surface is SOLID to a ray while the raster shadow pass cuts its holes - a known difference, not a
- *    bug, until there is a ray-tracing PIPELINE with an any-hit stage.
+ *  - NO geometry is built OPAQUE any more, and that is a reversal: the flag DECLARES "no any-hit shader may be
+ *    invoked", and while every geometry carried it - which is what this module shipped with, because an inline
+ *    ray query has no any-hit stage and a MASK surface was therefore as solid as its bounding triangles - the
+ *    ray-tracing shadow's any-hit stage could not have run at all. Whether a geometry is opaque is a property
+ *    of its MATERIAL, which this module is not told (it is handed vertex and index addresses), so the flag is
+ *    off for every geometry and the alphaMode MASK decision is taken per HIT instead
+ *    (shaders/rt_shadow.rahit, measured against the raster shadow there). Measured on an NVIDIA RTX 4060
+ *    (591.59.0.0), lifting the flag changes no image: three capture arms with the closest-hit stage silenced
+ *    all produced the correct frame, differing by 0.01 whole-frame mean - the flag changes the BUILT structure
+ *    and with it the traversal order, not the visibility.
  *  - a skinned or morphed mesh is built from its SOURCE vertex buffer, which holds the bind pose: the
  *    deformation happens in the vertex shader and never reaches this memory. Such a primitive casts
  *    its bind-pose shadow until a compute skinning pass exists to write deformed vertices somewhere a
@@ -82,6 +90,24 @@ namespace vulkan::acceleration_structure {
         VkDeviceAddress index_address = 0; // first index, already offset into the buffer
         VkIndexType index_type = VK_INDEX_TYPE_UINT32;
         uint32_t index_count = 0; // triangles = index_count / 3
+        /**
+         * THE OPACITY MICROMAP this geometry consults, when it has one: the handle, the PER-TRIANGLE index buffer
+         * the traversal reads to find its micromap triangle, and the usage record the micromap was built with (the
+         * attachment repeats it, so it is carried here rather than looked up).
+         *
+         * A micromap makes a micro-triangle's opacity the traversal's business instead of a shader's: a triangle
+         * whose micro-triangles are opaque is committed without any-hit work, a transparent one is skipped, and an
+         * UNKNOWN one invokes the any-hit shader - which is what makes an all-unknown micromap a no-op and a
+         * decisive test at the same time.
+         *
+         * @note a null handle means no micromap, which is also the state of every geometry on a device without
+         *       VK_EXT_opacity_micromap: nothing changes for it.
+         */
+        VkMicromapEXT opacity_micromap = VK_NULL_HANDLE;
+        VkDeviceAddress opacity_index_address = 0;
+        VkDeviceSize opacity_index_stride = 0;
+        VkIndexType opacity_index_type = VK_INDEX_TYPE_UINT32;
+        VkMicromapUsageEXT opacity_usage = {};
     };
 
     /**
@@ -181,6 +207,19 @@ namespace vulkan::acceleration_structure {
         /// what the build recorded (it keeps its infos for exactly this reason - an update reuses them)
         std::vector<VkAccelerationStructureBuildGeometryInfoKHR> update_infos = {};
         std::vector<VkAccelerationStructureBuildRangeInfoKHR const*> update_range_ptrs = {};
+        /**
+         * THE OPACITY MICROMAP ATTACHMENTS, one per geometry that has one.
+         *
+         * @note A DEQUE, and that is the whole point of the type: `VkAccelerationStructureGeometryKHR::pNext`
+         *       points at these structs from add() until the build is recorded, so their addresses must survive
+         *       every later insertion - which a vector does not promise and a deque does. The usage record sits
+         *       beside its attachment in the same element because the attachment points at it.
+         */
+        struct micromap_attachment {
+            VkAccelerationStructureTrianglesOpacityMicromapEXT attachment = {};
+            VkMicromapUsageEXT usage = {};
+        };
+        std::deque<micromap_attachment> micromap_geometries = {};
 
     public:
         explicit bottom_level_structures(core& device);
@@ -275,8 +314,9 @@ namespace vulkan::acceleration_structure {
             uint32_t count = 0;     // instances added this frame
             vk_buffer storage = {}; // the structure's own memory, sized for `capacity`
             VkAccelerationStructureKHR handle = VK_NULL_HANDLE;
-            VkDeviceSize scratch_size = 0; // what the build of `count` instances needs
-            vk_buffer scratch = {};        // the build's scratch memory, kept once sized
+            VkDeviceSize structure_size = 0; // the size it was CREATED with: what a heap address-range descriptor carries
+            VkDeviceSize scratch_size = 0;   // what the build of `count` instances needs
+            vk_buffer scratch = {};          // the build's scratch memory, kept once sized
         };
 
         core* vk = nullptr; // non-const: VMA's detail lookups and buffer creation are not const
@@ -324,6 +364,30 @@ namespace vulkan::acceleration_structure {
         /** @brief the structure the slot's frame must bind, or VK_NULL_HANDLE when it is empty */
         [[nodiscard]] VkAccelerationStructureKHR handle(uint32_t frame_slot) const noexcept {
             return frame_slot < this->slots.size() ? this->slots[frame_slot].handle : VK_NULL_HANDLE;
+        }
+
+        /**
+         * @brief the size the slot's structure was created with
+         * @return that size, or 0 when the slot does not exist
+         * @note PUBLISHED FOR THE DESCRIPTOR HEAP: a heap acceleration-structure descriptor is an ADDRESS RANGE
+         *       (VkResourceDescriptorDataEXT has no AS member - see docs/descriptor_heap_migration.md), and
+         *       VkDeviceAddressRangeEXT must carry a REAL size - a lesson this renderer already paid for on the
+         *       material table (VUID-VkDeviceAddressRangeKHR-address-11365). The size query at creation is the only
+         *       place that number exists, so it is kept rather than re-derived by a caller that cannot know it.
+         */
+        [[nodiscard]] VkDeviceSize structure_size(uint32_t frame_slot) const noexcept {
+            return frame_slot < this->slots.size() ? this->slots[frame_slot].structure_size : 0;
+        }
+
+        /**
+         * @brief the size of the slot's instance table (binding 17): its capacity times the record's own size
+         * @return that size, or 0 when the slot does not exist
+         * @note PUBLISHED for the same reason structure_size is: the descriptor-set path writes this buffer with
+         *       VK_WHOLE_SIZE (legal there), while a HEAP range must carry a real size
+         *       (VUID-VkDeviceAddressRangeKHR-address-11365), and the capacity is this module's to know.
+         */
+        [[nodiscard]] VkDeviceSize instance_table_size(uint32_t frame_slot) const noexcept {
+            return frame_slot < this->slots.size() ? static_cast<VkDeviceSize>(this->slots[frame_slot].capacity) * sizeof(instance_record) : 0;
         }
 
         /** @brief the slot's instance table (instance_record[count]); the shading-at-a-hit step binds it */

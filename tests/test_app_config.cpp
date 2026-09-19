@@ -1,11 +1,12 @@
 // Headless unit tests: app_config (pure CPU) ===================================
-// The test executable runs with the repository root as working directory (see
-// CMakeLists.txt VR_BUILD_TESTS block), so fixtures are referenced relative to it.
+// The test executable runs in the build's per-test scratch directory (see the CMakeLists.txt
+// VR_BUILD_TESTS block), so fixtures are addressed through the absolute VR_TEST_SOURCE_DIR the
+// build injects rather than relative to the working directory.
 #include "vk_test.h"
 
 #include <string_view>
 
-import app_config;
+import application_configuration;
 
 namespace {
     void test_load_settings_applies_toml() {
@@ -22,29 +23,12 @@ namespace {
         CHECK(settings.render.ssao_radius > 1.49f && settings.render.ssao_radius < 1.51f);
         CHECK(settings.render.ssao_intensity > 0.49f && settings.render.ssao_intensity < 0.51f);
         CHECK(settings.render.ssao_samples == 4);
-        CHECK(settings.render.ssgi); // fixture turns screen-space GI on
-        CHECK(settings.render.ssgi_intensity > 1.24f && settings.render.ssgi_intensity < 1.26f);
-        CHECK(settings.render.ssgi_radius > 0.24f && settings.render.ssgi_radius < 0.26f);
-        CHECK(settings.render.ssgi_rays == 4);
-        CHECK(settings.render.ssgi_steps == 10);
-        CHECK(settings.render.ssgi_spatial_sigma > 3.49f && settings.render.ssgi_spatial_sigma < 3.51f);
-        CHECK(!settings.render.ssgi_upsample);                                                   // fixture: the bilinear fetch (the measurement setting)
         CHECK(settings.render.rt_shadows);                                                       // fixture: the ray-traced sun shadows
         CHECK(!settings.render.rt_mask_bake);                                                    // fixture: the bake off (the A/B)
         CHECK(settings.render.rt_skin_bake);                                                     // fixture: the per-frame skin refit on
         CHECK(settings.render.animation_time > 0.74f && settings.render.animation_time < 0.76f); // fixture: a pinned pose
-        CHECK(settings.render.ssgi_ray_tracing);                                                 // fixture: traced GI rays
-        CHECK(settings.render.ssgi_bounce > 0.59f && settings.render.ssgi_bounce < 0.61f);       // fixture: multi-bounce on
-        CHECK(settings.render.ssgi_probes);                                                      // fixture: the world-space probe cache
-        CHECK(settings.render.ssgi_probe_rate > 0.14f && settings.render.ssgi_probe_rate < 0.16f);
-        CHECK(settings.render.ssgi_probe_rounds == 3);
-        CHECK(settings.render.ssgi_probe_gain > 0.49f && settings.render.ssgi_probe_gain < 0.51f);
-        CHECK(settings.render.ssgi_hit_shading); // fixture: hits shaded from geometry
-        CHECK(settings.render.ssgi_specular);    // fixture: the glossy lobe traced
-        CHECK(settings.render.ssgi_specular_rays == 4);
-        CHECK(settings.render.ssgi_specular_radius > 0.74f && settings.render.ssgi_specular_radius < 0.76f);
-        CHECK(settings.render.furnace); // fixture: the analytic verification mode
-        CHECK(settings.render.unlit);   // fixture: the flat render mode
+        CHECK(settings.render.furnace);                                                          // fixture: the analytic verification mode
+        CHECK(settings.render.unlit);                                                            // fixture: the flat render mode
         CHECK(settings.render.fxaa);
         CHECK(!settings.render.gpu_timings);
         CHECK(settings.render.gbuffer_debug);
@@ -73,12 +57,6 @@ namespace {
         CHECK(settings.lighting.demo_lights == 0);
         CHECK(settings.render.ssao); // default: screen-space AO runs
         CHECK(settings.render.ssao_samples == 8);
-        CHECK(settings.render.ssgi);                                                             // default: ON - the traced chain is the shipped configuration
-        CHECK(settings.render.ssgi_intensity > 0.99f && settings.render.ssgi_intensity < 1.01f); // ... at the value that means "use the traced estimate"
-        CHECK(settings.render.ssgi_rays == 2);
-        CHECK(settings.render.ssgi_steps == 6);
-        CHECK(settings.render.ssgi_spatial_sigma > 1.99f && settings.render.ssgi_spatial_sigma < 2.01f);
-        CHECK(settings.render.ssgi_upsample);           // default: the joint-bilateral upsample
         CHECK(!settings.render.rt_shadows);             // default: the cascaded shadow maps, not traced rays
         CHECK(!settings.render.rt_mask_bake);           // default: OFF - the per-triangle rule measured worse than the raster path
         CHECK(!settings.render.rt_skin_bake);           // default: OFF - the bind-pose shadow is what the L2.2b baseline measures
@@ -102,9 +80,6 @@ namespace {
         CHECK(settings.render.ssao);
         CHECK(settings.render.ssao_samples == 8);
         CHECK(!settings.render.taa);
-        CHECK(settings.render.ssgi_specular);           // the example ships the glossy lobe ON (L2.3 closed its blocker)
-        CHECK(settings.render.ssgi_specular_rays == 1); // ... at the one ray the feature is defined by
-        CHECK(settings.render.ssgi_specular_radius > 0.49f && settings.render.ssgi_specular_radius < 0.51f);
         CHECK(settings.lighting.demo_lights == 0);
         CHECK(settings.lighting.env_size == 256);
         CHECK(settings.gui.show);
@@ -166,28 +141,12 @@ namespace {
         CHECK(settings.render.ssao_radius > 0.49f && settings.render.ssao_radius < 0.51f);
         CHECK(settings.render.ssao_intensity > 0.99f && settings.render.ssao_intensity < 1.01f);
         CHECK(settings.render.ssao_samples == 8);
-        // [render] screen-space GI: the generator writes these seven, so the fixture has to carry them
-        CHECK(settings.render.ssgi);
-        CHECK(settings.render.ssgi_intensity > 0.99f && settings.render.ssgi_intensity < 1.01f);
-        CHECK(settings.render.ssgi_rays == 2);
-        CHECK(settings.render.ssgi_spatial_sigma > 1.99f && settings.render.ssgi_spatial_sigma < 2.01f);
-        CHECK(settings.render.ssgi_upsample);
         // [render] ray tracing: written by the generator like every other switch, so it round-trips
         CHECK(!settings.render.rt_shadows);
-        CHECK(!settings.render.rt_mask_bake);                                               // default: the mask bake is off (see the generated-defaults fixture)
-        CHECK(!settings.render.rt_skin_bake);                                               // default: the per-frame skin refit is off (same fixture)
-        CHECK(settings.render.animation_time < 0.0f);                                       // default: -1, i.e. play (the generator writes it out)
-        CHECK(settings.render.ssgi_ray_tracing);                                            // default: traced where the device allows it, marched otherwise
-        CHECK(settings.render.ssgi_bounce > -0.01f && settings.render.ssgi_bounce < 0.01f); // default: single bounce
-        CHECK(!settings.render.ssgi_probes);                                                // default: the screen-space chain alone
-        CHECK(settings.render.ssgi_probe_rate > 0.07f && settings.render.ssgi_probe_rate < 0.09f);
-        CHECK(settings.render.ssgi_probe_rounds == 2);
-        CHECK(settings.render.ssgi_probe_gain > 0.99f && settings.render.ssgi_probe_gain < 1.01f);
-        CHECK(settings.render.ssgi_hit_shading);                                                             // default: hits are shaded from their own geometry (the shipped configuration)
-        CHECK(settings.render.ssgi_specular);                                                                // default: a glossy ray replaces the environment's specular
-        CHECK(settings.render.ssgi_specular_rays == 1);                                                      // default: one glossy ray per pixel
-        CHECK(settings.render.ssgi_specular_radius > 0.49f && settings.render.ssgi_specular_radius < 0.51f); // default: the reach's measured knee
-        CHECK(!settings.render.furnace);                                                                     // default: a normal frame, not the verification mode
+        CHECK(!settings.render.rt_mask_bake);         // default: the mask bake is off (see the generated-defaults fixture)
+        CHECK(!settings.render.rt_skin_bake);         // default: the per-frame skin refit is off (same fixture)
+        CHECK(settings.render.animation_time < 0.0f); // default: -1, i.e. play (the generator writes it out)
+        CHECK(!settings.render.furnace);              // default: a normal frame, not the verification mode
         // [render] validation
         CHECK(settings.render.validation_layers);
         // [gui]
@@ -199,6 +158,29 @@ namespace {
         CHECK(settings.lighting.env_mip_count == 5);
         CHECK(settings.lighting.irr_size == 32);
         CHECK(settings.lighting.lut_size == 256);
+    }
+
+    void test_model_ask_sentinel_is_recognized_and_never_a_path() {
+        // `model = "ask"` is the config's way of asking for the startup file dialog, and the ONLY thing that
+        // may read it that way is app_config::wants_model_dialog - every other caller has to see the string
+        // as the path it looks like. The near misses below are why that comparison is exact and
+        // case-sensitive: a build that opened a file named "ask" instead of asking is the bug this guards.
+        app_config::app_settings const asking = app_config::load_settings(VR_TEST_SOURCE_DIR "/tests/fixtures/config_ask_model.toml");
+        CHECK(asking.model == "ask"); // the parser keeps the sentinel verbatim
+        CHECK(app_config::wants_model_dialog(asking));
+
+        app_config::app_settings const named = app_config::load_settings(VR_TEST_SOURCE_DIR "/tests/fixtures/config_full.toml");
+        CHECK(!app_config::wants_model_dialog(named)); // a real path is a real path
+
+        app_config::app_settings near = {};
+        near.model = "ASK"; // a model may legitimately be called this
+        CHECK(!app_config::wants_model_dialog(near));
+        near.model = "ask.glb";
+        CHECK(!app_config::wants_model_dialog(near));
+        near.model = " ask";
+        CHECK(!app_config::wants_model_dialog(near));
+        near.model = {}; // empty means "locate the default", not "ask"
+        CHECK(!app_config::wants_model_dialog(near));
     }
 
     void test_resolve_from_argv_merges_config_and_positional() {
@@ -216,6 +198,7 @@ int main() {
     test_load_settings_missing_file_keeps_defaults();
     test_lighting_sizes_are_clamped();
     test_generated_config_parses();
+    test_model_ask_sentinel_is_recognized_and_never_a_path();
     test_resolve_from_argv_merges_config_and_positional();
     return vk_test::finish("test_app_config");
 }

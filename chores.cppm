@@ -5,7 +5,7 @@ module;
 export module chores;
 
 export import vstd;
-import app_config;
+import application_configuration;
 import utility;
 import vulkan.animation; // setup_gui builds the animation playback controls
 import vulkan.runtime;
@@ -151,6 +151,28 @@ namespace chores {
         bool taa_enabled = false;
         float taa_blend_static = 0.9f; // history weight for a static pixel (0.9 = 10% of the new frame)
         float taa_blend_min = 0.5f;    // history weight floor under motion (lower = less ghosting)
+        // Stochastic PUNCTUAL lighting (docs/megalights.md): the switch and the estimator's sample count. The
+        // switch is the A/B a user actually wants - the shadows the punctual lights never had, against the
+        // unshadowed path - and the sample count is the one knob cost and noise both scale with.
+        bool megalights_enabled = false;
+        float megalights_samples = 4.0f;
+        // The chain's spatial pre-filter width in half-resolution texels: the dial between grain and detail,
+        // and 0 makes the chain temporal-only. A slider rather than a constant, because a filter that removes
+        // signal and noise at the same rate is worse than none - so it is moved and measured.
+        float megalights_spatial_sigma = 1.5f;
+        // How many frames the running mean may average: 1 turns the ACCUMULATION off (the resolve writes this
+        // frame's estimate straight through), 12 is the shipped policy. It exists because the comparison a user
+        // actually wants is "what does each half of the denoise do", and both halves are now one slider each.
+        float megalights_frames = 12.0f;
+        // The history's relative depth tolerance: the dial between ghosting (too loose) and losing the
+        // accumulation at every depth edge TAA's jitter reprojects onto the wrong side of (too tight).
+        float megalights_history_tolerance = 0.03f;
+        // The visibility ray's normal-offset scale: the self-intersection guard, and the dial between
+        // "shadow acne / a flickering terminator" (too small) and "a shadow detached from its caster" (too big).
+        float megalights_bias = 1.0f;
+        // The emitter's angular radius (radians): the soft-shadow dial, 0 = hard. It is what moves a flickering
+        // terminator, so it is a slider rather than a constant.
+        float megalights_light_angle = 0.0f;
         // demo punctual lights (count matches vulkan::max_punctual_lights): the gui rows below
         // edit these fields live (no per-widget callbacks), and main() pushes the enabled set to
         // the runtime once per frame via chores::apply_point_lights(). Each slot is a point light
@@ -169,6 +191,11 @@ namespace chores {
             float outer_cone_deg = 30.0f; // spot: hard cutoff half-angle (degrees)
         };
         light_slot point_lights[4] = {};
+        // Which slot the panel's punctual-light group is editing (0-based, clamped by the panel). The group
+        // draws ONE slot at a time - four slots of nine controls each was thirty-six rows of panel for a
+        // feature most frames leave off - so this index is what the "punctual light" combo writes and every
+        // widget of the group tests.
+        int active_light = 0;
         // clustered light culling (M5): checkbox mirrored into the runtime every frame
         // (runtime::set_clustered_lights); false = the brute-force loop over every light
         bool clustered_lights = true;

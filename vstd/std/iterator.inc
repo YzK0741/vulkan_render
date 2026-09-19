@@ -23,14 +23,16 @@ export namespace std {
 
   namespace ranges {
     // [iterator.cust], customization point objects
-    inline namespace __cpo {
-      // [iterator.cust.move], ranges::iter_move
-      using std::ranges::__cpo::iter_move;
+    //
+    // PORTABILITY LAYER (vstd/vstd_compat.inc): these two were `inline namespace __cpo { using
+    // std::ranges::__cpo::... }`. libc++ declares them in an INLINE namespace, so the public spelling
+    // is the same entity - and it is what every other standard library spells.
+    // [iterator.cust.move], ranges::iter_move
+    using std::ranges::iter_move;
 
-      // [iterator.cust.swap], ranges::iter_swap
-      using std::ranges::__cpo::iter_swap;
-    } // namespace __cpo
-  }   // namespace ranges
+    // [iterator.cust.swap], ranges::iter_swap
+    using std::ranges::iter_swap;
+  } // namespace ranges
 
   using std::iter_rvalue_reference_t;
 

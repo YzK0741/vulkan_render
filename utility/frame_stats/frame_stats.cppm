@@ -2,7 +2,7 @@ module;
 
 #include <cstdint>
 
-export module utility.frame_stats;
+export module utility:frame_stats;
 
 import vstd;
 

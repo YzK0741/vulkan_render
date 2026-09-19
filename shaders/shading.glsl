@@ -32,21 +32,33 @@
 // be sampled at the jittered offsets), while `view_proj_unjittered` / `prev_view_proj` are the
 // jitter-free pair - a jitter that leaked into a motion vector would be read as camera motion and
 // would reproject the history to the wrong place every frame.
-layout(set = 0, binding = 0) uniform CameraUBO {
+// THE SLOT GRID, which is what every declaration below addresses (see docs/descriptor_heap_migration.md): the
+// constants, the two specialization constants that carry the frame and image indices, and the shared heap arrays.
+#include "heap_slots.glsl"
+
+// HEAP-NATIVE (see docs/descriptor_heap_migration.md): the array IS the heap and the slot carries the FRAME, so
+// every read is `camera[heap_camera_slot].field` (the slot constants are declared with the rest of the grid
+// below). The block itself is unchanged - it is a CPU/GPU contract.
+layout(descriptor_heap, descriptor_stride = heap_slot_stride) uniform CameraUBO {
     mat4 view;
     mat4 proj;
     vec3 camera_pos;
     mat4 view_proj_unjittered;
     mat4 prev_view_proj;
-} camera;
+} camera[];
 
-// Split-sum IBL (bindings 2-4): the prefiltered GGX environment (roughness mip chain), the
+// Split-sum IBL: the prefiltered GGX environment (roughness mip chain), the
 // irradiance map for the diffuse ambient, and the BRDF integration LUT.
-layout(set = 0, binding = 2) uniform samplerCube env_sampler;        // prefiltered environment (roughness mip chain)
-layout(set = 0, binding = 3) uniform samplerCube irradiance_sampler; // irradiance map (diffuse IBL)
-layout(set = 0, binding = 4) uniform sampler2D brdf_lut_sampler;     // BRDF integration LUT
-// ... and the specular half of the split sum, which now lives in a file of its own because the GI chain
-// subtracts exactly this term and has to compute it from the same expressions (see that file's header).
+// IMAGES AND SAMPLERS ARE SEPARATE IN A HEAP, so these are textures now and the sampler is the shared one (the
+// host picks which at the fetch sites below).
+layout(descriptor_heap, descriptor_stride = heap_slot_stride) uniform textureCube env_texture[];
+layout(descriptor_heap, descriptor_stride = heap_slot_stride) uniform textureCube irradiance_texture[];
+layout(descriptor_heap, descriptor_stride = heap_slot_stride) uniform texture2D brdf_lut_texture[];
+
+// The SLOTS these declarations resolve to live in heap_slots.glsl with every other stage's, because a stage that
+// does not include this file needs them too (see that file's note on which index each kind of array takes).
+// ... and the specular half of the split sum, which lives in a file of its own so that the two sides of a
+// subtraction compute it from the same expressions (see that file's header).
 #include "ibl_specular.glsl"
 
 // Light UBO (scene set binding 7): the orthographic light view-proj (world -> shadow map) and the
@@ -68,7 +80,7 @@ struct PunctualLight {
     vec4 params;   // x = range (0 = infinite), y = 0 point / 1 spot, z = cos(outer cone), w = cos(inner cone, spot only)
 };
 
-layout(set = 0, binding = 7) uniform LightUBO {
+layout(descriptor_heap, descriptor_stride = heap_slot_stride) uniform LightUBO {
     // One orthographic world -> light-clip matrix per cascade: entry 0 covers the near range, the
     // rest the ranges given by cascade_splits. With cascade_count == 1 only entry 0 is fitted and
     // used, which is exactly the single-shadow-map behavior.
@@ -103,19 +115,19 @@ layout(set = 0, binding = 7) uniform LightUBO {
     //                 used by the cluster pass only)
     vec4 cluster_grid;
     vec4 cluster_depth;
-} light;
+} light[];
 
 // Per-cluster light lists (scene set bindings 11/12), written by shaders/light_cluster.comp: one
 // entry per cluster in cluster_counts (how many lights landed in it) and a fixed-capacity row per
-// cluster in cluster_indices holding the indices into light.punctual_lights. Storage buffers rather
+// cluster in cluster_indices holding the indices into light[heap_light_slot].punctual_lights. Storage buffers rather
 // than more UBO lanes because the grid is thousands of entries - and small enough (16 lights per
 // cluster) that no per-cluster linked list / prefix sum is needed.
-layout(set = 0, binding = 11) readonly buffer ClusterCounts {
+layout(descriptor_heap, descriptor_stride = heap_slot_stride) readonly buffer ClusterCounts {
     uint counts[];
-} cluster_counts;
-layout(set = 0, binding = 12) readonly buffer ClusterIndices {
+} cluster_counts[];
+layout(descriptor_heap, descriptor_stride = heap_slot_stride) readonly buffer ClusterIndices {
     uint indices[];
-} cluster_indices;
+} cluster_indices[];
 
 // Shadow map (scene set binding 8): a 2D ARRAY of cascades, sampled with a depth-compare sampler
 // (sampler2DArrayShadow) whose LINEAR filtering performs HARDWARE percentage-closer filtering - the
@@ -123,7 +135,9 @@ layout(set = 0, binding = 12) readonly buffer ClusterIndices {
 // and returns the lit fraction (no manual 3x3 loop needed). An ARRAY texture rather than an array of
 // samplers because the layer is chosen per FRAGMENT: dynamic indexing of a sampler array would need
 // dynamically uniform indices, while a texture-array layer is just a coordinate.
-layout(set = 0, binding = 8) uniform sampler2DArrayShadow shadow_map;
+// ... and it is a heap TEXTURE (the depth-compare sampler comes from the sampler heap at heap_sampler_shadow),
+// per swapchain image, which is what heap_image_index selects.
+layout(descriptor_heap, descriptor_stride = heap_slot_stride) uniform texture2DArray shadow_texture[];
 
 const float PI = 3.14159265359;
 
@@ -167,12 +181,12 @@ float toon_band(float x, float steps, float softness) {
  *   camera can see.
  */
 float calc_shadow_cascade(vec3 world_pos, vec3 normal, int cascade) {
-    float texel_uv = light.light_dir.w;                    // 1 / shadow map size
-    float texel_world = light.cascade_texel_world[cascade]; // world size of one texel of this cascade
+    float texel_uv = light[heap_light_slot].light_dir.w;                    // 1 / shadow map size
+    float texel_world = light[heap_light_slot].cascade_texel_world[cascade]; // world size of one texel of this cascade
 
     // normal offset: shift the world position before projecting it into light space
     vec3 offset_pos = world_pos + normal * (texel_world * 2.0);
-    vec4 light_clip = light.light_view_proj[cascade] * vec4(offset_pos, 1.0);
+    vec4 light_clip = light[heap_light_slot].light_view_proj[cascade] * vec4(offset_pos, 1.0);
     vec3 ndc = light_clip.xyz / light_clip.w; // ortho projection: w == 1
     vec2 uv = ndc.xy * 0.5 + 0.5;
     float current_depth = ndc.z; // [0,1] (RH_ZO ortho)
@@ -188,12 +202,12 @@ float calc_shadow_cascade(vec3 world_pos, vec3 normal, int cascade) {
     for (int y = -1; y <= 1; ++y) {
         for (int x = -1; x <= 1; ++x) {
             vec2 tap = uv + vec2(float(x), float(y)) * texel_uv;
-            lit += texture(shadow_map, vec4(tap, float(cascade), current_depth - bias));
+            lit += texture(sampler2DArrayShadow(shadow_texture[heap_shadow_slot], heap_samplers[heap_sampler_shadow]), vec4(tap, float(cascade), current_depth - bias));
         }
     }
     float shadow = lit / 9.0;
     // cel shading hardens the shadow edge into the same bands as the diffuse falloff
-    return toon_band(shadow, light.toon_steps, light.toon_softness);
+    return toon_band(shadow, light[heap_light_slot].toon_steps, light[heap_light_slot].toon_softness);
 }
 
 /**
@@ -211,16 +225,16 @@ float calc_shadow_cascade(vec3 world_pos, vec3 normal, int cascade) {
  * a hard switch would show as a line where the resolution (and the offset) step is.
  */
 float calc_shadow(vec3 world_pos, vec3 normal) {
-    if (light.cascade_count < 1.5) {
+    if (light[heap_light_slot].cascade_count < 1.5) {
         return calc_shadow_cascade(world_pos, normal, 0); // single map: no selection to do
     }
-    const float view_depth = -(camera.view * vec4(world_pos, 1.0)).z; // positive distance along the view
-    int cascade = int(light.cascade_count + 0.5) - 1;                 // past the last split: the farthest
+    const float view_depth = -(camera[heap_camera_slot].view * vec4(world_pos, 1.0)).z; // positive distance along the view
+    int cascade = int(light[heap_light_slot].cascade_count + 0.5) - 1;                 // past the last split: the farthest
     for (int i = 0; i < MAX_SHADOW_CASCADES; ++i) {
-        if (i >= int(light.cascade_count + 0.5)) {
+        if (i >= int(light[heap_light_slot].cascade_count + 0.5)) {
             break;
         }
-        if (view_depth <= light.cascade_splits[i]) {
+        if (view_depth <= light[heap_light_slot].cascade_splits[i]) {
             cascade = i;
             break;
         }
@@ -229,9 +243,9 @@ float calc_shadow(vec3 world_pos, vec3 normal) {
 
     // blend into the next cascade across the boundary band
     const int next = cascade + 1;
-    if (next < int(light.cascade_count + 0.5)) {
-        const float boundary = light.cascade_splits[cascade];
-        const float band = max(boundary * light.cascade_blend, 1e-4);
+    if (next < int(light[heap_light_slot].cascade_count + 0.5)) {
+        const float boundary = light[heap_light_slot].cascade_splits[cascade];
+        const float band = max(boundary * light[heap_light_slot].cascade_blend, 1e-4);
         if (view_depth > boundary - band) {
             const float t = clamp((view_depth - (boundary - band)) / band, 0.0, 1.0);
             shadow = mix(shadow, calc_shadow_cascade(world_pos, normal, next), t);
@@ -375,7 +389,7 @@ vec3 evaluate_direct_light(vec3 n, vec3 v, vec3 base_color, float metallic, floa
     //      piece so the gui is a live A/B compare.
     float ndf;
     float vis;
-    const int brdf_model = int(light.brdf_model + 0.5);
+    const int brdf_model = int(light[heap_light_slot].brdf_model + 0.5);
     if (brdf_model == 1) {
         ndf = distribution_ggx(n, h, roughness);
         vis = geometry_vis_smith_height_correlated(n, v, l, roughness);
@@ -402,17 +416,17 @@ vec3 evaluate_direct_light(vec3 n, vec3 v, vec3 base_color, float metallic, floa
     //      into bands and turn the specular lobe into a single hard highlight block. The
     //      visibility terms keep their unquantized ndotl, so only the shading response bands -
     //      the silhouette stays smooth.
-    if (light.toon_steps > 0.5) {
-        ndotl = toon_band(ndotl, light.toon_steps, light.toon_softness);
+    if (light[heap_light_slot].toon_steps > 0.5) {
+        ndotl = toon_band(ndotl, light[heap_light_slot].toon_steps, light[heap_light_slot].toon_softness);
         float ndoth = max(dot(n, h), 0.0);
         float highlight_threshold = 0.5 + 0.5 * (1.0 - roughness); // smooth surfaces -> tighter highlight
-        specular *= smoothstep(highlight_threshold - light.toon_softness, highlight_threshold + light.toon_softness, ndoth);
+        specular *= smoothstep(highlight_threshold - light[heap_light_slot].toon_softness, highlight_threshold + light[heap_light_slot].toon_softness, ndoth);
     }
 
     // ---- Diffuse by the selected model (LightUBO.diffuse_model): Lambert (default) or the
     //      roughness-dependent Oren-Nayar approximation (0 -> Lambert).
     vec3 diffuse;
-    if (int(light.diffuse_model + 0.5) == 1) {
+    if (int(light[heap_light_slot].diffuse_model + 0.5) == 1) {
         diffuse = kd * base_color * oren_nayar_diffuse(n, v, l, roughness, ndotv, ndotl);
     } else {
         diffuse = kd * base_color / PI;
@@ -424,12 +438,12 @@ vec3 evaluate_direct_light(vec3 n, vec3 v, vec3 base_color, float metallic, floa
 ///        always uses this fixed GGX model, independent of the BRDF presets above
 /// Diffuse ambient: irradiance map lookup by the world normal
 vec3 get_diffuse_light(vec3 n) {
-    return texture(irradiance_sampler, n).rgb;
+    return texture(samplerCube(irradiance_texture[heap_irradiance_slot], heap_samplers[heap_sampler_texture]), n).rgb;
 }
 
 // The specular half - get_specular_sample / get_ibl_ggx_fresnel / get_ibl_radiance_ggx - is
-// shaders/ibl_specular.glsl's, included above. It moved there when the GI chain needed the same
-// expressions for a subtraction rather than as a third copy; see that file's header for what was
+// shaders/ibl_specular.glsl's, included above. It moved there so a subtraction would use the same
+// expressions rather than a third copy; see that file's header for what was
 // verified. The three below are the call sites' names for it.
 
 /**
@@ -443,30 +457,34 @@ vec3 get_diffuse_light(vec3 n) {
  * fragment in a cluster the lights were never assigned to (a light popping out at a slice edge).
  */
 int cluster_slice_of(float view_depth, int slices) {
-    const float near = max(light.cluster_depth.x, 1e-4);
-    const float far = max(light.cluster_depth.y, near * 1.0001);
+    const float near = max(light[heap_light_slot].cluster_depth.x, 1e-4);
+    const float far = max(light[heap_light_slot].cluster_depth.y, near * 1.0001);
     const float t = clamp(log(max(view_depth, near) / near) / log(far / near), 0.0, 1.0);
     return clamp(int(t * float(slices)), 0, slices - 1);
 }
 
 /**
- * @brief cluster index of a fragment, or -1 when clustering is off (the brute-force path)
- * @param world_pos the shaded fragment's world position (its view depth picks the slice)
- * @note the tile comes from gl_FragCoord (pixels, y-down - the same convention the compute shader's
- *       dispatch uses), clamped to the active grid so an oversized screen reads a valid cluster
+ * @brief cluster index of a pixel, or -1 when clustering is off (the brute-force path)
+ * @param pixel the shaded pixel, in PIXELS from the top-left (y down - the same convention the compute
+ *        shader's dispatch uses); a fragment passes `ivec2(gl_FragCoord.xy)`
+ * @param world_pos the shaded point's world position (its view depth picks the slice)
+ * @note THE PIXEL IS A PARAMETER rather than read from gl_FragCoord, and that is what makes this file
+ *       usable from a COMPUTE shader: `shaders/megalights_trace.comp` includes it for the same BRDF and
+ *       the same cluster lists, and gl_FragCoord does not exist there. The fragment path's wrapper below
+ *       is the only place the builtin appears.
  */
-int cluster_index_of(vec3 world_pos) {
-    if (light.cluster_grid.w < 0.5) {
+int cluster_index_at(ivec2 pixel, vec3 world_pos) {
+    if (light[heap_light_slot].cluster_grid.w < 0.5) {
         return -1;
     }
-    const int tiles_x = int(light.cluster_grid.x);
-    const int tiles_y = int(light.cluster_grid.y);
-    const int slices = int(light.cluster_grid.z);
+    const int tiles_x = int(light[heap_light_slot].cluster_grid.x);
+    const int tiles_y = int(light[heap_light_slot].cluster_grid.y);
+    const int slices = int(light[heap_light_slot].cluster_grid.z);
     if (tiles_x <= 0 || tiles_y <= 0 || slices <= 0) {
         return -1;
     }
-    const ivec2 tile = clamp(ivec2(gl_FragCoord.xy) / int(CLUSTER_TILE_SIZE), ivec2(0), ivec2(tiles_x - 1, tiles_y - 1));
-    const float view_depth = -(camera.view * vec4(world_pos, 1.0)).z;
+    const ivec2 tile = clamp(pixel / int(CLUSTER_TILE_SIZE), ivec2(0), ivec2(tiles_x - 1, tiles_y - 1));
+    const float view_depth = -(camera[heap_camera_slot].view * vec4(world_pos, 1.0)).z;
     return (cluster_slice_of(view_depth, slices) * tiles_y + tile.y) * tiles_x + tile.x;
 }
 
@@ -476,9 +494,9 @@ int cluster_index_of(vec3 world_pos) {
  */
 int cluster_light_count_for(int cluster) {
     if (cluster < 0) {
-        return int(light.light_count);
+        return int(light[heap_light_slot].light_count);
     }
-    return int(min(cluster_counts.counts[cluster], uint(CLUSTER_LIGHT_CAPACITY)));
+    return int(min(cluster_counts[heap_cluster_count_slot].counts[cluster], uint(CLUSTER_LIGHT_CAPACITY)));
 }
 
 /**
@@ -489,7 +507,47 @@ int cluster_light_index(int cluster, int i) {
     if (cluster < 0) {
         return i;
     }
-    return int(cluster_indices.indices[cluster * int(CLUSTER_LIGHT_CAPACITY) + i]);
+    return int(cluster_indices[heap_cluster_index_slot].indices[cluster * int(CLUSTER_LIGHT_CAPACITY) + i]);
+}
+
+/**
+ * @brief the radiance one punctual light delivers at a surface point, and where it comes from
+ * @param pl the light (the light UBO's entry)
+ * @param world_pos the receiving point
+ * @param out_to_light the unit direction from the point TOWARDS the light
+ * @param out_distance the distance to the light, in world units
+ * @return linear radiance arriving at the point, BEFORE the BRDF
+ *
+ * THE ONE DEFINITION OF A PUNCTUAL LIGHT'S ATTENUATION, extracted so that the stochastic lighting pass
+ * (`shaders/megalights_trace.comp`) and this shader's own loop cannot disagree about it: the trace pass
+ * has to evaluate a light's contribution to build its sampling PDF, and a second copy of inverse-square
+ * plus the range fade plus the spot cone is a second chance to pick different thresholds.
+ *
+ * The falloff is `1 / (1 + d^2)` rather than a physical `1 / d^2`: it is well behaved at zero distance,
+ * which is what an artist-facing intensity wants. `range` (0 = infinite) adds a smooth cutoff - the fade
+ * is SQUARED so the value and its slope both reach zero at the range boundary.
+ */
+vec3 punctual_light_radiance(const PunctualLight pl, vec3 world_pos, out vec3 out_to_light, out float out_distance) {
+    const vec3 to_light = pl.position.xyz - world_pos;
+    out_distance = length(to_light);
+    out_to_light = out_distance > 1e-6 ? to_light / out_distance : vec3(0.0, 1.0, 0.0);
+    vec3 radiance = pl.color.xyz / (1.0 + out_distance * out_distance);
+    const float range = pl.params.x;
+    if (range > 0.0) {
+        // smooth range cutoff (no hard pop at the boundary)
+        const float d = out_distance / range;
+        const float fade = clamp(1.0 - d * d, 0.0, 1.0);
+        radiance *= fade * fade;
+    }
+    if (pl.params.y > 0.5) { // spot light: cone around spot_dir
+        const float outer = pl.params.z;
+        // inner cone: cos of the inner half-angle (glTF KHR innerConeAngle, set by the CPU);
+        // w == 0 means the light did not specify one -> legacy soft-inner mix(outer, 1, 0.6)
+        const float inner = pl.params.w > 0.0 ? pl.params.w : mix(outer, 1.0, 0.6);
+        const float cone = smoothstep(outer, inner, dot(-out_to_light, normalize(pl.spot_dir.xyz)));
+        radiance *= cone;
+    }
+    return radiance;
 }
 
 /**
@@ -498,6 +556,7 @@ int cluster_light_index(int cluster, int i) {
  *       the G-buffer texels - which is the whole point: the lighting below cannot tell them apart
  */
 struct shade_input {
+    ivec2 pixel;    // the pixel being shaded, in PIXELS (y down); the cluster lookup's tile coordinate
     vec3 world_pos; // world-space position (view vector + shadow lookup)
     vec3 normal;    // world-space shading normal (normal-mapped, double-sided flipped)
     vec3 albedo;    // base color, linear
@@ -505,6 +564,19 @@ struct shade_input {
     float metallic; // 0 = dielectric, 1 = metal
     float roughness; // perceptual roughness
     float ao;       // ambient occlusion: scales the IBL ambient only, never the direct light
+    /**
+     * 1 = the PUNCTUAL lights are somebody else's business this frame, so this stage must not add them.
+     *
+     * The somebody is `shaders/megalights_trace.comp` (docs/megalights.md): it samples a few of the pixel's
+     * lights, traces one visibility ray per sample and produces the shadowed estimate that the deferred
+     * lighting stage then adds back - so this loop, which knows nothing about occlusion, would double every
+     * punctual light in the frame.
+     *
+     * IT IS A RECORDED FACT RATHER THAN THE KNOB, and the difference matters: the renderer sets it from
+     * whether the stochastic pass actually recorded this frame, so a frame whose pass was gated off keeps
+     * this loop instead of losing its punctual lights entirely.
+     */
+    float punctual_replaced;
     // < 0 = no override: the shadow comes from calc_shadow() as it always did. >= 0 = use this factor
     // instead, which is how the deferred path hands in the RAY-TRACED visibility (it is a screen-space
     // lookup, so it cannot be recomputed from world_pos inside the shared lighting code). The forward
@@ -526,7 +598,7 @@ struct shade_input {
  * interiors from going pitch black.
  */
 vec3 shade_surface(shade_input s) {
-    const vec3 v = normalize(camera.camera_pos - s.world_pos);
+    const vec3 v = normalize(camera[heap_camera_slot].camera_pos - s.world_pos);
     const vec3 f0 = mix(vec3(0.04), s.albedo, s.metallic);
 
     vec3 direct = vec3(0.0);
@@ -536,10 +608,10 @@ vec3 shade_surface(shade_input s) {
         float shadow = 1.0;
         if (s.shadow_override >= 0.0) {
             shadow = s.shadow_override;
-        } else if (light.shadow_enabled > 0.5) {
+        } else if (light[heap_light_slot].shadow_enabled > 0.5) {
             shadow = calc_shadow(s.world_pos, s.normal);
         }
-        direct += evaluate_direct_light(s.normal, v, s.albedo, s.metallic, s.roughness, f0, light.light_dir.xyz, vec3(7.5 * light.sun_intensity) * shadow);
+        direct += evaluate_direct_light(s.normal, v, s.albedo, s.metallic, s.roughness, f0, light[heap_light_slot].light_dir.xyz, vec3(7.5 * light[heap_light_slot].sun_intensity) * shadow);
     }
     // punctual lights (point/spot, no shadow casting in this version): inverse-square falloff
     // (well-behaved at zero distance) with an optional smooth range cutoff; spots add a soft
@@ -550,33 +622,19 @@ vec3 shade_surface(shade_input s) {
     // which is what makes a light count two orders of magnitude past the old four affordable. With
     // clustering off (cluster_grid.w == 0) the loop walks every active light instead, the
     // brute-force reference the clustered path is verified against.
-    const int frag_cluster = cluster_index_of(s.world_pos);
-    const int punctual_count = cluster_light_count_for(frag_cluster);
+    const int frag_cluster = cluster_index_at(s.pixel, s.world_pos);
+    const int punctual_count = s.punctual_replaced != 0.0 ? 0 : cluster_light_count_for(frag_cluster);
     for (int i = 0; i < MAX_PUNCTUAL_LIGHTS; ++i) {
         if (i >= punctual_count) {
             break;
         }
         const int light_index = cluster_light_index(frag_cluster, i);
-        const PunctualLight pl = light.punctual_lights[light_index];
-        vec3 to_light = pl.position.xyz - s.world_pos;
-        const float dist = length(to_light);
-        const vec3 dir = dist > 1e-6 ? to_light / dist : vec3(0.0, 1.0, 0.0);
-        vec3 radiance = pl.color.xyz / (1.0 + dist * dist);
-        const float range = pl.params.x;
-        if (range > 0.0) {
-            // smooth range cutoff (no hard pop at the boundary)
-            const float d = dist / range;
-            const float fade = clamp(1.0 - d * d, 0.0, 1.0);
-            radiance *= fade * fade;
-        }
-        if (pl.params.y > 0.5) { // spot light: cone around spot_dir
-            const float outer = pl.params.z;
-            // inner cone: cos of the inner half-angle (glTF KHR innerConeAngle, set by the CPU);
-            // w == 0 means the light did not specify one -> legacy soft-inner mix(outer, 1, 0.6)
-            const float inner = pl.params.w > 0.0 ? pl.params.w : mix(outer, 1.0, 0.6);
-            const float cone = smoothstep(outer, inner, dot(-dir, normalize(pl.spot_dir.xyz)));
-            radiance *= cone;
-        }
+        const PunctualLight pl = light[heap_light_slot].punctual_lights[light_index];
+        // The attenuation is `punctual_light_radiance`'s (see its note): the stochastic lighting pass
+        // evaluates the same function to build its sampling PDF, so the two cannot drift.
+        vec3 dir;
+        float dist;
+        const vec3 radiance = punctual_light_radiance(pl, s.world_pos, dir, dist);
         if (radiance != vec3(0.0)) {
             direct += evaluate_direct_light(s.normal, v, s.albedo, s.metallic, s.roughness, f0, dir, radiance);
         }
@@ -590,6 +648,13 @@ vec3 shade_surface(shade_input s) {
     // Metals have no diffuse term: diffuse ambient is scaled by (1 - metallic),
     // metal color comes entirely from specular environment (matches the official mix(dielectric, metal, metallic))
     vec3 ambient = ibl_diffuse * s.albedo * s.ao * (1.0 - s.metallic);
+    // ... and dropped entirely on a frame that does not add the diffuse ambient at all (see
+    // shade_input). A BRANCH rather than a fifth factor, and it is not an optimisation: multiplying the
+    // finished term by 1.0 is algebraically the identity but NOT bit-identical - folding a fifth operand
+    // into the expression changes how the compiler contracts the chain, and it moved one 8-bit texel of
+    // 1036800 on one measured frame (blue, one step). Zeroing the finished value leaves every frame that
+    // does not use the switch bit for bit what it was, and that is what makes "the frames that do not use
+    // it are unchanged" a check rather than a claim.
     vec3 specular_ibl = ibl_specular * fresnel_ibl * s.ao;
 
     vec3 color = ambient + direct + specular_ibl + s.emissive;

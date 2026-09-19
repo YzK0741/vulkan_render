@@ -1,19 +1,20 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 import vstd;
-import app_config;
+import application_configuration;
 import chores; // demo bootstrap helpers (shader loading / dir locating / pipelines)
 import gltf_loader;
-import utility;          // re-exports utility.frame_clock / frame_stats / bvh / better_pmr / thread_pool / data_block
+import utility;          // re-exports utility:frame_clock / frame_stats / bvh / better_pmr / thread_pool / data_block
 import vulkan.animation; // animation::controller: glTF playback / skinning / morphs on the runtime tree
 import vulkan.math;
 import vulkan.scene_tree; // scene storage + GPU primitives (was vulkan.model)
 import vulkan.runtime;
+import vulkan.render_start_demo; // the example's pass wiring: this app's chain, from outside the renderer
 
-// Route std::pmr allocations through mimalloc (utility.better_pmr) before main(): this
+// Route std::pmr allocations through mimalloc (utility:better_pmr) before main(): this
 // file-scope reference's dynamic initialization runs at startup, so every runtime/scene
 // object built below already allocates its std::pmr vectors from mimalloc. Idempotent —
-// other TUs (vulkan/runtime.cpp) keep their own copy of the same singleton.
+// other TUs (vulkan/runtime/runtime.cpp) keep their own copy of the same singleton.
 [[maybe_unused]] static auto& pmr = utility::init_pmr(); // NOLINT(keep-alive)
 
 namespace {
@@ -186,6 +187,7 @@ int main(int argc, char** argv) {
     // is created when the first scene set binds it - see runtime::set_shadow_cascades.
     runtime.set_shadow_cascades(static_cast<uint32_t>(settings.render.shadow_cascades));
     runtime.set_shadow_cascade_blend(settings.render.shadow_cascade_blend);
+    runtime.set_shadow_depth_bias(settings.render.shadow_bias_constant, settings.render.shadow_bias_slope, 0.0f);
     // shadow map edge length: same startup-only rule as the cascade count (the layered image and its
     // views are created when the first scene set binds them, so this must precede the scene import)
     runtime.set_shadow_map_size(static_cast<uint32_t>(settings.render.shadow_map_size));
@@ -196,64 +198,40 @@ int main(int argc, char** argv) {
     //    imported scene) and the directional shadow pass. The legacy
     //    triangle demo pipeline is no longer created - nothing draws it.
     chores::setup_pipeline(runtime, shaders_dir);
-    // Screen-space GI has to be told AFTER the pipelines exist: its compute pipeline and its temporal
-    // resolve are created by setup_pipeline above, and set_ssgi() warns when either is missing.
-    // Startup-only knobs - the intensity and the ray budget are read here rather than per frame, so
-    // changing the config value needs a restart (there is no overlay control for them).
-    runtime.set_ssgi(settings.render.ssgi,
-                     settings.render.ssgi_intensity,
-                     settings.render.ssgi_radius,
-                     static_cast<uint32_t>(settings.render.ssgi_rays),
-                     static_cast<uint32_t>(settings.render.ssgi_steps));
-    runtime.set_ssgi_spatial(settings.render.ssgi_spatial_sigma);
-    runtime.set_ssgi_upsample(settings.render.ssgi_upsample);
+    // THE EXAMPLE'S OWN WIRING: this application's passes are fed by `vulkan.render_start_demo`, which finds them
+    // in the chain the runtime owns and answers the frame's per-stage questions (see the module's header). The
+    // runtime holds none of these references itself any more, which is what lets a second application hand it a
+    // different chain - and the demo object outlives the frame loop because it lives here, in the app's own scope.
+    vulkan::render_start_demo start_demo;
+    static_cast<void>(start_demo.attach(runtime)); // builds this app's chain and hands it over
+    // ... and the CREATE step runs over that chain (the shaders above are registered by now): every pass builds what
+    // it owns, and the renderer's two jobs - which are not passes - are created with them.
+    runtime.create_passes();
+    // Stochastic punctual lighting (docs/megalights.md): the switch and the sample count, with the two bias
+    // terms left at the pass's own defaults (they are self-intersection guards rather than look knobs, and the
+    // pass clamps them). OFF by default, so a stock config is the unshadowed path it always was.
+    // The two bias radii are UE's pair scaled by the config's dial (see app_config's note): the floor at
+    // normal incidence and the larger offset at grazing incidence, where the ray leaves nearly parallel to the
+    // surface and a small offset would let it re-hit the surface it started from.
+    float const ml_bias_floor = 0.01f * settings.render.megalights_bias;
+    float const ml_bias_grazing = 0.1f * settings.render.megalights_bias;
+    start_demo.set_megalights(settings.render.megalights, static_cast<uint32_t>(settings.render.megalights_samples), 0.001f, ml_bias_floor, ml_bias_grazing);
+    // ... and the chain's policy: UE's relative depth tolerance (0.03) and frame-count cap (12) for the temporal
+    // running mean, plus this chain's own spatial pre-filter width, which is the config's because it is the dial
+    // between grain and detail (see app_config's note and docs/megalights.md's measurement).
+    start_demo.set_megalights_accumulation(settings.render.megalights_history_tolerance, 12.0f, settings.render.megalights_spatial_sigma);
     // Same bargain as the ray-traced shadows: a request the runtime grants only on a device with ray
     // queries and a built top level structure - otherwise the GI rays keep marching the depth buffer.
-    runtime.set_ssgi_ray_tracing(settings.render.ssgi_ray_tracing);
-    // The multi-bounce gain: how much of the previous frame's accumulated indirect a GI hit re-emits.
-    // 0 (the default) keeps the estimator single-bounce, and the runtime clamps the knob to [0, 1]
-    // because above one the diffuse loop it closes is not guaranteed to converge.
-    runtime.set_ssgi_bounce(settings.render.ssgi_bounce);
-    // Shade the surface a GI ray hits from the geometry it landed on. A request: the runtime publishes the
-    // acceleration structures' instance table to the tracer only when they exist, and a frame without it
-    // samples the screen exactly as before.
-    runtime.set_ssgi_hit_shading(settings.render.ssgi_hit_shading);
     // The furnace verification mode: an analytic reference rather than another estimator of ours.
     runtime.set_furnace(settings.render.furnace);
-    // The world-space probe cache: where the screen-space chain cannot answer - a ray that leaves the
-    // frame or hits something hidden - the tracer reads a grid anchored to the scene instead of the
-    // far-field environment probe. Optional at every level (no pipeline, no chain, or off: the tracer
-    // keeps its fallback), and its gain is what makes the difference measurable.
-    runtime.set_ssgi_probes(settings.render.ssgi_probes,
-                            settings.render.ssgi_probe_rate,
-                            static_cast<uint32_t>(settings.render.ssgi_probe_rounds),
-                            settings.render.ssgi_probe_gain);
-    // The glossy lobe: a traced reflection REPLACING the lighting stage's split-sum specular ambient, so a
-    // metal panel inside a room stops reflecting the sky. It needs the traced GI path and hit shading, and
-    // it does nothing where either is missing (the runtime says so in the log).
-    runtime.set_ssgi_specular(settings.render.ssgi_specular, static_cast<uint32_t>(settings.render.ssgi_specular_rays), settings.render.ssgi_specular_radius);
-    // Ray-traced sun shadows: a request, not a guarantee - the runtime grants it only on a device with
-    // ray queries, and the acceleration structures are built by the first frame that records with it on
-    // (the caster set they are built from is only complete once the scene is loaded and culled).
     runtime.set_rt_shadows(settings.render.rt_shadows);
     // ... and the alphaMode MASK bake, which is what keeps a masked surface from being SOLID to those rays:
     // a compute pass collapses the triangles the material's alpha cuts out, before the structures are built.
     runtime.set_rt_mask_bake(settings.render.rt_mask_bake);
     // ... and the per-frame skinning pass, which is what keeps an ANIMATED caster's traced shadow where the
     // caster actually is: the structures are built from the bind pose, so without it the ray sees the mesh
-    // at rest (the baseline table in docs/gi_hit_shading.md's L2.2b section is that error, measured).
+    // at rest.
     runtime.set_rt_skin_bake(settings.render.rt_skin_bake);
-    if (settings.render.ssgi) {
-        // The ORACLE and the hit shading are named and not just the ray counts: the shipped configuration
-        // is the traced path with shaded hits (see the [render] ssgi note in config.example.toml), and this
-        // line is what a reader uses to tell which of the two chains is about to run. It says "as
-        // configured" because the DEVICE decides in the end - the runtime logs a pipeline it could not
-        // create, and a device without ray queries silently keeps the marched path.
-        utility::log("ssgi: GI on as configured - {}, {} (intensity {:.2f}, radius {:.2f} scene radii, {} rays x {} steps at half res)",
-                     settings.render.ssgi_ray_tracing ? "traced rays" : "marched depth",
-                     settings.render.ssgi_hit_shading ? "hits shaded from their own geometry" : "hits read from the screen",
-                     settings.render.ssgi_intensity, settings.render.ssgi_radius, settings.render.ssgi_rays, settings.render.ssgi_steps);
-    }
 
     // 7. Collect the async startup results
     auto scenes = load_future.get();
@@ -301,7 +279,7 @@ int main(int argc, char** argv) {
     std::vector<unsigned char> const irr_bytes = vulkan::to_half_rgba(irradiance);
     std::vector<unsigned char> const lut_bytes = vulkan::to_half_rg(brdf_lut);
 
-    // 10. Upload the scene-wide IBL once: shared by every primitive (bindings 2-4 of the scene set)
+    // 10. Upload the scene-wide IBL once: shared by every primitive (bindings 2-4 of the scene block)
     runtime.set_ibl(vulkan::ibl_input{.prefiltered_env = env_bytes, .irradiance = irr_bytes, .brdf_lut = lut_bytes, .env_size = static_cast<uint32_t>(env_size), .env_mip_count = static_cast<uint32_t>(env_mip_count), .irr_size = static_cast<uint32_t>(irr_size), .lut_size = static_cast<uint32_t>(lut_size)});
 
     // 11. Batch-import: the runtime drives the traversal itself through two aligned loader
@@ -381,13 +359,13 @@ int main(int argc, char** argv) {
         for (int i = 0; i < total; ++i) {
             float const t = static_cast<float>(i) / static_cast<float>(total);
             float const angle = t * 6.2831853f * 3.0f; // three turns around the scene
-            float const radius = scene_radius * 0.85f;
+            float const radius = scene_radius * settings.lighting.demo_light_radius;
             vulkan::punctual_light light = {};
             light.position = scene_sink + glm::vec3(std::cos(angle) * radius, scene_radius * (t - 0.5f), std::sin(angle) * radius);
             // hue cycle: a warm/cool strip of colors makes the per-cluster lists visible as color
             light.color = glm::vec3(0.5f + 0.5f * std::cos(angle), 0.5f + 0.5f * std::cos(angle + 2.094f), 0.5f + 0.5f * std::cos(angle + 4.188f));
             light.intensity = 12.0f;
-            light.range = scene_radius * 0.55f; // finite range: what the cluster sphere test culls on
+            light.range = scene_radius * settings.lighting.demo_light_range; // finite range: what the cluster sphere test culls on
             demo_lights.push_back(light);
         }
         utility::log("demo lights: {} procedural punctual lights around the scene (clustered light stress)", total);
@@ -402,7 +380,7 @@ int main(int argc, char** argv) {
     // Dear ImGui debug overlay on by default ([gui] show)
     bool const use_gui = settings.gui.show;
 
-    // FPS statistics (utility.frame_stats): a rolling one-second window of frame gaps.
+    // FPS statistics (utility:frame_stats): a rolling one-second window of frame gaps.
     // tick() once per presented frame, on_skipped() on minimized/recreate iterations, and
     // the once-per-second report (log + the overlay's smoothed value) keys off window_rolled().
     utility::frame_stats frame_stats;
@@ -520,8 +498,23 @@ int main(int argc, char** argv) {
     gui.fxaa_enabled = settings.render.fxaa;
     gui.gbuffer_debug = settings.render.gbuffer_debug; // gbuffer debug view initial state (M1)
     gui.gbuffer_channel = settings.render.gbuffer_channel;
-    gui.render_mode = settings.render.unlit ? 1 : 0;                 // render-mode combo (0 = pbr, 1 = unlit)
-    gui.taa_enabled = settings.render.taa;                           // temporal anti-aliasing (M3)
+    gui.render_mode = settings.render.unlit ? 1 : 0; // render-mode combo (0 = pbr, 1 = unlit)
+    gui.taa_enabled = settings.render.taa;           // temporal anti-aliasing (M3)
+    // ... and its TWO BLEND WEIGHTS, which the frame loop mirrors into the runtime every frame
+    // (start_demo.set_taa below). Without these two lines the config's values never reached the
+    // renderer: chores' gui_bindings defaults (0.9 / 0.5) are what set_taa received on every frame,
+    // so editing `[render] taa_blend_static` in the file changed NOTHING - measured, the flicker at a
+    // pinned close-up was byte-identical at 0.90, 0.95 and 0.98 (38.22% of pixels changing per frame
+    // in all three). `taa_enabled` alone happened to look wired because it IS copied here.
+    gui.taa_blend_static = settings.render.taa_blend_static;
+    gui.taa_blend_min = settings.render.taa_blend_min;
+    gui.megalights_enabled = settings.render.megalights;
+    gui.megalights_samples = static_cast<float>(settings.render.megalights_samples);
+    gui.megalights_spatial_sigma = settings.render.megalights_spatial_sigma;
+    gui.megalights_history_tolerance = settings.render.megalights_history_tolerance;
+    gui.megalights_bias = settings.render.megalights_bias;
+    gui.megalights_light_angle = settings.render.megalights_light_angle;
+    start_demo.set_megalights_light_angle(settings.render.megalights_light_angle);
     gui.shadow_cascades = settings.render.shadow_cascades - 1;       // cascade combo index (0 = single map)
     gui.shadow_cascade_blend = settings.render.shadow_cascade_blend; // cascaded shadow maps (M4)
     gui.clustered_lights = settings.render.clustered_lights;         // clustered light culling (M5)
@@ -726,7 +719,7 @@ int main(int argc, char** argv) {
             // the lighting stage cannot switch pipelines per fragment, so tell it that the default
             // pipeline is the flat one - it then writes the stored albedo instead of shading, so
             // "unlit" means the same thing for the opaque scene and for the transparent pass
-            runtime.set_unlit(gui.render_mode == 1);
+            start_demo.set_unlit(gui.render_mode == 1);
             utility::log("render mode: {} ({})", mode_name, gui.render_mode == 0 ? "lit" : "unlit / flat");
         }
 
@@ -745,17 +738,25 @@ int main(int argc, char** argv) {
         // G-buffer debug view (the G-buffer's stored data): mirrored every frame like the FXAA state,
         // so the config, the overlay checkbox and the channel combo all take effect immediately
         runtime.set_gbuffer_debug(gui.gbuffer_debug);
-        runtime.set_gbuffer_channel(gui.gbuffer_channel);
+        start_demo.set_gbuffer_channel(gui.gbuffer_channel);
         // TAA (the engine's anti-aliasing): mirrored like the other render toggles. The jitter
         // follows automatically - it is applied to the projection when TAA is active.
-        runtime.set_taa(gui.taa_enabled, gui.taa_blend_static, gui.taa_blend_min);
+        start_demo.set_taa(gui.taa_enabled, gui.taa_blend_static, gui.taa_blend_min);
+        // Stochastic punctual lighting: the overlay's switch and sample count, mirrored like the GI's - the two
+        // bias terms are the pass's constants and are passed through at their shipped values.
+        start_demo.set_megalights(gui.megalights_enabled, static_cast<uint32_t>(std::max(gui.megalights_samples, 1.0f) + 0.5f), 0.001f, 0.01f * gui.megalights_bias,
+                                  0.1f * gui.megalights_bias);
+        start_demo.set_megalights_light_angle(gui.megalights_light_angle);
+        // ... and the chain's policy, so the overlay's own slider moves the spatial pre-filter live (0 = the
+        // temporal-only chain, which is also the A/B the measurement uses).
+        start_demo.set_megalights_accumulation(gui.megalights_history_tolerance, gui.megalights_frames, gui.megalights_spatial_sigma);
 
         // Order matters for the M5/M6 mirrors: their availability checks read the state the lines
         // above just set (the debug view replaces the lighting stage, clustered lighting only exists
         // when the cluster pipeline does), so mirroring them earlier would report a stale answer for
         // the first frame of every run.
         runtime.set_clustered_lights(gui.clustered_lights);
-        runtime.set_ssao(gui.ssao_enabled, gui.ssao_radius, gui.ssao_intensity, static_cast<uint32_t>(std::max(gui.ssao_samples, 0.0f) + 0.5f));
+        start_demo.set_ssao(gui.ssao_enabled, gui.ssao_radius, gui.ssao_intensity, static_cast<uint32_t>(std::max(gui.ssao_samples, 0.0f) + 0.5f));
         // cel shading: the combo picks a discrete band count (index 0 = off); every entry is a
         // visibly different look, unlike a continuous strength that had dead zones between bands
         constexpr std::array<float, 7> toon_band_counts = {0.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 8.0f};

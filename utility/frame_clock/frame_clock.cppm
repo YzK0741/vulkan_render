@@ -2,7 +2,7 @@ module;
 
 #include <cstdint> // ::uint64_t (used unqualified below)
 
-export module utility.frame_clock;
+export module utility:frame_clock;
 
 import vstd;
 

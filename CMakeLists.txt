@@ -31,13 +31,20 @@ endif()
 # per-config flags (Release already adds -O3 -DNDEBUG, Debug -g), so only the extras that the
 # defaults do not cover are listed here - keeping the flags duplicated here AND in the defaults
 # would put -O3 / -g on the command line twice.
+# Tuning target for Release. -march=native is right for a build on your own machine and wrong for an
+# artifact someone else downloads: a binary tuned for the building CPU can die with SIGILL on an older
+# one, which is the opposite of what the single-file Release build is for. CI publishes the executable
+# (see .github/workflows/ci.yml), so it configures with -DVR_NATIVE_ARCH=OFF to get a baseline.
+option(VR_NATIVE_ARCH "Tune Release builds for the building CPU (-march=native)" ON)
+set(VR_RELEASE_MARCH "$<IF:$<BOOL:${VR_NATIVE_ARCH}>,-march=native,-march=x86-64-v3>")
+
 set(COMPILE_OPTIONS
         $<$<CONFIG:Release>:
         -fno-rtti
         -ffunction-sections
         -fdata-sections
         -flto
-        -march=native
+        ${VR_RELEASE_MARCH}
         -fno-unwind-tables
         -fno-asynchronous-unwind-tables
         -fmerge-all-constants
@@ -79,9 +86,6 @@ target_sources(utility
         utility/thread_pool/thread_pool.cppm
         PRIVATE
         utility/utility.cpp
-        utility/BVH/bvh.cpp
-        utility/better_pmr/better_pmr.cpp
-        utility/thread_pool/thread_pool.cpp
 )
 
 # Startup configuration: parses config.toml (+ --config / argv merging) into app_settings.
@@ -93,10 +97,10 @@ target_sources(app_config
     PUBLIC
         FILE_SET CXX_MODULES
         FILES
-        app_config/app_config.cppm
+        application_configuration/application_configuration.cppm
 
     PRIVATE
-        app_config/app_config.cpp
+        application_configuration/application_configuration.cpp
 )
 
 # The engine core library (vulkancorekit): Vulkan object management + math + the runtime
@@ -111,54 +115,87 @@ target_sources(vulkancorekit
         FILE_SET CXX_MODULES
         FILES
         vulkan/core/core.cppm
-        vulkan/core/filter/filter.cppm
+    vulkan/core/core.declarations.cppm
+    vulkan/core/core.constructor.cppm
+        vulkan/core/filter/filters.cppm
         vulkan/core/vma/vma.cppm
+        vulkan/core/descriptor_heap/descriptor_heap.cppm
         vulkan/core/vma/handles/vma_handles.cppm
         vulkan/core/handles/handles.cppm
         vulkan/core/init_utils/init_utils.cppm
+        vulkan/init_utils/init_utils.cppm
         vulkan/core/pipeline/pipeline.cppm
         vulkan/math/math.cppm
         vulkan/constant_init/constant_init.cppm
-        vulkan/runtime.cppm
+        vulkan/runtime/runtime.cppm
+    vulkan/runtime/runtime.declarations.cppm
+    vulkan/runtime/runtime.constructor.cppm
+    vulkan/runtime/runtime.probes.cppm
+    vulkan/runtime/runtime.frames.cppm
+    vulkan/runtime/runtime.readback.cppm
         vulkan/bindings/bindings.cppm
         vulkan/pipelines/pipelines.cppm
         vulkan/render_resource/render_resource.cppm
         vulkan/render_resource/shared.cppm
+        vulkan/frame_constants/frame_constants.cppm
         vulkan/pass/pass.cppm
-        vulkan/pass/gi_probe.cppm
         vulkan/pass/taa.cppm
         vulkan/pass/scene.cppm
         vulkan/pass/transparent.cppm
+        vulkan/pass/megalights_trace.cppm
+        vulkan/pass/megalights_temporal.cppm
+        vulkan/pass/ray_traced_shadow.cppm
+        vulkan/pass/mask_bake.cppm
+        vulkan/pass/compute_skin.cppm
+        vulkan/pass/cluster.cppm
+        vulkan/pass/deferred.cppm
+        vulkan/pass/post.cppm
+        vulkan/pass/fxaa.cppm
+        vulkan/pass/geometry_buffer_debug.cppm
+        vulkan/pass/shadow.cppm
+        vulkan/pass/chain.cppm
+        vulkan/render_start_demo/render_start_demo.cppm
         vulkan/profiling/profiling.cppm
         vulkan/shadow_fit/shadow_fit.cppm
         vulkan/readback/readback.cppm
         vulkan/acceleration_structure/acceleration_structure.cppm
+        vulkan/ray_tracing/ray_tracing.cppm
         vulkan/core/pipeline/spirv_parser.cppm
         vulkan/scene_tree/scene_tree.cppm
         vulkan/primitive/primitive.cppm
         vulkan/render_environment/render_environment.cppm
-        vulkan/gui/gui.cppm
+        vulkan/graphical_user_interface/graphical_user_interface.cppm
         vulkan/animation/controller.cppm
     PRIVATE
         vulkan/core/core.cpp
-        vulkan/core/filter/filter.cpp
-        vulkan/core/vma/vma.cpp
+        vulkan/core/filter/filters.cpp
         vulkan/core/handles/handles.cpp
-        vulkan/core/init_utils/init_util.cpp
+        vulkan/init_utils/init_utils.cpp
         vulkan/core/pipeline/pipeline.cpp
         vulkan/math/math.cpp
-        vulkan/core/pipeline/spirv_parser.cpp
-        vulkan/runtime.cpp
-        vulkan/pass/gi_probe.cpp
+        vulkan/runtime/runtime.cpp
         vulkan/pass/taa.cpp
         vulkan/pass/scene.cpp
         vulkan/pass/transparent.cpp
+        vulkan/pass/megalights_trace.cpp
+        vulkan/pass/megalights_temporal.cpp
+        vulkan/pass/ray_traced_shadow.cpp
+        vulkan/pass/mask_bake.cpp
+        vulkan/pass/compute_skin.cpp
+        vulkan/pass/cluster.cpp
+        vulkan/pass/deferred.cpp
+        vulkan/pass/post.cpp
+        vulkan/pass/fxaa.cpp
+        vulkan/pass/geometry_buffer_debug.cpp
+        vulkan/pass/shadow.cpp
+        vulkan/render_start_demo/render_start_demo.cpp
         vulkan/shadow_fit/shadow_fit.cpp
         vulkan/readback/readback.cpp
         vulkan/acceleration_structure/acceleration_structure.cpp
+        vulkan/ray_tracing/ray_tracing.cpp
         vulkan/scene_tree/scene_tree.cpp
         vulkan/primitive/primitive.cpp
-        vulkan/gui/gui.cpp
+        vulkan/graphical_user_interface/graphical_user_interface.cpp
         vulkan/animation/controller.cpp
         third_party/spirv-reflect/spirv_reflect.c
 )
@@ -333,6 +370,11 @@ target_link_libraries(utility
         xxhash
         mimalloc_vendored
 )
+# The file dialog (utility/platform_dialog.cpp, for the config's `model = "ask"`) is GetOpenFileNameW,
+# which lives in the common dialog library. Windows-only, like the backend itself.
+if(WIN32)
+    target_link_libraries(utility comdlg32)
+endif()
 
 target_link_libraries(app_config
         utility
@@ -420,6 +462,9 @@ if(VR_BUILD_TESTS)
     # source root for fixture/model paths (tests no longer assume the repo root is the cwd)
     target_compile_definitions(test_app_config PRIVATE VR_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
     target_compile_definitions(test_gltf_loader PRIVATE VR_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+    # test_render_resources reads shaders/heap_slots.glsl and vulkan/core/core.declarations.cppm to compare the slot grid's two
+    # sources of truth (see the last block of that test): both are text, neither is generated from the other.
+    target_compile_definitions(test_render_resources PRIVATE VR_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 
     target_link_libraries(test_app_config
             app_config
@@ -495,7 +540,7 @@ target_compile_options(gltf_loader PRIVATE -Wno-unused-parameter)
 # `static_cast<size_t>(log10(val))`, and for a float in (0, 1) - e.g. the DEFAULT
 # `clear_color = [0.02, 0.02, 0.03]` - log10 is negative, so the cast is UB
 # ("-1.69897 is outside the range of representable values of type 'unsigned long long'",
-# toml++/impl/toml_formatter.inl:94). It is reachable from app_config.cpp:29 alone, which dumps every
+# toml++/impl/toml_formatter.inl:94). It is reachable from application_configuration.cpp:29 alone, which dumps every
 # key of the loaded file into the log. Upstream's bug, not this project's - and it fires from a
 # default config value, so it is not a corner case.
 #
@@ -544,7 +589,7 @@ find_program(CLANG_FORMAT_EXECUTABLE clang-format)
 if(CLANG_FORMAT_EXECUTABLE)
     file(GLOB_RECURSE PROJECT_FORMAT_SOURCES CONFIGURE_DEPENDS
             ${CMAKE_CURRENT_SOURCE_DIR}/main.cpp
-            ${CMAKE_CURRENT_SOURCE_DIR}/app_config/*.cpp*
+            ${CMAKE_CURRENT_SOURCE_DIR}/application_configuration/*.cpp*
             ${CMAKE_CURRENT_SOURCE_DIR}/gltf_loader/*.cpp*
             ${CMAKE_CURRENT_SOURCE_DIR}/utility/*.cpp*
             ${CMAKE_CURRENT_SOURCE_DIR}/vulkan/*.cpp*
@@ -584,8 +629,12 @@ endif()
 # The platform halves of utility live in plain (non-module) TUs so that <windows.h> stays out of a
 # module's global module fragment - including it there made libc++'s operator new ambiguous in every
 # TU that imported `utility`. One file per platform facility; the module side only sees their C
-# entry points (see utility/platform_sleep.cpp and utility/platform_path.cpp).
-target_sources(utility PRIVATE utility/platform_sleep.cpp utility/platform_path.cpp)
+# entry points (see utility/platform_sleep.cpp, platform_path.cpp and platform_dialog.cpp).
+target_sources(utility PRIVATE
+        utility/platform_sleep.cpp
+        utility/platform_path.cpp
+        utility/platform_dialog.cpp
+)
 # ---- GLSL -> SPIR-V: the build owns the step ----
 # Editing a .glsl without recompiling used to leave you running stale SPIR-V ("my shader change does
 # nothing"), so the compiled binaries are no longer committed and are never hand-synced: every build
@@ -623,27 +672,27 @@ set(VR_SHADER_INCLUDES
     "${VR_SHADER_SRC_DIR}/surface.glsl"
     "${VR_SHADER_SRC_DIR}/shading.glsl"
     "${VR_SHADER_SRC_DIR}/sky.glsl"
-    # hit_shading.glsl was MISSING here since it was added: the two passes that include it (ssgi.comp and
-    # gi_probe.comp) did not list it as a dependency, so editing it alone left the SPIR-V stale - the exact
-    # trap the comment above describes, from the other side. Found while adding probe_sh.glsl next to it.
-    "${VR_SHADER_SRC_DIR}/hit_shading.glsl"
-    "${VR_SHADER_SRC_DIR}/probe_sh.glsl"
-    # ibl_specular.glsl is included by four shaders now (shading.glsl, hit_shading.glsl and the two GI
-    # passes that compute the specular ambient's removal), so it belongs here for the same reason the two
-    # above do: editing it alone must not leave stale SPIR-V behind.
+    # ibl_specular.glsl is included by shading.glsl, so it belongs here for the same reason the three above
+    # do: editing it alone must not leave stale SPIR-V behind.
     "${VR_SHADER_SRC_DIR}/ibl_specular.glsl"
+    # heap_slots.glsl is the SLOT GRID's shader-side source of truth (core.declarations.cppm is the host's): a shader that
+    # includes it and is not rebuilt after it changes would index the heap by stale numbers, which validation
+    # cannot see. The C++ side is compared against it by a test (see test_render_resources).
+    "${VR_SHADER_SRC_DIR}/heap_slots.glsl"
 )
 set(VR_SHADER_SOURCES
     pbr.vert pbr.frag unlit.frag gbuffer.frag gbuffer_debug.frag deferred.frag taa.frag
     light_cluster.comp
-    ssgi.comp
-    ssgi_spec.comp
-    ssgi_temporal.comp
-    ssgi_spatial.comp
-    gi_probe.comp
-    rt_shadow.comp
+    megalights_trace.comp
+    megalights_temporal.comp
+    rt_shadow.rgen rt_shadow.rchit rt_shadow.rmiss rt_shadow.rahit
     mask_bake.comp
     compute_skin.comp
+    # the heap-native probe: not part of any frame, run once at setup in a command buffer of its own (see
+    # runtime::run_heap_probe and docs/descriptor_heap_migration.md). The .vert/.frag pair is its GRAPHICS half -
+    # a fragment stage reading the heap through a heap-flagged, layout-less pipeline.
+    heap_probe.comp
+    heap_probe.vert heap_probe.frag
     shadow.vert shadow.frag post.vert post.frag fxaa.frag
 )
 set(VR_SHADER_OUTPUTS "")

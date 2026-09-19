@@ -10,11 +10,11 @@
 export namespace std {
   // [func.invoke], invoke
   using std::invoke;
-#if _LIBCPP_STD_VER >= 23
+#if VSTD_STD_VER >= 23
   using std::invoke_r;
 #endif
 
-#if _LIBCPP_STD_VER >= 20
+#if VSTD_STD_VER >= 20
   using std::basic_common_reference;
 #endif
 
@@ -61,7 +61,7 @@ export namespace std {
 
   // [func.bind.partial], function templates bind_front and bind_back
   using std::bind_front;
-#if _LIBCPP_STD_VER >= 23
+#if VSTD_STD_VER >= 23
   using std::bind_back;
 #endif
 
