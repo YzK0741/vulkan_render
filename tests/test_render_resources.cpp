@@ -555,6 +555,20 @@ int main() {
             return base->second + std::strtoull(rhs.c_str() + plus + 3, nullptr, 10);
         };
 
+        /// The `= <rhs>;` tail of a declaration line, or nullopt when the line is not shaped that way.
+        /// NOT `line.substr(eq + 2u, line.find(';', eq) - eq - 2u)`: when the ';' is missing that length comes
+        /// from npos, `substr` throws std::out_of_range, and under -fno-exceptions a throw is a fail-fast
+        /// abort. This file died with 0xc0000409 exactly once - when a source file it parses had moved and the
+        /// parse stopped matching - and a THROWN length was how. A malformed line must be a reported failure,
+        /// not a crash.
+        auto const rhs_after_eq = [](std::string const& line, std::size_t const eq) -> std::optional<std::string> {
+            std::size_t const semi = line.find(';', eq);
+            if (eq == std::string::npos || semi == std::string::npos || semi <= eq + 2u) {
+                return std::nullopt;
+            }
+            return line.substr(eq + 2u, semi - eq - 2u);
+        };
+
         std::map<std::string, uint64_t> shader_scalars;
         std::map<std::string, uint64_t> shader_slots; // the `heap_slots_<name>` arrays
         for (std::string const& line : read_lines(std::string(VR_TEST_SOURCE_DIR) + "/shaders/heap_slots.glsl")) {
@@ -565,9 +579,18 @@ int main() {
             if (eq == std::string::npos) {
                 continue;
             }
-            std::string const name = line.substr(11, line.find(' ', 11) - 11);
-            std::optional<uint64_t> const value = value_of(line.substr(eq + 2u, line.find(';', eq) - eq - 2u), shader_scalars);
+            std::size_t const name_end = line.find(' ', 11);
+            std::optional<std::string> const rhs = rhs_after_eq(line, eq);
+            CHECK_MSG(name_end != std::string::npos && rhs.has_value(), line.c_str());
+            if (name_end == std::string::npos || !rhs.has_value()) {
+                continue;
+            }
+            std::string const name = line.substr(11, name_end - 11);
+            std::optional<uint64_t> const value = value_of(*rhs, shader_scalars);
             CHECK_MSG(value.has_value(), name.c_str());
+            if (!value.has_value()) {
+                continue;
+            }
             if (name.rfind("heap_slots_", 0) == 0) {
                 shader_slots[name.substr(11)] = *value;
             } else {
@@ -600,7 +623,12 @@ int main() {
             }
             std::size_t const name_begin = lhs.rfind(' ');
             std::string const name = lhs.substr(name_begin == std::string::npos ? 0u : name_begin + 1u);
-            std::optional<uint64_t> const value = value_of(line.substr(eq + 2u, line.find(';', eq) - eq - 2u), host_scalars);
+            std::optional<std::string> const rhs = rhs_after_eq(line, eq);
+            CHECK_MSG(rhs.has_value(), line.c_str());
+            if (!rhs.has_value()) {
+                continue;
+            }
+            std::optional<uint64_t> const value = value_of(*rhs, host_scalars);
             if (in_slots && value.has_value()) {
                 host_slots[name] = *value;
             } else if (!in_slots && value.has_value() && name.rfind("heap_", 0) == 0) {
@@ -615,8 +643,13 @@ int main() {
         std::array<std::string_view, 6> const sampler_slots = {"heap_sampler_texture", "heap_sampler_post", "heap_sampler_gbuffer", "heap_sampler_post_nearest", "heap_sampler_taa", "heap_sampler_shadow"};
         for (std::size_t i = 0; i < sampler_slots.size(); ++i) {
             auto const found = shader_scalars.find(std::string(sampler_slots[i]));
+            auto const base = shader_scalars.find("heap_sampler_base");
             CHECK_MSG(found != shader_scalars.end(), sampler_slots[i].data());
-            CHECK_MSG(found->second == shader_scalars.at("heap_sampler_base") + i, "a sampler slot is out of order in shaders/heap_slots.glsl");
+            CHECK_MSG(base != shader_scalars.end(), "heap_sampler_base is not declared in shaders/heap_slots.glsl");
+            if (found == shader_scalars.end() || base == shader_scalars.end()) {
+                continue; // a reported failure, not a thrown std::out_of_range from map::at
+            }
+            CHECK_MSG(found->second == base->second + i, "a sampler slot is out of order in shaders/heap_slots.glsl");
             shader_scalars.erase(found);
         }
 
