@@ -1,4 +1,4 @@
-// module version: 0.12.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.13.0  (independent of the app version in CMakeLists project(VERSION))
 
 /**
  * @file vulkan/render_resource/render_resource.cppm

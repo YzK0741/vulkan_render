@@ -1,4 +1,4 @@
-// module version: 0.14.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.15.0  (independent of the app version in CMakeLists project(VERSION))
 
 /**
  * @file vulkan/pass/pass.cppm

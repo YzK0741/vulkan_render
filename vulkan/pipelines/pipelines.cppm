@@ -1,4 +1,4 @@
-// module version: 0.19.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.20.0  (independent of the app version in CMakeLists project(VERSION))
 
 /**
  * @file vulkan/pipelines/pipelines.cppm
