@@ -257,6 +257,39 @@ large effect in the wrong direction, when the fixed patches show a small effect 
 through a mask are fine for comparing two renders against a fixed benchmark; they are not fine for deciding
 which way a knob moves.
 
+### Making the face FLAT, which is what the face shader is for
+
+The reference's `- Face` group exists to keep the surface NORMALS from shading a face: its factor comes from
+a painted light map compared against the light direction in a head frame, with a mirrored UV so the edge is
+symmetric. "Flat" is measurable, and it is worth measuring: the p10..p90 spread of a region's own skin
+luminance. On the in-game capture the reference's face spreads 36.4 against its own hair's 69.6 - the face
+really is about twice as flat - while this engine's face spread 63.3, as shaded as the hair.
+
+Two changes were tried against that number, and the measurement decided which one mattered:
+
+| arm | spread | lit luma/sat | shadow luma/sat | shadow/lit |
+| --- | --- | --- | --- | --- |
+| reference | 36.4 | 236.1 / 0.102 | 196.7 / 0.157 | 0.83 |
+| shadow map OFF (the floor) | 10.9 | 235.8 / 0.060 | 201.9 / 0.210 | 0.86 |
+| before this slice | 63.3 | 235.4 / 0.055 | 182.3 / 0.228 | 0.77 |
+| falloff swapped to the face scalar, shadow kept | 63.3 | 235.4 / 0.055 | 182.3 / 0.228 | 0.77 |
+| ... and the face keeps 60% of the cast shadow | 33.5 | 235.3 / 0.056 | 191.3 / 0.210 | 0.81 |
+
+**The lever was the CAST SHADOW, not the falloff.** Turning the shadow map off collapses the face's spread
+to 10.9, i.e. the face's entire shading variation was the hair's shadow falling on it - the bangs painting a
+shadow across an anime face, which is exactly what the reference's face path does not do. Swapping the
+per-fragment falloff for the head-frame scalar (the reference's own mechanism, using the view as the head
+frame because a PMX has no head bone in the shader) measured as a NO-OP on this capture: this sun puts every
+face normal past the reference's own 0.25 threshold, so there was nothing for it to flatten. It is kept
+anyway - it is the reference's structure and it is what makes a face flat when the light grazes - and this
+paragraph is why a reviewer should not expect it to show up in the numbers above.
+
+What the numbers do show is that retaining 60% of the cast shadow lands the face within 3 of the reference's
+spread and pulls the shadow half from 182.3 to 191.3 (against 196.7). What is left is the lit half's
+saturation (0.056 against 0.102), which is not a flatness question at all - it is the pale albedo and the
+tonemapper, and no face path changes it.
+
+
 
 
 ## The outline, and the three things it cost

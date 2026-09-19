@@ -597,7 +597,23 @@ vec3 evaluate_direct_light(vec3 n, vec3 v, vec3 base_color, float metallic, floa
     //      roughness-dependent Oren-Nayar approximation (0 -> Lambert).
     vec3 radiance;
     if (warp) {
-        const float light_factor = smoothstep(0.0, 0.25, raw_ndotl);
+        const float ndotl_falloff = smoothstep(0.0, 0.25, raw_ndotl);
+        // ---- THE FLAT FACE (the reference's `- Face` group), which is a separate path there for exactly
+        // this reason: a face is nearly flat and its shading is PAINTED, so the reference does not let the
+        // surface normals shade it at all. Its mechanism is a face light map (R = a signed distance) whose
+        // value is compared against the light direction expressed in a HEAD frame, with a +/-0.025 window
+        // and a mirrored UV so the edge is symmetric.
+        //
+        // What this port keeps is that SHAPE of the mechanism; what it substitutes is the two inputs a PMX
+        // does not carry. There is no face SDF, so the "distance" collapses to a pair of thresholds, and
+        // there is no head bone in the shader, so the head frame is the VIEW's - the face of a portrait
+        // points at the camera. The result is ONE scalar for the whole face, which is the property the
+        // measurement was after: the reference's face spreads 36.4 luma between its p10 and p90 skin pixels
+        // while its own hair spreads 69.6, and the normal-driven face this engine had spread 63.3 - as
+        // shaded as the hair. `face_mask` is 0 or 1, so the non-face path is untouched bit for bit.
+        const vec3 face_forward = normalize(v); // v points from the surface at the eye: a portrait's face forward
+        const float face_light = smoothstep(-0.15, 0.35, dot(face_forward, l));
+        const float light_factor = mix(ndotl_falloff, face_light, face_mask);
         // THE BAND FACTOR, per texel where the reference's light map would supply it. A PMX has no light map,
         // so the band is derived from the surface's OWN albedo luminance - a darker material takes a deeper
         // shadow - which is the direction a painted light map goes, and the frame's toon_shadow_band_gain
@@ -853,7 +869,17 @@ vec3 shade_surface(shade_input s) {
         } else if (light[heap_light_slot].shadow_enabled > 0.5) {
             shadow = calc_shadow(s.world_pos, s.normal);
         }
-        direct += evaluate_direct_light(s.normal, v, s.albedo, s.metallic, s.roughness, f0, light[heap_light_slot].light_dir.xyz, vec3(7.5 * light[heap_light_slot].sun_intensity) * shadow, s.sphere_sample, s.face_mask);
+        // ---- THE FACE KEEPS ONLY PART OF THE CAST SHADOW, and that is what "flat" turned out to mean here.
+        // Measured on this asset with the skin mask's own p10..p90 spread: the whole face spreads 63.3 luma
+        // with the shadow map on and 10.9 with it off, i.e. the face's shading is almost ENTIRELY the hair's
+        // cast shadow on it - not the normals, not the diffuse falloff (changing those moved the number not
+        // at all). The reference's face spreads 36.4, in between, because its face path takes its factor
+        // from a painted light map rather than from the shadow map - the bangs do not paint a shadow on an
+        // anime face. So face materials retain `face_shadow_retain` of it: not all (that would overshoot
+        // flatter than the reference) and not none of the reference's own soft variation.
+        const float face_shadow_retain = 0.6;
+        const float sun_shadow = mix(shadow, 1.0, s.face_mask * (1.0 - face_shadow_retain));
+        direct += evaluate_direct_light(s.normal, v, s.albedo, s.metallic, s.roughness, f0, light[heap_light_slot].light_dir.xyz, vec3(7.5 * light[heap_light_slot].sun_intensity) * sun_shadow, s.sphere_sample, s.face_mask);
     }
     // punctual lights (point/spot, no shadow casting in this version): inverse-square falloff
     // (well-behaved at zero distance) with an optional smooth range cutoff; spots add a soft
