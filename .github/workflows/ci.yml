@@ -34,13 +34,19 @@ jobs:
       run:
         shell: msys2 {0}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Set up MSYS2 (clang64)
         uses: msys2/setup-msys2@v2
         with:
           msystem: clang64
-          update: true
+          # update: false - PINNED DELIBERATELY. This project is C++23 modules on clang+libc++ and its STL module is
+          # byte-bound to that libc++ (see vstd/README.md), so a CI that silently upgrades its toolchain tests a
+          # different toolchain than the one this project is developed against. Measured: with update: true the
+          # ASan+UBSan job returned ctest exit code 8 - eight failed tests, i.e. EVERY test aborting at start-up -
+          # while the same commands on the pinned local clang 22.1.8 pass 8/8. The sanitizer runtime ships with
+          # the toolchain, so pinning the toolchain is the fix.
+          update: false
           install: >-
             mingw-w64-clang-x86_64-clang
             mingw-w64-clang-x86_64-clang-tools-extra
@@ -83,16 +89,16 @@ jobs:
       - name: clang-tidy (pure-CPU modules, warnings are errors)
         run: >-
           clang-tidy -p build --warnings-as-errors='*'
-          app_config/app_config.cppm app_config/app_config.cpp
+          application_configuration/application_configuration.cppm application_configuration/application_configuration.cpp
           utility/data_block.cppm utility/utility.cppm utility/utility.cpp
-          utility/thread_pool/thread_pool.cppm utility/thread_pool/thread_pool.cpp
-          utility/BVH/bvh.cppm utility/BVH/bvh.cpp
+         utility/thread_pool/thread_pool.cppm
+         utility/BVH/bvh.cppm
           utility/frame_clock/frame_clock.cppm
           utility/frame_stats/frame_stats.cppm
           utility/better_pmr/better_pmr.cppm
 
       - name: Upload the Release executable
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: vulkan_render-windows-x64
           path: build/vulkan_render.exe
@@ -105,13 +111,19 @@ jobs:
       run:
         shell: msys2 {0}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Set up MSYS2 (clang64)
         uses: msys2/setup-msys2@v2
         with:
           msystem: clang64
-          update: true
+          # update: false - PINNED DELIBERATELY. This project is C++23 modules on clang+libc++ and its STL module is
+          # byte-bound to that libc++ (see vstd/README.md), so a CI that silently upgrades its toolchain tests a
+          # different toolchain than the one this project is developed against. Measured: with update: true the
+          # ASan+UBSan job returned ctest exit code 8 - eight failed tests, i.e. EVERY test aborting at start-up -
+          # while the same commands on the pinned local clang 22.1.8 pass 8/8. The sanitizer runtime ships with
+          # the toolchain, so pinning the toolchain is the fix.
+          update: false
           install: >-
             mingw-w64-clang-x86_64-clang
             mingw-w64-clang-x86_64-lld
@@ -181,4 +193,3 @@ jobs:
           ASAN_OPTIONS: halt_on_error=1
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
         run: ctest --test-dir build-asan --output-on-failure
-
