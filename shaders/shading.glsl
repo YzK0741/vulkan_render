@@ -914,9 +914,14 @@ vec3 shade_surface(shade_input s) {
     }
 
     // ---- IBL (split-sum): diffuse irradiance + prefiltered specular ----
-    vec3 ibl_diffuse = get_diffuse_light(shading_normal);
-    vec3 ibl_specular = ibl_specular_radiance(shading_normal, v, s.roughness);
-    vec3 fresnel_ibl = ibl_specular_fresnel(shading_normal, v, s.roughness, f0, 1.0);
+    // THE ENVIRONMENT USES THE GEOMETRIC NORMAL, not the flattened one: the flattened normal points at the
+    // camera, so an irradiance lookup along it samples the sky BEHIND THE VIEWER and washes a face with a
+    // hemisphere it never sees. The flattening is for the sun's cel ramp - the artistic term - while the
+    // environment is a property of where the surface actually points. Its irradiance is low-frequency, so
+    // the face stays flat either way.
+    vec3 ibl_diffuse = get_diffuse_light(s.normal);
+    vec3 ibl_specular = ibl_specular_radiance(s.normal, v, s.roughness);
+    vec3 fresnel_ibl = ibl_specular_fresnel(s.normal, v, s.roughness, f0, 1.0);
 
     // Metals have no diffuse term: diffuse ambient is scaled by (1 - metallic),
     // metal color comes entirely from specular environment (matches the official mix(dielectric, metal, metallic))

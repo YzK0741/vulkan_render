@@ -344,6 +344,12 @@ a fixed box: spread 25.9 -> 17.8 and mean luma 213.7 -> 222.3, and the dark lowe
 at build-release-clang64/gi-probe/ is gone. The sign of that axis is measured rather than reasoned about -
 `+view[2]` points AWAY from the eye in this engine's view matrix and the face went black.
 
+**The ENVIRONMENT keeps the geometric normal.** The flattened one points at the camera, so an irradiance
+lookup along it samples the sky BEHIND THE VIEWER - a hemisphere the face never sees. The flattening is for
+the sun's cel ramp, the artistic term; the environment is a property of where the surface actually points.
+Its irradiance is low-frequency, so the face stays flat either way (measured: face mean 235/221/214 ->
+235/220/211, i.e. a colour this small, but the lookup is now the right one).
+
 ### The painted set is wider than the face: the ears are in it too
 
 The face is not the only thing on this model that should be DRAWN rather than lit. 千夏's ears live in the
