@@ -6,7 +6,7 @@
 
 #include <string_view>
 
-import app_config;
+import application_configuration;
 
 namespace {
     void test_load_settings_applies_toml() {

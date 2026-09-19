@@ -12,10 +12,10 @@
 // ============================================================================
 
 // THE PRIMARY INTERFACE IS DELIBERATELY THIS SMALL. It re-exports the declarations and imports NO
-// implementation partition: under -Werror that import is an error in clang 22 (see core.decl.cppm's
+// implementation partition: under -Werror that import is an error in clang 22 (see core.declarations.cppm's
 // header), and it is unnecessary - CMake compiles every partition listed in the module's file set, so
 // the definitions in them are archived and the linker finds them. `import vulkan.core;` behaves exactly
 // as it did before the split, for all twelve importers.
 
 export module vulkan.core;
-export import :decl;
+export import :declarations;

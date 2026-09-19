@@ -40,9 +40,9 @@ import vulkan.pass.chain; // pass_chain: the chain the runtime owns its passes i
 import vulkan.pass.cluster;
 import vulkan.pass.deferred;
 import vulkan.pass.fxaa;
-import vulkan.pass.gbuffer_debug;
+import vulkan.pass.geometry_buffer_debug;
 import vulkan.pass.post;
-import vulkan.pass.rt_shadow;
+import vulkan.pass.ray_traced_shadow;
 import vulkan.pass.scene;
 import vulkan.pass.shadow;
 import vulkan.pass.megalights_trace;

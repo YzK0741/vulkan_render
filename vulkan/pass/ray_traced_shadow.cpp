@@ -21,7 +21,7 @@ module;
 #include <vector>
 #include <vulkan/vulkan.h>
 
-module vulkan.pass.rt_shadow;
+module vulkan.pass.ray_traced_shadow;
 
 import vulkan.render_resource;
 import vulkan.constant_init;

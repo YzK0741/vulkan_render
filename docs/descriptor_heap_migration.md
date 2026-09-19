@@ -285,9 +285,9 @@ change per site:
 | `vulkan/pass/mask_bake.cpp` | 128 |
 | `vulkan/pass/compute_skin.cpp` | 143 |
 | `vulkan/pass/fxaa.cpp` | 175 |
-| `vulkan/pass/gbuffer_debug.cpp` | 158 |
+| `vulkan/pass/geometry_buffer_debug.cpp` | 158 |
 | `vulkan/pass/deferred.cpp` | 173 |
-| `vulkan/pass/rt_shadow.cpp` | 204 |
+| `vulkan/pass/ray_traced_shadow.cpp` | 204 |
 | `vulkan/pass/megalights_trace.cpp` | 152 |
 | `vulkan/pass/megalights_temporal.cpp` | 217 |
 | `vulkan/pass/post.cpp` | 244, 356 |

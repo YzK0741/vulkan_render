@@ -1,7 +1,7 @@
 // module version: 0.3.0  (independent of the app version in CMakeLists project(VERSION))
 
 /**
- * @file vulkan/pass/gbuffer_debug.cppm
+ * @file vulkan/pass/geometry_buffer_debug.cppm
  * @brief The fifteenth real pass: the G-buffer debug view, which shows the stored surface one channel at a time.
  * @defgroup vulkan_pass_gbuffer_debug G-buffer Debug View Pass
  *
@@ -34,7 +34,7 @@ module;
 #include <string_view>
 #include <vulkan/vulkan.h>
 
-export module vulkan.pass.gbuffer_debug;
+export module vulkan.pass.geometry_buffer_debug;
 
 import vulkan.pass;
 import vulkan.render_resource;

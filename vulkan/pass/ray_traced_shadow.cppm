@@ -1,7 +1,7 @@
 // module version: 0.3.0  (independent of the app version in CMakeLists project(VERSION))
 
 /**
- * @file vulkan/pass/rt_shadow.cppm
+ * @file vulkan/pass/ray_traced_shadow.cppm
  * @brief The ninth real pass, and the only one that traces outside the chain: the ray-traced sun shadow.
  * @defgroup vulkan_pass_rt_shadow Ray-Traced Shadow Pass
  *
@@ -110,7 +110,7 @@ module;
 #include <string_view>
 #include <vulkan/vulkan.h>
 
-export module vulkan.pass.rt_shadow;
+export module vulkan.pass.ray_traced_shadow;
 
 import vulkan.pass;
 import vulkan.render_resource;

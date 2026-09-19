@@ -25,23 +25,23 @@ module;
 export module vulkan.runtime;
 
 import vulkan.profiling;
-import vulkan.pass;                   // the pass framework: the host the runner talks to, and the stage runner
-import vulkan.pass.taa;               // the second, and the first GRAPHICS one
-import vulkan.pass.scene;             // the third: the scene itself, whose work is DATA rather than a declaration
-import vulkan.pass.transparent;       // the fourth: the blended geometry, over the shaded frame
-import vulkan.pass.rt_shadow;         // the ninth, and the only pass that traces outside the chain: the ray-traced shadow
-import vulkan.pass.mask_bake;         // ... and the one-shot MASK bake, which is a JOB rather than a frame pass
-import vulkan.pass.compute_skin;      // ... and the compute-skinning job, which is a job for the same reason
-import vulkan.pass.gbuffer_debug;     // the fifteenth: the G-buffer debug view
-import vulkan.pass.shadow;            // the sixteenth: the directional shadow map, one depth-only cascade per layer
-import vulkan.pass.chain;             // the chain container: what holds a run of passes and its ORDER
-import vulkan.render_resource.shared; // the five samplers a pass's declaration chooses between
-import vulkan.frame_constants;        // one frame's shared constants, filled by the frame loop and read by passes
-import vulkan.shadow_fit;             // the cascade fit itself (pure CPU; the runtime gathers and caches)
-import vulkan.readback;               // GPU -> CPU buffer copies (the screenshot's staging buffer and read)
-import vulkan.acceleration_structure; // build_input_usage: the usage bits a structure build reads a buffer through
-import vulkan.ray_tracing;            // THE STRUCTURE PHASE: the structures, the caster map and the copies (a value this class owns)
-import vulkan.init_utils;             // the resource-creation patterns the init functions below repeat
+import vulkan.pass;                       // the pass framework: the host the runner talks to, and the stage runner
+import vulkan.pass.taa;                   // the second, and the first GRAPHICS one
+import vulkan.pass.scene;                 // the third: the scene itself, whose work is DATA rather than a declaration
+import vulkan.pass.transparent;           // the fourth: the blended geometry, over the shaded frame
+import vulkan.pass.ray_traced_shadow;     // the ninth, and the only pass that traces outside the chain: the ray-traced shadow
+import vulkan.pass.mask_bake;             // ... and the one-shot MASK bake, which is a JOB rather than a frame pass
+import vulkan.pass.compute_skin;          // ... and the compute-skinning job, which is a job for the same reason
+import vulkan.pass.geometry_buffer_debug; // the fifteenth: the G-buffer debug view
+import vulkan.pass.shadow;                // the sixteenth: the directional shadow map, one depth-only cascade per layer
+import vulkan.pass.chain;                 // the chain container: what holds a run of passes and its ORDER
+import vulkan.render_resource.shared;     // the five samplers a pass's declaration chooses between
+import vulkan.frame_constants;            // one frame's shared constants, filled by the frame loop and read by passes
+import vulkan.shadow_fit;                 // the cascade fit itself (pure CPU; the runtime gathers and caches)
+import vulkan.readback;                   // GPU -> CPU buffer copies (the screenshot's staging buffer and read)
+import vulkan.acceleration_structure;     // build_input_usage: the usage bits a structure build reads a buffer through
+import vulkan.ray_tracing;                // THE STRUCTURE PHASE: the structures, the caster map and the copies (a value this class owns)
+import vulkan.init_utils;                 // the resource-creation patterns the init functions below repeat
 export import vstd;
 export import vulkan.core;
 export import vulkan.core.filters;
@@ -49,7 +49,7 @@ export import vulkan.scene_tree;         // scene storage + the abstract leaf in
 export import vulkan.primitive;          // the GPU primitives + material/UBO records (peer module)
 export import vulkan.render_environment; // per-worker draw state (peer module)
 import utility;
-export import vulkan.gui; // optional debug overlay (gui_content): exported so callers can manage panels/widgets via debug_gui()
+export import vulkan.graphical_user_interface; // optional debug overlay (gui_content): exported so callers can manage panels/widgets via debug_gui()
 
 /**
  * @file runtime.cppm
@@ -1105,7 +1105,7 @@ namespace vulkan {
         // structures for it to feed.
         bool rt_skin_bake = false;
         // The ray-traced sun shadow pass (see shaders/rt_shadow.comp): its pipeline,
-        // push block's shape and its one-shot log line are the PASS's now (vulkan.pass.rt_shadow), and its
+        // push block's shape and its one-shot log line are the PASS's now (vulkan.pass.ray_traced_shadow), and its
         // member and stage are declared next to the other passes above. The renderer keeps two facts about it:
         // WHERE it sits (after the G-buffer pass, before the lighting stage - see the frame loop) and the
         // transition the lighting stage's heap slot needs on a frame where the pass does not run.

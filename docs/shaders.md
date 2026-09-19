@@ -256,7 +256,7 @@
  *   this device's compiler then drops it and reads the payload back uninitialised, so every escaped ray
  *   came back classified as occluded and the sun was killed on all the sunlit ground. One store per path -
  *   `rt_shadow.rchit` writes 1.0 for a hit, `rt_shadow.rmiss` writes 0.0 for a miss - and no raygen store.
- *   The four-arm measurement that isolated it is in `vulkan/pass/rt_shadow.cppm`.
+ *   The four-arm measurement that isolated it is in `vulkan/pass/ray_traced_shadow.cppm`.
  * - **Comments here are the reference.** Every non-obvious decision (bias choices, guards against
  *   NaN at grazing angles, banding, the gamma/encode split) is documented where it is implemented,
  *   and those comments are what Doxygen shows for the matching symbol.

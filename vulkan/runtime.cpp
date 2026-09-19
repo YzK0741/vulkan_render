@@ -3538,7 +3538,7 @@ namespace vulkan {
             // start from) and before the lighting stage (which multiplies the sun term by the result).
             // Running it before the G-buffer pass would mean starting rays from the PREVIOUS frame's
             // surface, so the position is not a detail - it is the ordering constraint. The PASS owns the
-            // recording (vulkan.pass.rt_shadow); what is this loop's is the position and the off path below.
+            // recording (vulkan.pass.ray_traced_shadow); what is this loop's is the position and the off path below.
             pass::stage const rt_shadow_stage = {.name = "rt_shadow", .passes = this->rt_shadow_stage, .marks = false};
             // THIS STAGE'S ONE FRAME-ORDER DUTY, done by the chain's OWNER now that the passes are its: this stage
             // may be the first sampler of the stored surface this frame, and whoever samples it FIRST publishes the
@@ -3658,7 +3658,7 @@ namespace vulkan {
 
         // G-buffer debug mode (an inspection of the stored data, never combined with the lighting
         // stage or TAA): turn one channel into a visible image in the HDR target. THE PASS owns the recording
-        // (vulkan.pass.gbuffer_debug); what stays here is the frame - the target's own transition (which has to
+        // (vulkan.pass.geometry_buffer_debug); what stays here is the frame - the target's own transition (which has to
         // happen even when the pass cannot draw, because the post chain samples that image), the two per-image
         // hand-backs its frame carries, and the fallback that clears the target when there is no set to draw with.
         if (this->gbuffer_pass_active() && !this->deferred_lit_active()) {
@@ -3733,7 +3733,7 @@ namespace vulkan {
     }
 
     // =============================================================================================
-    // THE G-BUFFER DEBUG VIEW (vulkan.pass.gbuffer_debug)
+    // THE G-BUFFER DEBUG VIEW (vulkan.pass.geometry_buffer_debug)
     // =============================================================================================
     //
     // THE G-BUFFER DEBUG VIEW'S RESOLVER AND ITS `ensure_inputs` CALLBACK ARE GONE (S3). Its declaration resolves

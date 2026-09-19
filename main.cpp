@@ -1,7 +1,7 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 import vstd;
-import app_config;
+import application_configuration;
 import chores; // demo bootstrap helpers (shader loading / dir locating / pipelines)
 import gltf_loader;
 import utility;          // re-exports utility.frame_clock / frame_stats / bvh / better_pmr / thread_pool / data_block

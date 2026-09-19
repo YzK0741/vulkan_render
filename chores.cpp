@@ -227,7 +227,7 @@ namespace chores {
             if (!gbuffer_result) {
                 utility::log("gbuffer pipeline disabled: {}", gbuffer_result.error());
             } else {
-                // The debug view is a PASS (vulkan.pass.gbuffer_debug): the app registers its two shaders and the
+                // The debug view is a PASS (vulkan.pass.geometry_buffer_debug): the app registers its two shaders and the
                 // pass builds its pipeline, which is all it owns. The samplers those declarations
                 // choose between are the device root's now (`core::create_samplers`).
                 load_shader(shaders_dir, "post.vert.spv", vertex_code);
@@ -278,7 +278,7 @@ namespace chores {
 
             // Ray-traced sun shadows: one ray per pixel against the scene's acceleration structures. IT IS A
             // PASS, so its shaders have to be registered BEFORE create_passes() below - the pass builds its own
-            // ray-tracing pipeline from them (see vulkan.pass.rt_shadow), and a pass created
+            // ray-tracing pipeline from them (see vulkan.pass.ray_traced_shadow), and a pass created
             // before its shaders exist builds nothing and says so. Optional, and the builder refuses on a device
             // without a ray-tracing pipeline: without it the cascaded shadow maps keep running.
             std::vector<unsigned char> rt_shadow_raygen_code;

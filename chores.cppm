@@ -5,7 +5,7 @@ module;
 export module chores;
 
 export import vstd;
-import app_config;
+import application_configuration;
 import utility;
 import vulkan.animation; // setup_gui builds the animation playback controls
 import vulkan.runtime;

@@ -1,5 +1,5 @@
 // ============================================================================
-// module: vulkan.gui
+// module: vulkan.graphical_user_interface
 // module version: 0.4.1  (independent of the app version in CMakeLists project(VERSION))
 //
 // Dear ImGui debug overlay: widget / panel layer driven from the runtime's frame
@@ -14,14 +14,14 @@ module;
 #include <vulkan/vulkan.h>
 
 // GLFWwindow is used as an opaque pointer in gui_create_info; glfw3.h itself is only included
-// in gui.cpp (the platform backend calls). A forward declaration keeps this interface light.
+// in graphical_user_interface.cpp (the platform backend calls). A forward declaration keeps this interface light.
 struct GLFWwindow;
 
-export module vulkan.gui;
+export module vulkan.graphical_user_interface;
 export import vstd;
 
 /**
- * @file gui.cppm
+ * @file graphical_user_interface.cppm
  * @defgroup vulkan_gui Vulkan Debug GUI
  * @brief Dear ImGui integration for the vulkan runtime: owns the ImGui context, the GLFW +
  *        Vulkan backends and the per-frame recording slot, and exposes a small widget/panel
@@ -70,7 +70,7 @@ namespace vulkan::gui {
      *        "for each widget: widget->draw()" — new controls only add a subclass
      *        (same pattern as scene_tree::primitive / normal_draw_primitive).
      * @note draw() is called once per frame inside debug_panel::draw(); implementations call
-     *       the ImGui API directly (see gui.cpp)
+     *       the ImGui API directly (see graphical_user_interface.cpp)
      */
     export class widget {
     public:
@@ -213,7 +213,7 @@ namespace vulkan::gui {
          *        so a later resize within this session overrides it
          * @param width,height desired default size; pass 0 for either to keep ImGui's auto-size
          * @note nothing outlives the run: the overlay disables ImGui's .ini persistence
-         *       (io.IniFilename = nullptr in gui.cpp), so these values are the size at the start of
+         *       (io.IniFilename = nullptr in graphical_user_interface.cpp), so these values are the size at the start of
          *       every run and there is no file for a user resize to come back from
          */
         void set_default_size(float width, float height) noexcept;
@@ -240,7 +240,7 @@ namespace vulkan::gui {
     export class gui_content {
     public:
         gui_content() noexcept = default;
-        ~gui_content(); // shuts the overlay down (see gui.cpp); safe on a default-constructed object
+        ~gui_content(); // shuts the overlay down (see graphical_user_interface.cpp); safe on a default-constructed object
         gui_content(gui_content const&) = delete;
         gui_content& operator=(gui_content const&) = delete;
 

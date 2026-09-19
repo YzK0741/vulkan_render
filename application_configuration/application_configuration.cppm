@@ -14,12 +14,12 @@ module;
 // so including it in the global module fragment works under the project flags.
 #include <toml++/toml.hpp>
 
-export module app_config;
+export module application_configuration;
 export import vstd;
 import utility;
 
 /**
- * @file app_config.cppm
+ * @file application_configuration.cppm
  * @defgroup app_config Application Startup Config
  * @brief load vulkan_render startup settings from a TOML file, merged with command-line
  *        arguments (--config <path> overrides the default file; explicit argv values for the

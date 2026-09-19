@@ -5,7 +5,7 @@ module;
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_vulkan.h>
 
-module vulkan.gui;
+module vulkan.graphical_user_interface;
 
 import utility;
 import vulkan.constant_init;

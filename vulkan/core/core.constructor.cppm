@@ -8,8 +8,8 @@
 // layout, the pipelines or the queries - those are not construction.
 //
 // THE TWO IMPORTS ON THIS LINE AND THE glm INCLUDE ARE NOT DECORATION. A partition does NOT see the
-// primary interface, and imports are NOT transitive: the declarations come from `import :decl;`, and
-// `utility` (whose log() this code calls) is imported by :decl NON-exported, so it has to be imported
+// primary interface, and imports are NOT transitive: the declarations come from `import :declarations;`, and
+// `utility` (whose log() this code calls) is imported by :declarations NON-exported, so it has to be imported
 // again here. The glm include is the one core.cpp explains at length: without it this translation unit
 // sees TWO operator new(size_t, align_val_t) declarations under -fno-exceptions with the vendored std
 // module and resolves NEITHER.
@@ -32,7 +32,7 @@ module;
 
 module vulkan.core:constructor;
 
-import :decl;
+import :declarations;
 import utility;
 import vulkan.core.pipeline;
 import vulkan.core.init_utils;

@@ -13,7 +13,7 @@ module;
 #include <string>
 #include <vulkan/vulkan.h>
 
-module vulkan.pass.gbuffer_debug;
+module vulkan.pass.geometry_buffer_debug;
 
 import vulkan.constant_init;
 import vulkan.pipelines; // build_gbuffer_debug: the view pipeline, and that is all the pass takes from the builder

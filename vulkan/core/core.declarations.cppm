@@ -1,5 +1,5 @@
 // ============================================================================
-// module: vulkan.core:decl  - the INTERFACE PARTITION of vulkan.core
+// module: vulkan.core:declarations  - the INTERFACE PARTITION of vulkan.core
 //
 // The declarations live here so the implementation halves can be partitions: a partition does not
 // see the primary interface on its own, so every implementation partition imports THIS one.
@@ -32,7 +32,7 @@ module;
 #include <memory>
 #include <vulkan/vulkan.h>
 
-export module vulkan.core:decl;
+export module vulkan.core:declarations;
 import utility;
 export import vstd;
 export import vulkan.core.handles;

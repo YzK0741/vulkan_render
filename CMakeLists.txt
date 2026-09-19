@@ -100,10 +100,10 @@ target_sources(app_config
     PUBLIC
         FILE_SET CXX_MODULES
         FILES
-        app_config/app_config.cppm
+        application_configuration/application_configuration.cppm
 
     PRIVATE
-        app_config/app_config.cpp
+        application_configuration/application_configuration.cpp
 )
 
 # The engine core library (vulkancorekit): Vulkan object management + math + the runtime
@@ -118,7 +118,7 @@ target_sources(vulkancorekit
         FILE_SET CXX_MODULES
         FILES
         vulkan/core/core.cppm
-    vulkan/core/core.decl.cppm
+    vulkan/core/core.declarations.cppm
     vulkan/core/core.constructor.cppm
         vulkan/core/filter/filters.cppm
         vulkan/core/vma/vma.cppm
@@ -142,14 +142,14 @@ target_sources(vulkancorekit
         vulkan/pass/transparent.cppm
         vulkan/pass/megalights_trace.cppm
         vulkan/pass/megalights_temporal.cppm
-        vulkan/pass/rt_shadow.cppm
+        vulkan/pass/ray_traced_shadow.cppm
         vulkan/pass/mask_bake.cppm
         vulkan/pass/compute_skin.cppm
         vulkan/pass/cluster.cppm
         vulkan/pass/deferred.cppm
         vulkan/pass/post.cppm
         vulkan/pass/fxaa.cppm
-        vulkan/pass/gbuffer_debug.cppm
+        vulkan/pass/geometry_buffer_debug.cppm
         vulkan/pass/shadow.cppm
         vulkan/pass/chain.cppm
         vulkan/render_start_demo/render_start_demo.cppm
@@ -162,7 +162,7 @@ target_sources(vulkancorekit
         vulkan/scene_tree/scene_tree.cppm
         vulkan/primitive/primitive.cppm
         vulkan/render_environment/render_environment.cppm
-        vulkan/gui/gui.cppm
+        vulkan/graphical_user_interface/graphical_user_interface.cppm
         vulkan/animation/controller.cppm
     PRIVATE
         vulkan/core/core.cpp
@@ -181,14 +181,14 @@ target_sources(vulkancorekit
         vulkan/pass/transparent.cpp
         vulkan/pass/megalights_trace.cpp
         vulkan/pass/megalights_temporal.cpp
-        vulkan/pass/rt_shadow.cpp
+        vulkan/pass/ray_traced_shadow.cpp
         vulkan/pass/mask_bake.cpp
         vulkan/pass/compute_skin.cpp
         vulkan/pass/cluster.cpp
         vulkan/pass/deferred.cpp
         vulkan/pass/post.cpp
         vulkan/pass/fxaa.cpp
-        vulkan/pass/gbuffer_debug.cpp
+        vulkan/pass/geometry_buffer_debug.cpp
         vulkan/pass/shadow.cpp
         vulkan/render_start_demo/render_start_demo.cpp
         vulkan/shadow_fit/shadow_fit.cpp
@@ -197,7 +197,7 @@ target_sources(vulkancorekit
         vulkan/ray_tracing/ray_tracing.cpp
         vulkan/scene_tree/scene_tree.cpp
         vulkan/primitive/primitive.cpp
-        vulkan/gui/gui.cpp
+        vulkan/graphical_user_interface/graphical_user_interface.cpp
         vulkan/animation/controller.cpp
         third_party/spirv-reflect/spirv_reflect.c
 )
@@ -464,7 +464,7 @@ if(VR_BUILD_TESTS)
     # source root for fixture/model paths (tests no longer assume the repo root is the cwd)
     target_compile_definitions(test_app_config PRIVATE VR_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
     target_compile_definitions(test_gltf_loader PRIVATE VR_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
-    # test_render_resources reads shaders/heap_slots.glsl and vulkan/core/core.decl.cppm to compare the slot grid's two
+    # test_render_resources reads shaders/heap_slots.glsl and vulkan/core/core.declarations.cppm to compare the slot grid's two
     # sources of truth (see the last block of that test): both are text, neither is generated from the other.
     target_compile_definitions(test_render_resources PRIVATE VR_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 
@@ -542,7 +542,7 @@ target_compile_options(gltf_loader PRIVATE -Wno-unused-parameter)
 # `static_cast<size_t>(log10(val))`, and for a float in (0, 1) - e.g. the DEFAULT
 # `clear_color = [0.02, 0.02, 0.03]` - log10 is negative, so the cast is UB
 # ("-1.69897 is outside the range of representable values of type 'unsigned long long'",
-# toml++/impl/toml_formatter.inl:94). It is reachable from app_config.cpp:29 alone, which dumps every
+# toml++/impl/toml_formatter.inl:94). It is reachable from application_configuration.cpp:29 alone, which dumps every
 # key of the loaded file into the log. Upstream's bug, not this project's - and it fires from a
 # default config value, so it is not a corner case.
 #
@@ -591,7 +591,7 @@ find_program(CLANG_FORMAT_EXECUTABLE clang-format)
 if(CLANG_FORMAT_EXECUTABLE)
     file(GLOB_RECURSE PROJECT_FORMAT_SOURCES CONFIGURE_DEPENDS
             ${CMAKE_CURRENT_SOURCE_DIR}/main.cpp
-            ${CMAKE_CURRENT_SOURCE_DIR}/app_config/*.cpp*
+            ${CMAKE_CURRENT_SOURCE_DIR}/application_configuration/*.cpp*
             ${CMAKE_CURRENT_SOURCE_DIR}/gltf_loader/*.cpp*
             ${CMAKE_CURRENT_SOURCE_DIR}/utility/*.cpp*
             ${CMAKE_CURRENT_SOURCE_DIR}/vulkan/*.cpp*
@@ -677,7 +677,7 @@ set(VR_SHADER_INCLUDES
     # ibl_specular.glsl is included by shading.glsl, so it belongs here for the same reason the three above
     # do: editing it alone must not leave stale SPIR-V behind.
     "${VR_SHADER_SRC_DIR}/ibl_specular.glsl"
-    # heap_slots.glsl is the SLOT GRID's shader-side source of truth (core.decl.cppm is the host's): a shader that
+    # heap_slots.glsl is the SLOT GRID's shader-side source of truth (core.declarations.cppm is the host's): a shader that
     # includes it and is not rebuilt after it changes would index the heap by stale numbers, which validation
     # cannot see. The C++ side is compared against it by a test (see test_render_resources).
     "${VR_SHADER_SRC_DIR}/heap_slots.glsl"

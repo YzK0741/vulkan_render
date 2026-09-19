@@ -3,7 +3,7 @@ module;
 #include <sstream>
 #include <toml++/toml.hpp>
 
-module app_config;
+module application_configuration;
 
 import utility;
 
