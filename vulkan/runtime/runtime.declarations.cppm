@@ -8,7 +8,7 @@
 // ============================================================================
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.80.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.81.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -834,6 +834,11 @@ namespace vulkan {
         // map the reference reads its band from. 0 = the frame-wide constant, the compiled default.
         // Copied into light_state.npr_rim.w every frame.
         float toon_shadow_band_gain = 0.0f;
+        // A SCALE on the sun's radiance, which is the constant 7.5 in shade_surface times the light UBO's
+        // sun_intensity lane - a lane that used to be only on/off (0 in furnace mode), so the sun's
+        // brightness had no knob at all and a lit surface landed at albedo/pi * 7.5 = 2.4x its albedo,
+        // deep in the tonemapper's flat, desaturating region. 1.0 = the constant as it always was.
+        float sun_intensity = 1.0f;
         // The OUTLINE (runtime::set_outline; see docs/zzz_shading.md): the hull's colour and its width in
         // world units. 0 width = no hull is recorded at all, which is the compiled default and what keeps a
         // frame that does not ask for an outline byte-identical to one recorded before it existed.
@@ -2131,6 +2136,17 @@ namespace vulkan {
          * @note same timing rule as set_toon_shading: CPU-side, copied into the light UBO every frame
          */
         void set_toon_warp(glm::vec3 const& shadow_tint, float rim, float shadow_band = 0.3f, float specular = 0.0f, float shadow_band_gain = 0.0f) noexcept;
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief a scale on the sun's radiance, i.e. the shading path's constant 7.5 (see set_exposure)
+         * @param scale 1.0 = the constant unchanged, which is the default and what the gate's references
+         *        were recorded with; 0 disables the sun entirely (what `furnace` mode does)
+         * @note the sun's brightness was previously not a knob at all - the light UBO's sun_intensity
+         *       lane was only ever written as 0 or 1 - and a lit surface therefore always landed at
+         *       albedo/pi * 7.5 = 2.4x its albedo, deep in the tonemapper's flat, desaturating region
+         */
+        void set_sun_intensity(float scale) noexcept;
 
         /**
          * @ingroup vulkan_runtime

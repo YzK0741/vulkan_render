@@ -26,6 +26,7 @@ namespace {
         // ZZZ-style NPR: this fixture is the one that proves the four keys are READ (three of them are
         // neutral in the generated defaults, so a parser that ignored them would read the same values).
         CHECK(settings.render.exposure > 0.749f && settings.render.exposure < 0.751f);
+        CHECK(settings.render.sun_intensity > 0.799f && settings.render.sun_intensity < 0.801f);
         CHECK(settings.render.toon_steps == 5);
         CHECK(settings.render.toon_softness > 0.049f && settings.render.toon_softness < 0.051f);
         CHECK(settings.render.toon_shadow_tint[0] > 0.549f && settings.render.toon_shadow_tint[0] < 0.551f);
@@ -163,6 +164,7 @@ namespace {
         // is the NEUTRAL value - which is the property that matters here, because a neutral value is what
         // leaves the shading plain PBR (see docs/zzz_shading.md and the light UBO's npr_ lanes).
         CHECK(settings.render.exposure == 1.0f);
+        CHECK(settings.render.sun_intensity == 1.0f);
         CHECK(settings.render.toon_steps == 0);
         CHECK(settings.render.toon_softness > 0.14f && settings.render.toon_softness < 0.16f);
         CHECK(settings.render.toon_shadow_tint[0] == 1.0f && settings.render.toon_shadow_tint[1] == 1.0f && settings.render.toon_shadow_tint[2] == 1.0f);

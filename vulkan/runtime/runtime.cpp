@@ -944,6 +944,10 @@ namespace vulkan {
         this->toon_softness = std::clamp(softness, 0.01f, 0.5f);
     }
 
+    void runtime::set_sun_intensity(float const scale) noexcept {
+        this->sun_intensity = std::clamp(scale, 0.0f, 3.0f);
+    }
+
     void runtime::set_toon_warp(glm::vec3 const& shadow_tint, float const rim, float const shadow_band, float const specular, float const shadow_band_gain) noexcept {
         // All four are "off" at their neutral value, and that is deliberate rather than a convenience: the
         // shader branches on `toon_steps` alone, so a stock config (toon_steps 0) compiles and records

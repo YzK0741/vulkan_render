@@ -1,6 +1,6 @@
 // ============================================================================
 // module: app_config
-// module version: 0.34.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.35.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // Startup configuration: TOML file (config.toml / --config) merged with argv.
 // Pure CPU, no Vulkan dependency.
@@ -140,6 +140,10 @@ namespace app_config {
         // render needs it reproducible: it decides how far into the tonemapper's flat, desaturating
         // region the lit side sits, which is measurable (see docs/zzz_shading.md).
         float exposure = 1.0f;
+        // A scale on the sun's radiance (the shading path's constant 7.5). The reference render's lit side is
+        // cooler than ours in the tonemapper's sense - ours sits deep in the flat, desaturating region - and
+        // this is the knob for that, independent of the exposure, which scales the whole frame.
+        float sun_intensity = 1.0f;
         float toon_rim = 0.0f;
         // The reference's own two shading parameters, which a ZZZ model carries in its ILM light map and a
         // PMX does not: the band factor its five-colour shadow cascade is walked with (0 = its deepest

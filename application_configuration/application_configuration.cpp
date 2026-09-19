@@ -224,6 +224,11 @@ namespace app_config {
             }
             // the reference's own two shading parameters (see docs/zzz_shading.md): its light-map band and
             // its highlight mask, which this engine substitutes frame-wide because a PMX carries neither
+            if (toml::node const* node = render->get("sun_intensity")) {
+                if (std::optional<double> const value = node->value<double>()) {
+                    settings.render.sun_intensity = static_cast<float>(std::clamp(*value, 0.0, 3.0));
+                }
+            }
             if (toml::node const* node = render->get("exposure")) {
                 if (std::optional<double> const value = node->value<double>()) {
                     settings.render.exposure = static_cast<float>(std::clamp(*value, 0.05, 4.0));
