@@ -69,8 +69,26 @@ module;
 #include <algorithm>
 #include <any>
 #include <array>
-#if VSTD_HAS_ATOMIC_HEADER
-#  include <atomic>
+// THE HEADER THE TOOLCHAIN MAY NOT HAVE YET, which is why this is an __has_include and not a VSTD_*
+// flag: libc++ 22.1.8 does not ship <stdfloat> at all (the negative check further down is what says
+// so), while libstdc++ 16.2.0 ships it and defines every __STDCPP_*_T__ macro with it. The partition
+// std/stdfloat.inc is guarded by those STANDARD macros, so without this include it is active under
+// libstdc++ while nothing has declared the names - measured: five errors, "float16_t has not been
+// declared in 'std'". Including it under __has_include is what makes the whitelist and the partition
+// agree on both toolchains.
+#if defined(__has_include)
+#  if __has_include(<stdfloat>)
+#    include <stdfloat>
+#  endif
+#endif
+// The same reasoning, and it was luck rather than agreement before: <atomic> was included under a
+// toolchain FLAG (`VSTD_HAS_ATOMIC_HEADER`, libc++'s own, undefined under libstdc++) while
+// std/atomic.inc is included unconditionally - it survived only because libstdc++ happens to declare
+// std::atomic through other headers. __has_include asks the question that actually matters.
+#if defined(__has_include)
+#  if __has_include(<atomic>)
+#    include <atomic>
+#  endif
 #endif
 #include <bit>
 #include <cctype>

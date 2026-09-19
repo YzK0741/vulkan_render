@@ -155,7 +155,15 @@ export namespace std {
     //   undefined if overload resolution selects a program-defined operator|
     //   function.
     // This is used internally in C++20 mode.
+#if VSTD_IMPLEMENTATION_LIBCXX
+    // LIBC++-ONLY BY NECESSITY, not by preference: libc++ declares this operator in std::ranges and
+    // it can be named, while libstdc++ implements it as a HIDDEN FRIEND of its range-adaptor closure
+    // type - measured, `using std::views::operator|;` and `using std::ranges::operator|;` both fail
+    // there, and a hidden friend is reachable by ADL only and cannot be re-exported by name at all.
+    // Pipelines still work on that toolchain (`views::a | views::b`); what cannot be done there is to
+    // NAME std::ranges::operator|.
     using std::ranges::operator|;
+#endif
 #if VSTD_STD_VER >= 23
     // [range.adaptor.object], range adaptor objects
     using std::ranges::range_adaptor_closure;

@@ -25,7 +25,13 @@ export namespace std {
   using std::system VSTD_USING_IF_EXISTS;
 
   // [c.malloc], C library memory allocation
+#if VSTD_HAS_STD_ALIGNED_ALLOC
+  // libstdc++ 16.2.0 keeps aligned_alloc in the GLOBAL namespace only (measured), so this line needs
+  // the capability test rather than the VSTD_USING_IF_EXISTS suffix: the suffix is libc++'s
+  // __attribute__((using_if_exists)), which GCC does not have, so there it expands to nothing and a
+  // missing name is a hard error.
   using std::aligned_alloc VSTD_USING_IF_EXISTS;
+#endif
   using std::calloc VSTD_USING_IF_EXISTS;
   using std::free VSTD_USING_IF_EXISTS;
   using std::malloc VSTD_USING_IF_EXISTS;

@@ -95,6 +95,10 @@
 #  ifdef _LIBCPP_NO_LOCK_FREE_TYPES
 #    define VSTD_NO_LOCK_FREE_TYPES _LIBCPP_NO_LOCK_FREE_TYPES
 #  endif
+// std::aligned_alloc: libc++ declares it in <cstdlib>; libstdc++ 16.2.0 keeps it in the GLOBAL
+// namespace only (measured with `using std::aligned_alloc;`), and no feature-test macro covers it, so
+// this is a library fact rather than a standard one.
+#  define VSTD_HAS_STD_ALIGNED_ALLOC 1
 #  ifdef _LIBCPP_HAS_EXPERIMENTAL_SYNCSTREAM
 #    define VSTD_HAS_EXPERIMENTAL_SYNCSTREAM _LIBCPP_HAS_EXPERIMENTAL_SYNCSTREAM
 #  endif
@@ -161,6 +165,9 @@
 #  endif
 #  if __has_include(<atomic>)
 #    define VSTD_HAS_ATOMIC_HEADER 1
+  // (no VSTD_HAS_STD_ALIGNED_ALLOC here ON PURPOSE: libstdc++ 16.2.0 does not put aligned_alloc in
+  // std, and the partition guards its line on this name, so leaving it undefined is what makes that
+  // line vanish. Re-measure on a libstdc++ upgrade and define it if the deviation is fixed.)
 #  endif
 
 #endif // _LIBCPP_VERSION
