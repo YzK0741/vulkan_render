@@ -47,12 +47,21 @@
 
 module;
 
-#include <__config>
+// <__config> IS LIBC++-ONLY, and that made this one line the first thing a non-libc++ toolchain
+// failed on: "fatal error: __config: No such file or directory" from g++ 16 on the very first
+// compile. It is still included first where it exists, because it is what defines _LIBCPP_VERSION and
+// the _LIBCPP_HAS_* flags the portability layer below reads; elsewhere it is simply absent, and the
+// layer takes its other branch.
+#if defined(__has_include)
+#  if __has_include(<__config>)
+#    include <__config>
+#  endif
+#endif
 
-// THE PORTABILITY LAYER, and the reason it sits exactly here: <__config> is what makes the
-// toolchain's own capability macros exist, and every partition below is written against the VSTD_*
-// spelling this file defines - which under libc++ IS the _LIBCPP_* macro, so this changes nothing
-// here and everything for a toolchain that is not libc++ (see vstd/vstd_compat.inc).
+// THE PORTABILITY LAYER, and the reason it sits exactly here: <__config> (where the toolchain has one)
+// is what makes the toolchain's own capability macros exist, and every partition below is written
+// against the VSTD_* spelling this file defines - which under libc++ IS the _LIBCPP_* macro, so this
+// changes nothing here and everything for a toolchain that is not libc++ (see vstd/vstd_compat.inc).
 #include "vstd_compat.inc"
 
 // The headers of Table 24: C++ library headers [tab:headers.cpp]
