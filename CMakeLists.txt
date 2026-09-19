@@ -134,6 +134,8 @@ target_sources(vulkancorekit
     vulkan/runtime.declarations.cppm
     vulkan/runtime.constructor.cppm
     vulkan/runtime.probes.cppm
+    vulkan/runtime.frames.cppm
+    vulkan/runtime.readback.cppm
         vulkan/bindings/bindings.cppm
         vulkan/pipelines/pipelines.cppm
         vulkan/render_resource/render_resource.cppm
