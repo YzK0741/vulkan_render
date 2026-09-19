@@ -455,37 +455,6 @@ namespace vulkan {
          */
         VkDeviceSize heap_texture_array_offset = VK_WHOLE_SIZE;
         VkDeviceSize heap_material_table_offset = VK_WHOLE_SIZE;
-        /**
-         * @brief THE SCENE BLOCK: one descriptor per scene binding, per frame slot
-         *
-         * @note MEASURED, and it is the hazard that shaped this layout: a heap-native stage reads the HEAP for
-         *       every binding it declares, so a slot nobody wrote comes back as garbage - or, for an image, as
-         *       nothing at all. The white fallback texture is the case that was measured: its slot stayed empty,
-         *       every material with a missing map sampled it and read zero, and the frame went black with
-         *       validation SILENT (docs/descriptor_heap_handover.md has the symptom, the cause and the numbers).
-         *       There is no half-way state to fall back to either - every stage is heap-native, so every slot a
-         *       stage names has to have been written.
-         *
-         * @note ONE DESCRIPTOR PER BINDING, at `heap_scene_binding_offset[binding]` inside the slot's block: the
-         *       strides differ by KIND (a buffer descriptor is smaller than an image one), so the offsets are
-         *       computed once here rather than derived from the binding number later. The per-SLOT part matters
-         *       because the scene block is per frame slot (the camera and light UBOs, the visibility images, the
-         *       TLAS and the instance table are all rewritten per slot), and WHICH slot a stage reads is the index
-         *       it pushes in its own block (`vkCmdPushDataEXT`, the `heap_frame_slot` lane that
-         *       `shaders/heap_slots.glsl` aliases) - one pushed index per frame instead of one pipeline per slot.
-         *
-         * @note DEAD RESERVATION, left here rather than quietly deleted: the writes that used to fill this region
-         *       now go to the GRID slots instead (`runtime::write_heap_scene_buffer` takes
-         *       `core::heap_slots::scene_camera` and its neighbours, which live at the grid's base, not at
-         *       `heap_scene_block_base`), and nothing reads the region - not the host, not a shader. It costs 2 x
-         *       `heap_scene_slot_stride` bytes and is logged at startup. Removing it is a code change
-         *       (core.cpp's reservation and the two members), not a doc one, so it is recorded here for whoever
-         *       makes that pass.
-         */
-        VkDeviceSize heap_scene_block_base = VK_WHOLE_SIZE;
-        VkDeviceSize heap_scene_slot_stride = 0;
-        /// @brief the offset of scene binding b inside a slot's block, or VK_WHOLE_SIZE when the heap has no slot for it
-        std::array<VkDeviceSize, 18> heap_scene_binding_offset = {};
 
         /**
          * @brief THE SLOT GRID: where every descriptor this renderer uses lives, in SLOTS of @ref heap_slot_stride

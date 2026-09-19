@@ -536,8 +536,7 @@ namespace vulkan {
          * per-slot binding's entry must name THAT slot's buffer - so this walks the per-slot vector, takes each
          * buffer's device address and writes it at `heap_slot_offset(slot_base + slot)`: one GRID slot per frame in
          * flight, which is exactly where the shaders read it (`heap_slots_scene_camera + heap_frame_slot` and its
-         * neighbours). It does NOT write `core::heap_scene_block_base` - that region is reserved and unread, see
-         * the note on it in core.cppm. The heap is the only path now, so "the heap is not in use" is a startup
+         * neighbours). The heap is the only path now, so "the heap is not in use" is a startup
          * failure rather than a quiet fall back to a descriptor set.
          */
         void write_heap_scene_buffer(core& vk, std::vector<vk_buffer> const& buffers, uint32_t const slot_base, VkDeviceSize const size, VkDescriptorType const type) {

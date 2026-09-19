@@ -44,18 +44,24 @@ writes a GPU timestamp into a per-frame-slot query pool, and the values are read
 slot completed and averaged over a 60-frame window (logged and shown in the overlay). Every
 rendering feature below is steered by those numbers rather than by guesswork.
 
-The renderer is being evolved toward a deferred pipeline, one milestone at a time. **M1 (done)** is
+The renderer was evolved to a deferred pipeline one milestone at a time, and **the G-buffer path is now
+the ONLY scene path** - the forward one was removed in commit `78b6737` ("the G-buffer path is the only
+scene path, and the forward one is gone") - so everything below describes what the engine does rather
+than what it is becoming. **M1 (done)** is
 the G-buffer: the opaque pass stores the surface (albedo/metallic, world normal/roughness, material
 id/AO/flags) in three 1x targets, with a channel debug view. **M2 (done)** is the deferred lighting
 stage: `shaders/deferred.frag` shades every pixel from those targets and adds the result into the HDR
-target (sky where no geometry wrote depth), through the *same* function the forward path calls
-(`shaders/shading.glsl`), with emissive added by the base pass and the material-surface gather shared
-in `shaders/surface.glsl`. The forward path stays as the A/B reference - measured on Sponza the two
-agree to 0.32/255 mean absolute luminance difference. **M3 (done)** is temporal anti-aliasing on that
-path: a Halton(2,3) projection jitter, per-pixel camera motion vectors written by the G-buffer, and
-`shaders/taa.frag` resolving the jitter against a reprojected, neighborhood-clamped history (with a
-view-depth guard for disocclusions) - measured against the same frame without TAA, 1.05/255 mean
-difference with 9% less high-frequency energy, and the previous forward path byte-identical. TAA is
+target (sky where no geometry wrote depth), through `shade_surface()` - the SINGLE lighting entry point
+(`shaders/shading.glsl`) that every shading stage in the engine now calls - with emissive added by the
+base pass and the material-surface gather shared in `shaders/surface.glsl`. While the forward path
+still existed the two were A/B references and agreed to 0.32/255 mean absolute luminance difference on
+Sponza; that number is a HISTORICAL measurement, not a current comparison - there is no longer a second
+path to compare against, the shared shading code simply IS the path. **M3 (done)** is temporal
+anti-aliasing on that path: a Halton(2,3) projection jitter, per-pixel camera motion vectors written by
+the G-buffer, and `shaders/taa.frag` resolving the jitter against a reprojected, neighborhood-clamped
+history (with a view-depth guard for disocclusions) - measured against the same frame without TAA,
+1.05/255 mean difference with 9% less high-frequency energy, and, as the measurement was taken at the
+time, the then-still-present forward path byte-identical. TAA is
 the engine's anti-aliasing because a 1x G-buffer cannot be multisampled. **M4 (done)** is cascaded
 shadow maps: the
 sun's shadow pass fills a layered 2D-array depth map (1..4 cascades, three by default), each cascade

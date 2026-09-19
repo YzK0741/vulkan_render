@@ -99,21 +99,28 @@
  *
  * @section shader_shading The shared lighting (shading.glsl)
  *
- * `pbr.frag` (forward) and `deferred.frag` (deferred) shade a surface through the SAME function,
- * `shade_surface()` in `shaders/shading.glsl`: the directional sun through the shadow test, the
- * punctual lights, the split-sum IBL ambient, the selectable BRDF/diffuse presets and the cel-shading
- * bands. The include declares the bindings a shading stage needs (0 camera UBO, 2/3/4 the IBL maps,
- * 7 the light UBO, 8 the shadow map) and takes a `shade_input` - world position, normal, albedo,
- * emissive, metallic, roughness, AO. The forward path fills that from its interpolated fragment
- * inputs, the deferred path from G-buffer texels; the lighting cannot tell the difference, which is
- * what makes the two render paths comparable instead of merely similar.
+ * `shade_surface()` in `shaders/shading.glsl` is the engine's SINGLE lighting entry point: the
+ * directional sun through the shadow test, the punctual lights, the split-sum IBL ambient, the
+ * selectable BRDF/diffuse presets and the cel-shading bands. It takes a `shade_input` - world position,
+ * normal, albedo, emissive, metallic, roughness, AO - which the caller fills from whatever it has (the
+ * deferred path from G-buffer texels, a forward-style stage from its interpolated fragment inputs), so
+ * the lighting cannot tell where the surface came from. The include reaches the resources it needs
+ * through the descriptor heap, with `shaders/heap_slots.glsl` naming the slots (the camera UBO, the IBL
+ * maps, the light UBO and the shadow map).
+ *
+ * This section used to read ONE FUNCTION, TWO PATHS - `pbr.frag` (forward) and `deferred.frag`
+ * (deferred) as two callers, and their agreement as the A/B reference. THE FORWARD SCENE PATH IS GONE
+ * (commit `78b6737`, "the G-buffer path is the only scene path, and the forward one is gone"), so there
+ * is one path now and nothing to compare it against; the measurements taken while there were two are in
+ * `docs/mainpage.md`'s M2 note.
  *
  * @section shader_sky The shared sky (sky.glsl)
  *
- * `sky_color()` is a pure function of a world-space direction with no bindings at all, so both
- * backgrounds use it: the forward path's `skybox.frag` (a fullscreen triangle evaluated per pixel)
- * and the deferred path's `deferred.frag` (the pixels whose G-buffer depth is still the far plane).
- * Two backgrounds from one function means the two paths cannot disagree about the sky.
+ * `sky_color()` is a pure function of a world-space direction with no bindings at all, and the deferred
+ * path calls it for the pixels whose G-buffer depth is still the far plane. It was shared with a second
+ * background while the forward path existed (`skybox.frag`, since deleted); one function with one
+ * caller is still one function, and the point stands - the sky cannot drift from the geometry drawn in
+ * front of it.
  *
  * @section shader_clusters Clustered light culling (M5)
  *
