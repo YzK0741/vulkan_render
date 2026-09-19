@@ -218,10 +218,10 @@ namespace chores {
             // G-buffer pair (the deferred path's first half): the surface-writing pipeline the
             // opaque pass binds when it writes the G-buffer, and the fullscreen debug view that
             // turns one stored channel into a visible image. Both optional - without them
-            // runtime::set_gbuffer_debug() has no effect and the forward path keeps running.
+            // runtime::set_gbuffer_debug() has no effect and the opaque pass shades into the HDR target directly.
             std::vector<unsigned char> vertex_code;
             std::vector<unsigned char> fragment_code;
-            load_shader(shaders_dir, "pbr.vert.spv", vertex_code); // the vertex stage is the forward one
+            load_shader(shaders_dir, "pbr.vert.spv", vertex_code); // the G-buffer vertex stage (instancing/skinning/morphing)
             load_shader(shaders_dir, "gbuffer.frag.spv", fragment_code);
             auto const gbuffer_result = runtime.make_gbuffer_pipeline(vertex_code, fragment_code);
             if (!gbuffer_result) {

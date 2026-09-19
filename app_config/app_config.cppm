@@ -216,14 +216,14 @@ namespace app_config {
         bool gbuffer_debug = false;
         int gbuffer_channel = 1; // 0 albedo, 1 normal, 2 roughness, 3 metallic, 4 ao, 5 material id, 6 depth, 7 flags, 8 motion
         // deferred lighting ([render] deferred): the opaque scene is stored in the G-buffer and shaded
-        // in screen space afterwards, through the same lighting code the forward path runs per
-        // fragment; alpha-blended
+        // in screen space afterwards, through shade_surface() - the single lighting entry point every
+        // shading stage in the engine calls; alpha-blended
         // geometry is not drawn in this mode yet (see runtime::set_deferred).
         bool deferred = false;
         // Temporal anti-aliasing ([render] taa / taa_blend_static / taa_blend_min): the deferred path's
         // anti-aliasing (a G-buffer cannot be multisampled, so there is no MSAA to fall back on). The projection is jittered every frame and a resolve pass blends the
-        // reprojected, neighborhood-clamped history in - see runtime::set_taa. The forward path keeps
-        // object motion yet: the G-buffer motion vectors are camera-only for now.
+        // reprojected, neighborhood-clamped history in - see runtime::set_taa. There is no per-object
+        // motion yet: the G-buffer motion vectors are camera-only at this milestone.
         bool taa = false;
         float taa_blend_static = 0.9f;                      // history weight for a pixel that did not move
         float taa_blend_min = 0.5f;                         // history weight floor under motion (lower = less ghosting)

@@ -83,7 +83,7 @@ namespace vulkan {
     export constexpr uint32_t scene_cascade_push_size = sizeof(uint32_t);
 
     /**
-     * @brief format of the HDR scene target the forward pass renders into and the post-process
+     * @brief format of the HDR scene target the deferred lighting stage renders into and the post-process
      *        pass samples: the scene color target uses it, and each swapchain image owns one
      *        single-sample resolve target in it (see core::create_render_targets)
      */
@@ -796,13 +796,13 @@ namespace vulkan {
          * @brief create the G-buffer pipeline: the shared scene layout, the three gbuffer_formats
          *        color targets and a single-sampled depth attachment
          * @param vertex_shader_code raw SPIR-V of the vertex stage (pbr.vert: instancing / skinning /
-         *        morphing are identical to the forward path)
+         *        morphing are identical to what the forward path did)
          * @param fragment_shader_code raw SPIR-V of the fragment stage (gbuffer.frag: writes the
          *        three targets and shades nothing)
          * @return vk_pipeline on success, error message on failure
          * @note single-sampled on purpose (a G-buffer cannot be multisampled without per-sample
-         *       shading), so this pipeline may NOT be recorded into the forward pass's instance:
-         *       its attachments are the core::gbuffer_* targets and the pass that owns them
+         *       shading), so this pipeline may NOT be recorded into an instance whose attachments are
+         *       the HDR target: its own attachments are the core::gbuffer_* targets and the pass that owns them
          */
         std::expected<vk_pipeline, std::string_view> make_gbuffer_pipeline(
             std::span<unsigned char const> vertex_shader_code,

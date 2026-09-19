@@ -275,7 +275,7 @@ namespace vulkan {
                              // lighting interval look four times more expensive with rays on
             lighting_end,    // after the deferred path's shading work: the lighting stage and, in the
                              // same interval, the transparent pass that composites over it (~0 in the
-                             // forward path, where both of those happen inside the scene instance)
+                             // old forward path, where both of those happened inside the scene instance)
             taa_end,         // after the TAA resolve + its history copy (~0 when TAA is off)
             main_end,        // after the last scene-side work of the frame (the debug view, when it runs)
                              // those passes are the only compute work in the post chain: without it their
@@ -297,7 +297,7 @@ namespace vulkan {
         // row; the log line ignores it and prints everything on one line.
         // "scene" is the geometry instance of whichever path is active, "lighting" is the deferred
         // path's shading work (the lighting stage plus the transparent pass that composites over it;
-        // 0 ms in the forward path, where the shading happens inside the scene instance - as does the
+        // 0 ms in the old forward path, where the shading happened inside the scene instance - as does the
         // forward transparent pass, whose cost therefore shows up in "scene" as well), and "debug" is
         // the G-buffer debug view when it runs.
         struct gpu_timing_label {
@@ -1785,11 +1785,11 @@ namespace vulkan {
          * @param command_buffer the frame's primary command buffer
          * @param gbuffer_pass true when the leaves bind the G-buffer pipelines (deferred path)
          * @param draw_transparent record and execute the alpha-blended leaves inside THIS instance
-         *        (the forward path, which shades as it draws and therefore already has an image to
+         *        (the transparent half, which shades as it draws and therefore already has an image to
          *        blend over). The deferred path passes false and records them in an instance of its
          *        own after the lighting stage - see record_transparent_pass()
          *
-         * Shared by both scene paths on purpose - the segmentation, the per-segment secondary
+         * Shared by the opaque and transparent halves on purpose - the segmentation, the per-segment secondary
          * lifetime and the execute order are the same work in either; only the pipelines the leaves
          * bind (chosen in record_main_segment() from @p gbuffer_pass) and the two optional extras
          * differ.
@@ -1887,14 +1887,14 @@ namespace vulkan {
             VkCommandBuffer command_buffer = VK_NULL_HANDLE;
             std::span<primitive const* const> leaves = {};
             // Color attachment formats of the instance this secondary is recorded into, in
-            // attachment order: one entry (the HDR target) for the forward pass, the four G-buffer
+            // attachment order: one entry (the HDR target) when the leaves shade into it, the four G-buffer
             // attachments when the opaque pass writes the G-buffer. Held by value because the task outlives the
             // call that builds it (it is moved into the task pool).
             std::array<VkFormat, vulkan::gbuffer_pass_attachment_count> color_formats = {};
-            uint32_t color_count = 0;                    // formats in use (1 forward, 4 G-buffer: surface targets + HDR)
+            uint32_t color_count = 0;                    // formats in use (1 when only the HDR target, 4 for surface targets + HDR)
             VkFormat depth_format = VK_FORMAT_UNDEFINED; // main depth attachment format
             VkSampleCountFlagBits rasterization_samples = VK_SAMPLE_COUNT_1_BIT;
-            bool gbuffer_pass = false;      // leaves bind the G-buffer pipeline (not the forward ones)
+            bool gbuffer_pass = false;      // leaves bind the G-buffer pipeline (not the HDR-shading ones)
             runtime const* owner = nullptr; // recording context (scene set / pipeline caches)
             // set to true by operator() when the secondary was actually recorded (begin + end
             // succeeded). Points into a per-frame array owned by the caller of the task batch;
@@ -2382,7 +2382,7 @@ namespace vulkan {
          *        frame per frame; higher converges smoother but reacts slower to lighting changes)
          * @param blend_min history weight floor once a pixel moves a pixel or more per frame (lower =
          *        trusts the current frame more under motion, which trades smoothing for less ghosting)
-         * @note deferred-path only for now: the forward path has no motion vectors, so it keeps its
+         * @note there is no PER-OBJECT motion vector to clamp against yet, only the camera:
          *       fix for it. The G-buffer motion vectors are camera-only at this milestone, so a
          *       deformed (skinned/morphed) object can ghost slightly - see gbuffer.frag.
          */

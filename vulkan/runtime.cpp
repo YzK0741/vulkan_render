@@ -2466,8 +2466,8 @@ namespace vulkan {
     }
 
     bool runtime::taa_active() const noexcept {
-        // The forward path has no motion vectors (its fragment stage does not write them), so TAA is
-        // the engine's answer to aliasing, now that there is no MSAA to fall back on.
+        // TAA is
+        // the engine's answer to aliasing: a 1x G-buffer cannot be multisampled, so there is no MSAA to fall back on.
         return this->taa_on && this->pass_ready("taa") && this->deferred_lit_active();
     }
 
@@ -3623,7 +3623,7 @@ namespace vulkan {
             }
             this->record_transparent_pass(command_buffer);
         } else {
-            // The pass does not run (the debug view replaces the lighting stage, and the forward path has
+            // The pass does not run (the debug view replaces the lighting stage, and a skipped lighting stage has
             // no G-buffer to start rays from), but every mark is written in order on every frame - the
             // report's labels are positional. Written next to scene_end, so the interval is 0 ms.
             this->gpu_mark(command_buffer, gpu_mark_id::rt_shadow_end, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
