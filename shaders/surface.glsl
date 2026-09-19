@@ -32,7 +32,7 @@
 #include "heap_slots.glsl"
 
 // One entry of the material table; layout matches material_record in vulkan/primitive.cppm
-// (std430, 80 bytes). Field order and the flag bits are a CPU/GPU contract - see register_material.
+// (std430, 96 bytes). Field order and the flag bits are a CPU/GPU contract - see register_material.
 struct Material {
     uvec4 tex_indices; // albedo, metallic-roughness, normal, occlusion (indices into textures[])
     uint emissive_index;
@@ -46,6 +46,13 @@ struct Material {
     float normal_scale;
     uint flags; // bit0: normal map, bit1: occlusion map, bit2: emissive map, bit3: double-sided,
                 // bit4: alphaMode MASK, bit5: alphaMode BLEND
+    // MMD's own outline inputs, from the glTF material's `extras` (see docs/zzz_shading.md): xyz is the
+    // line colour the model authored, w its thickness multiplier, and flags bit6 says whether the model
+    // authored an edge AT ALL - required, because black is a legitimate edge colour and 0 a legitimate
+    // size, so the values alone cannot say "absent". APPENDED, so every field above keeps its offset; and
+    // declared in EVERY copy of this record, because a storage buffer's array stride is the struct's own
+    // size - a copy that omits it indexes the table at the wrong pitch.
+    vec4 npr_edge;
 };
 // The ARRAY name carries the HEAP slot and the block member carries the record index: two index spaces, which is
 // why a lookup is `heap_material_tables[heap_slots_materials].materials[push.material_index]`.

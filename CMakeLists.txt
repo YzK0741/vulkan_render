@@ -209,6 +209,15 @@ target_sources(gltf_loader
     PRIVATE
         gltf_loader/gltf_loader.cpp
 )
+# ... and the loader's OWN translation unit sees simdjson as well, which the note below says consumers do
+# not: fastgltf HANDS an extras callback a simdjson DOM object (Parser::setExtrasParseCallback), so the code
+# that reads a material's application-specific data needs the real type rather than the forward declaration
+# fastgltf's headers deliberately stop at. The include stays PRIVATE here, so nothing outside
+# gltf_loader.cpp gains either dependency.
+target_include_directories(gltf_loader
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/simdjson/singleheader
+)
 
 # fastgltf + simdjson, vendored under third_party/ (the sources ship in the repo, so no
 # network FetchContent is needed and both Windows/MSYS2 and Linux build self-contained).

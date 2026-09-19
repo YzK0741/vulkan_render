@@ -926,12 +926,19 @@ namespace vulkan {
         if (info.factors.alpha_blend) {
             record.flags |= 32u; // bit5: alphaMode BLEND - alpha-blended / transparent material
         }
+        // MMD's own outline inputs (docs/zzz_shading.md): they reach the outline's two stages through this
+        // record, and bit6 is what tells them the model authored an edge at all - black is a legitimate
+        // colour and 0 a legitimate size, so the values cannot say it themselves.
+        if (info.factors.mmd_edge_present) {
+            record.npr_edge = glm::vec4(glm::vec3(info.factors.mmd_edge_color), info.factors.mmd_edge_size);
+            record.flags |= 64u; // bit6: the model authored MMD edge data
+        }
 
         // ---- 3. Content-address the record, then append (or degrade on overflow) ----
         // Identical materials (same texture slots, factors and flags) share ONE table entry:
         // registration happens per primitive, so a scene with N primitives over M shared glTF
         // materials would otherwise append N records and burn the table needlessly. The key is
-        // the byte-exact 80-byte record carried in a data_block - no hash collisions, because
+        // the byte-exact 96-byte record carried in a data_block - no hash collisions, because
         // the unordered lookup hashes the block only for bucketing while equality stays
         // byte-exact.
         utility::data_block<sizeof(vulkan::material_record)> material_key = {};

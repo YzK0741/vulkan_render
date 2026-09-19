@@ -3,7 +3,7 @@
 //         GPU primitives that live in the scene-tree leaves, plus the GPU
 //         material / camera / light UBO records of the scene block; versioned in
 //         lock-step with vulkan.runtime, see that module's banner)
-// module version: 0.10.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.11.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // GPU scene contents (namespace vulkan):
 //   - vulkan::primitive (owns geometry buffers + material push constants,
@@ -249,6 +249,11 @@ namespace vulkan {
         float alpha_cutoff = 0.5f;       // alphaMode MASK threshold (fragment discard below it)
         bool alpha_mask = false;         // alphaMode == MASK
         bool alpha_blend = false;        // alphaMode == BLEND (alpha-blended / transparent)
+        // MMD's own outline inputs (see gltf_loader's material_factors and docs/zzz_shading.md); they end
+        // up in material_record::npr_edge, which is what the outline's two stages read.
+        glm::vec4 mmd_edge_color = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
+        float mmd_edge_size = 1.0f;
+        bool mmd_edge_present = false;
     };
 
     /**
@@ -387,7 +392,7 @@ namespace vulkan {
      *        the 5 texture array indices + all material parameters. Primitives only push a
      *        material_index and the shader reads the record — material data lives in one
      *        GPU-visible place and is shareable between primitives
-     * @note layout matches the Material struct in pbr.frag (std430, 80 bytes)
+     * @note layout matches the Material struct in pbr.frag (std430, 96 bytes)
      */
     export struct material_record {
         glm::uvec4 tex_indices = {};     // albedo, metallic-roughness, normal, occlusion (indices into the texture array)
@@ -400,16 +405,25 @@ namespace vulkan {
         float metallic_factor = 1.0f;
         float roughness_factor = 1.0f;
         float normal_scale = 1.0f;
-        uint32_t flags = 0; // bit0: normal map, bit1: occlusion map, bit2: emissive map, bit3: double-sided, bit4: alphaMode MASK, bit5: alphaMode BLEND
+        // bit0: normal map, bit1: occlusion map, bit2: emissive map, bit3: double-sided,
+        // bit4: alphaMode MASK, bit5: alphaMode BLEND, bit6: the model authored MMD edge data (npr_edge)
+        uint32_t flags = 0;
+        // ---- MMD's own outline inputs, from the glTF material's `extras` (this project's PMX converter
+        //      writes them; a glTF from anywhere else leaves them at these neutral values, and then the
+        //      global [render] outline_* settings decide the line). Read by shaders/outline.vert (w, the
+        //      thickness multiplier) and outline.frag (xyz, the colour). APPENDED, so every field above
+        //      keeps its offset - and declared in EVERY copy of this record, because a storage buffer's
+        //      array stride is the struct's own size (see shaders/surface.glsl).
+        glm::vec4 npr_edge = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
     };
-    static_assert(sizeof(material_record) == 80);
+    static_assert(sizeof(material_record) == 96);
 
     /**
      * @ingroup vulkan_primitive
      * @brief max entries of the GPU material table
      * @note sized for the heaviest glTF stress sample (NodePerformanceTest: 10000 rocks, each
      *       with its own material record - factors differ per rock, so content dedup cannot
-     *       collapse them). 16384 x 80 B = 1.3 MiB storage buffer, negligible. The runtime
+     *       collapse them). 16384 x 96 B = 1.5 MiB storage buffer, negligible. The runtime
      *       dedups byte-identical materials (register_material) and reserves index 0 as the
      *       default material; registrations past the capacity degrade to it with a logged
      *       warning instead of failing the whole scene.

@@ -35,6 +35,13 @@ struct Material {
     float roughness_factor;
     float normal_scale;
     uint flags; // bit0: normal map, bit1: occlusion map, bit2: emissive map, bit3: double-sided, bit4: alphaMode MASK, bit5: alphaMode BLEND
+    // MMD's own outline inputs, from the glTF material's `extras` (see docs/zzz_shading.md): xyz is the
+    // line colour the model authored, w its thickness multiplier, and flags bit6 says whether the model
+    // authored an edge AT ALL - required, because black is a legitimate edge colour and 0 a legitimate
+    // size, so the values alone cannot say "absent". APPENDED, so every field above keeps its offset; and
+    // declared in EVERY copy of this record, because a storage buffer's array stride is the struct's own
+    // size - a copy that omits it indexes the table at the wrong pitch.
+    vec4 npr_edge;
 };
 // HEAP-NATIVE (see unlit.frag for the shape): the bindless array is the shared `heap_textures`, the table is an
 // array of blocks whose ARRAY name carries the heap slot, and the extensions are per stage.

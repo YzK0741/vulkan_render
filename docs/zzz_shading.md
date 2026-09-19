@@ -22,7 +22,7 @@ there, and the shader source says so where the warp is implemented (`shaders/sha
 | `SpecularColor1..5` - the specular's own five bands | the cel path's hardened highlight (`toon_steps > 0`), no per-band colours | partial |
 | `NTMatcap` / `Eff_MatCap` / `CombineMESphere` - the matcap, and the model's MMD sphere texture combined with it | `[render] toon_rim`: a view-space silhouette rim | **stand-in** - the rim is `pow(1 - N.V, 3)`, not a texture lookup, because the sphere maps are not in the converted model at all |
 | the `- Face` group: `headOrgn` / `headFwd` / `headUp`, `Face_lightmap`, `SpecularShapeMaskDot` | - | **not implemented**: it needs a face light-map/SDF the MMD model does not carry (its extra UV sets ride along in the GLB, the map they index does not) |
-| the `Outline` shader, thickness from the vertex colour | `[render] outline_color` / `outline_width`: an inverted hull drawn into the G-buffer (shaders/outline.vert + outline.frag), recorded by the scene pass before the surfaces | **implemented with a UNIFORM width** - the per-vertex edge scale the reference reads from the vertex colour is exported by the converter (`COLOR_0`) but the loader does not import that attribute yet |
+| the `Outline` shader, thickness from the vertex colour | `[render] outline_color` / `outline_width` as the FALLBACK, and the material's own `mmd_edge_color` / `mmd_edge_size` from the glTF `extras` (read by the loader, carried in `material_record::npr_edge`, used by shaders/outline.vert + outline.frag) | **implemented**: per-material colour and thickness. The per-VERTEX edge scale the reference reads from the vertex colour is exported by the converter (`_EDGESCALE`) but the loader does not import that attribute yet |
 | the `Glow` shader | - | **not implemented** |
 
 ## How to ask for it
@@ -126,9 +126,32 @@ None of the three is a subtle rendering question, and all three are the same kin
 does not line up with a contract that lives somewhere else. They are written down here because the contracts
 are the part of this engine a reader cannot see from the shader.
 
-**What the outline does not do yet:** the thickness is uniform, while the reference takes it per-vertex from
-the model's own edge scale (the PMX `エッジ倍率`, which the converter already exports as `COLOR_0` and the
-loader does not import); and the hull's motion vector is zero, so an animated character's line gets the
-camera's motion only and can crawl slightly under TAA.
+**What the outline does not do yet:** the thickness is per MATERIAL (the model's own `エッジ倍率` for hair,
+face, body, ...) but not per vertex, while the reference also reads the per-vertex edge scale the PMX
+converter already exports as `_EDGESCALE` and the loader does not import. And the hull's motion vector is
+zero, so an animated character's line gets the camera's motion only and can crawl slightly under TAA.
+
+### Where the per-material data comes from
+
+The MMD inputs are application-specific, so the converter writes them into each material's `extras` -
+and fastgltf does NOT keep extras: it parses them, hands the simdjson DOM object to an
+`ExtrasParseCallback` and forgets it. The loader therefore installs one (`collect_mmd_extras` in
+gltf_loader.cpp), which is also why that one translation unit now has the real simdjson header rather than
+fastgltf's forward declaration (see the target's include dirs). An absent field leaves the NEUTRAL value
+behind, and "the model authored an edge at all" is a separate flag - black is a legitimate edge colour and
+0 a legitimate size, so the values cannot be asked to imply their own absence.
+
+The GPU side is one lane APPENDED to the material record (`npr_edge`: xyz the colour, w the thickness) plus
+flag bit6. Appending matters twice over: the fields above keep their offsets, and - because a storage
+buffer's array stride is the struct's own size - EVERY copy of the record in the shaders has to grow with
+it (seven files declare one; a copy that stopped early would index the table at the wrong pitch).
+
+Measured on the asset, with the frame's global outline colour set to a colour nothing should use (bright
+green, then magenta) and everything else equal: the two captures differ by 370 pixels of 1,036,800 (mean
+0.0005/255) against a run-to-run jitter of 294 - i.e. the global colour is never reached, because every
+material on this model authored its own. Its hair materials author `(0.333, 0.424, 0.302)` at size 0.5 and
+the rest black at 0.5..1.0, which is what the render shows: thinner, dark-green lines on the hair and
+thicker black ones on the body.
+
 
 

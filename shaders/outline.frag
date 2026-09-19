@@ -67,8 +67,30 @@ layout(push_constant) uniform PushConstants {
 #define heap_frame_slot (push.frame_slot)
 #define heap_image_index (push.image_index)
 
+// The material table, for this draw's record: the COLOUR is per material in MMD (usually black, the hair's
+// is a dark green here - see docs/zzz_shading.md), so the frame's [render] outline_color is only the
+// fallback for a material that authored none. Declared in full - a storage buffer's array stride is the
+// struct's own size, so a copy that stops early indexes the table at the wrong pitch.
+struct Material {
+    uvec4 tex_indices;
+    uint emissive_index;
+    float alpha_cutoff;
+    float occlusion_strength;
+    uint _pad;
+    vec4 base_color_factor;
+    vec4 emissive_factor;
+    float metallic_factor;
+    float roughness_factor;
+    float normal_scale;
+    uint flags; // bit6: the model authored MMD edge data
+    vec4 npr_edge;
+};
+layout(descriptor_heap, descriptor_stride = heap_slot_stride) readonly buffer Materials { Material materials[]; } heap_material_tables[];
+
 void main() {
-    out_albedo_metallic = vec4(camera[heap_camera_slot].outline.rgb, 0.0);
+    const Material material = heap_material_tables[heap_slots_materials].materials[push.material_index];
+    const vec3 line = (material.flags & 64u) != 0u ? material.npr_edge.rgb : camera[heap_camera_slot].outline.rgb;
+    out_albedo_metallic = vec4(line, 0.0);
     // A degenerate interpolated normal would normalize to a NaN, which the lighting stage would then read
     // as a normal - so it falls back to a facing direction instead.
     const float normal_length = length(v_normal);

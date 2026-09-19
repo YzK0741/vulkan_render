@@ -1,6 +1,6 @@
 // ============================================================================
 // module: gltf_loader
-// module version: 0.1.1  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.2.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // Pure-CPU glTF / GLB loader (vendored fastgltf + stb): drawable stream, retained
 // node tree, animations / skins / morph targets / cameras / punctual lights.
@@ -236,6 +236,12 @@ namespace gltf {
         float alpha_cutoff = 0.5f;       // alphaMode MASK threshold (default per glTF spec)
         bool alpha_mask = false;         // alphaMode == MASK: discard fragments below alpha_cutoff
         bool alpha_blend = false;        // alphaMode == BLEND: alpha-blended (transparent) material
+        // MMD's own outline inputs, read from the material's `extras` (this project's PMX converter writes
+        // them; see docs/zzz_shading.md). `present` rather than "is the colour black": black is a legitimate
+        // edge colour and 0 a legitimate size, so the values alone cannot say "this model authored none".
+        glm::vec4 mmd_edge_color = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f); // rgb: the line's colour
+        float mmd_edge_size = 1.0f;                                   // the line's thickness multiplier
+        bool mmd_edge_present = false;
     };
 
     /**
@@ -774,6 +780,11 @@ namespace gltf {
         float alpha_cutoff = 0.5f;       // alphaMode MASK threshold
         bool alpha_mask = false;         // alphaMode == MASK (fragment discard)
         bool alpha_blend = false;        // alphaMode == BLEND (alpha-blended / transparent)
+        // MMD's own outline inputs, carried through to the GPU material table (see gltf_loader.cpp's
+        // collect_mmd_extras and material_factors above)
+        glm::vec4 mmd_edge_color = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
+        float mmd_edge_size = 1.0f;
+        bool mmd_edge_present = false;
     };
 
     /**

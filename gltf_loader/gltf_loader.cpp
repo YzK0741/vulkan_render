@@ -5,6 +5,9 @@ module;
 #include <fastgltf/types.hpp>
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
+// The material `extras` callback below is handed a simdjson DOM object, so this TU needs the real type -
+// fastgltf's headers only forward-declare it (see the target's include dirs in CMakeLists.txt).
+#include <simdjson.h>
 
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb/stb_image.h>
@@ -320,7 +323,63 @@ namespace {
         return texture_indices;
     }
 
-    gltf::material load_material(fastgltf::Material const& material) {
+    // MMD's outline inputs (see docs/zzz_shading.md), captured from a material's `extras` by the parser's
+    // extras callback below. fastgltf does not KEEP application-specific data - it hands the simdjson object
+    // to a callback and forgets it - so this is the only place a loader can see what the model authored.
+    struct mmd_extras {
+        bool present = false;
+        glm::vec4 edge_color = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
+        float edge_size = 1.0f;
+    };
+
+    /**
+     * @brief fastgltf's extras callback: keep the MMD inputs of each MATERIAL, drop everything else
+     * @param extras the object's `extras`
+     * @param index the object's index within its category (the material index here)
+     * @param category which array the object came from; only Materials is interesting
+     * @param user the std::vector<mmd_extras>* installed with Parser::setUserPointer
+     *
+     * A field that is absent or unreadable leaves the NEUTRAL value rather than a zero: a zero-width line is
+     * invisible and a silently black one on a model that authored no edge is the kind of wrong a render
+     * hides, so "was anything here at all" is a separate flag (mmd_edge_present) rather than something the
+     * values are asked to imply.
+     */
+    void collect_mmd_extras(simdjson::dom::object* const extras, std::size_t const index, fastgltf::Category const category, void* const user) {
+        if (category != fastgltf::Category::Materials || extras == nullptr || user == nullptr) {
+            return;
+        }
+        auto& table = *static_cast<std::vector<mmd_extras>*>(user);
+        if (index >= table.size()) {
+            table.resize(index + 1);
+        }
+        mmd_extras& entry = table[index];
+        // simdjson 4's DOM object is addressed with at_key (the operator[] overload is the element's), and
+        // every read is checked: a missing or differently-typed field leaves the neutral value behind.
+        simdjson::dom::array channels{};
+        if (extras->at_key("mmd_edge_color").get_array().get(channels) == simdjson::SUCCESS) {
+            float rgb[3] = {0.0f, 0.0f, 0.0f};
+            std::size_t channel_index = 0;
+            for (auto const channel : channels) {
+                if (channel_index >= 3) {
+                    break;
+                }
+                double channel_value = 0.0;
+                if (channel.get_double().get(channel_value) == simdjson::SUCCESS) {
+                    rgb[channel_index] = static_cast<float>(channel_value);
+                }
+                ++channel_index;
+            }
+            entry.edge_color = glm::vec4(rgb[0], rgb[1], rgb[2], 1.0f);
+            entry.present = true;
+        }
+        double edge_size = 0.0;
+        if (extras->at_key("mmd_edge_size").get_double().get(edge_size) == simdjson::SUCCESS) {
+            entry.edge_size = static_cast<float>(edge_size);
+            entry.present = true;
+        }
+    }
+
+    gltf::material load_material(fastgltf::Material const& material, mmd_extras const* const extras) {
         gltf::material result;
         result.factors.base_color_factor = glm::vec4(material.pbrData.baseColorFactor[0],
                                                      material.pbrData.baseColorFactor[1],
@@ -338,6 +397,12 @@ namespace {
         result.factors.alpha_cutoff = material.alphaCutoff;
         result.factors.alpha_mask = material.alphaMode == fastgltf::AlphaMode::Mask;
         result.factors.alpha_blend = material.alphaMode == fastgltf::AlphaMode::Blend;
+        // MMD's outline inputs, when the file carries them (see collect_mmd_extras and docs/zzz_shading.md)
+        if (extras != nullptr && extras->present) {
+            result.factors.mmd_edge_color = extras->edge_color;
+            result.factors.mmd_edge_size = extras->edge_size;
+            result.factors.mmd_edge_present = true;
+        }
         result.double_sided = material.doubleSided;
         result.texture_indices = get_texture_indices(material);
         return result;
@@ -1240,6 +1305,12 @@ namespace gltf {
         // (cameras are part of the default categories). Files without the extension parse
         // identically to before.
         fastgltf::Parser parser(fastgltf::Extensions::KHR_lights_punctual);
+        // THE `extras` PASS (see collect_mmd_extras): fastgltf DROPS application-specific data, and the MMD
+        // inputs this project's own PMX converter writes - the outline's colour and thickness - live exactly
+        // there. The vector is filled by index as the parser walks the materials.
+        std::vector<mmd_extras> material_extras;
+        parser.setUserPointer(&material_extras);
+        parser.setExtrasParseCallback(&collect_mmd_extras);
         auto asset_exp = parser.loadGltf(buffer_exp.get(), path.parent_path(), load_options());
         if (!asset_exp) {
             utility::error("gltf load err: {}", fastgltf::getErrorMessage(asset_exp.error()));
@@ -1299,7 +1370,7 @@ namespace gltf {
 
         result.materials.reserve(asset.materials.size());
         for (std::size_t i = 0; i < asset.materials.size(); ++i) {
-            result.materials.push_back(load_material(asset.materials[i]));
+            result.materials.push_back(load_material(asset.materials[i], i < material_extras.size() ? &material_extras[i] : nullptr));
         }
 
         return result;
@@ -1513,6 +1584,9 @@ namespace gltf {
             out.factors.alpha_cutoff = mat.factors.alpha_cutoff;
             out.factors.alpha_mask = mat.factors.alpha_mask;
             out.factors.alpha_blend = mat.factors.alpha_blend;
+            out.factors.mmd_edge_color = mat.factors.mmd_edge_color;
+            out.factors.mmd_edge_size = mat.factors.mmd_edge_size;
+            out.factors.mmd_edge_present = mat.factors.mmd_edge_present;
             out.double_sided = mat.double_sided;
             for (int i = 0; i < 5; ++i) {
                 auto const it = mat.texture_indices.find(std::string(slot_names[i]));

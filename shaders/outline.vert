@@ -70,6 +70,26 @@ layout(descriptor_heap, descriptor_stride = heap_slot_stride) readonly buffer Mo
     float morphs[];
 } morph_data[];
 
+// The material table, for THIS draw's record (see surface.glsl for the canonical field list): the model's
+// own outline thickness, which is the thing MMD authors per material and the reason this stage reads the
+// table at all. Declared in full even though one lane is used: a storage buffer's array stride is the
+// struct's own size, so a copy that stops early indexes the table at the wrong pitch.
+struct Material {
+    uvec4 tex_indices;
+    uint emissive_index;
+    float alpha_cutoff;
+    float occlusion_strength;
+    uint _pad;
+    vec4 base_color_factor;
+    vec4 emissive_factor;
+    float metallic_factor;
+    float roughness_factor;
+    float normal_scale;
+    uint flags; // bit6: the model authored MMD edge data (hand-appended in the converter, see docs)
+    vec4 npr_edge;
+};
+layout(descriptor_heap, descriptor_stride = heap_slot_stride) readonly buffer Materials { Material materials[]; } heap_material_tables[];
+
 // The material push block. Mirrors material_push_constants (vulkan/primitive/primitive.cppm) - the hull
 // reads the model matrix and the morph/skin/skinning indices, and ignores the rest.
 // `motion_base` is DECLARED AND UNUSED for the same reason `in_uv` above is: it sits in the 4 bytes
@@ -139,13 +159,19 @@ void main() {
     // ---- world, then THE EXPANSION along the world-space normal
     const mat4 world = (push.flags & 1u) != 0u ? instances[heap_instance_slot].transforms[push.instance_base + gl_InstanceIndex] : push.model;
     vec4 world_pos = world * local_pos;
+    // THE WIDTH IS THE MATERIAL'S OWN when the model authored one: MMD stores a per-material edge size
+    // (エッジ倍率) that its own renderer scales the extrusion by - the hair and the face are 0.5 here, the
+    // body 1.0 - and the frame's [render] outline_width is the overall multiplier on top of it. A model
+    // without the data (any glTF this project's converter did not write) keeps the frame's width flat.
+    const Material material = heap_material_tables[heap_slots_materials].materials[push.material_index];
+    const float width = (material.flags & 64u) != 0u ? camera[heap_camera_slot].outline.w * material.npr_edge.w : camera[heap_camera_slot].outline.w;
     // A degenerate normal (a vertex no triangle uses, or a mesh with no normals) has nothing to push
     // along, and normalizing it would be a NaN that rasterizes the whole hull away - so the guard is on
     // the length rather than on a zero comparison.
     const vec3 world_normal = mat3(world) * skinned_normal;
     const float normal_length = length(world_normal);
     if (normal_length > 1e-8) {
-        world_pos.xyz += (world_normal / normal_length) * camera[heap_camera_slot].outline.w;
+        world_pos.xyz += (world_normal / normal_length) * width;
     }
 
     gl_Position = camera[heap_camera_slot].proj * camera[heap_camera_slot].view * world_pos;
