@@ -472,12 +472,23 @@ def write_glb(out_path: Path, model: dict) -> dict:
     # with 40944 triangles (the whole mesh) and each with the full-atlas UV bounding box, so the whole model
     # wore the face atlas - the body pale, the tie brown (the face atlas's fabric patch), the "hair" showing
     # that atlas's dark and mint regions.
+    # THE FACE BLOCK'S OWN PLANE, accumulated here because this is where the per-material index
+    # ranges and the vertex normals meet: the average of a face's own normals IS the plane it lies
+    # in, which is what the engine's face flattening needs. A guessed world axis measured wrong, and
+    # taking the direction from the camera made the shading follow the viewer.
+    face_normal_sum = [0.0, 0.0, 0.0]
     primitives = []
     start = 0
     for mi, m in enumerate(model["materials"]):
         count = m["face_count"]
         if count == 0:
             continue
+        if m["name"].startswith(MMD_FACE_MATERIAL_PREFIXES):
+            for vertex_index in model["indices"][start : start + count]:
+                normal = model["normals"][vertex_index]
+                face_normal_sum[0] += normal[0]
+                face_normal_sum[1] += normal[1]
+                face_normal_sum[2] += normal[2]
         index_acc_i = {
             "bufferView": index_view,
             "byteOffset": start * 4,  # UNSIGNED_INT indices, so the byte offset is 4 per index
@@ -500,6 +511,19 @@ def write_glb(out_path: Path, model: dict) -> dict:
         start += count
     if start != len(model["indices"]):
         raise SystemExit(f"material face counts cover {start} of {len(model['indices'])} indices")
+
+    # ... and the averaged direction goes into the FACE materials' extras, which is the only place a
+    # loader can read application data from (see the loader's extras callback). Written on every face
+    # material rather than one of them, so no consumer has to know which material carries it.
+    face_length = math.sqrt(sum(component * component for component in face_normal_sum))
+    if face_length > 1e-6:
+        face_normal = [round(component / face_length, 6) for component in face_normal_sum]
+        for material in gltf_materials:
+            if material["extras"]["mmd_face"]:
+                material["extras"]["mmd_face_normal"] = face_normal
+        print(f"  the face block faces {face_normal} (averaged over its own vertex normals)")
+    else:
+        print("  the face block has no usable normals; the engine keeps its own default direction")
 
     gltf = {
         "asset": {"version": "2.0", "generator": "pmx_to_glb.py (project tool)"},

@@ -947,6 +947,9 @@ namespace vulkan {
             record.flags |= 64u; // bit6: this material is PAINTED (drawn from its albedo)
         }
         if (info.factors.mmd_face) {
+            // The face block's own plane, from the GLB's extras: every face material carries the same one,
+            // so simply adopting the last seen is both correct and free of ordering assumptions.
+            this->face_forward = info.factors.mmd_face_normal;
             // bit7, NOT a higher bit: the deferred path's only channel for material flags is ONE BYTE in the
             // G-buffer (out_material.a), and the shading stage reads the face there rather than from the
             // record - so the face bit has to live inside that byte. The sphere MODE moved up to bits 8-9 for

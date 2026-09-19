@@ -336,6 +336,7 @@ namespace {
         int sphere_mode = 0;
         bool unlit = false;
         bool face = false;
+        glm::vec3 face_normal = glm::vec3(0.0f, 0.0f, 1.0f); // mmd_face_normal: the FACE BLOCK's own plane
     };
 
     /**

@@ -3,7 +3,7 @@
 //         GPU primitives that live in the scene-tree leaves, plus the GPU
 //         material / camera / light UBO records of the scene block; versioned in
 //         lock-step with vulkan.runtime, see that module's banner)
-// module version: 0.16.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.17.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // GPU scene contents (namespace vulkan):
 //   - vulkan::primitive (owns geometry buffers + material push constants,
@@ -192,6 +192,11 @@ namespace vulkan {
         //                  docs/zzz_shading.md), so the frame's sun scale cannot move it and this lane is
         //                  the face's own brightness control.
         glm::vec4 npr_face = glm::vec4(1.3f, 0.75f, 0.0f, 0.0f);
+        // The FACE BLOCK's own plane in world space (xyz): the direction the face is facing, averaged over
+        // the face materials' own vertex normals by the PMX converter. A face's shading normal is flattened
+        // towards it so the nose, lips and cheeks stop shading a face that is nearly flat in the art - the
+        // reference does the same from its `headFwd` empty object.
+        glm::vec4 npr_face_forward = glm::vec4(0.0f, 0.0f, 1.0f, 0.0f);
     };
     // std140 layout guard against the GLSL LightUBO: four cascade matrices (256 B), the direction,
     // the two per-cascade vec4s (304 B), four floats, light_count (a glm::vec4 whose x carries the
@@ -204,7 +209,7 @@ namespace vulkan {
     static_assert(offsetof(light_ubo, punctual_lights) == max_shadow_cascades * sizeof(glm::mat4) + 6 * sizeof(glm::vec4));
     static_assert(offsetof(light_ubo, cluster_grid) == max_shadow_cascades * sizeof(glm::mat4) + 6 * sizeof(glm::vec4) + max_punctual_lights * sizeof(point_light));
     static_assert(offsetof(light_ubo, cluster_depth) == max_shadow_cascades * sizeof(glm::mat4) + 7 * sizeof(glm::vec4) + max_punctual_lights * sizeof(point_light));
-    static_assert(sizeof(light_ubo) == max_shadow_cascades * sizeof(glm::mat4) + 11 * sizeof(glm::vec4) + max_punctual_lights * sizeof(point_light));
+    static_assert(sizeof(light_ubo) == max_shadow_cascades * sizeof(glm::mat4) + 12 * sizeof(glm::vec4) + max_punctual_lights * sizeof(point_light));
     static_assert(sizeof(light_ubo) <= 16384, "the light UBO must stay inside the guaranteed maxUniformBufferRange (16 KB)");
     static_assert(sizeof(point_light) == 64);
 
@@ -266,6 +271,12 @@ namespace vulkan {
         // this material is part of the model's FACE block (the PMX converter marks it by name);
         // the reference shades the face with a separate shader whose shadow is much lighter
         bool mmd_face = false;
+        // The FACE BLOCK's own plane: the average of the face materials' vertex normals, written into the
+        // GLB's extras by the PMX converter. The engine's face flattening blends a face's shading normal
+        // towards this direction, so it is DATA rather than a guess: a fixed world axis was measured wrong
+        // (the face went dark) and taking it from the camera made the shading follow the viewer, which a
+        // user reported as "the face is only right at one angle".
+        glm::vec3 mmd_face_normal = glm::vec3(0.0f, 0.0f, 1.0f);
         // ... and this material is PAINTED: drawn from its albedo, not from the lighting stack. The face
         // block is one such set, and so are the head's own props (the ears, the head wear)
         bool mmd_unlit = false;

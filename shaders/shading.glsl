@@ -130,6 +130,11 @@ layout(descriptor_heap, descriptor_stride = heap_slot_stride) uniform LightUBO {
     //                  the frame's toon_shadow_band (0 = the frame-wide constant, the compiled default).
     vec4 npr_shadow;
     vec4 npr_rim;
+    // npr_face_forward xyz = the FACE BLOCK's own plane in world space, i.e. the direction the face is
+    // facing (the converter averages its vertex normals). The face's shading normal is blended towards it
+    // so that a face that is nearly flat in the art STOPS being shaded by its nose, lips and cheeks - and
+    // so that the blend does not follow the camera (which made the face right at one angle only).
+    vec4 npr_face_forward;
     vec4 npr_face;
 } light[];
 
@@ -529,7 +534,9 @@ vec3 fresnel_schlick(float cos_theta, vec3 f0) {
  *       multiscatter compensation, Lambert diffuse irradiance) - the GUI preset switch is an honest
  *       direct-light A/B, not a whole-scene model comparison.
  */
-vec3 evaluate_direct_light(vec3 n, vec3 v, vec3 base_color, float metallic, float roughness, vec3 f0, vec3 light_dir, vec3 light_radiance, vec3 matcap_sample) {
+//
+// `ndotl_wrap` 1 = half-lambert for the diffuse falloff (see the FACE below), 0 = the ordinary ramp.
+vec3 evaluate_direct_light(vec3 n, vec3 v, vec3 base_color, float metallic, float roughness, vec3 f0, vec3 light_dir, vec3 light_radiance, vec3 matcap_sample, float ndotl_wrap) {
     vec3 l = normalize(light_dir);
     // Half vector: normalize(v + l) is NaN when the light sits exactly behind the fragment
     // along the view ray (v + l == 0, e.g. a point light placed at the camera). Fall back to
@@ -566,7 +573,14 @@ vec3 evaluate_direct_light(vec3 n, vec3 v, vec3 base_color, float metallic, floa
     // The UNQUANTIZED falloff is kept for the rim below: the rim is a silhouette term, and a band edge
     // cutting it would be visible as a step in it.
     const float raw_ndotl = max(dot(n, l), 0.0);
-    float ndotl = raw_ndotl;
+    // ---- A FACE IS NOT LIT LIKE A SPHERE, and the reference does not light it like one either: its face
+    // path takes the lit/shadow split from a soft `Face Factor` group and its shadow is a TINT, not an
+    // absence of light. With the ordinary ramp a sun that happens to sit to the side of the face turns the
+    // whole face grey - measured at 155 luma against 209 with the camera-aligned normal - which is the other
+    // half of what a user kept reporting. Half-lambert wraps the falloff so the face keeps its light and
+    // only its SHADOW SIDE darkens, smoothly.
+    const float wrap = clamp(ndotl_wrap, 0.0, 1.0);
+    float ndotl = mix(raw_ndotl, raw_ndotl * 0.5 + 0.5, wrap);
 
     // ---- cel/toon shading (no-op when LightUBO.toon_steps < 1): quantize the diffuse falloff
     //      into bands and turn the specular lobe into a single hard highlight block. The
@@ -864,9 +878,14 @@ vec3 shade_surface(shade_input s) {
     // light, n.l falls off the cel threshold and the face reads as shadowed - past about 30 degrees of
     // elevation. One direction for the whole face keeps it a flat plane that always faces the viewer.
     const float face_normal_flatten = 0.85;
-    // (the sign is measured, not reasoned about: +view[2] points AWAY from the eye in this engine's view
-    // matrix, and the face went black - the target has to be the direction from the scene TO the camera)
-    const vec3 face_forward = -normalize(camera[heap_camera_slot].view[2].xyz);
+    // THE TARGET IS THE MODEL'S OWN FACE PLANE (npr_face_forward, averaged over the face block's vertex
+    // normals), NOT THE CAMERA AND NOT A GUESSED WORLD AXIS. Both of those were tried and both were wrong in
+    // ways a user could see: the camera axis made the shading follow the viewer, so the face came out right
+    // at one angle and wrong at the rest; a world axis measured wrong and darkened the whole face. The model
+    // knows its own direction, and this is it - the same thing the reference takes from its `headFwd`.
+    const vec3 face_forward = length(light[heap_light_slot].npr_face_forward.xyz) > 0.5
+                                  ? normalize(light[heap_light_slot].npr_face_forward.xyz)
+                                  : s.normal;
     const vec3 shading_normal = mix(s.normal, face_forward, s.face_mask * face_normal_flatten);
 
     // directional sun: shadow factor attenuates only this light; IBL ambient stays unshadowed
@@ -888,7 +907,7 @@ vec3 shade_surface(shade_input s) {
         // 35% by the earlier mix. That is the grey speckle a user reported and diagnosed as "the shadow
         // computed wrongly, and the cause is the normal".
         const float sun_shadow = mix(shadow, 1.0, s.face_mask);
-        direct += evaluate_direct_light(shading_normal, v, s.albedo, s.metallic, s.roughness, f0, light[heap_light_slot].light_dir.xyz, vec3(7.5 * light[heap_light_slot].sun_intensity) * sun_shadow, s.sphere_sample);
+        direct += evaluate_direct_light(shading_normal, v, s.albedo, s.metallic, s.roughness, f0, light[heap_light_slot].light_dir.xyz, vec3(7.5 * light[heap_light_slot].sun_intensity) * sun_shadow, s.sphere_sample, s.face_mask);
     }
     // punctual lights (point/spot, no shadow casting in this version): inverse-square falloff
     // (well-behaved at zero distance) with an optional smooth range cutoff; spots add a soft
@@ -913,19 +932,22 @@ vec3 shade_surface(shade_input s) {
         float dist;
         const vec3 radiance = punctual_light_radiance(pl, s.world_pos, dir, dist);
         if (radiance != vec3(0.0)) {
-            direct += evaluate_direct_light(shading_normal, v, s.albedo, s.metallic, s.roughness, f0, dir, radiance, s.sphere_sample);
+            direct += evaluate_direct_light(shading_normal, v, s.albedo, s.metallic, s.roughness, f0, dir, radiance, s.sphere_sample, s.face_mask);
         }
     }
 
     // ---- IBL (split-sum): diffuse irradiance + prefiltered specular ----
-    // THE ENVIRONMENT USES THE GEOMETRIC NORMAL, not the flattened one: the flattened normal points at the
-    // camera, so an irradiance lookup along it samples the sky BEHIND THE VIEWER and washes a face with a
-    // hemisphere it never sees. The flattening is for the sun's cel ramp - the artistic term - while the
-    // environment is a property of where the surface actually points. Its irradiance is low-frequency, so
-    // the face stays flat either way.
-    vec3 ibl_diffuse = get_diffuse_light(s.normal);
-    vec3 ibl_specular = ibl_specular_radiance(s.normal, v, s.roughness);
-    vec3 fresnel_ibl = ibl_specular_fresnel(s.normal, v, s.roughness, f0, 1.0);
+    // THE ENVIRONMENT USES THE SHADING NORMAL, i.e. the flattened one on a face. An earlier version kept
+    // the geometric normal here, on the grounds that the flattened one pointed at the camera and would
+    // sample the sky behind the viewer. That reasoning died with the camera-axis target: the flattened
+    // normal is the MODEL'S OWN FACE PLANE now, so the hemisphere it samples IS the one the face is facing.
+    // Leaving the geometric normal here was measured as the face's biggest single loss: a face seen from
+    // below has geometric normals pointing down-forward, so its ambient came off the GROUND - 155 luma
+    // against 209 for the same face with the camera-aligned normal. The shadow lookup keeps the geometric
+    // one, which is where the acne lived.
+    vec3 ibl_diffuse = get_diffuse_light(shading_normal);
+    vec3 ibl_specular = ibl_specular_radiance(shading_normal, v, s.roughness);
+    vec3 fresnel_ibl = ibl_specular_fresnel(shading_normal, v, s.roughness, f0, 1.0);
 
     // Metals have no diffuse term: diffuse ambient is scaled by (1 - metallic),
     // metal color comes entirely from specular environment (matches the official mix(dielectric, metal, metallic))

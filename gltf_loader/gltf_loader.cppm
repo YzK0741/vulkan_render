@@ -1,6 +1,6 @@
 // ============================================================================
 // module: gltf_loader
-// module version: 0.6.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.7.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // Pure-CPU glTF / GLB loader (vendored fastgltf + stb): drawable stream, retained
 // node tree, animations / skins / morph targets / cameras / punctual lights.
@@ -251,6 +251,12 @@ namespace gltf {
         // this material is part of the model's FACE block (the PMX converter marks it by name);
         // the reference shades the face with a separate shader whose shadow is much lighter
         bool mmd_face = false;
+        // The FACE BLOCK's own plane: the average of the face materials' vertex normals, written into the
+        // GLB's extras by the PMX converter. The engine's face flattening blends a face's shading normal
+        // towards this direction, so it is DATA rather than a guess: a fixed world axis was measured wrong
+        // (the face went dark) and taking it from the camera made the shading follow the viewer, which a
+        // user reported as "the face is only right at one angle".
+        glm::vec3 mmd_face_normal = glm::vec3(0.0f, 0.0f, 1.0f);
         // ... and this material is PAINTED: drawn from its albedo, not from the lighting stack. The face
         // block is one such set, and so are the head's own props (the ears, the head wear)
         bool mmd_unlit = false;
@@ -802,6 +808,12 @@ namespace gltf {
         // this material is part of the model's FACE block (the PMX converter marks it by name); the
         // reference shades the face with a separate shader whose shadow is much lighter
         bool mmd_face = false;
+        // The FACE BLOCK's own plane: the average of the face materials' vertex normals, written into the
+        // GLB's extras by the PMX converter. The engine's face flattening blends a face's shading normal
+        // towards this direction, so it is DATA rather than a guess: a fixed world axis was measured wrong
+        // (the face went dark) and taking it from the camera made the shading follow the viewer, which a
+        // user reported as "the face is only right at one angle".
+        glm::vec3 mmd_face_normal = glm::vec3(0.0f, 0.0f, 1.0f);
         // ... and this material is PAINTED: drawn from its albedo, not from the lighting stack. The face
         // block is one such set, and so are the head's own props (the ears, the head wear)
         bool mmd_unlit = false;

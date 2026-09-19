@@ -8,7 +8,7 @@
 // ============================================================================
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.84.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.85.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -844,6 +844,10 @@ namespace vulkan {
         // copied into light_state.npr_face every frame.
         float unlit_gain = 1.3f;
         float face_nose_strength = 1.0f;
+        // the FACE BLOCK's own plane in world space, adopted from the imported materials (all of them agree,
+        // because the converter averages over the whole block). Written into light_state.npr_face_forward
+        // every frame; (0,0,1) until a face material is seen, and harmless then because no face is drawn.
+        glm::vec3 face_forward = glm::vec3(0.0f, 0.0f, 1.0f);
         // The OUTLINE (runtime::set_outline; see docs/zzz_shading.md): the hull's colour and its width in
         // world units. 0 width = no hull is recorded at all, which is the compiled default and what keeps a
         // frame that does not ask for an outline byte-identical to one recorded before it existed.
