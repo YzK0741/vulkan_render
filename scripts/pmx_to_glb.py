@@ -23,10 +23,13 @@ depends on.)
 
 WHAT IT CARRIES THAT MATTERS FOR NPR, because these are the model's authored shading inputs:
   * the diffuse texture per material, plus its diffuse colour and sphere/toon modes as extras;
-  * MMD's per-vertex EDGE SCALE, which is the outline thickness - written to COLOR_0, because that is the
-    one vertex attribute a glTF can carry it in and the renderer can learn to read it. MMD's own renderer
-    draws outlines by extruding along the normal scaled by this value, which is the same control a
-    ZZZ-style hand-drawn lineart uses.
+  * MMD's per-vertex EDGE SCALE, which is the outline thickness, written as `_EDGESCALE` - a SCALAR float
+    with a leading underscore, i.e. the glTF spec's name for an application-specific attribute. NOT COLOR_0,
+    which is where this started: the spec defines COLOR_0 as a MULTIPLIER of the base colour, so a
+    conforming viewer tints the whole model by it - measured in the Khronos glTF Sample Viewer, which drew
+    this asset solid RED, because the edge scale was written as (scale, 0, 0, 1) and its green and blue
+    lanes are zero. The reference asset for the same shading (Endmin) carries `_EDGESCALE` the same way,
+    which is the other reason to match it.
   * the SPEHRE/TOON texture indices as glTF extras, so a shader can find `sp.png` / `toon_defo.bmp`.
 
 TEXTURES: glTF allows PNG and JPEG only, and MMD assets are full of BMP. BMPs are re-encoded to PNG here
@@ -326,11 +329,10 @@ def write_glb(out_path: Path, model: dict) -> dict:
     nrm_acc = accessor(nrm_view, "f", len(model["normals"]), 3)
     uv_view = add_view(struct.pack("<" + "f" * (2 * len(model["uvs"])), *[c for t in model["uvs"] for c in t]), 34962)
     uv_acc = accessor(uv_view, "f", len(model["uvs"]), 2)
-    edge_view = add_view(
-        struct.pack("<" + "f" * (4 * len(model["edge_scales"])), *[c for e in model["edge_scales"] for c in (e, 0.0, 0.0, 1.0)]),
-        34962,
-    )
-    edge_acc = accessor(edge_view, "f", len(model["edge_scales"]), 4)
+    # The per-vertex edge scale, as `_EDGESCALE`: ONE float per vertex, which is the form the reference
+    # asset uses (see the header's note on why this is not COLOR_0).
+    edge_view = add_view(struct.pack("<" + "f" * len(model["edge_scales"]), *model["edge_scales"]), 34962)
+    edge_acc = accessor(edge_view, "f", len(model["edge_scales"]), 1)
     # the additional UV sets, as glTF TEXCOORD_1 / TEXCOORD_2 (VEC2: the first two components of each vec4)
     extra_acc = []
     for set_index in range(len(model["extra_uvs"][0]) if model["extra_uvs"] else 0):
@@ -412,7 +414,7 @@ def write_glb(out_path: Path, model: dict) -> dict:
         primitives.append(
             {
                 "attributes": dict(
-                    {"POSITION": pos_acc, "NORMAL": nrm_acc, "TEXCOORD_0": uv_acc, "COLOR_0": edge_acc},
+                    {"POSITION": pos_acc, "NORMAL": nrm_acc, "TEXCOORD_0": uv_acc, "_EDGESCALE": edge_acc},
                     **{f"TEXCOORD_{i + 1}": a for i, a in enumerate(extra_acc)},
                 ),
                 "indices": index_acc,
