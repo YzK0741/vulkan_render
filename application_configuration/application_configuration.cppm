@@ -1,6 +1,6 @@
 // ============================================================================
 // module: app_config
-// module version: 0.29.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.30.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // Startup configuration: TOML file (config.toml / --config) merged with argv.
 // Pure CPU, no Vulkan dependency.
@@ -108,6 +108,13 @@ namespace app_config {
         // See the log's "initial camera" line for the numbers this resolves to, and use
         // --capture-camera to pin an exact pose.
         std::string camera_fit = "exterior";
+        // A PINNED initial camera pose: yaw (deg), pitch (deg), distance, target x, y, z - the same six
+        // numbers `--capture-camera` takes and the same six the log prints (`camera pose: ...`), so a view
+        // can be reproduced from a config, pasted between the two, or reported by a user. ABSENT by
+        // default, which leaves `camera_fit` in charge; when present it wins over the fit and is itself
+        // overridden by `--capture-camera`.
+        std::array<float, 6> camera_pose = {};
+        bool camera_pose_set = false;
         bool shadow = true; // record the directional shadow pass each frame
         // Cascaded shadow maps ([render] shadow_cascades / shadow_cascade_blend): how many cascades the
         // shadow pass fits, renders and samples (1 = one box over the whole visible range, the historic

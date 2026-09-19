@@ -160,6 +160,22 @@ namespace app_config {
                     settings.render.animation_time = static_cast<float>(*value);
                 }
             }
+            if (toml::node const* node = render->get("camera_pose")) {
+                if (toml::array const* pose = node->as_array()) {
+                    std::size_t value_index = 0;
+                    for (toml::node const& element : *pose) {
+                        if (value_index >= settings.render.camera_pose.size()) {
+                            break;
+                        }
+                        if (std::optional<double> const number = element.value<double>()) {
+                            settings.render.camera_pose[value_index++] = static_cast<float>(*number);
+                        }
+                    }
+                    // All six are required: a partial pose is not a pose, and silently keeping half of it
+                    // would pin a view nobody asked for.
+                    settings.render.camera_pose_set = value_index == settings.render.camera_pose.size();
+                }
+            }
             if (toml::node const* node = render->get("camera_fit")) {
                 if (std::optional<std::string> const value = node->value<std::string>()) {
                     settings.render.camera_fit = *value;

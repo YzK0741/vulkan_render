@@ -173,6 +173,8 @@ def write_toml(path: str, cfg: dict) -> None:
         f"ssao_intensity = {cfg['ssao_intensity']}",
         f"ssao_samples = {cfg['ssao_samples']}",
         "",
+        "# camera_pose = [yaw_deg, pitch_deg, distance, tx, ty, tz]   # a PINNED initial pose; absent\n"
+        "#   leaves camera_fit in charge. F12 and exit print one (`camera pose: ...`) to paste back.\n"
         "# ---- [render] ray-traced effects ----",
         f"rt_shadows = {str(cfg['rt_shadows']).lower()}",
         f"rt_mask_bake = {str(cfg['rt_mask_bake']).lower()}",
