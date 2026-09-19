@@ -467,15 +467,21 @@ vec3 evaluate_direct_light(vec3 n, vec3 v, vec3 base_color, float metallic, floa
     const bool warp = any(notEqual(shadow_tint, vec3(1.0)));
 
     // ---- Diffuse by the selected model (LightUBO.diffuse_model): Lambert (default) or the
-    //      roughness-dependent Oren-Nayar approximation (0 -> Lambert). The WARP takes the diffuse over
-    //      entirely, and the specular is the one thing it does NOT: a highlight belongs where the sun
-    //      reaches the surface, so it keeps the unquantized falloff in both paths. Handing the specular
-    //      the ramp's light factor as well is what made this path read as blown out the first time it
-    //      was captured - the whole surface, unlit side included, collected the sun's full specular.
+    //      roughness-dependent Oren-Nayar approximation (0 -> Lambert).
+    //
+    // THE WARP CHANGES THE DIFFUSE COLOUR, NOT THE LIGHT FACTOR, and that distinction is a measurement
+    // rather than a reading of the reference's name for it (Diffuse Warp). The first version took the
+    // light factor over - the argument being that the tinted colour already IS the shadowed result, so an
+    // extra ndotl would darken the shadow side twice - and the capture came out bleached: this engine's
+    // sun carries a radiance of 7.5 (see shade_surface), so the lit band landed at albedo/pi * 7.5 =
+    // 2.4x the albedo and the tonemapper resolved it to white. Measured on the stylised asset's face, in
+    // the face region's mean: PBR 154, the warp without ndotl 176, pure albedo (unlit) 182 - i.e. the
+    // shading had been flattened into the texture. With the light factor kept, the ramp selects the
+    // colour and the light still falls off, which is what the band structure is for.
     vec3 radiance;
     if (warp) {
         const vec3 warped = kd * diffuse_warp(base_color, ndotl, shadow_tint) / PI;
-        radiance = (warped + specular * raw_ndotl) * light_radiance;
+        radiance = (warped + specular) * (light_radiance * ndotl);
     } else {
         vec3 diffuse;
         if (int(light[heap_light_slot].diffuse_model + 0.5) == 1) {

@@ -63,15 +63,30 @@ sky, the background and the overlay do not move). The frame means rise by ~2.2/2
 which is the expected direction rather than a defect: the shadowed end of the ramp is a tinted PAINT, so it
 no longer falls to zero the way the un-warped falloff did.
 
-Two properties the same pair settled, because both were wrong in the first version:
+Three properties the same pair settled, because all three were wrong in the first version - and the third
+one is the reason the warp was briefly removed from the "what does this look like" column and put back:
 
-- **The specular keeps the UNQUANTIZED falloff.** Handing it the ramp's light factor along with the diffuse
-  made the whole model - unlit side included - collect the sun's full specular, and the capture read as
-  blown out. The fix is in the warp's branch: `specular * raw_ndotl`.
+- **The warp changes the diffuse COLOUR, not the light factor.** The first version took the light factor
+  over, arguing that the tinted colour already IS the shadowed result and an extra ndotl would darken the
+  shadow side twice. This engine's sun carries a radiance of 7.5 (`shade_surface`), so that put the lit
+  band at `albedo/pi * 7.5` = 2.4x the albedo and the tonemapper resolved it to white. Measured on the
+  stylised asset's face region (mean R/G/B): PBR 154/155/166, the warp without ndotl 176/177/188, pure
+  albedo (unlit) 182/180/185, and the warp with the light factor kept 151/153/166 - i.e. the wrong shape
+  had flattened the shading into the texture, and the right one leaves the face where the PBR path has it
+  while still banding and tinting it.
+- **The specular keeps the falloff, and the SAME one the diffuse uses.** Handing it the raw cosine while
+  the diffuse took none - the first version's split - let the whole model, unlit side included, collect the
+  sun's full specular. Both terms now carry `light_radiance * ndotl`, with the ndotl the ramp produced.
 - **The tint is a paint value, not an attenuation.** (0.55, 0.5, 0.75) against this asset's near-white
   albedo still reads as a bright lavender surface rather than a shadow. That is why the shipped default is
   the neutral value: the useful range is a property of the model, and the reference's five per-material
   `ShadowColor` values are how the reference avoids the question.
+
+What the ramp does NOT solve, and why the reference has a shader for it: on a face, a band edge crossing
+the nose is a visible line, because a face is nearly flat and its shading is painted into the texture. The
+reference's `- Face` group works in a `headOrgn`/`headFwd`/`headUp` frame with a face light-map and an SDF,
+which is the piece listed as missing above.
+
 
 ## The outline, and the three things it cost
 
