@@ -97,7 +97,7 @@ export namespace vulkan::pass {
      *
      * `group_size` is a DECLARED FACT, not a convenience: it must equal the shader's `local_size_x/y/z`, and
      * that equality is exactly the kind of thing this layer exists to be able to check later against the
-     * SPIR-V (the reflection parser is already in `vulkan.core.pipeline.spirv_parser`). Today the same number
+     * SPIR-V (the reflection parser is already in `vulkan.core.pipeline:spirv_parser`). Today the same number
      * lives in a shader and in a dispatch call, in two files, with nothing tying them together.
      */
     struct behaviour {

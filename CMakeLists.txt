@@ -173,7 +173,6 @@ target_sources(vulkancorekit
         vulkan/init_utils/init_utils.cpp
         vulkan/core/pipeline/pipeline.cpp
         vulkan/math/math.cpp
-        vulkan/core/pipeline/spirv_parser.cpp
         vulkan/runtime/runtime.cpp
         vulkan/pass/taa.cpp
         vulkan/pass/scene.cpp

@@ -3,7 +3,7 @@ module;
 #include <vulkan/vulkan.h>
 
 module vulkan.core.pipeline;
-import vulkan.core.pipeline.spirv_parser;
+import :spirv_parser;
 import vulkan.constant_init;
 
 namespace {

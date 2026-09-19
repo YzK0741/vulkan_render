@@ -81,7 +81,7 @@ mirrors the module's suffix (`namespace vulkan::bindings`), types are `snake_cas
 | `set_pool_requirements` | function | per-`VkDescriptorType` counts for one set | the number that had to equal the layout by hand and did not once |
 | `write_set` | function | `expected<void, std::string> write_set(VkDevice, pass_io const&, uint32_t set, VkDescriptorSet, span<VkImageView const>, span<VkBuffer const>, sampler_set const&)` | replaces the parallel arrays and ternaries in `ensure_*_descriptors` |
 | `resource_views` | `struct` | the owner hands in the actual `VkImageView`/`VkBuffer` per `resource_id` for one (image_index, slot) | the one thing that must stay with the resource's owner; it is why this layer needs no `runtime&` |
-| `validate` | function | `expected<void, std::string> validate(pass_io const&, spirv_reflection const&)` | checks the declaration against what the SHADER actually declares, using the existing `vulkan.core.pipeline.spirv_parser` |
+| `validate` | function | `expected<void, std::string> validate(pass_io const&, spirv_reflection const&)` | checks the declaration against what the SHADER actually declares, using the existing `vulkan.core.pipeline:spirv_parser` |
 
 Names considered and rejected: `vulkan.graph` (implies order derivation, which is a later stage and not what
 this module is), `vulkan.descriptors` / `vulkan.sets` (the repository already has `vulkan.bindings`, which owns
