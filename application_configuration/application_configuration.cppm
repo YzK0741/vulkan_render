@@ -1,6 +1,6 @@
 // ============================================================================
 // module: app_config
-// module version: 0.33.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.34.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // Startup configuration: TOML file (config.toml / --config) merged with argv.
 // Pure CPU, no Vulkan dependency.
@@ -146,6 +146,10 @@ namespace app_config {
         // shadow colour, 1 = its lit end) and the mask on its stepped highlight term (0 = no highlight).
         float toon_shadow_band = 0.3f;
         float toon_specular = 0.0f;
+        // How much of each surface's own albedo luminance is added to `toon_shadow_band`, i.e. the
+        // per-texel half of the reference's light-map input (it reads its band from an ILM texture's R
+        // channel; a PMX carries none). 0 = the frame-wide constant, the neutral default.
+        float toon_shadow_band_gain = 0.0f;
         // ---- the OUTLINE ([render] outline_color / outline_width; see docs/zzz_shading.md): an inverted
         // hull of the scene, drawn into the G-buffer in `outline_color`, expanded by `outline_width` WORLD
         // units. Width 0 is the default and means the hull is not recorded at all, so the default frame is

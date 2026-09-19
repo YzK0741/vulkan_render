@@ -234,6 +234,11 @@ namespace app_config {
                     settings.render.toon_shadow_band = static_cast<float>(std::clamp(*value, 0.0, 1.0));
                 }
             }
+            if (toml::node const* node = render->get("toon_shadow_band_gain")) {
+                if (std::optional<double> const value = node->value<double>()) {
+                    settings.render.toon_shadow_band_gain = static_cast<float>(std::clamp(*value, 0.0, 1.0));
+                }
+            }
             if (toml::node const* node = render->get("toon_specular")) {
                 if (std::optional<double> const value = node->value<double>()) {
                     settings.render.toon_specular = static_cast<float>(std::clamp(*value, 0.0, 2.0));

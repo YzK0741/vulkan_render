@@ -125,7 +125,9 @@ layout(descriptor_heap, descriptor_stride = heap_slot_stride) uniform LightUBO {
     //                    OFF - which is the compiled default, so a stock frame is unchanged.
     //                    w unused.
     //   npr_rim    x = rim strength (0 = off), y = rim exponent (its falloff in view space),
-    //              z = the reference's `MData.z` specular mask (see reference_specular_colors), w unused.
+    //              z = the reference's `MData.z` specular mask (see reference_specular_colors),
+    //              w = the per-texel band gain: how much of the surface's own albedo luminance is added to
+    //                  the frame's toon_shadow_band (0 = the frame-wide constant, the compiled default).
     vec4 npr_shadow;
     vec4 npr_rim;
 } light[];
@@ -596,6 +598,19 @@ vec3 evaluate_direct_light(vec3 n, vec3 v, vec3 base_color, float metallic, floa
     vec3 radiance;
     if (warp) {
         const float light_factor = smoothstep(0.0, 0.25, raw_ndotl);
+        // THE BAND FACTOR, per texel where the reference's light map would supply it. A PMX has no light map,
+        // so the band is derived from the surface's OWN albedo luminance - a darker material takes a deeper
+        // shadow - which is the direction a painted light map goes, and the frame's toon_shadow_band_gain
+        // scales how much of it is used. At gain 0 the band is the frame-wide constant, i.e. exactly the
+        // behaviour before this existed.
+        //
+        // Why it has to be per texel at all is measured rather than assumed: sweeping the frame-wide band on
+        // this asset puts the HAIR's best arm at 0.15 (shadow luma 182.7 / saturation 0.244 against the
+        // reference's 180.3 / 0.246, a near-exact match) while the FACE only approaches its reference
+        // (196.7 / 0.157) above 0.3 - no single value serves both. The luminance split reproduces that
+        // direction: the hair's albedo is mid-dark (linear luma 0.42), the skin's is pale (0.53).
+        const float albedo_luma = dot(base_color, vec3(0.2126, 0.7152, 0.0722));
+        const float band = clamp(shadow_band + light[heap_light_slot].npr_rim.w * albedo_luma, 0.0, 1.0);
         // the reference's own composition, in its own order: the base colour goes through the per-channel
         // Matcap combine, THAT is multiplied by the shadow multiplier, and the stepped highlight is added on
         // top of it, masked by the reference's `MData.z` (a per-material value the game reads from its ILM
@@ -609,14 +624,14 @@ vec3 evaluate_direct_light(vec3 n, vec3 v, vec3 base_color, float metallic, floa
         // template shipping its matcap image EMPTY rather than an intended look, so a material without a
         // sample passes through unchanged.
         const vec3 combined = matcap_sample == vec3(0.0) ? base_color : reference_matcap_combine(base_color, light_factor, matcap_sample);
-        const vec3 shadow_mult = reference_shadow_multiplier(base_color, raw_ndotl, shadow_band, shadow_tint);
+        const vec3 shadow_mult = reference_shadow_multiplier(base_color, raw_ndotl, band, shadow_tint);
         const float spec_mask = light[heap_light_slot].npr_rim.z;
         // the half-vector dot this branch needs is not the one the BRDF helper computes internally, so it is
         // taken here; v + l degenerates to zero when the view and the light are exactly opposed
         const vec3 half_vector = v + l;
         const float half_length = length(half_vector);
         const float ndoth_band = half_length > 1e-6 ? smoothstep(0.75, 1.0, max(dot(n, half_vector / half_length), 0.0)) : 0.0;
-        const vec3 highlight = reference_specular_colors(base_color, shadow_band) * (spec_mask * ndoth_band * light_factor);
+        const vec3 highlight = reference_specular_colors(base_color, band) * (spec_mask * ndoth_band * light_factor);
         const vec3 shaded = kd * (combined * shadow_mult + highlight) / PI;
         radiance = shaded * light_radiance;
     } else {

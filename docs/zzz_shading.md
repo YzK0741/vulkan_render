@@ -33,13 +33,17 @@ toon_steps = 5                  # the ramp; 0 = plain PBR
 toon_softness = 0.05            # band edge width: smaller = harder edges
 toon_shadow_tint = [0.55, 0.5, 0.75]   # (1,1,1) = the warp is OFF
 toon_rim = 0.8                  # 0 = no rim
+toon_shadow_band = 0.0          # the reference's five-colour shadow cascade: 0 = its deepest colour
+toon_shadow_band_gain = 0.25    # ... plus this much of each surface's own albedo luminance (per texel)
+toon_specular = 0.8             # the mask on the reference's stepped highlight term; 0 = off
 outline_color = [0.06, 0.04, 0.09]     # the hull's colour, written into the G-buffer's albedo
 outline_width = 0.05            # WORLD units of expansion; 0 = no hull recorded at all
+exposure = 1.0                  # the linear scale the tonemapper sees (README's "Exposure" slider)
 ```
 
-All four defaults are the NEUTRAL values, so a config that omits them shades exactly as the renderer did
-before the keys existed - which is what keeps the gate's reference frames valid. That is not a claim: the
-gate is run against them.
+Every default is the NEUTRAL value, so a config that omits them shades exactly as the renderer did before the
+keys existed - which is what keeps the gate's reference frames valid. That is not a claim: the gate is run
+against them. The values above are the arm measured against the in-game reference (see the tables below).
 
 The parameters ride two lanes appended to the light UBO (`npr_shadow`, `npr_rim`). They are appended
 rather than inserted because a stage that declares the block without them still matches the buffer, which
@@ -138,7 +142,7 @@ ILM light map, no vertex colours). The substitutions, each named in the code:
 | reference input | here |
 | --- | --- |
 | `ShadowColor1..5` | derived from the material's albedo: a ramp from a vibrance+darken transform of it to WHITE, which is the reference's own lit end |
-| `MData.x` (light-map band) | `runtime::toon_shadow_band`, one frame-wide value (0 = the deepest shadow colour) |
+| `MData.x` (light-map band) | `[render] toon_shadow_band` as a frame-wide constant PLUS `toon_shadow_band_gain`, which adds each surface's own albedo luminance to it - the per-texel half, derived from something a PMX does have (see below) |
 | `MData.z` (specular mask) | `[render] toon_specular`, one frame-wide value (0 = the highlight term off) |
 | the vertex-colour shadow mask | 1 (a PMX has no vertex colours) |
 | `Eff_MatCap` | the model's own MMD sphere map when it has one, otherwise no matcap |
@@ -165,6 +169,31 @@ measurement can move them without a rebuild:
 `[render] toon_specular` is the other new key - the reference's `MData.z`, the mask on its stepped highlight
 term. With it at 0.8 and the default band, the same hair measures lit 238.8 / shadow 185.0 (ratio 0.77), so
 the highlight arm is a second, independently tunable way into the reference's numbers.
+
+### The band factor, and why a frame-wide constant is not enough
+
+The reference reads its band - which of the five shadow colours a texel takes - from its light map, per
+texel. Sweeping a frame-wide constant on this asset shows why the reference needs that:
+
+| band | face shadow luma/sat | hair shadow luma/sat |
+| --- | --- | --- |
+| reference | 196.7 / 0.157 | 180.3 / 0.246 |
+| 0.15 (the hair's best) | 185.8 / 0.228 | 182.7 / 0.244 |
+| 0.30 | 187.3 / 0.210 | 185.5 / 0.191 |
+| gain 0.25 (band 0.0 + 0.25 x albedo luma) | 186.0 / 0.227 | 181.5 / 0.258 |
+
+The HAIR's optimum is 0.15 - a near-exact match on both luma and saturation - and the FACE wants a value
+above 0.3, so no constant serves both. `toon_shadow_band_gain` adds each surface's own albedo luminance to
+the constant, which is the direction a painted light map goes (darker material, deeper shadow) and is the
+one thing a PMX does carry: the hair's albedo is mid-dark (linear luma 0.42), the skin's pale (0.53). At
+gain 0.25 it beats the best constant on BOTH regions at once, which is the point of a per-texel input.
+
+Be honest about how much it buys, though: the two luminances differ by only 0.11, so the split is narrow.
+The face's remaining gap (186 against the reference's 196.7) is NOT something the band can close - in the
+reference the face is a different SHADER (`- Face`), not a different band, and that is the part this asset
+cannot supply. Gain 0 is the compiled default, i.e. the frame-wide constant and exactly the behaviour
+before this existed.
+
 
 ### The face, measured rather than assumed
 

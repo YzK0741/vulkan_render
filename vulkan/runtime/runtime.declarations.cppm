@@ -8,7 +8,7 @@
 // ============================================================================
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.78.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.79.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -829,6 +829,11 @@ namespace vulkan {
         // ILM texture and a PMX does not. 0 = the highlight term is off, which is the compiled default.
         // Copied into light_state.npr_rim.z every frame.
         float toon_specular = 0.0f;
+        // The per-texel band gain (see the shader's band derivation): how much of each surface's own
+        // albedo luminance is added to the frame-wide band, which is this port's stand-in for the light
+        // map the reference reads its band from. 0 = the frame-wide constant, the compiled default.
+        // Copied into light_state.npr_rim.w every frame.
+        float toon_shadow_band_gain = 0.0f;
         // The OUTLINE (runtime::set_outline; see docs/zzz_shading.md): the hull's colour and its width in
         // world units. 0 width = no hull is recorded at all, which is the compiled default and what keeps a
         // frame that does not ask for an outline byte-identical to one recorded before it existed.
@@ -2120,9 +2125,12 @@ namespace vulkan {
          *        shadow colour, 1 = its lit end. A PMX carries no light map, so this is the frame's stand-in.
          * @param specular the mask on the reference's stepped highlight term (its `MData.z`, from the same
          *        ILM texture); 0 = no highlight term, the default
+         * @param shadow_band_gain how much of each surface's own albedo luminance is added to
+         *        @p shadow_band, i.e. the per-texel half of the reference's light-map input; 0 = the
+         *        frame-wide constant, the default
          * @note same timing rule as set_toon_shading: CPU-side, copied into the light UBO every frame
          */
-        void set_toon_warp(glm::vec3 const& shadow_tint, float rim, float shadow_band = 0.3f, float specular = 0.0f) noexcept;
+        void set_toon_warp(glm::vec3 const& shadow_tint, float rim, float shadow_band = 0.3f, float specular = 0.0f, float shadow_band_gain = 0.0f) noexcept;
 
         /**
          * @ingroup vulkan_runtime

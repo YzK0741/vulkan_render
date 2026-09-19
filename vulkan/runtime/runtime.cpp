@@ -944,7 +944,7 @@ namespace vulkan {
         this->toon_softness = std::clamp(softness, 0.01f, 0.5f);
     }
 
-    void runtime::set_toon_warp(glm::vec3 const& shadow_tint, float const rim, float const shadow_band, float const specular) noexcept {
+    void runtime::set_toon_warp(glm::vec3 const& shadow_tint, float const rim, float const shadow_band, float const specular, float const shadow_band_gain) noexcept {
         // All four are "off" at their neutral value, and that is deliberate rather than a convenience: the
         // shader branches on `toon_steps` alone, so a stock config (toon_steps 0) compiles and records
         // exactly the frame it recorded before this path existed (the gate's references are the proof). The
@@ -956,6 +956,7 @@ namespace vulkan {
         this->toon_rim = std::clamp(rim, 0.0f, 2.0f);
         this->toon_shadow_band = std::clamp(shadow_band, 0.0f, 1.0f);
         this->toon_specular = std::clamp(specular, 0.0f, 2.0f);
+        this->toon_shadow_band_gain = std::clamp(shadow_band_gain, 0.0f, 1.0f);
     }
 
     void runtime::set_outline(glm::vec3 const& color, float const width) noexcept {

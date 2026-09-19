@@ -181,6 +181,7 @@ def write_toml(path: str, cfg: dict) -> None:
         f"toon_rim = {cfg['toon_rim']}",
         f"toon_shadow_band = {cfg['toon_shadow_band']}",
         f"toon_specular = {cfg['toon_specular']}",
+        f"toon_shadow_band_gain = {cfg['toon_shadow_band_gain']}",
         "outline_color = [{0}, {1}, {2}]".format(*cfg["outline_color"]),
         f"outline_width = {cfg['outline_width']}",
         "",
@@ -315,6 +316,13 @@ def ask_all(output_dir: str) -> dict:
     toon_specular = ask_float(
         "render.toon_specular", 0.0, 0.0, 2.0, hint="the reference shader's stepped highlight mask (0 = off)"
     )
+    toon_shadow_band_gain = ask_float(
+        "render.toon_shadow_band_gain",
+        0.0,
+        0.0,
+        1.0,
+        hint="how much of each surface's albedo luminance is added to toon_shadow_band (0 = the frame-wide constant)",
+    )
     outline_color = ask_float3(
         "render.outline_color (RGB; the inverted hull's colour)", (0.0, 0.0, 0.0)
     )
@@ -410,6 +418,7 @@ def ask_all(output_dir: str) -> dict:
         "toon_rim": toon_rim,
         "toon_shadow_band": toon_shadow_band,
         "toon_specular": toon_specular,
+        "toon_shadow_band_gain": toon_shadow_band_gain,
         "outline_color": outline_color,
         "outline_width": outline_width,
         "rt_shadows": rt_shadows,
