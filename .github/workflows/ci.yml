@@ -23,10 +23,11 @@ name: ci
 
 on:
   push:
-    # TEMPORARY, and the only reason this list has a second entry: CI otherwise runs on master alone, so a
-    # change to this file cannot be TESTED before it is merged. Remove npr-zzz-shading once both jobs are
-    # confirmed green.
-    branches: [master, npr-zzz-shading]
+    # master alone, as it was before: npr-zzz-shading was on this list only so the un-pinning of the toolchain
+    # could be TESTED without merging first (a change to this file is otherwise only exercised after it lands).
+    # Both jobs went green on run 35442375749 - un-pinned, i.e. on clang 22.1.8-3 / libc++ 22.1.8-1 / headers
+    # 1.4.357 - so the branch is off the list again.
+    branches: [master]
   pull_request:
 
 jobs:
