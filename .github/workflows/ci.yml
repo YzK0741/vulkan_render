@@ -23,7 +23,10 @@ name: ci
 
 on:
   push:
-    branches: [master]
+    # TEMPORARY, and the only reason this list has a second entry: CI only ran on master, so the
+    # toolchain pin (update: false) could not be TESTED without merging first. Remove npr-zzz-shading
+    # from this list once the ASan+UBSan job is confirmed green.
+    branches: [master, npr-zzz-shading]
   pull_request:
 
 jobs:
