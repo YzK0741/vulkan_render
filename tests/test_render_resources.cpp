@@ -630,12 +630,17 @@ int main() {
         // The comparison above keeps the two tables equal; this keeps them MEANINGFUL. A slot no host code ever
         // writes is a name for memory nothing put a descriptor in, and a heap-native shader indexing it reads
         // whatever the heap happened to contain - silently, which is the failure mode this whole file exists to
-        // catch. The host side is text too (runtime.cpp and core.cpp are where every heap write lives), so the
-        // check is the same kind as the one above, with ONE documented exception: the bloom chain writes its
-        // levels with arithmetic (`bloom_l0 + level * heap_image_capacity`), so l1..l3 are named in the header and
-        // never spelled out in the host. Every other exception is a BUG, not a style choice.
+        // catch. The host side is text too (runtime.cpp, core.cpp and the initialisation partition that now
+        // holds core's render-target heap writes are where every heap write lives), so the check is the same
+        // kind as the one above, with ONE documented exception: the bloom chain writes its levels with
+        // arithmetic (`bloom_l0 + level * heap_image_capacity`), so l1..l3 are named in the header and never
+        // spelled out in the host. Every other exception is a BUG, not a style choice.
+        //
+        // NOTE FOR THE NEXT PARTITION: that list is EXPLICIT, so a partition that takes heap writes has to be
+        // added here by hand. Scanning vulkan/core and the runtime directories would be better, and is not
+        // done here because this commit is a move rather than a test rewrite.
         std::string host_text;
-        for (std::string const& path : {std::string("/vulkan/runtime.cpp"), std::string("/vulkan/core/core.cpp")}) {
+        for (std::string const& path : {std::string("/vulkan/runtime.cpp"), std::string("/vulkan/core/core.cpp"), std::string("/vulkan/core/core.constructor.cppm")}) {
             for (std::string const& line : read_lines(std::string(VR_TEST_SOURCE_DIR) + path)) {
                 host_text += line;
                 host_text += '\n';

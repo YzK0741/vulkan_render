@@ -119,6 +119,7 @@ target_sources(vulkancorekit
         FILES
         vulkan/core/core.cppm
     vulkan/core/core.decl.cppm
+    vulkan/core/core.constructor.cppm
         vulkan/core/filter/filters.cppm
         vulkan/core/vma/vma.cppm
         vulkan/core/descriptor_heap/descriptor_heap.cppm
