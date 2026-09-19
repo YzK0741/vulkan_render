@@ -1,6 +1,6 @@
 // ============================================================================
 // module: gltf_loader
-// module version: 0.2.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.3.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // Pure-CPU glTF / GLB loader (vendored fastgltf + stb): drawable stream, retained
 // node tree, animations / skins / morph targets / cameras / punctual lights.
@@ -242,6 +242,11 @@ namespace gltf {
         glm::vec4 mmd_edge_color = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f); // rgb: the line's colour
         float mmd_edge_size = 1.0f;                                   // the line's thickness multiplier
         bool mmd_edge_present = false;
+        // MMD's SPHERE map: the texture index it was embedded at (0 = none) and how it combines with the
+        // base colour - 0 none, 1 multiply, 2 add, 3 sub-texture. It is what gives a model like this its
+        // saturation, because the diffuse textures are authored pale and the sphere map is combined on top.
+        uint32_t mmd_sphere_index = 0;
+        int mmd_sphere_mode = 0;
     };
 
     /**
@@ -785,6 +790,8 @@ namespace gltf {
         glm::vec4 mmd_edge_color = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
         float mmd_edge_size = 1.0f;
         bool mmd_edge_present = false;
+        uint32_t mmd_sphere_index = 0;
+        int mmd_sphere_mode = 0;
     };
 
     /**

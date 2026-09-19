@@ -330,6 +330,10 @@ namespace {
         bool present = false;
         glm::vec4 edge_color = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
         float edge_size = 1.0f;
+        // The sphere map (MMD's `spa` texture) and how it combines: 0 none, 1 multiply, 2 add,
+        // 3 sub-texture. `sphere_texture` is the glTF texture index the converter embedded it at.
+        uint32_t sphere_texture = 0;
+        int sphere_mode = 0;
     };
 
     /**
@@ -377,6 +381,16 @@ namespace {
             entry.edge_size = static_cast<float>(edge_size);
             entry.present = true;
         }
+        // The sphere map: the converter writes the glTF texture index it embedded the model's `spa` file at,
+        // which is what this loader can bind (the name beside it is for a human reading the file).
+        uint64_t sphere_texture = 0;
+        if (extras->at_key("mmd_sphere_texture").get_uint64().get(sphere_texture) == simdjson::SUCCESS) {
+            entry.sphere_texture = static_cast<uint32_t>(sphere_texture);
+        }
+        int64_t sphere_mode = 0;
+        if (extras->at_key("mmd_sphere_mode").get_int64().get(sphere_mode) == simdjson::SUCCESS) {
+            entry.sphere_mode = static_cast<int>(sphere_mode);
+        }
     }
 
     gltf::material load_material(fastgltf::Material const& material, mmd_extras const* const extras) {
@@ -402,6 +416,10 @@ namespace {
             result.factors.mmd_edge_color = extras->edge_color;
             result.factors.mmd_edge_size = extras->edge_size;
             result.factors.mmd_edge_present = true;
+        }
+        if (extras != nullptr && extras->sphere_mode != 0) {
+            result.factors.mmd_sphere_index = extras->sphere_texture;
+            result.factors.mmd_sphere_mode = extras->sphere_mode;
         }
         result.double_sided = material.doubleSided;
         result.texture_indices = get_texture_indices(material);
@@ -1587,6 +1605,8 @@ namespace gltf {
             out.factors.mmd_edge_color = mat.factors.mmd_edge_color;
             out.factors.mmd_edge_size = mat.factors.mmd_edge_size;
             out.factors.mmd_edge_present = mat.factors.mmd_edge_present;
+            out.factors.mmd_sphere_index = mat.factors.mmd_sphere_index;
+            out.factors.mmd_sphere_mode = mat.factors.mmd_sphere_mode;
             out.double_sided = mat.double_sided;
             for (int i = 0; i < 5; ++i) {
                 auto const it = mat.texture_indices.find(std::string(slot_names[i]));

@@ -37,7 +37,7 @@ struct Material {
     uint emissive_index;
     float alpha_cutoff;       // alphaMode MASK threshold
     float occlusion_strength; // mix(1, sampled AO, strength)
-    uint _pad;
+    uint sphere_index; // MMD sphere map: the texture it was combined from (0 = none); flags bits 7-8 hold the mode
     vec4 base_color_factor;
     vec4 emissive_factor;
     float metallic_factor;

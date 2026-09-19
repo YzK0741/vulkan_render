@@ -933,6 +933,11 @@ namespace vulkan {
             record.npr_edge = glm::vec4(glm::vec3(info.factors.mmd_edge_color), info.factors.mmd_edge_size);
             record.flags |= 64u; // bit6: the model authored MMD edge data
         }
+        // MMD's sphere map (docs/zzz_shading.md): the texture index rides the record's spare 4 bytes and the
+        // MODE rides two flag bits, so the record keeps its size and every shader copy keeps its layout.
+        // 0 = none, 1 = multiply, 2 = add, 3 = sub-texture.
+        record.sphere_index = info.factors.mmd_sphere_index;
+        record.flags |= static_cast<uint32_t>(std::clamp(info.factors.mmd_sphere_mode, 0, 3)) << 7u;
 
         // ---- 3. Content-address the record, then append (or degrade on overflow) ----
         // Identical materials (same texture slots, factors and flags) share ONE table entry:

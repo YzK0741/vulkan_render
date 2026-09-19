@@ -20,7 +20,7 @@ there, and the shader source says so where the warp is implemented (`shaders/sha
 | `ShadowColor1..5` - five authored shadow colours, one per band | `[render] toon_shadow_tint`, walked across the bands by `diffuse_warp` | **implemented**, one tint rather than five authored colours |
 | `NTShadow Colors` / `NTSmoothstep` - the banded ramp the colours are indexed by | `toon_band` in `shaders/shading.glsl`, driven by `[render] toon_steps` / `toon_softness` | already existed; the warp rides it |
 | `SpecularColor1..5` - the specular's own five bands | the cel path's hardened highlight (`toon_steps > 0`), no per-band colours | partial |
-| `NTMatcap` / `Eff_MatCap` / `CombineMESphere` - the matcap, and the model's MMD sphere texture combined with it | `[render] toon_rim`: a view-space silhouette rim | **stand-in** - the rim is `pow(1 - N.V, 3)`, not a texture lookup, because the sphere maps are not in the converted model at all |
+| `NTMatcap` / `Eff_MatCap` / `CombineMESphere` - the matcap, and the model's MMD sphere texture combined with it | the model's own sphere map, sampled matcap-style from the view-space normal and combined per its mode (`material_record::sphere_index` + flags bits 7-8: 1 multiply, 2 add), in `gather_surface` | **implemented** for the model's sphere; mode 3 (sub-texture) is not, and the authored matcap half has no equivalent yet - `[render] toon_rim` remains a procedural stand-in for it |
 | the `- Face` group: `headOrgn` / `headFwd` / `headUp`, `Face_lightmap`, `SpecularShapeMaskDot` | - | **not implemented**: it needs a face light-map/SDF the MMD model does not carry (its extra UV sets ride along in the GLB, the map they index does not) |
 | the `Outline` shader, thickness from the vertex colour | `[render] outline_color` / `outline_width` as the FALLBACK, and the material's own `mmd_edge_color` / `mmd_edge_size` from the glTF `extras` (read by the loader, carried in `material_record::npr_edge`, used by shaders/outline.vert + outline.frag) | **implemented**: per-material colour and thickness. The per-VERTEX edge scale the reference reads from the vertex colour is exported by the converter (`_EDGESCALE`) but the loader does not import that attribute yet |
 | the `Glow` shader | - | **not implemented** |
@@ -130,6 +130,34 @@ are the part of this engine a reader cannot see from the shader.
 face, body, ...) but not per vertex, while the reference also reads the per-vertex edge scale the PMX
 converter already exports as `_EDGESCALE` and the loader does not import. And the hull's motion vector is
 zero, so an animated character's line gets the camera's motion only and can crawl slightly under TAA.
+
+### The sphere map, and why this model shows nothing from it
+
+MMD's sphere map is the layer that gives a model its authored sheen: the diffuse textures are flat and the
+sphere is combined on top, either multiplied or added. The converter writes the texture index beside the
+name (`mmd_sphere_texture`), the loader reads both, they reach the record as `sphere_index` plus two flag
+bits, and `gather_surface` looks the map up matcap-style - the view-space normal's xy remapped to [0,1],
+with MMD's flipped V - and multiplies or adds it.
+
+**On this asset none of that is visible, and the reason is the model rather than the code.** Measured, in
+order:
+
+- the only material with a sphere map is `髮+` (mode 2 = add, `spa\hair_s.bmp`), and it is a DUPLICATE of
+  the hair: its bounding box matches the hair's in x and y, and 229 of 313 sampled `髮+` vertices sit
+  EXACTLY (distance 0.0000) on a `髮` vertex. It is the hair's inner surface.
+- so its fragments are always behind the hair's own. A probe that painted every sphere-map material
+  magenta changed 39 pixels of the frame - all of them in the debug overlay, none on the model.
+- and the map itself is a GREYSCALE highlight (mean 51,51,51; a white ball on black), so even where it
+  showed it would add a white sheen, not a hue.
+
+That last point is the useful one for the look: the saturation the reference art has is NOT in this model's
+diffuse textures (their means are 208/187/180, 199/169/174, 165/176/162 - all pale), and not in its sphere
+map either. It is authored in the REFERENCE's own shading colours - XIYAG's per-material `ShadowColor1..5`
+and `SpecularColor1..5` and its matcap are hand-picked vivid colours, which is what the Diffuse Warp
+interpolates towards. Our equivalent is one global `[render] toon_shadow_tint`; a per-material shadow
+colour is the next thing the look needs, and the PMX does not carry one, so it has to be a RULE (derived
+from each material's own albedo) rather than data.
+
 
 ### Where the per-material data comes from
 

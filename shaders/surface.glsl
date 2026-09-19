@@ -38,7 +38,7 @@ struct Material {
     uint emissive_index;
     float alpha_cutoff;       // alphaMode MASK threshold
     float occlusion_strength; // mix(1, sampled AO, strength)
-    uint _pad;
+    uint sphere_index; // MMD sphere map: the texture it was combined from (0 = none); flags bits 7-8 hold the mode
     vec4 base_color_factor;
     vec4 emissive_factor;
     float metallic_factor;
@@ -124,7 +124,7 @@ struct surface_sample {
  *       mirrored UV layouts (glTF TANGENT.w = -1) are handled implicitly and the vertex TANGENT
  *       attribute is never consumed; a degenerate UV derivative falls back to the fine normal.
  */
-surface_sample gather_surface(vec3 world_pos, vec3 geo_normal, vec2 uv) {
+surface_sample gather_surface(vec3 world_pos, vec3 geo_normal, vec2 uv, vec3 view_normal) {
     Material mat = heap_material_tables[heap_slots_materials].materials[push.material_index];
 
     surface_sample s;
@@ -170,6 +170,22 @@ surface_sample gather_surface(vec3 world_pos, vec3 geo_normal, vec2 uv) {
     // requires, so the inner side of a shell is lit by its inward-facing normal
     if ((mat.flags & 8u) != 0u && !gl_FrontFacing) {
         s.normal = -s.normal;
+    }
+
+    // ---- MMD's SPHERE map (see docs/zzz_shading.md), which is where a model like this gets its saturation:
+    //      the diffuse texture is authored pale and the sphere map is combined on top of it. The lookup is
+    //      matcap-shaped - the VIEW-space normal's xy, remapped to [0,1] - and the mode is the record's
+    //      flags bits 7-8: 1 multiply, 2 add. Mode 3 (sub-texture, which samples the model's extra UV sets
+    //      instead) is NOT implemented; no material in the asset this was built for uses it, and pretending
+    //      otherwise would sample a texture with the wrong coordinates.
+    const uint sphere_mode = (mat.flags >> 7u) & 3u;
+    if (sphere_mode == 1u || sphere_mode == 2u) {
+        const vec3 sphere_normal = normalize(view_normal);
+        // MMD's sphere textures are stored with the opposite vertical convention to glTF's UV origin, which
+        // a matcap lookup makes look like a flipped gradient rather than an obvious error.
+        const vec2 sphere_uv = vec2(sphere_normal.x * 0.5 + 0.5, 1.0 - (sphere_normal.y * 0.5 + 0.5));
+        const vec3 sphere = heap_sample(mat.sphere_index, sphere_uv).rgb;
+        s.albedo = sphere_mode == 1u ? s.albedo * sphere : s.albedo + sphere;
     }
     return s;
 }

@@ -408,6 +408,11 @@ def write_glb(out_path: Path, model: dict) -> dict:
                 "mmd_sphere_mode": m["sphere_mode"],
                 "mmd_texture_name": model["textures"][m["texture_index"]] if 0 <= m["texture_index"] < len(model["textures"]) else None,
                 "mmd_sphere_name": model["textures"][m["sphere_index"]] if 0 <= m["sphere_index"] < len(model["textures"]) else None,
+                # ... AND ITS glTF TEXTURE INDEX, which is what the loader can actually bind: the name above
+                # is for a human reading the file, and a loader would have to re-derive the mapping the
+                # converter already has. Written only when the sphere texture was embedded (the BMP -> PNG
+                # step can fail on a missing file), so "no key" and "no sphere" mean the same thing.
+                "mmd_sphere_texture": pmx_to_gltf_image.get(m["sphere_index"]),
                 "mmd_toon_name": model["textures"][m["toon_index"]] if m["toon_flag"] == 0 and 0 <= m["toon_index"] < len(model["textures"]) else None,
             },
         }

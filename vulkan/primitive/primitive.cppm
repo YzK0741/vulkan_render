@@ -3,7 +3,7 @@
 //         GPU primitives that live in the scene-tree leaves, plus the GPU
 //         material / camera / light UBO records of the scene block; versioned in
 //         lock-step with vulkan.runtime, see that module's banner)
-// module version: 0.11.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.12.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // GPU scene contents (namespace vulkan):
 //   - vulkan::primitive (owns geometry buffers + material push constants,
@@ -254,6 +254,9 @@ namespace vulkan {
         glm::vec4 mmd_edge_color = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
         float mmd_edge_size = 1.0f;
         bool mmd_edge_present = false;
+        // MMD's sphere map (see gltf_loader's material_factors): the embedded texture index and its mode
+        uint32_t mmd_sphere_index = 0;
+        int mmd_sphere_mode = 0;
     };
 
     /**
@@ -399,7 +402,10 @@ namespace vulkan {
         uint32_t emissive_index = 0;     // emissive texture index
         float alpha_cutoff = 0.5f;       // alphaMode MASK threshold (fragment discard below it)
         float occlusion_strength = 1.0f; // occlusion map influence: mix(1, sampled AO, strength)
-        uint32_t _pad = 0;               // keep the vec4 members 16-byte aligned (std430)
+        // The MMD SPHERE map's texture index (0 = none). It occupies the 4 bytes that used to be pure
+        // alignment padding, so the record's layout - and every shader's copy of it - is unchanged;
+        // the combine MODE rides flags bits 7-8 (0 none, 1 multiply, 2 add, 3 sub-texture).
+        uint32_t sphere_index = 0;
         glm::vec4 base_color_factor = glm::vec4(1.0f);
         glm::vec4 emissive_factor = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
         float metallic_factor = 1.0f;
