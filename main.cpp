@@ -535,6 +535,7 @@ int main(int argc, char** argv) {
     gui.megalights_samples = static_cast<float>(settings.render.megalights_samples);
     gui.megalights_spatial_sigma = settings.render.megalights_spatial_sigma;
     gui.megalights_history_tolerance = settings.render.megalights_history_tolerance;
+    gui.sun_intensity = settings.render.sun_intensity; // a scale on the sun (see [render] sun_intensity)
     gui.megalights_bias = settings.render.megalights_bias;
     gui.megalights_light_angle = settings.render.megalights_light_angle;
     start_demo.set_megalights_light_angle(settings.render.megalights_light_angle);
@@ -785,6 +786,7 @@ int main(int argc, char** argv) {
         constexpr std::array<float, 7> toon_band_counts = {0.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 8.0f};
         auto const toon_index = static_cast<std::size_t>(std::clamp(gui.toon_bands_index, 0, static_cast<int>(toon_band_counts.size()) - 1));
         runtime.set_toon_shading(toon_band_counts[toon_index], gui.toon_softness);
+        runtime.set_sun_intensity(gui.sun_intensity);
         // F12 screenshot: the runtime reports the request (edge-triggered in poll_events), main
         // captures the presented swapchain image and writes it as a PNG (dependency-free encoder)
         if (runtime.consume_screenshot_request()) {

@@ -133,6 +133,7 @@ def write_toml(path: str, cfg: dict) -> None:
         f"model = \"{fmt_toml_string(cfg['model'])}\"",
         "",
         f"grid_side = {cfg['grid_side']}",
+        f"sun_intensity = {cfg['sun_intensity']}",
         "",
         "# ---- [paths] resource directories (empty = auto-locate) ----",
         "[paths]",
@@ -205,6 +206,13 @@ def ask_all(output_dir: str) -> dict:
     print("(press Enter on any question to keep its default)\n")
 
     print("-- model + grid --")
+    sun_intensity = ask_float(
+        "render.sun_intensity",
+        1.0,
+        0.0,
+        3.0,
+        hint="a scale on the sun's radiance; 1.0 leaves the shading path's constant unchanged",
+    )
     model = ask_text(
         "model: glTF/GLB file to load",
         DEFAULT_MODEL,
@@ -319,6 +327,7 @@ def ask_all(output_dir: str) -> dict:
     print(f"\nwriting config.toml to: {output_dir}")
     return {
         "model": model,
+        "sun_intensity": sun_intensity,
         "grid_side": grid_side,
         "shaders_dir": shaders_dir,
         "model_dir": model_dir,

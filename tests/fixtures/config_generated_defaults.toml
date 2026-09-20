@@ -3,20 +3,11 @@
 #   scripts/make_config.py)
 # ============================================================
 
-# TEST FIXTURE - a verbatim copy of what `python scripts/make_config.py` writes when every question
-# is answered with its default. It exists because the generator and the parser drifted apart once:
-# the generator silently omitted eleven [render] keys app_config understood, and its env_mip_count
-# range included a value the loader now rejects. test_app_config.cpp::test_generated_config_parses
-# reads THIS file, so regenerating the fixture is what proves the two still agree - and that is the
-# only way it proves it, because the test cannot see the generator at all. It had DRIFTED by four
-# values (max_fps, camera_fit, taa, fxaa) when it was checked against the generator while the GI
-# defaults were flipped: the generator's defaults for those had moved and the copy was never
-# regenerated, so the file claimed an agreement that no longer held. Regenerated verbatim.
-
 # ---- top level: model to load ----
 model = "gltf_model/DamagedHelmet.gltf"
 
 grid_side = 0
+sun_intensity = 1.0
 
 # ---- [paths] resource directories (empty = auto-locate) ----
 [paths]
@@ -57,6 +48,8 @@ ssao_radius = 0.5
 ssao_intensity = 1.0
 ssao_samples = 8
 
+# camera_pose = [yaw_deg, pitch_deg, distance, tx, ty, tz]   # a PINNED initial pose; absent
+#   leaves camera_fit in charge. F12 and exit print one (`camera pose: ...`) to paste back.
 # ---- [render] ray-traced effects ----
 rt_shadows = false
 rt_mask_bake = false

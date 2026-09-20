@@ -809,6 +809,8 @@ namespace vulkan {
         // copied into light_state.light_count.z/w every frame like the exposure lane
         float toon_steps = 0.0f;
         float toon_softness = 0.15f;
+        // a scale on the sun (runtime::set_sun_intensity); the furnace mode forces the lane to 0 regardless
+        float sun_intensity = 1.0f;
         // bloom parameters (see set_bloom): blend weight into the HDR image and the bright-pass
         // threshold subtracted in linear space (0 intensity disables the effect)
 
@@ -2081,6 +2083,12 @@ namespace vulkan {
          * @note same timing rule as set_exposure: CPU-side, copied into the light UBO every frame
          */
         void set_toon_shading(float steps, float softness) noexcept;
+        /**
+         * @brief a scale on the sun's radiance (0..3; 1.0 = the shading path's constant unchanged).
+         * @note the furnace mode forces the lane to 0 whatever this says - it turns the sun OFF, and a
+         *       slider must not be able to argue with that.
+         */
+        void set_sun_intensity(float scale) noexcept;
 
         /**
          * @ingroup vulkan_runtime

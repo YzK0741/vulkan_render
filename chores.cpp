@@ -553,6 +553,7 @@ namespace chores {
             std::vector<std::string>{"off (plain pbr)", "2 bands (hardest)", "3 bands", "4 bands", "5 bands", "6 bands", "8 bands (softest)"},
             &bindings.toon_bands_index));
         panel.push_back(std::make_unique<vulkan::gui::slider_widget>("toon softness", &bindings.toon_softness, 0.01f, 0.25f));
+        panel.push_back(std::make_unique<vulkan::gui::slider_widget>("sun intensity", &bindings.sun_intensity, 0.0f, 3.0f));
         // ---- punctual lights (demo lights; see apply_point_lights): the widgets edit
         //      bindings.point_lights live and main() pushes the enabled set once per frame.
         //      Each slot is a point light or - with `spot` checked - a cone light -------

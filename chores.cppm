@@ -134,6 +134,7 @@ namespace chores {
         bool bloom_enabled = true;
         float bloom_intensity = 0.8f;      // bloom blend weight slider (runtime::set_bloom; 0 = off)
         int toon_bands_index = 0;          // cel-shading combo: index into toon_band_counts (0 = plain PBR)
+        float sun_intensity = 1.0f;        // a scale on the sun's radiance (0..3; 1.0 = unchanged)
         float toon_softness = 0.15f;       // cel-shading band edge softness slider (smaller = harder edges)
         float bloom_threshold = 0.35f;     // bloom bright-pass threshold (visible range 0..0.75)
         // FXAA (runtime::set_fxaa): checkbox + the two shader knobs. The checkbox is mirrored by

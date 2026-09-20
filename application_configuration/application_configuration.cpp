@@ -105,6 +105,11 @@ namespace app_config {
                     }
                 }
             }
+            if (toml::node const* node = render->get("sun_intensity")) {
+                if (std::optional<double> const value = node->value<double>()) {
+                    settings.render.sun_intensity = static_cast<float>(std::clamp(*value, 0.0, 3.0));
+                }
+            }
             if (toml::node const* node = render->get("megalights")) {
                 if (std::optional<bool> const value = node->value<bool>()) {
                     settings.render.megalights = *value;

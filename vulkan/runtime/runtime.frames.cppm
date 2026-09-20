@@ -161,7 +161,8 @@ namespace vulkan {
             // this struct. Recomposing it makes the flag authoritative - the lighting stage reads exactly
             // what the passes below will do this frame.
             this->light_state.rt_shadows = (this->rt_shadows && this->pass_ready("rt_shadow") && this->vulkan_core.ray_query_available) ? 1.0f : 0.0f;
-            this->light_state.sun_intensity = this->furnace ? 0.0f : 1.0f;
+            // the furnace mode still wins: it is a verification mode that turns the sun off entirely
+            this->light_state.sun_intensity = (this->furnace ? 0.0f : 1.0f) * this->sun_intensity;
             this->light_state.furnace_level = this->furnace ? 1.0f : 0.0f;
 
             // ---- clustered light culling (M5): this frame's grid + the view-depth range its

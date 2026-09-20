@@ -131,6 +131,10 @@ namespace app_config {
         // same two values as sliders.
         float shadow_bias_constant = 0.0f;
         float shadow_bias_slope = 1.5f;
+        // A SCALE ON THE SUN'S RADIANCE ([render] sun_intensity). The shading already multiplies the sun by
+        // this lane; without the key the only value reachable was the furnace mode's 0 or 1. 1.0 is the
+        // shading path's own constant 7.5 unchanged; the gui exposes it as "sun intensity".
+        float sun_intensity = 1.0f;
         // Clustered light culling ([render] clustered_lights, M5): the punctual lights are sorted
         // into a screen-tile x depth-slice grid once per frame and the shading stage loops only its
         // own cluster's list. false = the brute-force loop over every active light - the reference

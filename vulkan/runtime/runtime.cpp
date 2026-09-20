@@ -938,6 +938,10 @@ namespace vulkan {
         return this->exposure_scale;
     }
 
+    void runtime::set_sun_intensity(float const scale) noexcept {
+        this->sun_intensity = std::clamp(scale, 0.0f, 3.0f);
+    }
+
     void runtime::set_toon_shading(float const steps, float const softness) noexcept {
         // 0 disables the cel path (plain PBR); the shader rounds to whole bands
         this->toon_steps = steps < 1.5f ? 0.0f : std::round(std::clamp(steps, 2.0f, 8.0f));
