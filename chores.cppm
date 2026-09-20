@@ -137,6 +137,10 @@ namespace chores {
         float unlit_gain = 1.3f;            // face albedo gain slider
         float face_nose_strength = 0.75f;  // nose mark strength slider
         float face_gain = 1.0f;            // the lit face's brightness multiplier
+        float ambient_gain = 1.0f;         // the environment light's brightness
+        float ambient_tint_r = 1.0f;       // ... and its colour, channel by channel
+        float ambient_tint_g = 1.0f;
+        float ambient_tint_b = 1.0f;
         // bloom on/off (M9): the checkbox gates the whole chain; the intensity slider keeps its value
         // while it is off, so toggling back restores the previous look. main() mirrors it by pushing an
         // intensity of 0 when the box is clear, which is what runtime::active_features() gates the

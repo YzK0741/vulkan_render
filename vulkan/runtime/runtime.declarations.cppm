@@ -8,7 +8,7 @@
 // ============================================================================
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.86.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.87.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -848,6 +848,10 @@ namespace vulkan {
         // painted. The painted path had unlit_gain for this; a lit face is scaled by its own gain instead,
         // because the sun scale is shared with everything else in the frame. Rides light_state.npr_face.z.
         float face_gain = 1.0f;
+        // The environment light's brightness and colour (runtime::set_ambient). 1.0 / white leave the sky
+        // exactly as it is; the pair exists because the sky is both too bright and too blue for this asset.
+        float ambient_gain = 1.0f;
+        glm::vec3 ambient_tint = glm::vec3(1.0f, 1.0f, 1.0f);
         // the FACE BLOCK's own plane in world space, adopted from the imported materials (all of them agree,
         // because the converter averages over the whole block). Written into light_state.npr_face_forward
         // every frame; (0,0,1) until a face material is seen, and harmless then because no face is drawn.
@@ -2179,6 +2183,12 @@ namespace vulkan {
          * @param face_gain multiplied into a face material's lit result; 1.0 leaves it as lit
          */
         void set_face_shading(float gain, float nose_strength, float face_gain) noexcept;
+        /**
+         * @brief the environment light's brightness and colour.
+         * @param gain a multiplier on the ambient (diffuse and specular); 1.0 leaves it as the sky has it
+         * @param tint a per-channel tint on the same term; white leaves it as the sky has it
+         */
+        void set_ambient(float gain, glm::vec3 tint) noexcept;
 
         /**
          * @ingroup vulkan_runtime

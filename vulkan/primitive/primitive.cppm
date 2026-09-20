@@ -197,6 +197,12 @@ namespace vulkan {
         // towards it so the nose, lips and cheeks stop shading a face that is nearly flat in the art - the
         // reference does the same from its `headFwd` empty object.
         glm::vec4 npr_face_forward = glm::vec4(0.0f, 0.0f, 1.0f, 0.0f);
+        // The environment's own brightness and colour (xyz = tint, w = gain), [render] ambient_gain /
+        // ambient_tint. The ambient is the sky, so it is bright and blue, and nothing could scale or tint
+        // it: measured against the in-game reference, a dark albedo of 58 rendered at 120 and the darks came
+        // out BLUE (59/61/73 where the game's are 48/40/39). The shading applies it as a BRANCH, so a frame
+        // that leaves the knob neutral keeps its previous output bit for bit.
+        glm::vec4 ambient_gain_tint = glm::vec4(1.0f, 1.0f, 1.0f, 1.0f);
     };
     // std140 layout guard against the GLSL LightUBO: four cascade matrices (256 B), the direction,
     // the two per-cascade vec4s (304 B), four floats, light_count (a glm::vec4 whose x carries the
@@ -209,7 +215,7 @@ namespace vulkan {
     static_assert(offsetof(light_ubo, punctual_lights) == max_shadow_cascades * sizeof(glm::mat4) + 6 * sizeof(glm::vec4));
     static_assert(offsetof(light_ubo, cluster_grid) == max_shadow_cascades * sizeof(glm::mat4) + 6 * sizeof(glm::vec4) + max_punctual_lights * sizeof(point_light));
     static_assert(offsetof(light_ubo, cluster_depth) == max_shadow_cascades * sizeof(glm::mat4) + 7 * sizeof(glm::vec4) + max_punctual_lights * sizeof(point_light));
-    static_assert(sizeof(light_ubo) == max_shadow_cascades * sizeof(glm::mat4) + 12 * sizeof(glm::vec4) + max_punctual_lights * sizeof(point_light));
+    static_assert(sizeof(light_ubo) == max_shadow_cascades * sizeof(glm::mat4) + 13 * sizeof(glm::vec4) + max_punctual_lights * sizeof(point_light));
     static_assert(sizeof(light_ubo) <= 16384, "the light UBO must stay inside the guaranteed maxUniformBufferRange (16 KB)");
     static_assert(sizeof(point_light) == 64);
 

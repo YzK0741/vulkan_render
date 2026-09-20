@@ -245,6 +245,24 @@ namespace app_config {
                     settings.render.unlit_gain = static_cast<float>(std::clamp(*value, 0.0, 3.0));
                 }
             }
+            if (toml::node const* node = render->get("ambient_gain")) {
+                if (std::optional<double> const value = node->value<double>()) {
+                    settings.render.ambient_gain = static_cast<float>(std::clamp(*value, 0.0, 2.0));
+                }
+            }
+            if (toml::node const* node = render->get("ambient_tint")) {
+                if (toml::array const* color = node->as_array()) {
+                    std::size_t i = 0;
+                    for (toml::node const& element : *color) {
+                        if (i >= settings.render.ambient_tint.size()) {
+                            break;
+                        }
+                        if (std::optional<double> const channel = element.value<double>()) {
+                            settings.render.ambient_tint[i++] = static_cast<float>(std::clamp(*channel, 0.0, 2.0));
+                        }
+                    }
+                }
+            }
             if (toml::node const* node = render->get("face_gain")) {
                 if (std::optional<double> const value = node->value<double>()) {
                     settings.render.face_gain = static_cast<float>(std::clamp(*value, 0.0, 2.0));

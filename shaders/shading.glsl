@@ -136,6 +136,9 @@ layout(descriptor_heap, descriptor_stride = heap_slot_stride) uniform LightUBO {
     // so that a face that is nearly flat in the art STOPS being shaded by its nose, lips and cheeks - and
     // so that the blend does not follow the camera (which made the face right at one angle only).
     vec4 npr_face_forward;
+    // ambient_gain_tint xyz = a tint on the environment light, w = its gain ([render] ambient_tint /
+    // ambient_gain). Declared LAST to match the CPU struct member for member: this block is read by OFFSET.
+    vec4 ambient_gain_tint;
 } light[];
 
 // Per-cluster light lists (scene set bindings 11/12), written by shaders/light_cluster.comp: one
@@ -960,6 +963,19 @@ vec3 shade_surface(shade_input s) {
     // does not use the switch bit for bit what it was, and that is what makes "the frames that do not use
     // it are unchanged" a check rather than a claim.
     vec3 specular_ibl = ibl_specular * fresnel_ibl * s.ao;
+
+    // ---- THE ENVIRONMENT'S OWN GAIN AND TINT ([render] ambient_gain / ambient_tint). The ambient is the
+    // sky: bright, and blue enough that this asset's darks came out 59/61/73 where the reference's are
+    // 48/40/39, with a dark albedo of 58 rendering at 120.
+    //
+    // TWO PLAIN MULTIPLIES, NOT A BRANCH, AND THAT IS A MEASURED CHOICE: the first version wrapped them in
+    // `if (any(notEqual(scale, vec3(1.0))))`, which never runs with neutral knobs yet still cost four of the
+    // nine gate scenarios their bit-identity - control flow in the middle of this function changes how the
+    // compiler contracts the cluster loop and the ambient expression around it. Multiplying by exactly 1.0
+    // is exact in IEEE-754, and the gate is back to 0 changed with the multiplies unconditional.
+    const vec3 ambient_scale = light[heap_light_slot].ambient_gain_tint.rgb * light[heap_light_slot].ambient_gain_tint.w;
+    ambient *= ambient_scale;
+    specular_ibl *= ambient_scale;
 
     vec3 color = ambient + direct + specular_ibl + s.emissive;
 

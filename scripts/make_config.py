@@ -179,6 +179,8 @@ def write_toml(path: str, cfg: dict) -> None:
         f"unlit_gain = {cfg['unlit_gain']}",
         f"face_nose_strength = {cfg['face_nose_strength']}",
         f"face_gain = {cfg['face_gain']}",
+        f"ambient_gain = {cfg['ambient_gain']}",
+        "ambient_tint = [{0}, {1}, {2}]".format(*cfg["ambient_tint"]),
         f"toon_steps = {cfg['toon_steps']}",
         f"toon_softness = {cfg['toon_softness']}",
         "toon_shadow_tint = [{0}, {1}, {2}]".format(*cfg["toon_shadow_tint"]),
@@ -293,6 +295,17 @@ def ask_all(output_dir: str) -> dict:
         0.0,
         3.0,
         hint="a scale on the sun's radiance; 1.0 = the shading path's constant 7.5 unchanged",
+    )
+    ambient_tint = ask_float3(
+        "render.ambient_tint",
+        (1.0, 1.0, 1.0),
+    )
+    ambient_gain = ask_float(
+        "render.ambient_gain",
+        1.0,
+        0.0,
+        2.0,
+        hint="a multiplier on the environment light (the sky); 1.0 leaves it as the sky has it",
     )
     face_gain = ask_float(
         "render.face_gain",
@@ -448,6 +461,8 @@ def ask_all(output_dir: str) -> dict:
         "exposure": exposure,
         "sun_intensity": sun_intensity,
         "unlit_gain": unlit_gain,
+        "ambient_gain": ambient_gain,
+        "ambient_tint": ambient_tint,
         "face_gain": face_gain,
         "face_nose_strength": face_nose_strength,
         "toon_steps": toon_steps,

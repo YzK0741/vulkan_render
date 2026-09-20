@@ -1,6 +1,6 @@
 // ============================================================================
 // module: app_config
-// module version: 0.38.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.39.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // Startup configuration: TOML file (config.toml / --config) merged with argv.
 // Pure CPU, no Vulkan dependency.
@@ -161,6 +161,10 @@ namespace app_config {
         // by it, so a frame can bring the face down without touching the sun every surface shares. 1.0 is
         // neutral; the gui exposes it as "face gain".
         float face_gain = 1.0f;
+        // The environment light's brightness and colour ([render] ambient_gain / ambient_tint). The ambient
+        // is the sky, so it is bright and blue; these are what a frame uses to take it down and warm it.
+        float ambient_gain = 1.0f;
+        std::array<float, 3> ambient_tint = {1.0f, 1.0f, 1.0f};
         float toon_rim = 0.0f;
         // The reference's own two shading parameters, which a ZZZ model carries in its ILM light map and a
         // PMX does not: the band factor its five-colour shadow cascade is walked with (0 = its deepest

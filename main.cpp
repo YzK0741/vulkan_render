@@ -583,6 +583,10 @@ int main(int argc, char** argv) {
     gui.unlit_gain = settings.render.unlit_gain;
     gui.face_nose_strength = settings.render.face_nose_strength;
     gui.face_gain = settings.render.face_gain;
+    gui.ambient_gain = settings.render.ambient_gain;
+    gui.ambient_tint_r = settings.render.ambient_tint[0];
+    gui.ambient_tint_g = settings.render.ambient_tint[1];
+    gui.ambient_tint_b = settings.render.ambient_tint[2];
     runtime.set_toon_warp(glm::vec3(settings.render.toon_shadow_tint[0], settings.render.toon_shadow_tint[1], settings.render.toon_shadow_tint[2]), settings.render.toon_rim, settings.render.toon_shadow_band, settings.render.toon_specular, settings.render.toon_shadow_band_gain);
     // ... and the OUTLINE ([render] outline_color / outline_width): the inverted hull, whose width 0 default
     // means the scene pass records no hull commands at all (see docs/zzz_shading.md)
@@ -792,11 +796,12 @@ int main(int argc, char** argv) {
         // visible - imported model lights were loaded into those slots, so they must stay lit in
         // headless-overlay runs too (the demo slots stay off unless the user enabled them)
         chores::apply_point_lights(runtime, gui, demo_lights);
-        runtime.set_exposure(gui.exposure);                                                     // gui exposure slider -> linear scale (post-process pass)
-        runtime.set_sun_intensity(gui.sun_intensity);                                           // gui sun slider -> the shading path's 7.5 scale
-        runtime.set_face_shading(gui.unlit_gain, gui.face_nose_strength, gui.face_gain);        // gui face sliders -> the face
-        runtime.set_bloom(gui.bloom_enabled ? gui.bloom_intensity : 0.0f, gui.bloom_threshold); // bloom checkbox + knobs -> post pass
-        runtime.set_max_fps(config.settings.render.max_fps);                                    // 0 = uncapped (see config.example.toml)
+        runtime.set_exposure(gui.exposure);                                                                           // gui exposure slider -> linear scale (post-process pass)
+        runtime.set_sun_intensity(gui.sun_intensity);                                                                 // gui sun slider -> the shading path's 7.5 scale
+        runtime.set_face_shading(gui.unlit_gain, gui.face_nose_strength, gui.face_gain);                              // gui face sliders -> the face
+        runtime.set_ambient(gui.ambient_gain, glm::vec3(gui.ambient_tint_r, gui.ambient_tint_g, gui.ambient_tint_b)); // gui ambient -> the environment light
+        runtime.set_bloom(gui.bloom_enabled ? gui.bloom_intensity : 0.0f, gui.bloom_threshold);                       // bloom checkbox + knobs -> post pass
+        runtime.set_max_fps(config.settings.render.max_fps);                                                          // 0 = uncapped (see config.example.toml)
         // FXAA: mirrored every frame like the other post-process values (the runtime clamps them and
         // ignores the flag when no fxaa pipeline was created)
         runtime.set_fxaa(gui.fxaa_enabled, gui.fxaa_subpixel, gui.fxaa_edge_threshold);

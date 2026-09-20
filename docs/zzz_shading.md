@@ -1,3 +1,33 @@
+## Against the in-game reference: the ambient knob, and what is really lifting the darks
+
+A mask comparison with the game's own screenshot put the environment light first (a dark albedo of 58 rendering
+at 120, and the darks coming out BLUE - 59/61/73 where the game's are 48/40/39). `[render] ambient_gain` and
+`ambient_tint` are that lever: the ambient (diffuse and specular IBL) is scaled and tinted, as two plain
+multiplies. A BRANCH WAS TRIED FIRST and removed: `if (any(notEqual(scale, vec3(1.0))))` never runs with
+neutral knobs yet still cost four of the nine gate scenarios their bit-identity, because control flow in the
+middle of `shade_surface` changes how the compiler contracts the cluster loop and the ambient expression
+around it - and the unconditional multiplies cost the same four (exactly 1.0 is exact in IEEE-754, but the
+compiler cannot know it). The gate was re-baselined with `-Update`, the reason being this paragraph.
+
+Measured, the pair moves the SHADOW HUE and little else:
+
+| arm | dark parts | R-B |
+| --- | --- | --- |
+| game | 48/40/39 | +9 |
+| this engine, neutral | 59/61/73 | -14 |
+| `ambient_gain` 0.75, warm tint | 56/55/63 | -7 |
+| ... and `exposure` 0.7 | 58/54/64 | -6 |
+
+WHAT ACTUALLY LIFTS THE DARKS IS THE SUN AND THE TONE CURVE, not the ambient: a dark albedo (58) renders at 120
+because the sun's radiance is 7.5 and the ACES curve lifts the low end - `exposure` 0.7 and the ambient knob
+together only reach 216 from 227 on the whites. `sun_intensity` and `exposure` are both live in the gui, so the
+brightness side is reachable; what the pipeline does NOT have is a CONTRAST / BLACK-LEVEL control on the
+tonemap, which is the part of the game's grade that crushes its darks.
+
+AND ONE MEASUREMENT FROM THIS COMPARISON IS RETRACTED: an earlier "24.4% of the frame is blown white against
+the game's 3.0%" was taken on a crop of the game screenshot that is half UI and background, so the shares are
+not comparable at all. The albedo number (58 -> 120) and the mask MEANS are the parts that hold.
+
 # The ZZZ-style NPR shading, and what of the reference is here
 
 This engine's toon path began as a plain cel ramp: quantize the diffuse falloff into bands and let the

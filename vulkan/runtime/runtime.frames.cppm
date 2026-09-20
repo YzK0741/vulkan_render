@@ -166,6 +166,7 @@ namespace vulkan {
             this->light_state.npr_rim = glm::vec4(this->toon_rim, 3.0f, this->toon_specular, this->toon_shadow_band_gain);
             this->light_state.npr_face = glm::vec4(this->unlit_gain, this->face_nose_strength, this->face_gain, 0.0f);
             this->light_state.npr_face_forward = glm::vec4(this->face_forward, 0.0f);
+            this->light_state.ambient_gain_tint = glm::vec4(this->ambient_tint, this->ambient_gain);
             // Ray-traced sun shadows: composed HERE rather than in set_rt_shadows, because the light UBO
             // is rebuilt from light_state every frame and a later enable_shadows() (main.cpp calls it
             // after the settings are applied, which is where this flag was first lost) resets fields of

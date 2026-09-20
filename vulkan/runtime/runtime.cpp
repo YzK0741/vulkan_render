@@ -948,6 +948,11 @@ namespace vulkan {
         this->sun_intensity = std::clamp(scale, 0.0f, 3.0f);
     }
 
+    void runtime::set_ambient(float const gain, glm::vec3 const tint) noexcept {
+        this->ambient_gain = std::clamp(gain, 0.0f, 2.0f);
+        this->ambient_tint = glm::clamp(tint, glm::vec3(0.0f), glm::vec3(2.0f));
+    }
+
     void runtime::set_face_shading(float const gain, float const nose_strength, float const face_gain) noexcept {
         this->unlit_gain = std::clamp(gain, 0.0f, 3.0f);
         this->face_nose_strength = std::clamp(nose_strength, 0.0f, 1.0f);
