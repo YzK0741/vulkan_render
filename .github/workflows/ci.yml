@@ -81,15 +81,28 @@ jobs:
         run: cmake --build build-debug
 
       - name: clang-tidy (pure-CPU modules, warnings are errors)
-        run: >-
-          clang-tidy -p build --warnings-as-errors='*'
-          app_config/app_config.cppm app_config/app_config.cpp
-          utility/data_block.cppm utility/utility.cppm utility/utility.cpp
-          utility/thread_pool/thread_pool.cppm utility/thread_pool/thread_pool.cpp
-          utility/BVH/bvh.cppm utility/BVH/bvh.cpp
-          utility/frame_clock/frame_clock.cppm
-          utility/frame_stats/frame_stats.cppm
-          utility/better_pmr/better_pmr.cppm
+        run: |
+          # THE LIST IS CHECKED BEFORE IT IS USED. utility/thread_pool/thread_pool.cpp and
+          # utility/BVH/bvh.cpp sat in this list after the module renames moved them to .cppm, and
+          # clang-tidy's "no such file or directory" kept master red while every other gate passed.
+          # A hand-maintained list that can go stale silently is a failure mode of its own.
+          # app_config is the TARGET name; its sources live in application_configuration/ (the dir was
+          # renamed and this list was not).
+          TIDY_FILES="application_configuration/application_configuration.cppm \
+            application_configuration/application_configuration.cpp \
+            utility/data_block.cppm utility/utility.cppm utility/utility.cpp \
+            utility/thread_pool/thread_pool.cppm \
+            utility/BVH/bvh.cppm \
+            utility/frame_clock/frame_clock.cppm \
+            utility/frame_stats/frame_stats.cppm \
+            utility/better_pmr/better_pmr.cppm"
+          for f in $TIDY_FILES; do
+            if [ ! -f "$f" ]; then
+              echo "clang-tidy list names a file that does not exist: $f"
+              exit 1
+            fi
+          done
+          clang-tidy -p build --warnings-as-errors='*' $TIDY_FILES
 
       - name: Upload the Release executable
         uses: actions/upload-artifact@v5
