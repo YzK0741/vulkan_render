@@ -410,19 +410,38 @@ the sun's cel ramp, the artistic term; the environment is a property of where th
 Its irradiance is low-frequency, so the face stays flat either way (measured: face mean 235/221/214 ->
 235/220/211, i.e. a colour this small, but the lookup is now the right one).
 
-### The painted set is EMPTY: painting the head wear renders its ears solid black
+### Two instrument traps this cost, both of which gave a WRONG reading rather than an error
 
-The head-wear material (the ears and the head's pins) was in the painted set. Painting it renders the whole material SOLID
-BLACK - measured in the ear crop at one camera, 1653 black pixels of 22400 against 28 with the material
-out, and the ears' cyan and the pins' detail come back when it is out. Four other explanations were
-eliminated first, each by experiment: the OUTLINE (recolouring it magenta left 0 magenta pixels and the
-same black wedges), the FORWARD/BLEND pass (the material is OPAQUE), the FLAG BYTE (the G-buffer's
-material target is UNORM, so the byte survives exactly - and those pixels hold a PALE albedo with the
-painted bit set), and MSAA (an inert key in this engine's config).
+- **`Copy-Item` keeps the source's timestamp.** Restoring a shader with it therefore does NOT make ninja
+  rebuild, and the capture that follows shows the OLD shader's output. This produced a confident 1653 black
+  pixels from a tree whose source said the order was correct; the fix was a touch (or `Set-Content`, which
+  always rewrites) before rebuilding. Run the build with its output VISIBLE for shader work - a filtered
+  `cmake --build | Select-String error` cannot tell 'recompiled' from 'no work to do'.
+- **The render gate's baseline directory is machine-wide, not per branch.** It was last written on
+  `npr-zzz-shading`, so running the gate on `master` reported four scenarios changed that had nothing to do
+  with the change being tested. `VR_RENDER_BASELINE_DIR` exists for this: give each branch its own directory,
+  and re-baseline with `-Update` when a branch's own commits legitimately move a frame.
 
-So the cause is OPEN: a material with the painted bit set and a healthy albedo renders black in the
-deferred lighting path. The painted set is empty until that is understood; the MECHANISM stays in the
-engine, because the face uses the same path whenever a frame wants it painted.
+### The painted set holds the head wear - and the black ears it once caused were a UBO bug
+
+The head-wear material (the ears' inner surface and the head's pins) is painted again - and it was painted
+when it first went black, which sent this file down a wrong path for a while. The record is kept because the
+mistake is instructive.
+
+PAINTING IT RENDERED THE EARS SOLID BLACK: 1653 black pixels in the ear crop at one camera, against 28
+with the material unpainted. Four explanations were ruled out by experiment first - the OUTLINE
+(recolouring it magenta left 0 magenta pixels and the same black wedges), the FORWARD/BLEND pass (the
+material is OPAQUE), the FLAG BYTE (the G-buffer's material target is UNORM, so the byte survives exactly,
+and those pixels hold a PALE albedo with the painted bit set), and MSAA (an inert key in this engine's
+config) - and the file called the cause open.
+
+IT WAS THE LIGHT UBO'S MEMBER ORDER. `npr_face_forward` was declared before `npr_face` in the GLSL while
+the CPU struct declared it after, and a UBO is read by OFFSET: the shader's `npr_face.x` - which is
+`unlit_gain` - was reading the forward vector's x, which is 0.0, so `painted_color = albedo * unlit_gain`
+was black. PROVEN BY PUTTING THE SWAP BACK AND CHANGING NOTHING ELSE: 1653 black pixels again, against 3
+with the order correct. The order was fixed when the face-gain lane was added, and removing the material
+from the painted set had merely hidden the trigger - which is why the fallback the previous version of this
+section proposed (empty the set) was the wrong fix even though it made the symptom go away.
 
 ### What the painted set was, historically
 

@@ -413,16 +413,19 @@ def write_glb(out_path: Path, model: dict) -> dict:
     # OPTION 2: the face is NOT painted any more - it is LIT again, with its own flattened shading normal
     # (see gather_surface) and its own cast-shadow retention, which is what the reference's `- Face`
     # group stands in for. This set is therefore only the head's PROPS.
-    # EMPTY, and deliberately so. `头饰` (the ears and the head's pins) was in here, and painting it renders
-    # the whole material SOLID BLACK: measured in the ear crop, 1653 black pixels with it painted against 28
-    # without, and the ears' own cyan and the pins' detail come back when it is out. The painted path is not
-    # obviously at fault - those pixels hold a pale albedo and the painted bit in the G-buffer - so the cause
-    # is still open; the OUTLINE was ruled out by recolouring it magenta (0 magenta pixels, the wedges stayed
-    # black), the forward/blend pass by the material being OPAQUE, the flag byte by its target being UNORM,
-    # and MSAA by the key being inert in this engine's config. Black ears are worse than the flat cyan inner
-    # they replaced, so the set is empty until that is understood - the MECHANISM stays in the engine (the
-    # record's painted bit, the lighting override and its unlit_gain knob) for the face, which is lit now.
+    # The head wear (the ears' inner surface and the head's pins) is painted: the reference draws this part
+    # of a head rather than lighting it, and the ears are the case that made it obvious - they sit 0.77
+    # above the surrounding skin in the in-game capture.
+    #
+    # IT WAS REMOVED FOR A WHILE, and the reason is worth keeping: painting it produced SOLID BLACK ears
+    # (1653 black pixels in this crop against 28 without). That turned out NOT to be the painted path at
+    # all - it was the light UBO's member order, with `npr_face_forward` declared before `npr_face` in the
+    # GLSL while the CPU struct had them the other way round, so `unlit_gain` was read out of the wrong lane
+    # and `painted_color = albedo * 0` was black. Proven by putting that swap back and changing nothing
+    # else: 1653 black pixels again, against 3 with the order correct.
     MMD_UNLIT_MATERIAL_PREFIXES = (
+        "耳",  # ears
+        "头饰",  # ... and the head wear they are modelled in on this asset
     )
 
     gltf_materials = []
