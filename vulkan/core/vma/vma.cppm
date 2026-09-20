@@ -339,9 +339,17 @@ namespace vulkan {
          * @param type image usage type
          * @return the image handle
          */
+        // `std::span<T const>` rather than `std::span<T>`: a span of const elements converts to it implicitly,
+        // while the reverse needs a const_cast - and an upload source is exactly what must not be written to.
+        //
+        // THE ARGUMENT ORDER HERE WAS WRONG for as long as this overload has existed - `create_info` and
+        // `size_bytes()` in each other's place against the pointer overload above - and NOTHING CAUGHT IT,
+        // because no caller had ever instantiated the template. A defect in an uninstantiated template is not
+        // a build failure; it is a trap. init_utils' texture upload now calls this overload, so the gate
+        // compiles and runs it.
         template <typename T>
-        vk_image create_image(std::span<T> data, image_create_info create_info, image_type const type) {
-            return this->create_image(reinterpret_cast<unsigned char*>(data.data()), create_info, data.size_bytes(), type);
+        vk_image create_image(std::span<T const> data, image_create_info create_info, image_type const type) {
+            return this->create_image(reinterpret_cast<unsigned char const*>(data.data()), data.size_bytes(), create_info, type);
         }
 
         /**
@@ -355,8 +363,8 @@ namespace vulkan {
          * @return an owning vk_image (see create_image)
          */
         template <typename T, size_t N>
-        vk_image create_image(std::span<T, N> data, image_create_info create_info, image_type const type) {
-            return this->create_image(reinterpret_cast<unsigned char*>(data.data()), create_info, data.size_bytes(), type);
+        vk_image create_image(std::span<T const, N> data, image_create_info create_info, image_type const type) {
+            return this->create_image(reinterpret_cast<unsigned char const*>(data.data()), data.size_bytes(), create_info, type);
         }
 
         /**

@@ -77,7 +77,9 @@ namespace vulkan::init_utils {
                                  image_create_info const& info,
                                  std::string_view const what) {
         texture_2d texture = {};
-        texture.image = device.vma.create_image(reinterpret_cast<unsigned char const*>(pixels.data()), pixels.size_bytes(), info, image_type::texture_2d);
+        // the SPAN overload: it takes span<T const> and does the byte cast itself, which also means this
+        // call site is the one that keeps that overload instantiated (see its comment in vma.cppm)
+        texture.image = device.vma.create_image(pixels, info, image_type::texture_2d);
         if (!texture.image.valid()) {
             utility::panic(std::source_location::current(), "failed to create {}", what);
         }
