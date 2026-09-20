@@ -365,7 +365,12 @@ namespace vulkan::animation {
             matrices.reserve(4 + (this->skin_rigs.size() * 8));
             matrices.insert(matrices.end(), {glm::mat4(1.0f), glm::mat4(1.0f), glm::mat4(1.0f), glm::mat4(1.0f)});
             for (skin_rig const& rig : this->skin_rigs) {
-                glm::mat4 const mesh_world_inv = glm::inverse(world_of(rig.mesh_source));
+                // ONE SKINNING SPACE FOR THE WHOLE RIG, taken from its first mesh source. glTF says a
+                // skinned mesh's own node transform is IGNORED - the joints' world transforms are the
+                // skinning space - so a single inverse is right for every node sharing the skin, and the
+                // init logs the case where more than one node shares it. If an asset ever turns up whose
+                // shared nodes carry DIFFERENT transforms, this line is the one to revisit.
+                glm::mat4 const mesh_world_inv = glm::inverse(world_of(rig.mesh_sources.front()));
                 for (std::size_t j = 0; j < rig.s.joints.size(); ++j) {
                     matrices.push_back(mesh_world_inv * world_of(rig.s.joints[j]) * rig.s.inverse_bind[j]);
                 }

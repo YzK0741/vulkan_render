@@ -1164,7 +1164,7 @@ namespace vulkan {
         // whether a traced shadow now follows the pose, and because a device without ray queries has no
         // structures for it to feed.
         bool rt_skin_bake = false;
-        // The ray-traced sun shadow pass (see shaders/rt_shadow.comp): its pipeline,
+        // The ray-traced sun shadow pass (see the shaders/rt_shadow.* pipeline stages): its pipeline,
         // push block's shape and its one-shot log line are the PASS's now (vulkan.pass.ray_traced_shadow), and its
         // member and stage are declared next to the other passes above. The renderer keeps two facts about it:
         // WHERE it sits (after the G-buffer pass, before the lighting stage - see the frame loop) and the

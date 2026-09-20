@@ -127,7 +127,7 @@ export namespace vulkan::pass {
      */
     class rt_shadow_pass final : public frame_pass {
     public:
-        /// @brief the push block, which is also `rt_shadow.comp`'s
+        /// @brief the push block, which is also the one the `shaders/rt_shadow.*` stages declare
         struct push_constants {
             glm::mat4 inv_view_proj = glm::mat4(1.0f); // clip -> world, the block the lighting stage uses
             // x = ray tmin, y = absolute normal-offset floor, z = relative offset scale (per unit of

@@ -223,6 +223,13 @@ def ask_all(output_dir: str) -> dict:
     print("(press Enter on any question to keep its default)\n")
 
     print("-- model + grid --")
+    sun_intensity = ask_float(
+        "render.sun_intensity",
+        1.0,
+        0.0,
+        3.0,
+        hint="a scale on the sun's radiance; 1.0 leaves the shading path's constant unchanged",
+    )
     model = ask_text(
         "model: glTF/GLB file to load",
         DEFAULT_MODEL,
@@ -289,13 +296,6 @@ def ask_all(output_dir: str) -> dict:
     ssao_samples = ask_int("render.ssao_samples", 8, 1, 16, hint="samples per pixel")
 
     print("\n-- render (cel/toon + ZZZ-style NPR; see docs/zzz_shading.md) --")
-    sun_intensity = ask_float(
-        "render.sun_intensity",
-        1.0,
-        0.0,
-        3.0,
-        hint="a scale on the sun's radiance; 1.0 = the shading path's constant 7.5 unchanged",
-    )
     ambient_tint = ask_float3(
         "render.ambient_tint",
         (1.0, 1.0, 1.0),

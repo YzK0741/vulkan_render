@@ -352,7 +352,7 @@ namespace vulkan {
         std::vector<VkDeviceMemory> furnace_cube_memories = {};
         std::vector<VkImageView> furnace_cube_views = {};
 
-        // ---- ray-traced sun visibility (see shaders/rt_shadow.comp) ----
+        // ---- ray-traced sun visibility (see the shaders/rt_shadow.* pipeline stages) ----
         // FULL resolution, one per FRAME SLOT rather than per swapchain image: it is written and read
         // within one frame, and BOTH ends live in the frame's scene block, which is per slot. A
         // per-image image would have to be paired there with a per-slot top level structure, and
