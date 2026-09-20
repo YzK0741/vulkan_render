@@ -184,7 +184,7 @@ take.
 
 ### Round 7: the spatial half is in, and the cost decoupling is measured
 
-**The spatial half of 时空降噪** is a variance-weighted 3x3 pre-filter inside the temporal pass
+**The spatial half of the spatio-temporal denoiser** is a variance-weighted 3x3 pre-filter inside the temporal pass
 (`spatial_mean` in `shaders/megalights_temporal.comp`): filtering the frame's own estimate before the
 accumulation costs no second pass, image or descriptor family, at the price of not having the accumulated
 moments as its variance estimate - stated in the shader rather than hidden. Its width is
@@ -247,7 +247,7 @@ binaries pass, the four gate scenarios sit at their exact hashes with `megalight
 (`deferred` `98740BE429FA32C7`, `sponza` `22C2B33B4B6721FA`, `default_gi` `310220DA64A91257`, `sponza_march`
 `5468FAE8D93EC9F5`) and validation-clean, and the two defects the wiring found are recorded above.
 
-THE SPATIAL HALF of 时空降噪 is NOT written yet: the chain is trace -> temporal -> composite, with no
+THE SPATIAL HALF of that denoiser is NOT written yet: the chain is trace -> temporal -> composite, with no
 variance-gated filter between the resolve and the lighting stage. The reference note's section 4 has its
 policy (variance from the accumulated moments, a gate before it filters at all), and the SSGI work's
 lesson applies to it directly: a filter that removes signal and noise at the same rate is worse than no

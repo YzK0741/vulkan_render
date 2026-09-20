@@ -3,13 +3,13 @@
 # PowerShell (Windows): run from anywhere (the script resolves the repo root from its own dir):
 #     powershell -ExecutionPolicy Bypass -File scripts/windows/build_docs.ps1
 # Requires: doxygen on PATH (or the standard Windows install dir) and a TeX
-# toolchain — make + xelatex/makeindex, latexmk, or bare xelatex (MiKTeX's
+# toolchain — make + pdflatex/makeindex, latexmk, or bare pdflatex (MiKTeX's
 # per-user install under %LOCALAPPDATA% is found automatically).
 #
-# The LaTeX steps run SILENTLY: the (very chatty) xelatex/make/makeindex
+# The LaTeX steps run SILENTLY: the (very chatty) pdflatex/make/makeindex
 # stdout+stderr goes to a throwaway log file instead of the console. On
 # failure the tail of that log is printed so a broken build still says why;
-# xelatex additionally keeps its full transcript in docs/latex/refman.log.
+# pdflatex additionally keeps its full transcript in docs/latex/refman.log.
 
 $ErrorActionPreference = 'Stop'
 
@@ -84,23 +84,12 @@ function Show-LogTail {
     }
 }
 
-# XELATEX, NOT PDFLATEX, and it is not a preference: this project's own markdown names the asset in CJK
-# (千夏, 观海子, 模之屋 in docs/zzz_shading.md, 噪/时/空 in docs/megalights.md), and pdflatex stops at the
-# first of them with "! LaTeX Error: Unicode character 千 (U+5343)" - a fatal error that produces no PDF at
-# all. Doxyfile sets LATEX_CMD_NAME = xelatex and EXTRA_PACKAGES = ctex so its generated sources match;
-# the engine falls back to whatever `LATEX_CMD_NAME` names if xelatex is not installed.
-$script:LatexEngine = 'xelatex'
-if (-not (Get-Command $script:LatexEngine -ErrorAction SilentlyContinue)) {
-    $script:LatexEngine = 'pdflatex'
-    Write-Host '== xelatex not found: falling back to pdflatex (CJK in the docs will fail the build) =='
-}
-
-# manual rerun loop replicating the generated Makefile: the engine, makeindex,
-# repeat while the log asks for another pass, makeindex, once more
+# manual rerun loop replicating the generated Makefile: pdflatex, makeindex,
+# repeat pdflatex while the log asks for another pass, makeindex, pdflatex
 function Invoke-Pdflatex {
-    $code = Invoke-BuildStep $script:LatexEngine @('-interaction=nonstopmode', '-halt-on-error', 'refman.tex') 'latex_pass.log'
+    $code = Invoke-BuildStep 'pdflatex' @('-interaction=nonstopmode', '-halt-on-error', 'refman.tex') 'latex_pass.log'
     if ($code -ne 0) {
-        Write-Error "$($script:LatexEngine) failed (see docs/latex/refman.log for the full transcript):"
+        Write-Error 'pdflatex failed (see docs/latex/refman.log for the full transcript):'
         Show-LogTail 'latex_pass.log'
         exit $code
     }
@@ -135,7 +124,7 @@ Set-Location 'docs\latex'
 
 if (Get-Command make -ErrorAction SilentlyContinue) {
     # doxygen generates docs/latex/Makefile with 'all' -> refman.pdf
-    Write-Host '== latex via make, engine ' + $script:LatexEngine + ' (docs/latex/Makefile, output suppressed) =='
+    Write-Host '== latex via make (docs/latex/Makefile, output suppressed) =='
     $make = Get-Command make -ErrorAction SilentlyContinue
     $code = Invoke-BuildStep $make.Source @() 'latex_make.log'
     if ($code -ne 0) {
@@ -145,7 +134,7 @@ if (Get-Command make -ErrorAction SilentlyContinue) {
     }
     Remove-Item 'latex_make.log' -ErrorAction SilentlyContinue
 } elseif (Get-Command pdflatex -ErrorAction SilentlyContinue) {
-    Write-Host '== latex via ' + $script:LatexEngine + ' (no make found, output suppressed) =='
+    Write-Host '== latex via pdflatex (no make found, output suppressed) =='
     Invoke-LatexManual
 } else {
     Write-Error 'no LaTeX toolchain found. Install MiKTeX/TeX Live (or make), then rerun.'

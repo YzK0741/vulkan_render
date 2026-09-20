@@ -45,8 +45,8 @@ there, and the shader source says so where the warp is implemented (`shaders/sha
 
 ### The model the numbers were taken on, and its terms
 
-Every measurement in this file is of **千夏 (Sunna)**, an MMD model by **观海子** (BiliBili), distributed
-through 模之屋. Its readme grants modification - recolouring, fixing weights and physics, adding sphere
+Every measurement in this file is of **Sunna** (Qianxia), an MMD model by **Guanhaizi** (BiliBili),
+distributed through **BiliMOD**. Its readme grants modification - recolouring, fixing weights and physics, adding sphere
 (`spa`) and toon textures - and forbids redistribution, extracting its parts into other models, commercial
 use, and use in adult or offensive works; the final rights are miHoYo's.
 
@@ -94,7 +94,7 @@ keeps the change off every other shader that reads the light block.
 
 ## The first measurement
 
-Two captures of the converted PMX asset (千夏 -> `scripts/pmx_to_glb.py`), one config, one camera, one
+Two captures of the converted PMX asset (Sunna -> `scripts/pmx_to_glb.py`), one config, one camera, one
 frame count, the two arms differing only in the four keys above at:
 
 ```toml
@@ -307,9 +307,9 @@ the record of what the arm was worth. The flat hair loses the strand volume the 
 and reads as one pale mass; the ear shells it was aimed at are simply part of the hair.
 
 
-千夏's ear SHELLS are not a material of their own: the flags channel shows them carrying the hair's byte, and
+Sunna's ear SHELLS are not a material of their own: the flags channel shows them carrying the hair's byte, and
 the hair mesh is 81 connected fragments, so there is no clean ear island to split off. The converter's
-painted set therefore takes the hair too (`髮`, `髪`, `前髪`) - as a LOOK ARM rather than a correction, and
+painted set therefore took the hair too - as a LOOK ARM rather than a correction, and
 the measurement says why:
 
 | hair arm | p10 | median | p90 | mean | spread |
@@ -401,9 +401,9 @@ the sun's cel ramp, the artistic term; the environment is a property of where th
 Its irradiance is low-frequency, so the face stays flat either way (measured: face mean 235/221/214 ->
 235/220/211, i.e. a colour this small, but the lookup is now the right one).
 
-### The painted set is EMPTY: a painted `头饰` renders its ears solid black
+### The painted set is EMPTY: painting the head wear renders its ears solid black
 
-`头饰` (the ears and the head's pins) was in the painted set. Painting it renders the whole material SOLID
+The head-wear material (the ears and the head's pins) was in the painted set. Painting it renders the whole material SOLID
 BLACK - measured in the ear crop at one camera, 1653 black pixels of 22400 against 28 with the material
 out, and the ears' cyan and the pins' detail come back when it is out. Four other explanations were
 eliminated first, each by experiment: the OUTLINE (recolouring it magenta left 0 magenta pixels and the
@@ -417,11 +417,11 @@ engine, because the face uses the same path whenever a frame wants it painted.
 
 ### What the painted set was, historically
 
-The face is not the only thing on this model that should be DRAWN rather than lit. 千夏's ears live in the
-material `头饰`, and the geometry says so without any guessing: its vertices reach y 18.842, the tallest thing
+The face is not the only thing on this model that should be DRAWN rather than lit. Sunna's ears live in the
+head-wear material, and the geometry says so without any guessing: its vertices reach y 18.842, the tallest thing
 in the model and 0.7 above the hair, and an ear lit like a surface reads as a lump of plastic where a drawn
 ear should read as a shape. The converter's painted set is therefore the face block PLUS the ear/head-wear
-names (`耳`, `头饰`), and the two facts are two flags rather than one:
+names (the converter's ear and head-wear prefixes), and the two facts are two flags rather than one:
 
 - **bit7 = PAINTED**, which is what the lighting reads out of the G-buffer's one-byte material channel - so it
   has to be bit7 for the same reason the face bit did - and which decides that a material takes its albedo
@@ -556,7 +556,7 @@ None of the three is a subtle rendering question, and all three are the same kin
 does not line up with a contract that lives somewhere else. They are written down here because the contracts
 are the part of this engine a reader cannot see from the shader.
 
-**What the outline does not do yet:** the thickness is per MATERIAL (the model's own `エッジ倍率` for hair,
+**What the outline does not do yet:** the thickness is per MATERIAL (the model's own per-material edge-scale factor for hair,
 face, body, ...) but not per vertex, while the reference also reads the per-vertex edge scale the PMX
 converter already exports as `_EDGESCALE` and the loader does not import. And the hull's motion vector is
 zero, so an animated character's line gets the camera's motion only and can crawl slightly under TAA.
@@ -572,9 +572,9 @@ with MMD's flipped V - and multiplies or adds it.
 **On this asset none of that is visible, and the reason is the model rather than the code.** Measured, in
 order:
 
-- the only material with a sphere map is `髮+` (mode 2 = add, `spa\hair_s.bmp`), and it is a DUPLICATE of
-  the hair: its bounding box matches the hair's in x and y, and 229 of 313 sampled `髮+` vertices sit
-  EXACTLY (distance 0.0000) on a `髮` vertex. It is the hair's inner surface.
+- the only material with a sphere map is the hair's `+` variant (mode 2 = add, `spa\hair_s.bmp`), and it
+  is a DUPLICATE of the hair: its bounding box matches the hair's in x and y, and 229 of 313 of its sampled
+  vertices sit EXACTLY (distance 0.0000) on a hair vertex. It is the hair's inner surface.
 - so its fragments are always behind the hair's own. A probe that painted every sphere-map material
   magenta changed 39 pixels of the frame - all of them in the debug overlay, none on the model.
 - and the map itself is a GREYSCALE highlight (mean 51,51,51; a white ball on black), so even where it

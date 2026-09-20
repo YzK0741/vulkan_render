@@ -160,7 +160,7 @@ void main() {
     const mat4 world = (push.flags & 1u) != 0u ? instances[heap_instance_slot].transforms[push.instance_base + gl_InstanceIndex] : push.model;
     vec4 world_pos = world * local_pos;
     // THE WIDTH IS THE MATERIAL'S OWN when the model authored one: MMD stores a per-material edge size
-    // (エッジ倍率) that its own renderer scales the extrusion by - the hair and the face are 0.5 here, the
+    // (the per-material edge-scale factor) that its own renderer scales the extrusion by - the hair and the face are 0.5 here, the
     // body 1.0 - and the frame's [render] outline_width is the overall multiplier on top of it. A model
     // without the data (any glTF this project's converter did not write) keeps the frame's width flat.
     const Material material = heap_material_tables[heap_slots_materials].materials[push.material_index];
