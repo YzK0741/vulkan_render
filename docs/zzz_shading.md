@@ -1,3 +1,14 @@
+> ## THIS BRANCH IS AN EXPERIMENT, NOT A DEVELOPMENT BRANCH
+>
+> `master` is where development happens. **Nothing in this branch is scheduled to merge there**, and PR #1
+> is deliberately a DRAFT: its point is the diff and the CI result, not a merge. The branch exists to
+> explore one look on one asset, and it is kept building and CI-green against master so the exploration
+> stays usable rather than rotting.
+>
+> Anything here that turns out to be worth having on master should be PORTED deliberately, one feature at a
+> time, with its own verification - which is what happened to the camera-pose feature and the
+> sun-intensity knob. Those two are on master; the rest is not.
+
 ## Against the in-game reference: the ambient knob, and what is really lifting the darks
 
 A mask comparison with the game's own screenshot put the environment light first (a dark albedo of 58 rendering
