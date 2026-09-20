@@ -198,7 +198,9 @@ Measured against the in-game reference, same masks and same lit/shadow quartiles
 | reference hair | 236.9 | 0.096 | 181.1 | 0.339 | 0.76 |
 | ported hair, `toon_shadow_band = 0.0`, vibrance 2.0 | 237.6 | 0.100 | 179.4 | 0.320 | 0.76 |
 
-All five numbers within about two percent, which is what the parameters were tuned against. Two of them are
+The three luma and ratio numbers agree within about one percent, and the two saturations agree to 0.019 and
+0.004 ABSOLUTE - which is 5.6% and 4.2% in relative terms, so "all five within two percent" was too loose a
+way to say it. This is what the parameters were tuned against. Two of them are
 tuning artefacts rather than the reference's constants, and both are now `[render]` keys so the next
 measurement can move them without a rebuild:
 

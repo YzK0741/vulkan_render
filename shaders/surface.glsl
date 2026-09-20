@@ -229,7 +229,11 @@ surface_sample gather_surface(vec3 world_pos, vec3 geo_normal, vec2 uv, vec3 vie
         const vec2 uv_per_pixel = max(fwidth(uv), vec2(1e-6));
         const vec2 nose_radius = uv_per_pixel * 2.0; // about a 4-pixel-wide mark
         const float nose_d = length((uv - nose_uv) / nose_radius);
-        s.albedo *= mix(1.0, mix(1.0, 0.12, smoothstep(1.0, 0.35, nose_d)), nose_strength);
+        // 1 at the mark's centre, fading to 0 by its radius. Written as 1 - smoothstep(lo, hi, d) rather
+        // than smoothstep(hi, lo, d): GLSL leaves the result UNDEFINED when edge0 >= edge1, so the reversed
+        // form only works because this driver happens to clamp it that way.
+        const float nose_mask = 1.0 - smoothstep(0.35, 1.0, nose_d);
+        s.albedo *= mix(1.0, mix(1.0, 0.12, nose_mask), nose_strength);
     }
     return s;
 }
