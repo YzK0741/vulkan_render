@@ -127,6 +127,20 @@ namespace chores {
                                            // 2 = Beckmann, 3 = Blinn-Phong); write-through to runtime
         int diffuse_model = 0;             // diffuse combo (0 = Lambert, 1 = Oren-Nayar)
         float exposure = 1.0f;             // linear exposure slider (runtime::set_exposure)
+        // a scale on the sun's radiance, i.e. the shading path's constant 7.5 (runtime::set_sun_intensity).
+        // It is a SEPARATE knob from the exposure on purpose: the exposure scales the finished frame, while
+        // this moves how far into the tonemapper's flat, desaturating region the lit side sits - which is
+        // what decides whether a stylised model keeps its colour under a bright sun.
+        float sun_intensity = 1.0f;        // sun radiance scale slider (runtime::set_sun_intensity)
+        // the painted face's own two knobs (runtime::set_face_shading). They exist BESIDE the sun because the
+        // sun cannot reach that path: the face is drawn from its albedo, so this is where its brightness is.
+        float unlit_gain = 1.3f;            // face albedo gain slider
+        float face_nose_strength = 0.75f;  // nose mark strength slider
+        float face_gain = 1.0f;            // the lit face's brightness multiplier
+        float ambient_gain = 1.0f;         // the environment light's brightness
+        float ambient_tint_r = 1.0f;       // ... and its colour, channel by channel
+        float ambient_tint_g = 1.0f;
+        float ambient_tint_b = 1.0f;
         // bloom on/off (M9): the checkbox gates the whole chain; the intensity slider keeps its value
         // while it is off, so toggling back restores the previous look. main() mirrors it by pushing an
         // intensity of 0 when the box is clear, which is what runtime::active_features() gates the
@@ -134,7 +148,6 @@ namespace chores {
         bool bloom_enabled = true;
         float bloom_intensity = 0.8f;      // bloom blend weight slider (runtime::set_bloom; 0 = off)
         int toon_bands_index = 0;          // cel-shading combo: index into toon_band_counts (0 = plain PBR)
-        float sun_intensity = 1.0f;        // a scale on the sun's radiance (0..3; 1.0 = unchanged)
         float toon_softness = 0.15f;       // cel-shading band edge softness slider (smaller = harder edges)
         float bloom_threshold = 0.35f;     // bloom bright-pass threshold (visible range 0..0.75)
         // FXAA (runtime::set_fxaa): checkbox + the two shader knobs. The checkbox is mirrored by

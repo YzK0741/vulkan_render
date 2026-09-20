@@ -516,6 +516,11 @@ int main(int argc, char** argv) {
     // slider mirrors + the animation mirrors, which the frame loop keeps in sync each frame);
     // authored-camera names and the orbit-seeding callback are passed in, so chores never
     // touches glTF types.
+    // The cel/toon band counts the combo offers (index 0 = off). Declared HERE because two places read
+    // it: the config seeding just below, and the frame loop's per-frame set_toon_shading - which is what
+    // actually calls the runtime, so the config's [render] toon_steps has to be matched into this list to
+    // survive the first frame.
+    constexpr std::array<float, 7> toon_band_counts = {0.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 8.0f};
     chores::gui_bindings gui;
     gui.shadow_enabled = settings.render.shadow; // checkbox initial states mirror the config
     gui.fxaa_enabled = settings.render.fxaa;
@@ -535,7 +540,6 @@ int main(int argc, char** argv) {
     gui.megalights_samples = static_cast<float>(settings.render.megalights_samples);
     gui.megalights_spatial_sigma = settings.render.megalights_spatial_sigma;
     gui.megalights_history_tolerance = settings.render.megalights_history_tolerance;
-    gui.sun_intensity = settings.render.sun_intensity; // a scale on the sun (see [render] sun_intensity)
     gui.megalights_bias = settings.render.megalights_bias;
     gui.megalights_light_angle = settings.render.megalights_light_angle;
     start_demo.set_megalights_light_angle(settings.render.megalights_light_angle);
@@ -548,6 +552,45 @@ int main(int argc, char** argv) {
     gui.ssao_samples = static_cast<float>(settings.render.ssao_samples);
     gui.anim_playing = animation.is_playing(); // play checkbox initial state
     gui.current_camera = current_camera;       // combo selection (the pose seeded above)
+    // ---- ZZZ-style NPR ([render] toon_steps / toon_softness / toon_shadow_tint / toon_rim; see
+    //      docs/zzz_shading.md). The band count and the softness are seeded into the GUI because the
+    //      FRAME LOOP is what calls set_toon_shading, so a config that is not mirrored here is
+    //      overwritten on frame 1 - the trap the TAA blend weights above record in full. The combo
+    //      offers a fixed set of band counts, so a config asking for one it does not offer lands on the
+    //      nearest (7 -> 6 or 8) rather than silently shading as plain PBR. The warp and the rim have no
+    //      widget, so they go straight to the runtime, which copies them into the light UBO every frame
+    //      like the exposure lane.
+    {
+        int nearest = 0;
+        auto const wanted = static_cast<float>(settings.render.toon_steps);
+        for (int i = 1; i < static_cast<int>(toon_band_counts.size()); ++i) {
+            auto const at = static_cast<std::size_t>(i);
+            auto const best = static_cast<std::size_t>(nearest);
+            if (std::abs(toon_band_counts[at] - wanted) < std::abs(toon_band_counts[best] - wanted)) {
+                nearest = i;
+            }
+        }
+        gui.toon_bands_index = nearest;
+    }
+    gui.toon_softness = settings.render.toon_softness;
+    // The exposure has a GUI slider and the FRAME LOOP is what calls set_exposure, so the config value is
+    // seeded into the gui for the same reason the toon softness above is: a config that is not mirrored
+    // here is overwritten on frame 1.
+    gui.exposure = settings.render.exposure;
+    // ... and the sun's scale rides the same rule for the same reason: the frame loop pushes it, so a
+    // config that is not seeded into the gui here would be replaced by the slider's default on frame 1.
+    gui.sun_intensity = settings.render.sun_intensity;
+    gui.unlit_gain = settings.render.unlit_gain;
+    gui.face_nose_strength = settings.render.face_nose_strength;
+    gui.face_gain = settings.render.face_gain;
+    gui.ambient_gain = settings.render.ambient_gain;
+    gui.ambient_tint_r = settings.render.ambient_tint[0];
+    gui.ambient_tint_g = settings.render.ambient_tint[1];
+    gui.ambient_tint_b = settings.render.ambient_tint[2];
+    runtime.set_toon_warp(glm::vec3(settings.render.toon_shadow_tint[0], settings.render.toon_shadow_tint[1], settings.render.toon_shadow_tint[2]), settings.render.toon_rim, settings.render.toon_shadow_band, settings.render.toon_specular, settings.render.toon_shadow_band_gain);
+    // ... and the OUTLINE ([render] outline_color / outline_width): the inverted hull, whose width 0 default
+    // means the scene pass records no hull commands at all (see docs/zzz_shading.md)
+    runtime.set_outline(glm::vec3(settings.render.outline_color[0], settings.render.outline_color[1], settings.render.outline_color[2]), settings.render.outline_width);
 
     // ---- authored (glTF) punctual lights -> the editable gui light slots ----
     // KHR_lights_punctual lights load straight into the gui slots (up to
@@ -753,9 +796,13 @@ int main(int argc, char** argv) {
         // visible - imported model lights were loaded into those slots, so they must stay lit in
         // headless-overlay runs too (the demo slots stay off unless the user enabled them)
         chores::apply_point_lights(runtime, gui, demo_lights);
-        runtime.set_exposure(gui.exposure);                                                     // gui exposure slider -> linear scale (post-process pass)
-        runtime.set_bloom(gui.bloom_enabled ? gui.bloom_intensity : 0.0f, gui.bloom_threshold); // bloom checkbox + knobs -> post pass
-        runtime.set_max_fps(config.settings.render.max_fps);                                    // 0 = uncapped (see config.example.toml)
+        runtime.set_exposure(gui.exposure);           // gui exposure slider -> linear scale (post-process pass)
+        runtime.set_sun_intensity(gui.sun_intensity); // gui sun slider -> the shading path's 7.5 scale
+        // F12 screenshot: the runtime reports the request (edge-triggered in poll_events), main
+        runtime.set_face_shading(gui.unlit_gain, gui.face_nose_strength, gui.face_gain);                              // gui face sliders -> the face
+        runtime.set_ambient(gui.ambient_gain, glm::vec3(gui.ambient_tint_r, gui.ambient_tint_g, gui.ambient_tint_b)); // gui ambient -> the environment light
+        runtime.set_bloom(gui.bloom_enabled ? gui.bloom_intensity : 0.0f, gui.bloom_threshold);                       // bloom checkbox + knobs -> post pass
+        runtime.set_max_fps(config.settings.render.max_fps);                                                          // 0 = uncapped (see config.example.toml)
         // FXAA: mirrored every frame like the other post-process values (the runtime clamps them and
         // ignores the flag when no fxaa pipeline was created)
         runtime.set_fxaa(gui.fxaa_enabled, gui.fxaa_subpixel, gui.fxaa_edge_threshold);
@@ -783,11 +830,8 @@ int main(int argc, char** argv) {
         start_demo.set_ssao(gui.ssao_enabled, gui.ssao_radius, gui.ssao_intensity, static_cast<uint32_t>(std::max(gui.ssao_samples, 0.0f) + 0.5f));
         // cel shading: the combo picks a discrete band count (index 0 = off); every entry is a
         // visibly different look, unlike a continuous strength that had dead zones between bands
-        constexpr std::array<float, 7> toon_band_counts = {0.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 8.0f};
         auto const toon_index = static_cast<std::size_t>(std::clamp(gui.toon_bands_index, 0, static_cast<int>(toon_band_counts.size()) - 1));
         runtime.set_toon_shading(toon_band_counts[toon_index], gui.toon_softness);
-        runtime.set_sun_intensity(gui.sun_intensity);
-        // F12 screenshot: the runtime reports the request (edge-triggered in poll_events), main
         // captures the presented swapchain image and writes it as a PNG (dependency-free encoder)
         if (runtime.consume_screenshot_request()) {
             auto const image = runtime.acquire_current_frame_image();

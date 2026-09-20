@@ -32,20 +32,28 @@
 #include "heap_slots.glsl"
 
 // One entry of the material table; layout matches material_record in vulkan/primitive.cppm
-// (std430, 80 bytes). Field order and the flag bits are a CPU/GPU contract - see register_material.
+// (std430, 96 bytes). Field order and the flag bits are a CPU/GPU contract - see register_material.
 struct Material {
     uvec4 tex_indices; // albedo, metallic-roughness, normal, occlusion (indices into textures[])
     uint emissive_index;
     float alpha_cutoff;       // alphaMode MASK threshold
     float occlusion_strength; // mix(1, sampled AO, strength)
-    uint _pad;
+    uint sphere_index; // MMD sphere map: the texture it was combined from (0 = none); flags bits 8-9 hold the mode
     vec4 base_color_factor;
     vec4 emissive_factor;
     float metallic_factor;
     float roughness_factor;
     float normal_scale;
     uint flags; // bit0: normal map, bit1: occlusion map, bit2: emissive map, bit3: double-sided,
-                // bit4: alphaMode MASK, bit5: alphaMode BLEND
+                // bit4: alphaMode MASK, bit5: alphaMode BLEND, bit6: painted, bit7: face,
+                // bits 8-9: MMD sphere mode, bit10: MMD edge authored
+    // MMD's own outline inputs, from the glTF material's `extras` (see docs/zzz_shading.md): xyz is the
+    // line colour the model authored, w its thickness multiplier, and flags bit6 says whether the model
+    // authored an edge AT ALL - required, because black is a legitimate edge colour and 0 a legitimate
+    // size, so the values alone cannot say "absent". APPENDED, so every field above keeps its offset; and
+    // declared in EVERY copy of this record, because a storage buffer's array stride is the struct's own
+    // size - a copy that omits it indexes the table at the wrong pitch.
+    vec4 npr_edge;
 };
 // The ARRAY name carries the HEAP slot and the block member carries the record index: two index spaces, which is
 // why a lookup is `heap_material_tables[heap_slots_materials].materials[push.material_index]`.
@@ -101,6 +109,14 @@ struct surface_sample {
     float metallic;  // metallic_factor * metallic-roughness texture .b
     float ao;        // mix(1, occlusion texture .r, occlusion_strength)
     uint flags;      // the material record's flag bits (see Material)
+    float face_mask; // 1 for the model's FACE block: the lighting flattens its shading normal and gives it
+                     // a lighter cast shadow (see shade_surface). NOT flattened here: this pass writes the
+                     // G-buffer, whose normal the shadow lookup, SSAO and the ray-traced passes all read
+    vec3 sphere_sample; // the material's MMD sphere/matcap lookup, or 0 when it has none: the reference's
+                        // Matcap combine needs the SAMPLE and the light factor together, so the lookup is
+                        // kept here rather than only folded into the albedo (see reference_matcap_combine)
+    float painted_mask; // 1 when this material is PAINTED (the converter's mmd_unlit): drawn from its albedo,
+                        // not from the lighting stack. The face block is, and so are the head's props
 };
 
 /**
@@ -117,7 +133,7 @@ struct surface_sample {
  *       mirrored UV layouts (glTF TANGENT.w = -1) are handled implicitly and the vertex TANGENT
  *       attribute is never consumed; a degenerate UV derivative falls back to the fine normal.
  */
-surface_sample gather_surface(vec3 world_pos, vec3 geo_normal, vec2 uv) {
+surface_sample gather_surface(vec3 world_pos, vec3 geo_normal, vec2 uv, vec3 view_normal, float nose_strength) {
     Material mat = heap_material_tables[heap_slots_materials].materials[push.material_index];
 
     surface_sample s;
@@ -163,6 +179,61 @@ surface_sample gather_surface(vec3 world_pos, vec3 geo_normal, vec2 uv) {
     // requires, so the inner side of a shell is lit by its inward-facing normal
     if ((mat.flags & 8u) != 0u && !gl_FrontFacing) {
         s.normal = -s.normal;
+    }
+    // NOTE: the face's flattened SHADING normal is NOT applied here, and that is a fix rather than an
+    // omission. This pass writes the G-buffer, whose normal is read by the SHADOW lookup, by SSAO and by
+    // the ray-traced passes - so a normal bent towards the eye makes all of them wrong: measured on a
+    // turned head, the face went grey because the screen-space occlusion was computed against a normal that
+    // pointed at the camera. The flattening happens in shade_surface instead, where a normal is a shading
+    // input and nothing else.
+
+    // ---- MMD's SPHERE map (see docs/zzz_shading.md), which is where a model like this gets its saturation:
+    //      the diffuse texture is authored pale and the sphere map is combined on top of it. The lookup is
+    //      matcap-shaped - the VIEW-space normal's xy, remapped to [0,1] - and the mode is the record's
+    //      flags bits 7-8: 1 multiply, 2 add. Mode 3 (sub-texture, which samples the model's extra UV sets
+    //      instead) is NOT implemented; no material in the asset this was built for uses it, and pretending
+    //      otherwise would sample a texture with the wrong coordinates.
+    const uint sphere_mode = (mat.flags >> 8u) & 3u;
+    s.painted_mask = (mat.flags & 64u) != 0u ? 1.0 : 0.0; // record bit6
+    s.face_mask = (mat.flags & 128u) != 0u ? 1.0 : 0.0;    // record bit7
+    s.sphere_sample = vec3(0.0);
+    if (sphere_mode == 1u || sphere_mode == 2u) {
+        const vec3 sphere_normal = normalize(view_normal);
+        // MMD's sphere textures are stored with the opposite vertical convention to glTF's UV origin, which
+        // a matcap lookup makes look like a flipped gradient rather than an obvious error.
+        const vec2 sphere_uv = vec2(sphere_normal.x * 0.5 + 0.5, 1.0 - (sphere_normal.y * 0.5 + 0.5));
+        const vec3 sphere = heap_sample(mat.sphere_index, sphere_uv).rgb;
+        s.sphere_sample = sphere;
+        s.albedo = sphere_mode == 1u ? s.albedo * sphere : s.albedo + sphere;
+    }
+    // ---- THE NOSE MARK, redrawn at a FIXED size in UV space. The texture paints one - a ~10x20 texel dot
+    // at uv (0.5000, 0.5073) in this model's 2048 atlas - but this render puts the whole face into about a
+    // hundred pixels, so a texel-true mark is sub-pixel and vanishes. The artist's mark is what makes a
+    // face read as anime, so it is redrawn here as an ellipse at the painted mark's own position and shape:
+    // a model-specific constant, which is exactly what the reference's per-model face light map carries.
+    //
+    // IT LIVES IN THIS PASS, NOT IN THE LIGHTING, and that is not a style choice: the mark needs the
+    // SURFACE uv, and the deferred path's lighting stage only has a screen uv - the G-buffer carries no
+    // per-surface coordinates. Its first version sat in shade_surface and drew its ellipse at the middle of
+    // the FRAME, on fragments nothing had marked as face: measured, a strength sweep from 1.0 to 0.0 moved
+    // 392 pixels, which is the run-to-run jitter. Here both the forward and the deferred path get it.
+    if ((mat.flags & 128u) != 0u && nose_strength > 0.0) { // record bit7: the FACE block alone
+
+        const vec2 nose_uv = vec2(0.5000, 0.5073);
+        // SIZED IN PIXELS, NOT IN UV, and that is the correction a measurement forced: the painted mark is
+        // 10x20 texels of a 2048 atlas, i.e. 0.5% of the face, and this render puts the face into about a
+        // hundred pixels - so a uv-space ellipse of the painted size covers 0.38 of ONE pixel and moved
+        // nothing (a whole-face probe proved the path live, a strength sweep of the real size proved it
+        // invisible). fwidth(uv) is how many uv units one pixel spans, so the mark keeps a constant SIZE ON
+        // SCREEN at any zoom, which is what line art does.
+        const vec2 uv_per_pixel = max(fwidth(uv), vec2(1e-6));
+        const vec2 nose_radius = uv_per_pixel * 2.0; // about a 4-pixel-wide mark
+        const float nose_d = length((uv - nose_uv) / nose_radius);
+        // 1 at the mark's centre, fading to 0 by its radius. Written as 1 - smoothstep(lo, hi, d) rather
+        // than smoothstep(hi, lo, d): GLSL leaves the result UNDEFINED when edge0 >= edge1, so the reversed
+        // form only works because this driver happens to clamp it that way.
+        const float nose_mask = 1.0 - smoothstep(0.35, 1.0, nose_d);
+        s.albedo *= mix(1.0, mix(1.0, 0.12, nose_mask), nose_strength);
     }
     return s;
 }

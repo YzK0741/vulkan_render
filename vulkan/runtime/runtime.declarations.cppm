@@ -8,7 +8,7 @@
 // ============================================================================
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.72.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.87.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -354,6 +354,11 @@ namespace vulkan {
         // id/AO/flags go into core::gbuffer_* (1x targets + the pass's own 1x depth), so the opaque
         // pass runs at 1x.
         std::optional<vk_pipeline> gbuffer_pipeline = std::nullopt;
+        // The OUTLINE hull's pipeline (runtime::make_outline_pipeline): the G-buffer pipeline's state and its
+        // five targets with the hull's own two stages, so a hull writes into the same G-buffer the surface
+        // does and is lit/shadowed/tonemapped with it (see docs/zzz_shading.md). Optional like the G-buffer
+        // one: without it no hull is drawn at all.
+        std::optional<vk_pipeline> outline_pipeline = std::nullopt;
         // whether the opaque pass writes the G-buffer this frame (see set_gbuffer_debug). Only
         // takes effect once the needed pipelines exist, so the flags can be set before setup ends.
         bool gbuffer_debug = false;
@@ -809,8 +814,53 @@ namespace vulkan {
         // copied into light_state.light_count.z/w every frame like the exposure lane
         float toon_steps = 0.0f;
         float toon_softness = 0.15f;
-        // a scale on the sun (runtime::set_sun_intensity); the furnace mode forces the lane to 0 regardless
+        // ZZZ-style NPR (runtime::set_toon_warp; see docs/zzz_shading.md): the colour the shadowed end
+        // of the cel ramp lerps towards - (1,1,1) is the warp OFF, and the compiled default, so a frame
+        // that does not ask for it shades exactly as it did before this existed - and the strength of
+        // the view-space rim added on top. Copied into light_state.npr_shadow/npr_rim every frame.
+        glm::vec3 toon_shadow_tint = glm::vec3(1.0f);
+        float toon_rim = 0.0f;
+        // The band factor the reference's five-colour shadow cascade is walked with (its `MData.x`, the
+        // light-map channel a ZZZ model carries in its ILM texture). A PMX carries no light map, so this is
+        // the frame's substitute: 0 = its deepest shadow colour, 1 = its lit end. Copied into
+        // light_state.npr_shadow.w every frame, beside the tint.
+        float toon_shadow_band = 0.3f;
+        // The reference's `MData.z`: the mask on its stepped highlight term, which a ZZZ model carries in its
+        // ILM texture and a PMX does not. 0 = the highlight term is off, which is the compiled default.
+        // Copied into light_state.npr_rim.z every frame.
+        float toon_specular = 0.0f;
+        // The per-texel band gain (see the shader's band derivation): how much of each surface's own
+        // albedo luminance is added to the frame-wide band, which is this port's stand-in for the light
+        // map the reference reads its band from. 0 = the frame-wide constant, the compiled default.
+        // Copied into light_state.npr_rim.w every frame.
+        float toon_shadow_band_gain = 0.0f;
+        // A SCALE on the sun's radiance, which is the constant 7.5 in shade_surface times the light UBO's
+        // sun_intensity lane - a lane that used to be only on/off (0 in furnace mode), so the sun's
+        // brightness had no knob at all and a lit surface landed at albedo/pi * 7.5 = 2.4x its albedo,
+        // deep in the tonemapper's flat, desaturating region. 1.0 = the constant as it always was.
         float sun_intensity = 1.0f;
+        // The painted face's own look (runtime::set_face_shading): its gain on the albedo and the strength
+        // of the redrawn nose mark. The face does not read the sun, so these ARE its brightness controls;
+        // copied into light_state.npr_face every frame.
+        float unlit_gain = 1.3f;
+        float face_nose_strength = 1.0f;
+        // The LIT face's own brightness multiplier - the knob the face needs now that it is lit rather than
+        // painted. The painted path had unlit_gain for this; a lit face is scaled by its own gain instead,
+        // because the sun scale is shared with everything else in the frame. Rides light_state.npr_face.z.
+        float face_gain = 1.0f;
+        // The environment light's brightness and colour (runtime::set_ambient). 1.0 / white leave the sky
+        // exactly as it is; the pair exists because the sky is both too bright and too blue for this asset.
+        float ambient_gain = 1.0f;
+        glm::vec3 ambient_tint = glm::vec3(1.0f, 1.0f, 1.0f);
+        // the FACE BLOCK's own plane in world space, adopted from the imported materials (all of them agree,
+        // because the converter averages over the whole block). Written into light_state.npr_face_forward
+        // every frame; (0,0,1) until a face material is seen, and harmless then because no face is drawn.
+        glm::vec3 face_forward = glm::vec3(0.0f, 0.0f, 1.0f);
+        // The OUTLINE (runtime::set_outline; see docs/zzz_shading.md): the hull's colour and its width in
+        // world units. 0 width = no hull is recorded at all, which is the compiled default and what keeps a
+        // frame that does not ask for an outline byte-identical to one recorded before it existed.
+        glm::vec3 outline_color = glm::vec3(0.0f);
+        float outline_width = 0.0f;
         // bloom parameters (see set_bloom): blend weight into the HDR image and the bright-pass
         // threshold subtracted in linear space (0 intensity disables the effect)
 
@@ -2083,12 +2133,76 @@ namespace vulkan {
          * @note same timing rule as set_exposure: CPU-side, copied into the light UBO every frame
          */
         void set_toon_shading(float steps, float softness) noexcept;
+
         /**
-         * @brief a scale on the sun's radiance (0..3; 1.0 = the shading path's constant unchanged).
-         * @note the furnace mode forces the lane to 0 whatever this says - it turns the sun OFF, and a
-         *       slider must not be able to argue with that.
+         * @ingroup vulkan_runtime
+         * @brief the ZZZ-style NPR half of the toon path: the reference's own shading parameters, all off at
+         *        their neutral value
+         * @param shadow_tint an extra multiplier on the deepest of the reference's five shadow colours.
+         *        (1,1,1) = the derived colours alone, which is the default. Values above 1 brighten the
+         *        shadowed side instead of darkening it - allowed, and what a stylised model sometimes wants.
+         * @param rim rim strength added along the silhouette (0 = off; clamped to 0..2)
+         * @param shadow_band the band factor the reference's five-colour shadow cascade is walked with (its
+         *        `MData.x`, the light-map channel a ZZZ model carries in its ILM texture): 0 = its deepest
+         *        shadow colour, 1 = its lit end. A PMX carries no light map, so this is the frame's stand-in.
+         * @param specular the mask on the reference's stepped highlight term (its `MData.z`, from the same
+         *        ILM texture); 0 = no highlight term, the default
+         * @param shadow_band_gain how much of each surface's own albedo luminance is added to
+         *        @p shadow_band, i.e. the per-texel half of the reference's light-map input; 0 = the
+         *        frame-wide constant, the default
+         * @note same timing rule as set_toon_shading: CPU-side, copied into the light UBO every frame
+         */
+        void set_toon_warp(glm::vec3 const& shadow_tint, float rim, float shadow_band = 0.3f, float specular = 0.0f, float shadow_band_gain = 0.0f) noexcept;
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief a scale on the sun's radiance, i.e. the shading path's constant 7.5 (see set_exposure)
+         * @param scale 1.0 = the constant unchanged, which is the default and what the gate's references
+         *        were recorded with; 0 disables the sun entirely (what `furnace` mode does)
+         * @note the sun's brightness was previously not a knob at all - the light UBO's sun_intensity
+         *       lane was only ever written as 0 or 1 - and a lit surface therefore always landed at
+         *       albedo/pi * 7.5 = 2.4x its albedo, deep in the tonemapper's flat, desaturating region
          */
         void set_sun_intensity(float scale) noexcept;
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief the painted face's gain on its albedo, and the strength of the redrawn nose mark
+         * @param gain multiplies the face materials' albedo (the face path adds no light of its own);
+         *        1 = the albedo exactly, and the compiled default is 1.3
+         * @param nose_strength how far the nose mark darkens towards black at its centre; 0 removes it
+         * @note the SUN SCALE DELIBERATELY CANNOT MOVE THE FACE: face materials take the albedo and none of
+         *       the lighting stack (see docs/zzz_shading.md), which is the reference's own arrangement - so
+         *       a frame that brightens its lit objects with set_sun_intensity needs this for the face
+         */
+        /**
+         * @brief the face's own look: the painted path's gain, the redrawn nose's strength, and the LIT
+         *        face's brightness multiplier.
+         * @param gain the painted path's gain on the albedo (unused while nothing is painted)
+         * @param nose_strength 0 disables the redrawn nose mark
+         * @param face_gain multiplied into a face material's lit result; 1.0 leaves it as lit
+         */
+        void set_face_shading(float gain, float nose_strength, float face_gain) noexcept;
+        /**
+         * @brief the environment light's brightness and colour.
+         * @param gain a multiplier on the ambient (diffuse and specular); 1.0 leaves it as the sky has it
+         * @param tint a per-channel tint on the same term; white leaves it as the sky has it
+         */
+        void set_ambient(float gain, glm::vec3 tint) noexcept;
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief the OUTLINE: an inverted hull of the whole scene, drawn into the G-buffer in @p color
+         * @param color the line's colour, written into the G-buffer's albedo, so it is lit and tonemapped
+         *        with the surface it surrounds (clamped to 0..2 per channel)
+         * @param width the hull's expansion in WORLD units - the distance its vertex stage pushes a vertex
+         *        along its world normal (0 = the outline is off, which is the default; clamped to 0..2)
+         * @note width 0 disables it, and "disabled" means the hull commands are not recorded at all rather
+         *       than recorded and discarded: the frame's camera UBO carries the width and the scene pass
+         *       reads it to decide whether to run its hull loop.
+         * @note same timing rule as set_toon_warp: CPU-side state, copied into the light UBO every frame
+         */
+        void set_outline(glm::vec3 const& color, float width) noexcept;
 
         /**
          * @ingroup vulkan_runtime
@@ -2287,6 +2401,19 @@ namespace vulkan {
          *       default: the G-buffer pass binds it explicitly).
          */
         std::expected<void, std::string> make_gbuffer_pipeline(std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code);
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief create the OUTLINE hull's pipeline: the G-buffer pipeline's formats and state, the hull's stages
+         * @param vertex_shader_code raw SPIR-V of outline.vert
+         * @param fragment_shader_code raw SPIR-V of outline.frag
+         * @return success, or an error message on failure
+         * @note It shares make_gbuffer_pipeline's builder rather than repeating its format list: a hull writes
+         *       the five targets a surface writes, and two lists that must agree is exactly the drift this
+         *       avoids. Cull mode is NOT part of it - the hull is drawn with the front faces culled, which the
+         *       scene pass sets as dynamic state before its hull loop (see scene_pass::record_segment).
+         */
+        std::expected<void, std::string> make_outline_pipeline(std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code);
 
         /**
          * @ingroup vulkan_runtime
@@ -2852,6 +2979,13 @@ namespace vulkan {
                 info.factors.alpha_cutoff = factors.alpha_cutoff;
                 info.factors.alpha_mask = factors.alpha_mask;
                 info.factors.alpha_blend = factors.alpha_blend;
+                info.factors.mmd_edge_color = factors.mmd_edge_color;
+                info.factors.mmd_edge_size = factors.mmd_edge_size;
+                info.factors.mmd_edge_present = factors.mmd_edge_present;
+                info.factors.mmd_sphere_index = factors.mmd_sphere_index;
+                info.factors.mmd_sphere_mode = factors.mmd_sphere_mode;
+                info.factors.mmd_face = factors.mmd_face;
+                info.factors.mmd_unlit = factors.mmd_unlit;
                 info.double_sided = drawable.get_double_sided();
             };
             // attach one leaf primitive to @p node (geometry from the next drawable of the stream);

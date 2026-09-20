@@ -21,6 +21,23 @@ ssao = false
 ssao_radius = 1.5
 ssao_intensity = 0.5
 ssao_samples = 4
+# ZZZ-style NPR, every one of them at a NON-DEFAULT value: this fixture is what proves the parser READS
+# these four keys (the generated-defaults fixture cannot, because three of its values are neutral).
+exposure = 0.75
+sun_intensity = 0.8
+unlit_gain = 1.15
+face_nose_strength = 0.4
+toon_steps = 5
+toon_softness = 0.05
+toon_shadow_tint = [0.55, 0.5, 0.75]
+toon_rim = 0.8
+toon_shadow_band = 0.15
+toon_specular = 0.9
+toon_shadow_band_gain = 0.4
+# the outline, at non-default values too (the generated-defaults fixture's colour is black = the compiled
+# default, so only this fixture can prove the two keys are read back)
+outline_color = [0.1, 0.05, 0.2]
+outline_width = 0.06
 rt_shadows = true
 rt_mask_bake = false
 rt_skin_bake = true

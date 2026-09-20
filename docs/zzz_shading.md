@@ -1,0 +1,666 @@
+> ## THIS BRANCH IS AN EXPERIMENT, NOT A DEVELOPMENT BRANCH
+>
+> `master` is where development happens. **Nothing in this branch is scheduled to merge there**, and PR #1
+> is deliberately a DRAFT: its point is the diff and the CI result, not a merge. The branch exists to
+> explore one look on one asset, and it is kept building and CI-green against master so the exploration
+> stays usable rather than rotting.
+>
+> Anything here that turns out to be worth having on master should be PORTED deliberately, one feature at a
+> time, with its own verification - which is what happened to the camera-pose feature and the
+> sun-intensity knob. Those two are on master; the rest is not.
+
+## Against the in-game reference: the ambient knob, and what is really lifting the darks
+
+A mask comparison with the game's own screenshot put the environment light first (a dark albedo of 58 rendering
+at 120, and the darks coming out BLUE - 59/61/73 where the game's are 48/40/39). `[render] ambient_gain` and
+`ambient_tint` are that lever: the ambient (diffuse and specular IBL) is scaled and tinted, as two plain
+multiplies. A BRANCH WAS TRIED FIRST and removed: `if (any(notEqual(scale, vec3(1.0))))` never runs with
+neutral knobs yet still cost four of the nine gate scenarios their bit-identity, because control flow in the
+middle of `shade_surface` changes how the compiler contracts the cluster loop and the ambient expression
+around it - and the unconditional multiplies cost the same four (exactly 1.0 is exact in IEEE-754, but the
+compiler cannot know it). The gate was re-baselined with `-Update`, the reason being this paragraph.
+
+Measured, the pair moves the SHADOW HUE and little else:
+
+| arm | dark parts | R-B |
+| --- | --- | --- |
+| game | 48/40/39 | +9 |
+| this engine, neutral | 59/61/73 | -14 |
+| `ambient_gain` 0.75, warm tint | 56/55/63 | -7 |
+| ... and `exposure` 0.7 | 58/54/64 | -6 |
+
+WHAT ACTUALLY LIFTS THE DARKS IS THE SUN AND THE TONE CURVE, not the ambient: a dark albedo (58) renders at 120
+because the sun's radiance is 7.5 and the ACES curve lifts the low end - `exposure` 0.7 and the ambient knob
+together only reach 216 from 227 on the whites. `sun_intensity` and `exposure` are both live in the gui, so the
+brightness side is reachable; what the pipeline does NOT have is a CONTRAST / BLACK-LEVEL control on the
+tonemap, which is the part of the game's grade that crushes its darks.
+
+AND ONE MEASUREMENT FROM THIS COMPARISON IS RETRACTED: an earlier "24.4% of the frame is blown white against
+the game's 3.0%" was taken on a crop of the game screenshot that is half UI and background, so the shares are
+not comparable at all. The albedo number (58 -> 120) and the mask MEANS are the parts that hold.
+
+# The ZZZ-style NPR shading, and what of the reference is here
+
+This engine's toon path began as a plain cel ramp: quantize the diffuse falloff into bands and let the
+band darken the base colour. That is what `[render] toon_steps` does, and on a stylised model it reads as
+grey plastic - the shadowed side is the base colour scaled down, so it loses saturation exactly where the
+model wants it.
+
+The renderer's version of the look referenced here adds a DIFFUSE WARP: the shadowed end of the ramp
+lerps towards a tinted colour instead. The reference is **XIYAG's ZZZ shader** - the Blender
+reproduction of *Zenless Zone Zero*'s character shading, `XIYAG-ZZZ-Shader - Base` and
+`- Face` node groups, published as
+[`fnoji/Blender-ZZZ-XIYAG-Shader`](https://github.com/fnoji/Blender-ZZZ-XIYAG-Shader). The credit belongs
+there, and the shader source says so where the warp is implemented (`shaders/shading.glsl`,
+`diffuse_warp`).
+
+### The model the numbers were taken on, and its terms
+
+Every measurement in this file is of **Sunna** (Qianxia), an MMD model by **Guanhaizi** (BiliBili),
+distributed through **BiliMOD**. Its readme grants modification - recolouring, fixing weights and physics, adding sphere
+(`spa`) and toon textures - and forbids redistribution, extracting its parts into other models, commercial
+use, and use in adult or offensive works; the final rights are miHoYo's.
+
+So the model itself is NOT in this repository, and neither is anything converted from it: the PMX lives on
+the author's disk, `scripts/pmx_to_glb.py` turns it into a GLB in a gitignored build directory or a temp
+directory, and `git ls-files` finds no model asset of any kind here (the tracked `gltf_model/` files are the
+glTF sample assets the render gate uses, and they are unrelated). The captures this file quotes are local
+renders of that model; the numbers, not the asset, are what is published.
+
+## What the reference does, and what each part is here
+
+| the reference | where it lives here | status |
+| --- | --- | --- |
+| `ShadowColor1..5` - five authored shadow colours, one per band | `[render] toon_shadow_tint`, walked across the bands by `diffuse_warp` | **implemented**, one tint rather than five authored colours |
+| `NTShadow Colors` / `NTSmoothstep` - the banded ramp the colours are indexed by | `toon_band` in `shaders/shading.glsl`, driven by `[render] toon_steps` / `toon_softness` | already existed; the warp rides it |
+| `SpecularColor1..5` - the specular's own five bands | the cel path's hardened highlight (`toon_steps > 0`), no per-band colours | partial |
+| `NTMatcap` / `Eff_MatCap` / `CombineMESphere` - the matcap, and the model's MMD sphere texture combined with it | the model's own sphere map, sampled matcap-style from the view-space normal and combined per its mode (`material_record::sphere_index` + flags bits 7-8: 1 multiply, 2 add), in `gather_surface` | **implemented** for the model's sphere; mode 3 (sub-texture) is not, and the authored matcap half has no equivalent yet - `[render] toon_rim` remains a procedural stand-in for it |
+| the `- Face` group: `headOrgn` / `headFwd` / `headUp`, `Face_lightmap`, `SpecularShapeMaskDot` | the same frame's cel path on the face, with the measured agreement below | **not ported, and read from the .blend rather than assumed**: `Light Vector` takes the head frame from three SCENE OBJECTS (empties placed by the artist, their position differences), `Face Factor` needs a face light map whose R is a signed distance and whose Alpha is a mask (`Map Range 0.1..0.35`) plus a mirrored-UV lookup so the shadow edge is symmetric, and `Face Shader` needs a `TData` mask texture to cut the eyes out and blend its `ShadowColor` in. A PMX carries none of the three |
+| the `Outline` shader, thickness from the vertex colour | `[render] outline_color` / `outline_width` as the FALLBACK, and the material's own `mmd_edge_color` / `mmd_edge_size` from the glTF `extras` (read by the loader, carried in `material_record::npr_edge`, used by shaders/outline.vert + outline.frag) | **implemented**: per-material colour and thickness. The per-VERTEX edge scale the reference reads from the vertex colour is exported by the converter (`_EDGESCALE`) but the loader does not import that attribute yet |
+| the `Glow` shader | - | **not implemented** |
+
+## How to ask for it
+
+```toml
+[render]
+toon_steps = 5                  # the ramp; 0 = plain PBR
+toon_softness = 0.05            # band edge width: smaller = harder edges
+toon_shadow_tint = [0.55, 0.5, 0.75]   # (1,1,1) = the warp is OFF
+toon_rim = 0.8                  # 0 = no rim
+toon_shadow_band = 0.0          # the reference's five-colour shadow cascade: 0 = its deepest colour
+toon_shadow_band_gain = 0.25    # ... plus this much of each surface's own albedo luminance (per texel)
+toon_specular = 0.8             # the mask on the reference's stepped highlight term; 0 = off
+outline_color = [0.06, 0.04, 0.09]     # the hull's colour, written into the G-buffer's albedo
+outline_width = 0.05            # WORLD units of expansion; 0 = no hull recorded at all
+exposure = 1.0                  # the linear scale the tonemapper sees (README's "Exposure" slider)
+```
+
+Every default is the NEUTRAL value, so a config that omits them shades exactly as the renderer did before the
+keys existed - which is what keeps the gate's reference frames valid. That is not a claim: the gate is run
+against them. The values above are the arm measured against the in-game reference (see the tables below).
+
+The parameters ride two lanes appended to the light UBO (`npr_shadow`, `npr_rim`). They are appended
+rather than inserted because a stage that declares the block without them still matches the buffer, which
+keeps the change off every other shader that reads the light block.
+
+## The first measurement
+
+Two captures of the converted PMX asset (Sunna -> `scripts/pmx_to_glb.py`), one config, one camera, one
+frame count, the two arms differing only in the four keys above at:
+
+```toml
+toon_steps = 5
+toon_softness = 0.05
+toon_shadow_tint = [0.34, 0.31, 0.44]
+toon_rim = 0.5
+```
+
+`scripts/measure/diff.py` between them: 7.32% of pixels differ, 5.99% by more than 4, `max |d|` 178 - and
+the 4x4 tile table puts every one of those in the model's own columns (the outer tiles read 0.000, i.e. the
+sky, the background and the overlay do not move). The frame means rise by ~2.2/255 on all three channels,
+which is the expected direction rather than a defect: the shadowed end of the ramp is a tinted PAINT, so it
+no longer falls to zero the way the un-warped falloff did.
+
+Three properties the same pair settled, because all three were wrong in the first version - and the third
+one is the reason the warp was briefly removed from the "what does this look like" column and put back:
+
+- **The warp changes the diffuse COLOUR, not the light factor.** The first version took the light factor
+  over, arguing that the tinted colour already IS the shadowed result and an extra ndotl would darken the
+  shadow side twice. This engine's sun carries a radiance of 7.5 (`shade_surface`), so that put the lit
+  band at `albedo/pi * 7.5` = 2.4x the albedo and the tonemapper resolved it to white. Measured on the
+  asset's face region (mean R/G/B), one camera, one frame count, and - for the two warp arms - one commit
+  apart so that only the expression differs:
+
+  | | R | G | B | R stddev |
+  | --- | --- | --- | --- | --- |
+  | PBR (no warp) | 151.2 | 158.1 | 168.8 | 69.1 |
+  | warp, light factor dropped (wrong) | 172.9 | 178.4 | 190.1 | 65.7 |
+  | warp, light factor kept | 146.8 | 154.2 | 166.7 | 68.4 |
+  | pure albedo (unlit) | 181.0 | 185.2 | 190.7 | 45.8 |
+
+  The wrong shape sits at the albedo's own level with its contrast flattened towards the unlit row's - i.e.
+  it had pushed the shading into the texture. The right one bands and tints the face while leaving it where
+  the PBR path has it.
+- **The specular keeps the falloff, and the SAME one the diffuse uses.** Handing it the raw cosine while
+  the diffuse took none - the first version's split - let the whole model, unlit side included, collect the
+  sun's full specular. Both terms now carry `light_radiance * ndotl`, with the ndotl the ramp produced.
+- **The tint is a paint value, not an attenuation.** (0.55, 0.5, 0.75) against this asset's near-white
+  albedo still reads as a bright lavender surface rather than a shadow. That is why the shipped default is
+  the neutral value: the useful range is a property of the model, and the reference's five per-material
+  `ShadowColor` values are how the reference avoids the question.
+
+What the ramp does NOT solve, and why the reference has a shader for it: on a face, a band edge crossing
+the nose is a visible line, because a face is nearly flat and its shading is painted into the texture. The
+reference's `- Face` group works in a `headOrgn`/`headFwd`/`headUp` frame with a face light-map and an SDF,
+which is the piece listed as missing above.
+
+
+## The reference's own shader, read out of the .blend
+
+The rules above were being invented from the reference's *names*. They are now read from its *graph*: the
+`.blend` is dumped headless (`blender --background XIYAG_ZZZ_Shader.blend --python ...`), in four passes -
+every node with its unlinked defaults, every node group's interface, every operator and interpolation type,
+and every socket's exact source. That is what a port needs and what a screenshot cannot give.
+
+Two things the dump settled that guessing had got wrong:
+
+- **The shadow colours are MULTIPLIERS, not colours.** `ShadowColor1..5` default to pure WHITE, and white
+  means "no shadow at all". The shaded albedo is therefore `albedo * mix(SC, white, light)`, not a lerp
+  between two absolute colours.
+- **The diffuse falloff IS the shadow multiplier.** The reference's `Light Factor` is
+  `smoothstep(0, 0.25, NdotL)` - every surface past a quarter-lit is fully lit, which is where the cel edge
+  comes from - and there is no separate NdotL multiply on top of it. It multiplies that by
+  `smoothstep(0, 0.5, 1 - vertex_colour)`; a PMX has no vertex colours, so that term is 1 here.
+
+The whole main path, as the graph has it:
+
+```
+light = smoothstep(0, 0.25, NdotL) * smoothstep(0, 0.5, 1 - vertex_colour)
+SC    = pow( mix-chain(SC1..5, f * (0.2, 0.4, 0.6, 0.8)), 2.2 )    f = MData.x, the light-map channel
+SP    = pow( mix-chain(SP1..5, f < (0.8, 0.6, 0.4, 0.2)), 2.2 )    the SAME chain, but hard thresholds
+base' = Matcap(base, view_normal, light)                            per-channel, see below
+out   = base' * mix(SC, white, light) + SP * (MData.z * smoothstep(0.75, 1, NdotH) * light)
+```
+
+The shadow cascade is SMOOTH (its Math nodes multiply the factor) and the specular one is HARD - which is
+the opposite of what "cel shading" suggests, and the reason the reference's shadows have no visible borders
+while its highlights read as shapes. The `Matcap` group is not a texture lookup alone: it combines the
+matcap image with the base colour **per channel**, `mix(2*base*x, 1 - 2*(1-base)*x, base*0.5)`, which is
+where the reference's extra saturation in the darks actually comes from.
+
+**What this port substitutes, and why it has to.** The `.blend` is a TEMPLATE: its materials ship every
+colour white, `Stocking` 0, `LUT` 1, and its `Eff_MatCap` image is an empty placeholder. So there is no
+authored data to copy - and a PMX carries none either (no five shadow colours, no five specular colours, no
+ILM light map, no vertex colours). The substitutions, each named in the code:
+
+| reference input | here |
+| --- | --- |
+| `ShadowColor1..5` | derived from the material's albedo: a ramp from a vibrance+darken transform of it to WHITE, which is the reference's own lit end |
+| `MData.x` (light-map band) | `[render] toon_shadow_band` as a frame-wide constant PLUS `toon_shadow_band_gain`, which adds each surface's own albedo luminance to it - the per-texel half, derived from something a PMX does have (see below) |
+| `MData.z` (specular mask) | `[render] toon_specular`, one frame-wide value (0 = the highlight term off) |
+| the vertex-colour shadow mask | 1 (a PMX has no vertex colours) |
+| `Eff_MatCap` | the model's own MMD sphere map when it has one, otherwise no matcap |
+| `Stocking` / `LUT` | not ported: the first is a per-model gradient the texture already carries here, the second needs a LUT image the template does not ship |
+
+Measured against the in-game reference, same masks and same lit/shadow quartiles as the table above:
+
+| | lit luma | lit sat | shadow luma | shadow sat | shadow/lit |
+| --- | --- | --- | --- | --- | --- |
+| reference hair | 236.9 | 0.096 | 181.1 | 0.339 | 0.76 |
+| ported hair, `toon_shadow_band = 0.0`, vibrance 2.0 | 237.6 | 0.100 | 179.4 | 0.320 | 0.76 |
+
+The three luma and ratio numbers agree within about one percent, and the two saturations agree to 0.019 and
+0.004 ABSOLUTE - which is 5.6% and 4.2% in relative terms, so "all five within two percent" was too loose a
+way to say it. This is what the parameters were tuned against - AND IT IS A FIT, NOT A GENERAL RESULT. One asset, one
+lighting setup, one camera, and the parameters chosen by looking at the same masks that then measure them:
+it shows the port can be brought to this reference's numbers, and says nothing about another character,
+another sun or another view. Treating it as evidence for those would be reading a fit as a proof.
+Two of the numbers are
+tuning artefacts rather than the reference's constants, and both are now `[render]` keys so the next
+measurement can move them without a rebuild:
+
+- **`toon_shadow_band = 0.0`** - the deepest of the five shadow colours is the right arm for THIS asset,
+  whose author-painted shadow is the strong one; the compiled default stays 0.3 because a model with a real
+  light map is supposed to drive the band per texel.
+- **the vibrance constant is 2.0**, down from 3.0: at 3.0 the deepest band put the hair's shadow saturation
+  at 0.44 against the reference's 0.34 while every other number already matched, so the boost came down
+  rather than the band or the value scale moving.
+
+`[render] toon_specular` is the other new key - the reference's `MData.z`, the mask on its stepped highlight
+term. With it at 0.8 and the default band, the same hair measures lit 238.8 / shadow 185.0 (ratio 0.77), so
+the highlight arm is a second, independently tunable way into the reference's numbers.
+
+### The band factor, and why a frame-wide constant is not enough
+
+The reference reads its band - which of the five shadow colours a texel takes - from its light map, per
+texel. Sweeping a frame-wide constant on this asset shows why the reference needs that:
+
+| band | face shadow luma/sat | hair shadow luma/sat |
+| --- | --- | --- |
+| reference | 196.7 / 0.157 | 180.3 / 0.246 |
+| 0.15 (the hair's best) | 185.8 / 0.228 | 182.7 / 0.244 |
+| 0.30 | 187.3 / 0.210 | 185.5 / 0.191 |
+| gain 0.25 (band 0.0 + 0.25 x albedo luma) | 186.0 / 0.227 | 181.5 / 0.258 |
+
+The HAIR's optimum is 0.15 - a near-exact match on both luma and saturation - and the FACE wants a value
+above 0.3, so no constant serves both. `toon_shadow_band_gain` adds each surface's own albedo luminance to
+the constant, which is the direction a painted light map goes (darker material, deeper shadow) and is the
+one thing a PMX does carry: the hair's albedo is mid-dark (linear luma 0.42), the skin's pale (0.53). At
+gain 0.25 it beats the best constant on BOTH regions at once, which is the point of a per-texel input.
+
+Be honest about how much it buys, though: the two luminances differ by only 0.11, so the split is narrow.
+The face's remaining gap (186 against the reference's 196.7) is NOT something the band can close - in the
+reference the face is a different SHADER (`- Face`), not a different band, and that is the part this asset
+cannot supply. Gain 0 is the compiled default, i.e. the frame-wide constant and exactly the behaviour
+before this existed.
+
+
+### The face, measured rather than assumed
+
+The face groups are the one part of the reference that cannot be ported from the file, and the measurement
+says it matters less than the name suggests. With a skin mask that excludes the white shirt and the mint
+hair (a warm filter, `R > G > B` and `R - B > 12`) and a box on the head alone:
+
+| | lit rgb | lit luma | lit sat | shadow luma | shadow sat | shadow/lit |
+| --- | --- | --- | --- | --- | --- | --- |
+| reference face | 250/233/225 | 236.1 | 0.102 | 196.7 | 0.157 | 0.83 |
+| ported face, exposure 1.0 | 242/227/219 | 229.8 | 0.094 | 180.8 | 0.264 | 0.79 |
+
+The lit half - the hue and its saturation - is within a few percent, which is what the reference's face
+shader is FOR (a flat, symmetric, mask-driven face); what is left is the shadow half, where our derived
+shadow is darker and more saturated than the reference's painted one.
+
+**A measurement trap worth recording**, because it produced a wrong conclusion first: a mask of
+`R >= G >= B` and `R > 150` also selects a white shirt, and a box that reaches the collar then reports the
+FACE as neutral grey (247/247/246, saturation 0.005) - which reads exactly like a colour-pipeline bug and is
+not one. The albedo path is warm (the unlit face measures 225/215/211), the shirt is what was neutral, and
+the fix was the warmth filter in the table above rather than any shader change. For the same reason the
+"shadow" of a box that reaches the chest is the red tie, not skin.
+
+`[render] exposure` was added while chasing that: it is the exposure scale the README documents as a GUI
+slider, and matching a reference render needs it reproducible. It is NOT the lever here - 0.7 pulls the lit
+face to luma 220.9, further from the reference's 236.1 - but it is what let the question be answered with
+numbers rather than by eye.
+
+**The face does get its own path now, as far as this asset allows.** What the reference does with a shader,
+this port does with a flag and one number: the converter marks the model's face block by material NAME
+(`mmd_face`, the prefixes every PMX shares - on this asset exactly materials 0..11, the skin, mouth, teeth,
+lashes, brows, eyes and eye shadow), the flag rides `material_record` bit7, and the lighting uses it for the
+three things the face needs: a flattened shading normal, a wrapped falloff, and no cast shadow at all (see
+the option-2 section below - an earlier version gave those materials a shallower light band instead, which
+this file records and the code no longer does).
+
+Bit **7** is not a free choice: the deferred path's only channel for material flags is ONE BYTE in the
+G-buffer (`out_material.a`), so a flag the LIGHTING stage needs has to fit inside it. The sphere mode moved
+up to bits 8-9 for the same reason and loses nothing, because the stage that applies the sphere is the
+G-buffer pass, which reads the record directly.
+
+Measured with FIXED patches inside the face (a mean over a box, so the pixel set cannot change between
+arms), and the offset swept:
+
+| band offset | cheek luma | cheek sat | forehead luma |
+| --- | --- | --- | --- |
+| 0.0 (no face path) | 159.6 | 0.024 | 217.6 |
+| 0.2 (shipped) | 161.4 | 0.029 | 218.2 |
+| 0.5 | 163.2 | 0.033 | 218.8 |
+| 0.8 | 164.2 | 0.040 | 219.2 |
+
+The direction is right and monotone, but the effect is SMALL - 4.6 luma of cheek across the whole 0..0.8
+range - so 0.2 is the arm that also puts the lit quartile nearest the reference (235.4 against 236.1) and
+leaves the hair untouched. The offset is a documented constant rather than a `[render]` key because the
+reference has no such parameter.
+
+**A second measurement trap, and it invalidated a whole sweep before the fixed patches replaced it.** A
+quartile computed through an ABSOLUTE-threshold mask is not comparable between two shading arms: `R > 150`
+admits more of a region's dark pixels as that region brightens, so the "shadow quartile" of the admitted set
+can move the OPPOSITE way to the shading. It reported the face's shadow at 157/0.402 for offset 0.5, i.e. a
+large effect in the wrong direction, when the fixed patches show a small effect in the right one. Quartiles
+through a mask are fine for comparing two renders against a fixed benchmark; they are not fine for deciding
+which way a knob moves.
+
+### ... and the hair was TRIED, and rejected on sight
+
+**Outcome: reverted.** The three prefixes are out of the converter again, and the numbers stay here as
+the record of what the arm was worth. The flat hair loses the strand volume the lighting was giving it
+and reads as one pale mass; the ear shells it was aimed at are simply part of the hair.
+
+
+Sunna's ear SHELLS are not a material of their own: the flags channel shows them carrying the hair's byte, and
+the hair mesh is 81 connected fragments, so there is no clean ear island to split off. The converter's
+painted set therefore took the hair too - as a LOOK ARM rather than a correction, and
+the measurement says why:
+
+| hair arm | p10 | median | p90 | mean | spread |
+| --- | --- | --- | --- | --- | --- |
+| reference (the game) | 182.6 | 225.2 | 241.3 | 216.9 | 58.7 |
+| lit (what it was) | 194.7 | 221.4 | 230.1 | 217.1 | 35.4 |
+| painted, `unlit_gain` 1.3 | 215.7 | 228.0 | 236.0 | 225.1 | 20.2 |
+| painted, `unlit_gain` 1.0 | 198.4 | 208.8 | 235.1 | 211.6 | 36.6 |
+
+The game's own hair is MORE shaded than this engine's, not less (a spread of 58.7 against 35.4), so flattening
+it is a choice: it trades the strand volume for a drawn, uniform mass, and the painted version carries the
+strands' PAINTED detail instead of a lighting gradient. `unlit_gain` is the brightness knob for it - 1.3
+washes the hair towards white (mean 225.1 against the reference's 216.9) while 1.0 lands at 211.6, so about
+1.1 is the arm that keeps the flat look at the reference's level. Three prefixes in
+`scripts/pmx_to_glb.py` are the whole revert.
+
+
+**Two knobs and one layout trap came out of making the face lit.** `[render] face_gain` (the gui's "face gain",
+0..2, neutral 1.0) multiplies a face material's lit result, ambient included, so a face can be brought down
+without touching the sun every other surface shares - measured on a region the flags channel confirmed is face
+material: 203.3 before, 196.0 at 1.0, 16.8 at 0.0. And the light UBO is read by OFFSET: the new
+`npr_face_forward` lane was declared in the GLSL before `npr_face` while the CPU struct declared it after, so
+for one commit the shader's `npr_face` read the CPU's `npr_face_forward` (a constant z of 1.0, which is why the
+gain did nothing) and the flatten target was `normalize(unlit_gain, nose, gain)` rather than the model's face
+plane. The orders agree now, member for member.
+
+### Option 2: the face back in the LIGHT, with its own shading normal
+
+The painted face is flat but deaf: the sun scale cannot reach it (measured earlier: `sun_intensity` 0.5 moves
+the hair and the shirt, and the cheek by 0.2). The alternative the user asked for is to put the face back into
+the lighting and make it flat THERE, which is what the reference's `- Face` group does with a light map and an
+SDF. Two pieces do it here, and neither needs an asset:
+
+- **a flattened SHADING NORMAL.** `gather_surface` blends a face material's normal 85% of the way towards the
+  direction the face is facing (at the eye, in a portrait), so the nose, the lips and the cheeks stop shading
+  the face while the edges of the head keep their own normals. A blend, not a replacement.
+- **a lighter CAST SHADOW.** A lit face's variation turned out to be almost entirely the hair's shadow falling
+  on it (a spread of 63.3 with the shadow map on against 10.9 with it off), so a face material keeps 35% of it
+  - the bangs painting a shadow across a face is exactly what the reference's face path does not do.
+
+Measured, and the point of the exercise is in the third column: the face is LIT again.
+
+| arm | cheek luma | hair luma | shirt luma |
+| --- | --- | --- | --- |
+| option 2, `sun_intensity` 1.0 | 197.3 | 178.1 | 222.8 |
+| option 2, `sun_intensity` 0.5 | 181.4 | 171.0 | 203.6 |
+| painted face (what it replaces) | 187.5 | 178.1 | 222.8 |
+
+The sun moves the cheek by 15.9 luma now, where the painted face's cheek did not move at all. And the face
+looks the same: the lit half's saturation is 0.104 against the reference's 0.102, where the painted face
+measured 0.080 - lighting the face back up is what puts that saturation there.
+
+The flatten constant (`face_normal_flatten` 0.85) is documented in place. The OLDER `face_shadow_retain`
+constant is gone: the face takes no shadow map at all now, which is a stronger statement than keeping 35%
+of it. `[render] face_gain` and `[render] ambient_gain` / `ambient_tint` are on the panel as sliders.
+
+**And the face takes NO shadow map at all**, which is the fix for the grey speckle a user reported and
+diagnosed ("the shadow computed wrongly, and the cause is the normal"): the shadow lookup offsets its
+sample along the normal (`world_pos + normal * 2 texels`), so a face nearly PARALLEL to the light samples
+the map at a grazing angle - and the earlier retention KEPT 35% of that result. Measured in this repo's own
+scene, where the sun is in front: the face's spread falls from 12.8 to 1.5 and its luma rises from 222.3 to
+232.2, i.e. that residual variation WAS the shadow map. Toon practice agrees - GDC's 3D Toon Rendering talk
+puts it as "shadow shapes are determined by NdotL except for the face"
+(https://gdcvault.com/play/1034330/3D-Toon-Rendering-in-Hi) - because a face's shadow shape is the
+artist's. A frame that wants the bangs' cast shadow on the face has [render] shadow_bias_constant /
+shadow_bias_slope to widen the offset instead.
+the obvious next pair of knobs, alongside the ones the panel already has.
+
+**And the flattening must NOT happen in the G-buffer pass**, which the first version got wrong and a user's
+screenshot caught: the face went grey on a turned head. The G-buffer's normal is not a shading input - the
+SHADOW lookup, the screen-space occlusion and the ray-traced passes all read it - so storing a normal bent
+towards the eye made every one of them wrong: the shadow comparison's offset no longer matched the surface
+(self-shadowing) and SSAO occluded the face against itself. `gather_surface` writes the GEOMETRIC normal
+again and `shade_surface` derives the flattened one locally, where a normal is a shading input and nothing
+else. Measured after the fix, the frontal face is unchanged (cheek 196.9 against 197.3, i.e. jitter) and
+the sun still moves it (196.9 -> 180.9 at `sun_intensity` 0.5).
+
+**And the flattening's TARGET has to be one direction for the whole face, not the per-fragment eye vector.**
+A user diagnosed this one: looked at from below, `normalize(v)` lies almost IN the face's plane, so a normal
+blended 85% towards it swings away from the light, `n.l` falls off the cel threshold, and the LOWER FACE
+goes dark - from about 30 degrees of elevation upwards, which is exactly the angle they reported. The
+target is the CAMERA'S VIEW AXIS (one direction per frame, the direction from the scene to the camera), so
+the face stays a flat plane facing the viewer at every angle. Measured at pitch -45 with the skin mask over
+a fixed box: spread 25.9 -> 17.8 and mean luma 213.7 -> 222.3, and the dark lower half in the comparison
+at build-release-clang64/gi-probe/ is gone. The sign of that axis is measured rather than reasoned about -
+`+view[2]` points AWAY from the eye in this engine's view matrix and the face went black.
+
+**The ENVIRONMENT keeps the geometric normal.** The flattened one points at the camera, so an irradiance
+lookup along it samples the sky BEHIND THE VIEWER - a hemisphere the face never sees. The flattening is for
+the sun's cel ramp, the artistic term; the environment is a property of where the surface actually points.
+Its irradiance is low-frequency, so the face stays flat either way (measured: face mean 235/221/214 ->
+235/220/211, i.e. a colour this small, but the lookup is now the right one).
+
+### Two instrument traps this cost, both of which gave a WRONG reading rather than an error
+
+- **`Copy-Item` keeps the source's timestamp.** Restoring a shader with it therefore does NOT make ninja
+  rebuild, and the capture that follows shows the OLD shader's output. This produced a confident 1653 black
+  pixels from a tree whose source said the order was correct; the fix was a touch (or `Set-Content`, which
+  always rewrites) before rebuilding. Run the build with its output VISIBLE for shader work - a filtered
+  `cmake --build | Select-String error` cannot tell 'recompiled' from 'no work to do'.
+- **The render gate's baseline directory is machine-wide, not per branch.** It was last written on
+  `npr-zzz-shading`, so running the gate on `master` reported four scenarios changed that had nothing to do
+  with the change being tested. `VR_RENDER_BASELINE_DIR` exists for this: give each branch its own directory,
+  and re-baseline with `-Update` when a branch's own commits legitimately move a frame.
+
+### The painted set holds the head wear - and the black ears it once caused were a UBO bug
+
+The head-wear material (the ears' inner surface and the head's pins) is painted again - and it was painted
+when it first went black, which sent this file down a wrong path for a while. The record is kept because the
+mistake is instructive.
+
+PAINTING IT RENDERED THE EARS SOLID BLACK: 1653 black pixels in the ear crop at one camera, against 28
+with the material unpainted. Four explanations were ruled out by experiment first - the OUTLINE
+(recolouring it magenta left 0 magenta pixels and the same black wedges), the FORWARD/BLEND pass (the
+material is OPAQUE), the FLAG BYTE (the G-buffer's material target is UNORM, so the byte survives exactly,
+and those pixels hold a PALE albedo with the painted bit set), and MSAA (an inert key in this engine's
+config) - and the file called the cause open.
+
+IT WAS THE LIGHT UBO'S MEMBER ORDER. `npr_face_forward` was declared before `npr_face` in the GLSL while
+the CPU struct declared it after, and a UBO is read by OFFSET: the shader's `npr_face.x` - which is
+`unlit_gain` - was reading the forward vector's x, which is 0.0, so `painted_color = albedo * unlit_gain`
+was black. PROVEN BY PUTTING THE SWAP BACK AND CHANGING NOTHING ELSE: 1653 black pixels again, against 3
+with the order correct. The order was fixed when the face-gain lane was added, and removing the material
+from the painted set had merely hidden the trigger - which is why the fallback the previous version of this
+section proposed (empty the set) was the wrong fix even though it made the symptom go away.
+
+### What the painted set was, historically
+
+The face is not the only thing on this model that should be DRAWN rather than lit. Sunna's ears live in the
+head-wear material, and the geometry says so without any guessing: its vertices reach y 18.842, the tallest thing
+in the model and 0.7 above the hair, and an ear lit like a surface reads as a lump of plastic where a drawn
+ear should read as a shape. That is what the converter's painted set was FOR - and what it was, until
+painting the head wear turned out to render the ears SOLID BLACK, which is the next section: the set is
+EMPTY now, so this paragraph describes the reasoning and not the current state. The two facts it splits
+into are still two flags:
+
+- **bit6 = PAINTED**, which decides that a material takes its albedo times `unlit_gain` instead of the
+  lighting stack, and which the LIGHTING has to see - so it lives inside the G-buffer's one-byte material
+  channel, as does the face bit below;
+- **bit7 = FACE**, which the lighting also reads from that byte (the flattening, the wrapped falloff and the
+  shadow exemption), and which the G-buffer pass reads from the record for the redrawn nose mark.
+
+The two low bits are 6 and 7 rather than anything higher for that reason, the MMD sphere MODE sits at bits
+8-9 (where it always was) and the MMD EDGE flag moved UP to bit10, because only the outline stages read it
+and they index the record directly. The face bit was on bit8 before the relayout and overlapped the sphere
+mode there - latent, since no material on this asset carried both, and gone now.
+
+Measured with the non-PBR coefficient, on fixed patches, `unlit_gain` 1.3 -> 2.5:
+
+| patch | gain 1.3 | gain 2.5 |
+| --- | --- | --- |
+| ear | 195.6 | 203.7 |
+| face | 187.5 | 201.6 |
+| hair | 178.1 | 178.1 |
+| shirt | 222.8 | 222.8 |
+
+The painted materials move and the lit ones are bit for bit where they were, which is the property the user
+asked for and the reason the coefficient is named for what it is rather than for the face.
+
+Two pieces of code became MOOT in the same change and were removed rather than left: the face's band offset
+and its cast-shadow retention. Both tuned a lighting result that a painted material now discards entirely -
+their measurements stand above, and the band still serves every material that IS lit.
+
+### The face was PAINTED, not lit - and its nose mark is redrawn (SUPERSEDED: the face is lit now)
+
+The reference's `- Face` shader reads a face light map and a `TData` mask, and never the sun. That is not an
+optimisation, it is the whole point of a face in this style: an anime face IS its painting - the eyes, the
+blush, the mouth and the nose mark - and lighting it means washing that painting out. THIS SECTION IS
+HISTORY: face materials were painted for a while (`albedo * unlit_gain`, none of the lighting stack), and
+that is what the numbers below measure, but a painted face cannot be reached by the sun, the exposure or
+the ambient knobs at all - which is the complaint that led to option 2, where the face is LIT again with a
+flattened normal and `[render] face_gain` as its own brightness. What survives from here is the nose mark
+and the measured reason the painting's colour matters.
+
+Measured, and the reason it is worth doing rather than a matter of taste: the face's CHROMA (the mean
+sRGB max-minus-min over the skin mask) sits at 38.3 with the painted path against the reference's 31.1,
+where the lit face had 24.6 - the lit path was losing a third of the painting's colour to the lighting.
+
+**The nose mark.** (Its brightness knob is the NON-PBR coefficient below.) The texture already paints one - a ~10x20 texel dot at uv (0.5000, 0.5073) in this
+model's 2048 atlas - but this render puts the whole face into about a hundred pixels, so a texel-true mark
+is sub-pixel and invisible. It is redrawn as an ellipse in UV SPACE at the painted mark's own position and
+shape (`face_nose_uv` / `face_nose_radius` / `face_nose_strength` in shading.glsl): a model-specific
+constant, which is exactly what the reference's per-model face light map would have carried. Measured on a
+fixed 7x9 pixel patch at the nose tip: luma 242.2 before, 229.6 after.
+
+**Where the mark has to be drawn, which a measurement rather than a reading found.** Its first version sat
+in the lighting stage, next to the gain, and did NOTHING: the offset lane's gain worked and the mark's
+strength measured as a no-op (a sweep from 1.0 to 0.0 moved 392 pixels, which is the run-to-run jitter).
+The reason is that this engine shades this model through the G-buffer, whose lighting stage has a SCREEN
+uv, not the surface's - the ellipse was being drawn at the middle of the frame, where no fragment is
+marked as face. It lives in `gather_surface` now, the pass that has the real uv, so the forward and the
+deferred path both get it.
+
+**Its size has to be measured in PIXELS, not in uv.** The painted mark is 10x20 texels of a 2048 atlas -
+half a percent of the face - and this render puts the whole face into about a hundred pixels, so a
+uv-space ellipse of the painted size covers 0.38 of ONE pixel: a whole-face probe (a 0.5 radius) proved
+the path live while the real size still measured as nothing. It is sized by `fwidth(uv)` instead, i.e. a
+constant size ON SCREEN at any zoom, which is what line art does.
+
+**And the metric had to change too.** The mark is about twelve pixels of 1,036,800, i.e. an order of
+magnitude BELOW the run-to-run jitter that a whole-frame pixel count sees, and the largest frame-wide
+differences between a marked and an unmarked frame are the debug overlay's own fps text. A region diff is
+what shows it: in the face box the mark's pixels go from (232,228,225) to (113,101,97) - a 125-luma drop -
+and a fixed patch over them measures luma 228.2 at strength 0, 225.8 at 0.5, 217.1 at 1.0.
+
+Two honest notes about the numbers above. `unlit_gain` (1.3) - the NON-PBR brightness coefficient, called
+`face_gain` for a while because the face was the only thing that used it: it multiplies every surface drawn
+from its albedo - is a LOOK constant rather than a fitted one,
+because neither metric can fit it: the skin-mask quartiles are not comparable between arms (a brighter face
+admits more of its own dark pixels, so the mean can move the wrong way - the same trap recorded above), and
+a mask-free box has to be mostly hair and background to avoid that, which makes it insensitive to the face.
+The two numbers that ARE reliable here are the ones quoted: the chroma, from the mask, and the nose patch,
+from a fixed box.
+
+### Making the face FLAT, which is what the face shader is for
+
+The reference's `- Face` group exists to keep the surface NORMALS from shading a face: its factor comes from
+a painted light map compared against the light direction in a head frame, with a mirrored UV so the edge is
+symmetric. "Flat" is measurable, and it is worth measuring: the p10..p90 spread of a region's own skin
+luminance. On the in-game capture the reference's face spreads 36.4 against its own hair's 69.6 - the face
+really is about twice as flat - while this engine's face spread 63.3, as shaded as the hair.
+
+Two changes were tried against that number, and the measurement decided which one mattered:
+
+| arm | spread | lit luma/sat | shadow luma/sat | shadow/lit |
+| --- | --- | --- | --- | --- |
+| reference | 36.4 | 236.1 / 0.102 | 196.7 / 0.157 | 0.83 |
+| shadow map OFF (the floor) | 10.9 | 235.8 / 0.060 | 201.9 / 0.210 | 0.86 |
+| before this slice | 63.3 | 235.4 / 0.055 | 182.3 / 0.228 | 0.77 |
+| falloff swapped to the face scalar, shadow kept | 63.3 | 235.4 / 0.055 | 182.3 / 0.228 | 0.77 |
+| ... and the face keeps 60% of the cast shadow | 33.5 | 235.3 / 0.056 | 191.3 / 0.210 | 0.81 |
+
+**The lever was the CAST SHADOW, not the falloff.** Turning the shadow map off collapses the face's spread
+to 10.9, i.e. the face's entire shading variation was the hair's shadow falling on it - the bangs painting a
+shadow across an anime face, which is exactly what the reference's face path does not do. Swapping the
+per-fragment falloff for the head-frame scalar (the reference's own mechanism, using the view as the head
+frame because a PMX has no head bone in the shader) measured as a NO-OP on this capture: this sun puts every
+face normal past the reference's own 0.25 threshold, so there was nothing for it to flatten. It is kept
+anyway - it is the reference's structure and it is what makes a face flat when the light grazes - and this
+paragraph is why a reviewer should not expect it to show up in the numbers above.
+
+What the numbers do show is that retaining 60% of the cast shadow lands the face within 3 of the reference's
+spread and pulls the shadow half from 182.3 to 191.3 (against 196.7). What is left is the lit half's
+saturation (0.056 against 0.102), which is not a flatness question at all - it is the pale albedo and the
+tonemapper, and no face path changes it.
+
+
+
+
+## The outline, and the three things it cost
+
+The outline is the classic inverted hull: the model is drawn a second time, expanded along its normals by
+`outline_width` world units, with the FRONT faces culled, into the same five G-buffer targets the surface
+writes. It is geometry, not an overlay - so the line is lit, shadowed and tonemapped with the model, and the
+depth buffer keeps it attached to the silhouette. The scene pass records every non-blended leaf's hull
+before the surfaces (`scene_pass::record_segment`), which is why a hull costs one draw per leaf and why the
+cull mode and depth state are set once for the whole loop rather than per leaf.
+
+Three separate defects stood between that description and a line on screen, and every one of them was
+invisible to the validator (`validation clean` throughout, in fact):
+
+1. **The vertex input layout is DERIVED from what a stage declares** (`vulkan::make_pipeline` accumulates the
+   stride over the declared locations). The first outline.vert declared locations 0,1,4,5 and skipped 2 -
+   the UV - so the pipeline described a 48-byte stride against a 64-byte vertex and the hull rasterized as a
+   few enormous triangles across the screen. pbr.vert states the rule from its side ("shadow.vert must
+   declare exactly the same inputs"); outline.vert now declares the UV and says why.
+2. **`motion_base` sits between `instance_base` and `model` in the push block.** Declaring it after `model`
+   put `model` four bytes early, so the hull was transformed by the wrong matrix and landed outside the
+   view - drawn, valid, and nowhere. surface.glsl gets away with omitting it only because the std430
+   padding happens to land `model` on the same offset.
+3. **The hull pipeline had to be resynced to the frame's viewport** like the G-buffer pipeline is
+   (`runtime::update_pass_geometry`). It is a runtime member rather than a pass, so no pass declaration
+   resyncs it, and `begin_pipeline` re-emits whatever viewport it cached at creation.
+
+None of the three is a subtle rendering question, and all three are the same kind of thing: a shader that
+does not line up with a contract that lives somewhere else. They are written down here because the contracts
+are the part of this engine a reader cannot see from the shader.
+
+**What the outline does not do yet:** the thickness is per MATERIAL (the model's own per-material edge-scale factor for hair,
+face, body, ...) but not per vertex, while the reference also reads the per-vertex edge scale the PMX
+converter already exports as `_EDGESCALE` and the loader does not import. And the hull's motion vector is
+zero, so an animated character's line gets the camera's motion only and can crawl slightly under TAA.
+
+### The sphere map, and why this model shows nothing from it
+
+MMD's sphere map is the layer that gives a model its authored sheen: the diffuse textures are flat and the
+sphere is combined on top, either multiplied or added. The converter writes the texture index beside the
+name (`mmd_sphere_texture`), the loader reads both, they reach the record as `sphere_index` plus two flag
+bits, and `gather_surface` looks the map up matcap-style - the view-space normal's xy remapped to [0,1],
+with MMD's flipped V - and multiplies or adds it.
+
+**On this asset none of that is visible, and the reason is the model rather than the code.** Measured, in
+order:
+
+- the only material with a sphere map is the hair's `+` variant (mode 2 = add, `spa\hair_s.bmp`), and it
+  is a DUPLICATE of the hair: its bounding box matches the hair's in x and y, and 229 of 313 of its sampled
+  vertices sit EXACTLY (distance 0.0000) on a hair vertex. It is the hair's inner surface.
+- so its fragments are always behind the hair's own. A probe that painted every sphere-map material
+  magenta changed 39 pixels of the frame - all of them in the debug overlay, none on the model.
+- and the map itself is a GREYSCALE highlight (mean 51,51,51; a white ball on black), so even where it
+  showed it would add a white sheen, not a hue.
+
+That last point is the useful one for the look: the saturation the reference art has is NOT in this model's
+diffuse textures (their means are 208/187/180, 199/169/174, 165/176/162 - all pale), and not in its sphere
+map either. It is authored in the REFERENCE's own shading colours - XIYAG's per-material `ShadowColor1..5`
+and `SpecularColor1..5` and its matcap are hand-picked vivid colours, which is what the Diffuse Warp
+interpolates towards. Our equivalent is one global `[render] toon_shadow_tint`; a per-material shadow
+colour is the next thing the look needs, and the PMX does not carry one, so it has to be a RULE (derived
+from each material's own albedo) rather than data.
+
+
+### Where the per-material data comes from
+
+The MMD inputs are application-specific, so the converter writes them into each material's `extras` -
+and fastgltf does NOT keep extras: it parses them, hands the simdjson DOM object to an
+`ExtrasParseCallback` and forgets it. The loader therefore installs one (`collect_mmd_extras` in
+gltf_loader.cpp), which is also why that one translation unit now has the real simdjson header rather than
+fastgltf's forward declaration (see the target's include dirs). An absent field leaves the NEUTRAL value
+behind, and "the model authored an edge at all" is a separate flag - black is a legitimate edge colour and
+0 a legitimate size, so the values cannot be asked to imply their own absence.
+
+The GPU side is one lane APPENDED to the material record (`npr_edge`: xyz the colour, w the thickness) plus
+flag bit10 - it was bit6 until the painted/face relayout moved it up, which is safe precisely because the
+outline stages index the record and never read the G-buffer's byte. Appending matters twice over: the fields above keep their offsets, and - because a storage
+buffer's array stride is the struct's own size - EVERY copy of the record in the shaders has to grow with
+it (seven files declare one; a copy that stopped early would index the table at the wrong pitch).
+
+Measured on the asset, with the frame's global outline colour set to a colour nothing should use (bright
+green, then magenta) and everything else equal: the two captures differ by 370 pixels of 1,036,800 (mean
+0.0005/255) against a run-to-run jitter of 294 - i.e. the global colour is never reached, because every
+material on this model authored its own. Its hair materials author `(0.333, 0.424, 0.302)` at size 0.5 and
+the rest black at 0.5..1.0, which is what the render shows: thinner, dark-green lines on the hair and
+thicker black ones on the body.
+
+
+

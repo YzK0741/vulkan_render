@@ -23,6 +23,27 @@ namespace {
         CHECK(settings.render.ssao_radius > 1.49f && settings.render.ssao_radius < 1.51f);
         CHECK(settings.render.ssao_intensity > 0.49f && settings.render.ssao_intensity < 0.51f);
         CHECK(settings.render.ssao_samples == 4);
+        // ZZZ-style NPR: this fixture is the one that proves the four keys are READ (three of them are
+        // neutral in the generated defaults, so a parser that ignored them would read the same values).
+        CHECK(settings.render.exposure > 0.749f && settings.render.exposure < 0.751f);
+        CHECK(settings.render.sun_intensity > 0.799f && settings.render.sun_intensity < 0.801f);
+        CHECK(settings.render.unlit_gain > 1.149f && settings.render.unlit_gain < 1.151f);
+        CHECK(settings.render.face_nose_strength > 0.399f && settings.render.face_nose_strength < 0.401f);
+        CHECK(settings.render.toon_steps == 5);
+        CHECK(settings.render.toon_softness > 0.049f && settings.render.toon_softness < 0.051f);
+        CHECK(settings.render.toon_shadow_tint[0] > 0.549f && settings.render.toon_shadow_tint[0] < 0.551f);
+        CHECK(settings.render.toon_shadow_tint[1] > 0.499f && settings.render.toon_shadow_tint[1] < 0.501f);
+        CHECK(settings.render.toon_shadow_tint[2] > 0.749f && settings.render.toon_shadow_tint[2] < 0.751f);
+        CHECK(settings.render.toon_rim > 0.799f && settings.render.toon_rim < 0.801f);
+        CHECK(settings.render.toon_shadow_band > 0.149f && settings.render.toon_shadow_band < 0.151f);
+        CHECK(settings.render.toon_specular > 0.899f && settings.render.toon_specular < 0.901f);
+        CHECK(settings.render.toon_shadow_band_gain > 0.399f && settings.render.toon_shadow_band_gain < 0.401f);
+        // the outline: both keys at non-default values (the width is the one that matters - 0 is the
+        // compiled default AND the generated default, so only this fixture proves it is read at all)
+        CHECK(settings.render.outline_color[0] > 0.099f && settings.render.outline_color[0] < 0.101f);
+        CHECK(settings.render.outline_color[1] > 0.049f && settings.render.outline_color[1] < 0.051f);
+        CHECK(settings.render.outline_color[2] > 0.199f && settings.render.outline_color[2] < 0.201f);
+        CHECK(settings.render.outline_width > 0.059f && settings.render.outline_width < 0.061f);
         CHECK(settings.render.rt_shadows);                                                       // fixture: the ray-traced sun shadows
         CHECK(!settings.render.rt_mask_bake);                                                    // fixture: the bake off (the A/B)
         CHECK(settings.render.rt_skin_bake);                                                     // fixture: the per-frame skin refit on
@@ -141,6 +162,24 @@ namespace {
         CHECK(settings.render.ssao_radius > 0.49f && settings.render.ssao_radius < 0.51f);
         CHECK(settings.render.ssao_intensity > 0.99f && settings.render.ssao_intensity < 1.01f);
         CHECK(settings.render.ssao_samples == 8);
+        // [render] cel/toon + ZZZ-style NPR: the generator writes all four, and every one of its defaults
+        // is the NEUTRAL value - which is the property that matters here, because a neutral value is what
+        // leaves the shading plain PBR (see docs/zzz_shading.md and the light UBO's npr_ lanes).
+        CHECK(settings.render.exposure == 1.0f);
+        CHECK(settings.render.sun_intensity == 1.0f);
+        CHECK(settings.render.unlit_gain > 1.29f && settings.render.unlit_gain < 1.31f);
+        CHECK(settings.render.face_nose_strength > 0.99f && settings.render.face_nose_strength < 1.01f);
+        CHECK(settings.render.toon_steps == 0);
+        CHECK(settings.render.toon_softness > 0.14f && settings.render.toon_softness < 0.16f);
+        CHECK(settings.render.toon_shadow_tint[0] == 1.0f && settings.render.toon_shadow_tint[1] == 1.0f && settings.render.toon_shadow_tint[2] == 1.0f);
+        CHECK(settings.render.toon_rim == 0.0f);
+        CHECK(settings.render.toon_shadow_band > 0.29f && settings.render.toon_shadow_band < 0.31f);
+        CHECK(settings.render.toon_specular == 0.0f);
+        CHECK(settings.render.toon_shadow_band_gain == 0.0f);
+        // the outline: the generator writes both, and its defaults are the NEUTRAL pair (black, width 0),
+        // which is what leaves the hull unrecorded in a frame that does not ask for one
+        CHECK(settings.render.outline_color[0] == 0.0f && settings.render.outline_color[1] == 0.0f && settings.render.outline_color[2] == 0.0f);
+        CHECK(settings.render.outline_width == 0.0f);
         // [render] ray tracing: written by the generator like every other switch, so it round-trips
         CHECK(!settings.render.rt_shadows);
         CHECK(!settings.render.rt_mask_bake);         // default: the mask bake is off (see the generated-defaults fixture)

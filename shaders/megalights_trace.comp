@@ -254,7 +254,7 @@ void main() {
         if (radiance == vec3(0.0)) {
             continue; // out of range, or outside the spot's cone: not a candidate at all
         }
-        const vec3 shaded = evaluate_direct_light(normal, v, albedo, metallic, roughness, f0, dir, radiance);
+        const vec3 shaded = evaluate_direct_light(normal, v, albedo, metallic, roughness, f0, dir, radiance, vec3(0.0), 0.0);
         const float lum = dot(shaded, vec3(0.2126, 0.7152, 0.0722));
         // The log compression and the smooth cut, in that order (UE: the cut is inside the log's
         // argument). A luminance at or below the threshold lands on a weight of 0 and is dropped.
@@ -332,7 +332,7 @@ void main() {
                 ray_distance = distance * 1.01;
             }
             const float visible = visibility(origin, ray_dir, ray_distance, pc.params.z);
-            const vec3 shaded = evaluate_direct_light(normal, v, albedo, metallic, roughness, f0, dir, radiance);
+            const vec3 shaded = evaluate_direct_light(normal, v, albedo, metallic, roughness, f0, dir, radiance, vec3(0.0), 0.0);
             // `Sum / W_k` is 1/p for the reservoir's selection probability; the firefly cap bounds what a
             // single sample may carry; `1/samples` is the estimator's own normalization, and the smooth cut
             // is applied HERE as well as in the PDF (from the same luminance), which is what keeps the

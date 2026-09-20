@@ -926,12 +926,46 @@ namespace vulkan {
         if (info.factors.alpha_blend) {
             record.flags |= 32u; // bit5: alphaMode BLEND - alpha-blended / transparent material
         }
+        // MMD's own outline inputs (docs/zzz_shading.md): they reach the outline's two stages through this
+        // record, and bit6 is what tells them the model authored an edge at all - black is a legitimate
+        // colour and 0 a legitimate size, so the values cannot say it themselves.
+        if (info.factors.mmd_edge_present) {
+            record.npr_edge = glm::vec4(glm::vec3(info.factors.mmd_edge_color), info.factors.mmd_edge_size);
+            // bit10, NOT bit6: the record's low eight bits are the ones the G-buffer copies into its
+            // material channel, and those are spent on the flags the LIGHTING has to see (painted, face).
+            // The MMD edge flag is only ever read by the outline stages, which index the record itself.
+            record.flags |= 1024u; // bit10: the model authored MMD edge data
+        }
+        // MMD's sphere map (docs/zzz_shading.md): the texture index rides the record's spare 4 bytes and the
+        // MODE rides two flag bits, so the record keeps its size and every shader copy keeps its layout.
+        // 0 = none, 1 = multiply, 2 = add, 3 = sub-texture.
+        record.sphere_index = info.factors.mmd_sphere_index;
+        if (info.factors.mmd_unlit) {
+            // bit7 is the PAINTED flag the lighting stage reads out of the G-buffer's one-byte material
+            // channel, so it has to be bit7 for the same reason the face bit did: a shading flag only
+            // reaches the deferred lighting stage if it fits inside that byte.
+            record.flags |= 64u; // bit6: this material is PAINTED (drawn from its albedo)
+        }
+        if (info.factors.mmd_face) {
+            // The face block's own plane, from the GLB's extras: every face material carries the same one,
+            // so simply adopting the last seen is both correct and free of ordering assumptions.
+            this->face_forward = info.factors.mmd_face_normal;
+            // bit7, NOT a higher bit: the deferred path's only channel for material flags is ONE BYTE in the
+            // G-buffer (out_material.a), and the shading stage reads the face there rather than from the
+            // record - so the face bit has to live inside that byte. The sphere MODE moved up to bits 8-9 for
+            // the same reason, and it loses nothing: the stage that applies the sphere (the G-buffer pass)
+            // reads the record directly.
+            // ... while the FACE flag rides bit8, which only the G-buffer PASS can see - and that is enough,
+            // because the one thing needing it (the redrawn nose mark) is drawn on the albedo there.
+            record.flags |= 128u; // bit7: this material is part of the model's FACE block
+        }
+        record.flags |= static_cast<uint32_t>(std::clamp(info.factors.mmd_sphere_mode, 0, 3)) << 8u;
 
         // ---- 3. Content-address the record, then append (or degrade on overflow) ----
         // Identical materials (same texture slots, factors and flags) share ONE table entry:
         // registration happens per primitive, so a scene with N primitives over M shared glTF
         // materials would otherwise append N records and burn the table needlessly. The key is
-        // the byte-exact 80-byte record carried in a data_block - no hash collisions, because
+        // the byte-exact 96-byte record carried in a data_block - no hash collisions, because
         // the unordered lookup hashes the block only for bucketing while equality stays
         // byte-exact.
         utility::data_block<sizeof(vulkan::material_record)> material_key = {};

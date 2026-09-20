@@ -53,6 +53,19 @@ namespace vulkan {
     // independent): double-sided materials keep back faces. Transparent (alphaMode BLEND)
     // leaves disable depth writes so they blend onto whatever is behind them. All commands
     // record onto env.command_buffer.
+    //
+    // THE OUTLINE HULL (see docs/zzz_shading.md) is the same geometry recorded again through the hull's
+    // pipeline, which the scene pass has already bound: nothing here touches the cull mode or the depth
+    // state, because those belong to the hull LOOP rather than to a leaf - front-face culling and depth
+    // writes on, the same for every hull in the frame. A leaf whose geometry is not its own overrides it
+    // (an instanced draw reads its source's buffers, a static draw goes through its chunk table).
+    void primitive::draw_outline(render_environment& env) const {
+        if (!this->is_valid()) {
+            return; // the hull of nothing is nothing, and a draw with no indices is a validation error
+        }
+        this->bind_geometry_and_push(env);
+        vkCmdDrawIndexed(env.command_buffer, this->index_count, 1, 0, 0, 0);
+    }
     void normal_draw_primitive::draw(render_environment& env) const {
         // DIAGNOSTIC (temporary): an indexed geometry draw that rasterises nothing can simply have no indices, and
         // no shader-side experiment can tell that apart from a draw that never happens at all.
@@ -104,6 +117,21 @@ namespace vulkan {
         vkCmdDrawIndexed(command_buffer, geometry_source.index_count, this->instance_count, 0, 0, 0);
     }
 
+    void instanced_draw_primitive::draw_outline(render_environment& env) const {
+        if (!this->is_valid()) {
+            return;
+        }
+        // the hull is drawn per INSTANCE, exactly as draw() draws it: the vertex stage expands each
+        // instance's own copy, so an instanced batch outlines every one of its instances
+        VkCommandBuffer const command_buffer = env.command_buffer;
+        primitive const& geometry_source = *this->source;
+        constexpr VkDeviceSize vertex_offset = 0;
+        vkCmdBindVertexBuffers(command_buffer, 0, 1, &geometry_source.vertex_detail->buffer, &vertex_offset);
+        vkCmdBindIndexBuffer(command_buffer, geometry_source.index_detail->buffer, 0, geometry_source.index_type);
+        push_stage_block(env, this->push);
+        vkCmdDrawIndexed(command_buffer, geometry_source.index_count, this->instance_count, 0, 0, 0);
+    }
+
     void instanced_draw_primitive::destroy([[maybe_unused]] vma_allocator& vma) noexcept {
         // owns nothing: the instance transform buffer is runtime-owned, geometry is source's
     }
@@ -130,6 +158,32 @@ namespace vulkan {
             env.set_cull_mode(chunk.double_sided);
             material_push_constants const chunk_push = [&] {
                 material_push_constants p = this->push; // model + flags already correct
+                p.material_index = chunk.material_index;
+                return p;
+            }();
+            push_stage_block(env, chunk_push);
+            vkCmdDrawIndexed(command_buffer,
+                             chunk.index_count,
+                             1,
+                             chunk.first_index,
+                             static_cast<int32_t>(chunk.vertex_offset),
+                             0);
+        }
+    }
+
+    void static_draw_primitive::draw_outline(render_environment& env) const {
+        if (!this->is_valid()) {
+            return;
+        }
+        // The SAME chunk table the draw above walks, so a batch of many materials outlines as the batches
+        // it is made of; no cull or depth state is recorded here (the hull loop owns both).
+        VkCommandBuffer const command_buffer = env.command_buffer;
+        constexpr VkDeviceSize vertex_offset_bytes = 0;
+        vkCmdBindVertexBuffers(command_buffer, 0, 1, &this->vertex_detail->buffer, &vertex_offset_bytes);
+        vkCmdBindIndexBuffer(command_buffer, this->index_detail->buffer, 0, this->index_type);
+        for (chunk_record const& chunk : this->chunks) {
+            material_push_constants const chunk_push = [&] {
+                material_push_constants p = this->push;
                 p.material_index = chunk.material_index;
                 return p;
             }();

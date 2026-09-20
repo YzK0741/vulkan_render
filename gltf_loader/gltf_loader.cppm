@@ -1,6 +1,6 @@
 // ============================================================================
 // module: gltf_loader
-// module version: 0.1.1  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.7.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // Pure-CPU glTF / GLB loader (vendored fastgltf + stb): drawable stream, retained
 // node tree, animations / skins / morph targets / cameras / punctual lights.
@@ -236,6 +236,30 @@ namespace gltf {
         float alpha_cutoff = 0.5f;       // alphaMode MASK threshold (default per glTF spec)
         bool alpha_mask = false;         // alphaMode == MASK: discard fragments below alpha_cutoff
         bool alpha_blend = false;        // alphaMode == BLEND: alpha-blended (transparent) material
+        // MMD's own outline inputs, read from the material's `extras` (this project's PMX converter writes
+        // them; see docs/zzz_shading.md). `present` rather than "is the colour black": black is a legitimate
+        // edge colour and 0 a legitimate size, so the values alone cannot say "this model authored none".
+        glm::vec4 mmd_edge_color = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f); // rgb: the line's colour
+        float mmd_edge_size = 1.0f;                                   // the line's thickness multiplier
+        bool mmd_edge_present = false;
+        // MMD's SPHERE map: the texture index it was embedded at (0 = none) and how it combines with the
+        // base colour - 0 none, 1 multiply, 2 add, 3 sub-texture. It is what gives a model like this its
+        // saturation, because the diffuse textures are authored pale and the sphere map is combined on top.
+        uint32_t mmd_sphere_index = 0;
+        int mmd_sphere_mode = 0;
+
+        // this material is part of the model's FACE block (the PMX converter marks it by name);
+        // the reference shades the face with a separate shader whose shadow is much lighter
+        bool mmd_face = false;
+        // The FACE BLOCK's own plane: the average of the face materials' vertex normals, written into the
+        // GLB's extras by the PMX converter. The engine's face flattening blends a face's shading normal
+        // towards this direction, so it is DATA rather than a guess: a fixed world axis was measured wrong
+        // (the face went dark) and taking it from the camera made the shading follow the viewer, which a
+        // user reported as "the face is only right at one angle".
+        glm::vec3 mmd_face_normal = glm::vec3(0.0f, 0.0f, 1.0f);
+        // ... and this material is PAINTED: drawn from its albedo, not from the lighting stack. The face
+        // block is one such set, and so are the head's own props (the ears, the head wear)
+        bool mmd_unlit = false;
     };
 
     /**
@@ -774,6 +798,25 @@ namespace gltf {
         float alpha_cutoff = 0.5f;       // alphaMode MASK threshold
         bool alpha_mask = false;         // alphaMode == MASK (fragment discard)
         bool alpha_blend = false;        // alphaMode == BLEND (alpha-blended / transparent)
+        // MMD's own outline inputs, carried through to the GPU material table (see gltf_loader.cpp's
+        // collect_mmd_extras and material_factors above)
+        glm::vec4 mmd_edge_color = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
+        float mmd_edge_size = 1.0f;
+        bool mmd_edge_present = false;
+        uint32_t mmd_sphere_index = 0;
+        int mmd_sphere_mode = 0;
+        // this material is part of the model's FACE block (the PMX converter marks it by name); the
+        // reference shades the face with a separate shader whose shadow is much lighter
+        bool mmd_face = false;
+        // The FACE BLOCK's own plane: the average of the face materials' vertex normals, written into the
+        // GLB's extras by the PMX converter. The engine's face flattening blends a face's shading normal
+        // towards this direction, so it is DATA rather than a guess: a fixed world axis was measured wrong
+        // (the face went dark) and taking it from the camera made the shading follow the viewer, which a
+        // user reported as "the face is only right at one angle".
+        glm::vec3 mmd_face_normal = glm::vec3(0.0f, 0.0f, 1.0f);
+        // ... and this material is PAINTED: drawn from its albedo, not from the lighting stack. The face
+        // block is one such set, and so are the head's own props (the ears, the head wear)
+        bool mmd_unlit = false;
     };
 
     /**

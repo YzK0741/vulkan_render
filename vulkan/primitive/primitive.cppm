@@ -3,7 +3,7 @@
 //         GPU primitives that live in the scene-tree leaves, plus the GPU
 //         material / camera / light UBO records of the scene block; versioned in
 //         lock-step with vulkan.runtime, see that module's banner)
-// module version: 0.8.1  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.17.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // GPU scene contents (namespace vulkan):
 //   - vulkan::primitive (owns geometry buffers + material push constants,
@@ -60,10 +60,18 @@ namespace vulkan {
         float padding = 0.0f;
         glm::mat4 view_proj_unjittered; // current view * projection, jitter removed
         glm::mat4 prev_view_proj;       // the previous RENDERED frame's view * projection
+        // ---- the OUTLINE parameters (runtime::set_outline; see docs/zzz_shading.md), APPENDED so every
+        //      offset above keeps its value and a stage that declares the block without this member still
+        //      matches the buffer:
+        //        xyz = the outline's colour (written into the G-buffer's albedo by shaders/outline.frag)
+        //        w   = its width in WORLD units, which is the distance the hull's vertex stage pushes a
+        //              vertex along its world normal. 0 = the outline is off, and then no hull is drawn at
+        //              all - which is what keeps a stock frame's commands unchanged.
+        glm::vec4 outline = glm::vec4(0.0f);
     };
     // std140 layout check (same style as light_ubo below): two mat4, a vec4-aligned position, then
-    // the two unjittered matrices the motion vectors read
-    static_assert(sizeof(camera_ubo) == 4 * sizeof(glm::mat4) + sizeof(glm::vec4));
+    // the two unjittered matrices the motion vectors read, then the outline lane
+    static_assert(sizeof(camera_ubo) == 4 * sizeof(glm::mat4) + 2 * sizeof(glm::vec4));
     static_assert(offsetof(camera_ubo, proj) == sizeof(glm::mat4));
     static_assert(offsetof(camera_ubo, camera_pos) == 2 * sizeof(glm::mat4));
     static_assert(offsetof(camera_ubo, view_proj_unjittered) == 2 * sizeof(glm::mat4) + sizeof(glm::vec4));
@@ -170,6 +178,31 @@ namespace vulkan {
         //   cluster_depth x = near view depth, y = far view depth the slices span (z/w unused)
         glm::vec4 cluster_grid = {};
         glm::vec4 cluster_depth = {};
+        // ---- ZZZ-style NPR (the Diffuse Warp and the matcap rim of XIYAG's ZZZ shader; see
+        //      shaders/shading.glsl and docs/zzz_shading.md). APPENDED after the cluster lanes so every
+        //      offset above keeps its value, and both default to "off" - which is what keeps the gate's
+        //      references valid, because a frame that does not ask for the warp never takes that path.
+        //   npr_shadow xyz = the colour the shadowed end of the toon ramp lerps towards, as a MULTIPLIER
+        //                    of the material's base colour; (1,1,1) means the warp is off. w unused.
+        //   npr_rim    x = rim strength (0 = off), y = rim exponent; z/w unused.
+        glm::vec4 npr_shadow = glm::vec4(1.0f, 1.0f, 1.0f, 0.0f);
+        glm::vec4 npr_rim = glm::vec4(0.0f, 3.0f, 0.0f, 0.0f);
+        //   npr_face   x = the painted face's gain on its albedo, y = the strength of the redrawn nose
+        //                  mark, z/w unused. The face is drawn from its albedo and NOT from the sun (see
+        //                  docs/zzz_shading.md), so the frame's sun scale cannot move it and this lane is
+        //                  the face's own brightness control.
+        glm::vec4 npr_face = glm::vec4(1.3f, 0.75f, 0.0f, 0.0f);
+        // The FACE BLOCK's own plane in world space (xyz): the direction the face is facing, averaged over
+        // the face materials' own vertex normals by the PMX converter. A face's shading normal is flattened
+        // towards it so the nose, lips and cheeks stop shading a face that is nearly flat in the art - the
+        // reference does the same from its `headFwd` empty object.
+        glm::vec4 npr_face_forward = glm::vec4(0.0f, 0.0f, 1.0f, 0.0f);
+        // The environment's own brightness and colour (xyz = tint, w = gain), [render] ambient_gain /
+        // ambient_tint. The ambient is the sky, so it is bright and blue, and nothing could scale or tint
+        // it: measured against the in-game reference, a dark albedo of 58 rendered at 120 and the darks came
+        // out BLUE (59/61/73 where the game's are 48/40/39). The shading applies it as a BRANCH, so a frame
+        // that leaves the knob neutral keeps its previous output bit for bit.
+        glm::vec4 ambient_gain_tint = glm::vec4(1.0f, 1.0f, 1.0f, 1.0f);
     };
     // std140 layout guard against the GLSL LightUBO: four cascade matrices (256 B), the direction,
     // the two per-cascade vec4s (304 B), four floats, light_count (a glm::vec4 whose x carries the
@@ -182,7 +215,7 @@ namespace vulkan {
     static_assert(offsetof(light_ubo, punctual_lights) == max_shadow_cascades * sizeof(glm::mat4) + 6 * sizeof(glm::vec4));
     static_assert(offsetof(light_ubo, cluster_grid) == max_shadow_cascades * sizeof(glm::mat4) + 6 * sizeof(glm::vec4) + max_punctual_lights * sizeof(point_light));
     static_assert(offsetof(light_ubo, cluster_depth) == max_shadow_cascades * sizeof(glm::mat4) + 7 * sizeof(glm::vec4) + max_punctual_lights * sizeof(point_light));
-    static_assert(sizeof(light_ubo) == max_shadow_cascades * sizeof(glm::mat4) + 8 * sizeof(glm::vec4) + max_punctual_lights * sizeof(point_light));
+    static_assert(sizeof(light_ubo) == max_shadow_cascades * sizeof(glm::mat4) + 13 * sizeof(glm::vec4) + max_punctual_lights * sizeof(point_light));
     static_assert(sizeof(light_ubo) <= 16384, "the light UBO must stay inside the guaranteed maxUniformBufferRange (16 KB)");
     static_assert(sizeof(point_light) == 64);
 
@@ -232,6 +265,27 @@ namespace vulkan {
         float alpha_cutoff = 0.5f;       // alphaMode MASK threshold (fragment discard below it)
         bool alpha_mask = false;         // alphaMode == MASK
         bool alpha_blend = false;        // alphaMode == BLEND (alpha-blended / transparent)
+        // MMD's own outline inputs (see gltf_loader's material_factors and docs/zzz_shading.md); they end
+        // up in material_record::npr_edge, which is what the outline's two stages read.
+        glm::vec4 mmd_edge_color = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
+        float mmd_edge_size = 1.0f;
+        bool mmd_edge_present = false;
+        // MMD's sphere map (see gltf_loader's material_factors): the embedded texture index and its mode
+        uint32_t mmd_sphere_index = 0;
+        int mmd_sphere_mode = 0;
+
+        // this material is part of the model's FACE block (the PMX converter marks it by name);
+        // the reference shades the face with a separate shader whose shadow is much lighter
+        bool mmd_face = false;
+        // The FACE BLOCK's own plane: the average of the face materials' vertex normals, written into the
+        // GLB's extras by the PMX converter. The engine's face flattening blends a face's shading normal
+        // towards this direction, so it is DATA rather than a guess: a fixed world axis was measured wrong
+        // (the face went dark) and taking it from the camera made the shading follow the viewer, which a
+        // user reported as "the face is only right at one angle".
+        glm::vec3 mmd_face_normal = glm::vec3(0.0f, 0.0f, 1.0f);
+        // ... and this material is PAINTED: drawn from its albedo, not from the lighting stack. The face
+        // block is one such set, and so are the head's own props (the ears, the head wear)
+        bool mmd_unlit = false;
     };
 
     /**
@@ -370,29 +424,46 @@ namespace vulkan {
      *        the 5 texture array indices + all material parameters. Primitives only push a
      *        material_index and the shader reads the record — material data lives in one
      *        GPU-visible place and is shareable between primitives
-     * @note layout matches the Material struct in pbr.frag (std430, 80 bytes)
+     * @note layout matches the Material struct in pbr.frag (std430, 96 bytes)
      */
     export struct material_record {
         glm::uvec4 tex_indices = {};     // albedo, metallic-roughness, normal, occlusion (indices into the texture array)
         uint32_t emissive_index = 0;     // emissive texture index
         float alpha_cutoff = 0.5f;       // alphaMode MASK threshold (fragment discard below it)
         float occlusion_strength = 1.0f; // occlusion map influence: mix(1, sampled AO, strength)
-        uint32_t _pad = 0;               // keep the vec4 members 16-byte aligned (std430)
+        // The MMD SPHERE map's texture index (0 = none). It occupies the 4 bytes that used to be pure
+        // alignment padding, so the record's layout - and every shader's copy of it - is unchanged;
+        // the combine MODE rides flags bits 7-8 (0 none, 1 multiply, 2 add, 3 sub-texture).
+        uint32_t sphere_index = 0;
         glm::vec4 base_color_factor = glm::vec4(1.0f);
         glm::vec4 emissive_factor = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
         float metallic_factor = 1.0f;
         float roughness_factor = 1.0f;
         float normal_scale = 1.0f;
-        uint32_t flags = 0; // bit0: normal map, bit1: occlusion map, bit2: emissive map, bit3: double-sided, bit4: alphaMode MASK, bit5: alphaMode BLEND
+        // bit0: normal map, bit1: occlusion map, bit2: emissive map, bit3: double-sided,
+        // bit4: alphaMode MASK, bit5: alphaMode BLEND, bit6: PAINTED (drawn from the albedo, not lit),
+        // bit7: the model's FACE block. PAINTED AND FACE ARE 6 AND 7 ON PURPOSE: the deferred path's only
+        // channel for material flags is one BYTE in the G-buffer, so every flag the LIGHTING has to see
+        // must sit inside it - and the face needs to be visible there now that it is lit again, for its
+        // shadow handling. The sphere mode is bits 8-9 and the MMD edge bit is bit10, read only by the
+        // outline stages, which index this record directly.
+        uint32_t flags = 0;
+        // ---- MMD's own outline inputs, from the glTF material's `extras` (this project's PMX converter
+        //      writes them; a glTF from anywhere else leaves them at these neutral values, and then the
+        //      global [render] outline_* settings decide the line). Read by shaders/outline.vert (w, the
+        //      thickness multiplier) and outline.frag (xyz, the colour). APPENDED, so every field above
+        //      keeps its offset - and declared in EVERY copy of this record, because a storage buffer's
+        //      array stride is the struct's own size (see shaders/surface.glsl).
+        glm::vec4 npr_edge = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
     };
-    static_assert(sizeof(material_record) == 80);
+    static_assert(sizeof(material_record) == 96);
 
     /**
      * @ingroup vulkan_primitive
      * @brief max entries of the GPU material table
      * @note sized for the heaviest glTF stress sample (NodePerformanceTest: 10000 rocks, each
      *       with its own material record - factors differ per rock, so content dedup cannot
-     *       collapse them). 16384 x 80 B = 1.3 MiB storage buffer, negligible. The runtime
+     *       collapse them). 16384 x 96 B = 1.5 MiB storage buffer, negligible. The runtime
      *       dedups byte-identical materials (register_material) and reserves index 0 as the
      *       default material; registrations past the capacity degrade to it with a logged
      *       warning instead of failing the whole scene.
@@ -550,6 +621,22 @@ namespace vulkan {
         // the primitive lets draw() pick the depth-write state without a GPU readback.
         bool transparent = false;
 
+        /**
+         * @brief record this primitive's geometry a SECOND time as an outline hull (see docs/zzz_shading.md)
+         * @param env the recording session; it must already have the hull's pipeline bound (bind_outline)
+         *
+         * The default implementation binds this leaf's own geometry and issues the same indexed draw with
+         * the same push block as draw(): the hull's difference is entirely in its two shader stages (the
+         * vertex one expands along the world normal) and in the front-face culling the caller set, so no
+         * leaf has to re-describe its geometry. A leaf whose geometry belongs to someone else - an instanced
+         * draw reads its source's buffers - overrides this, exactly as it overrides draw().
+         *
+         * It is deliberately NOT part of vulkan::scene_tree::primitive (which only knows draw()): a hull is
+         * something this renderer adds to geometry it owns, not something every scene-tree primitive must be
+         * able to produce.
+         */
+        virtual void draw_outline(render_environment& env) const;
+
         // local-space AABB of this primitive's geometry (model space, i.e. before push.model);
         // filled by the runtime when the geometry is uploaded. has_bounds == false means "no
         // single world AABB" (e.g. an instanced primitive spreads over many transforms) and the
@@ -633,6 +720,7 @@ namespace vulkan {
         uint32_t instance_count = 0;
 
         void draw(render_environment& env) const override;
+        void draw_outline(render_environment& env) const override; // the hull geometry is source's, not ours
         void destroy(vma_allocator& vma) noexcept override;
         [[nodiscard]] bool is_valid() const noexcept override;
     };
@@ -717,6 +805,9 @@ namespace vulkan {
         std::vector<chunk_record> chunks = {};
 
         void draw(render_environment& env) const override;
+        // the hull of a static draw goes through the same chunk table its draw does (see the .cpp): one
+        // offset draw per chunk, so a batch of many materials outlines as the batches it is made of
+        void draw_outline(render_environment& env) const override;
         void destroy(vma_allocator& vma) noexcept override;
         [[nodiscard]] bool is_valid() const noexcept override;
     };

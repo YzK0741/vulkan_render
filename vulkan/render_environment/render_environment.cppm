@@ -54,9 +54,20 @@ namespace vulkan {
      * @endcode
      */
     export struct render_environment {
-        VkCommandBuffer command_buffer = VK_NULL_HANDLE;                        // session's recording target
-        std::string_view default_name = {};                                     // this pass's default
-        std::function<void(VkCommandBuffer, std::string_view)> bind = {};       // injected binder
+        VkCommandBuffer command_buffer = VK_NULL_HANDLE;                  // session's recording target
+        std::string_view default_name = {};                               // this pass's default
+        std::function<void(VkCommandBuffer, std::string_view)> bind = {}; // injected binder
+        /**
+         * The OUTLINE session's own binder: binds the inverted hull's pipeline (see docs/zzz_shading.md).
+         * It is a SECOND injected binder rather than another name in the registry because the hull's pipeline
+         * is the runtime's own - the same pair of shaders for every leaf, created next to the G-buffer one -
+         * and because a leaf may only ask for it through `bind_outline()`, which is what keeps a primitive
+         * from naming a pipeline that the recording pass did not intend it to use.
+         *
+         * Empty = this session has no outline (the frame did not ask for one, or none was built), and then
+         * `bind_outline()` does nothing and `draw_outline()` is never reached.
+         */
+        std::function<void(VkCommandBuffer)> bind_outline_fn = {};
         std::function<void(VkCommandBuffer, VkBool32)> set_depth_write_fn = {}; // injected depth-write setter
         VkPipelineLayout layout = VK_NULL_HANDLE;                               // shared scene layout
         /**
@@ -116,6 +127,28 @@ namespace vulkan {
             }
         }
 
+        /** @brief the value `bound` carries while the outline hull's pipeline is bound (not a registry name) */
+        static constexpr std::string_view outline_bound_marker = "outline-hull";
+
+        /**
+         * @brief bind the outline hull's pipeline for this session, when it is not already bound
+         * @note a NO-OP when the session has no outline binder (see bind_outline_fn), which is how a frame
+         *       that did not ask for an outline records no hull commands at all. The dedup is bind_default's:
+         *       `bound` becomes the marker above, so a following bind_default() re-emits its own bind.
+         */
+        void bind_outline() {
+            if (this->bind_outline_fn == nullptr || this->bound == outline_bound_marker) {
+                return;
+            }
+            this->bind_outline_fn(this->command_buffer);
+            this->bound = outline_bound_marker;
+        }
+
+        /** @brief whether the hull's pipeline is the one currently bound in this session */
+        [[nodiscard]] bool in_outline_pipeline() const noexcept {
+            return this->bound == outline_bound_marker;
+        }
+
         /**
          * @brief record the depth-write state when it differs from what is already recorded
          * @param enabled true = depth writes on (opaque passes); false = off (transparent
@@ -140,6 +173,23 @@ namespace vulkan {
          */
         void set_cull_mode(bool const two_sided_material) {
             VkCullModeFlags const want = (this->two_sided || two_sided_material) ? VK_CULL_MODE_NONE : VK_CULL_MODE_BACK_BIT;
+            if (!this->cull_mode_known || this->cull_mode_recorded != want) {
+                this->set_cull_mode_fn(this->command_buffer, want);
+                this->cull_mode_recorded = want;
+                this->cull_mode_known = true;
+            }
+        }
+
+        /**
+         * @brief record FRONT-face culling, for the outline hull (see docs/zzz_shading.md)
+         * @note the hull is the model expanded OUTWARD, so its camera-facing faces are the ones buried
+         *       inside it: culling the front faces leaves exactly the shell the real surface does not
+         *       already cover, which is the line. This ignores the session's two_sided flag on purpose -
+         *       a hull drawn two-sided would z-fight with the surface it surrounds rather than outline it.
+         *       Deduplicated like the other dynamic state, and the next set_cull_mode() call re-emits.
+         */
+        void set_cull_front() {
+            constexpr VkCullModeFlags want = VK_CULL_MODE_FRONT_BIT;
             if (!this->cull_mode_known || this->cull_mode_recorded != want) {
                 this->set_cull_mode_fn(this->command_buffer, want);
                 this->cull_mode_recorded = want;

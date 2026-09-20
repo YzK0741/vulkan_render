@@ -938,14 +938,50 @@ namespace vulkan {
         return this->exposure_scale;
     }
 
-    void runtime::set_sun_intensity(float const scale) noexcept {
-        this->sun_intensity = std::clamp(scale, 0.0f, 3.0f);
-    }
-
     void runtime::set_toon_shading(float const steps, float const softness) noexcept {
         // 0 disables the cel path (plain PBR); the shader rounds to whole bands
         this->toon_steps = steps < 1.5f ? 0.0f : std::round(std::clamp(steps, 2.0f, 8.0f));
         this->toon_softness = std::clamp(softness, 0.01f, 0.5f);
+    }
+
+    void runtime::set_sun_intensity(float const scale) noexcept {
+        this->sun_intensity = std::clamp(scale, 0.0f, 3.0f);
+    }
+
+    void runtime::set_ambient(float const gain, glm::vec3 const tint) noexcept {
+        this->ambient_gain = std::clamp(gain, 0.0f, 2.0f);
+        this->ambient_tint = glm::clamp(tint, glm::vec3(0.0f), glm::vec3(2.0f));
+    }
+
+    void runtime::set_face_shading(float const gain, float const nose_strength, float const face_gain) noexcept {
+        this->unlit_gain = std::clamp(gain, 0.0f, 3.0f);
+        this->face_nose_strength = std::clamp(nose_strength, 0.0f, 1.0f);
+        // 2 is generous rather than arbitrary: a face lit by a wrapped falloff can want a lift as well as a
+        // cut, and the clamp only has to stop a typo from producing a black or a blown face.
+        this->face_gain = std::clamp(face_gain, 0.0f, 2.0f);
+    }
+
+    void runtime::set_toon_warp(glm::vec3 const& shadow_tint, float const rim, float const shadow_band, float const specular, float const shadow_band_gain) noexcept {
+        // All four are "off" at their neutral value, and that is deliberate rather than a convenience: the
+        // shader branches on `toon_steps` alone, so a stock config (toon_steps 0) compiles and records
+        // exactly the frame it recorded before this path existed (the gate's references are the proof). The
+        // tint is a diffuse multiplier, so values above 1 brighten the shadowed side instead of darkening it -
+        // allowed, and what a stylised model sometimes wants; the clamp only keeps it from leaving the range
+        // a shadow colour can plausibly live in. The band and the specular mask are the reference's own
+        // parameters (its `MData.x` / `MData.z`); see docs/zzz_shading.md for what stands in for them here.
+        this->toon_shadow_tint = glm::clamp(shadow_tint, glm::vec3(0.0f), glm::vec3(2.0f));
+        this->toon_rim = std::clamp(rim, 0.0f, 2.0f);
+        this->toon_shadow_band = std::clamp(shadow_band, 0.0f, 1.0f);
+        this->toon_specular = std::clamp(specular, 0.0f, 2.0f);
+        this->toon_shadow_band_gain = std::clamp(shadow_band_gain, 0.0f, 1.0f);
+    }
+
+    void runtime::set_outline(glm::vec3 const& color, float const width) noexcept {
+        // The clamp is wide on purpose (2.0 in each channel and 2.0 world units): an outline is a look, and
+        // what a model wants depends on its own scale and palette. What it is NOT is unbounded, because a
+        // width of tens of world units turns a silhouette into a blob that costs fill rate for nothing.
+        this->outline_color = glm::clamp(color, glm::vec3(0.0f), glm::vec3(2.0f));
+        this->outline_width = std::clamp(width, 0.0f, 2.0f);
     }
 
     void runtime::set_bloom(float const intensity, float const threshold) noexcept {

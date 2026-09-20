@@ -117,6 +117,7 @@ Related source docs (tracked in the repo):
 - [shader reference](docs/shaders.md) (the pass chain, the shared scene set, push constants, conventions) — also the Doxygen `shaders` group description
 - [Lumen reference studies](docs/reference/) (`lumen_radiance_cache.md`, `lumen_surface_cache.md`, `lumen_reflection_denoiser.md`, `megalights_stochastic_lighting.md`: what UE 5.8.2 does, as a mechanism reference)
 - [MegaLights: stochastic punctual lighting](docs/megalights.md) (the feature, its acceptance numbers and what it cost)
+- [ZZZ-style NPR shading](docs/zzz_shading.md) (the cel path's Diffuse Warp and rim, the reference they follow, and what of it is still missing)
 - [capture harness](scripts/windows/check_render.ps1) and the [measurement instruments](scripts/measure/README.md) every number in the docs came out of
 - [docs/official-shaders/](docs/official-shaders/): reference shaders (IBL / PBR / primitive)
 

@@ -240,6 +240,16 @@ void main() {
     // ambient (diffuse and specular) and never the direct sun.
     si.ao = material.b * ssao_occlusion(v_uv, depth, si.normal);
     si.emissive = vec3(0.0);
+    // The G-buffer does not carry the material's sphere/matcap lookup, so the deferred path shades without
+    // the reference's Matcap combine (which needs the sample and the light factor together). Zero is its
+    // documented "no sample" value; the forward path (pbr.frag) passes the real one.
+    si.sphere_sample = vec3(0.0);
+    // ... but the material byte DOES: flags bit6 is PAINTED ("draw this from its albedo, not from the
+    // lighting stack") and bit7 is FACE, and they are 6 and 7 precisely so that both fit in this byte (see
+    // material_record) - the face needs to be visible HERE because a lit face keeps less cast shadow.
+    // Stored as k/255, so *255 recovers the byte exactly.
+    si.painted_mask = (uint(round(material.a * 255.0)) & 64u) != 0u ? 1.0 : 0.0;
+    si.face_mask = (uint(round(material.a * 255.0)) & 128u) != 0u ? 1.0 : 0.0;
     // Ray-traced sun visibility, or NEGATIVE to keep the cascaded shadow maps: the flag is the light
     // UBO's, and it is only ever set when the pass ran and the device has ray queries - so a frame with
     // rt_shadows off samples nothing that does not exist and shades exactly as it did before.

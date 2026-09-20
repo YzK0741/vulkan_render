@@ -122,6 +122,10 @@ namespace vulkan {
         this->current_ubo.view_proj_unjittered = this->current_ubo.proj * this->current_ubo.view;
         this->current_proj_unjittered = this->current_ubo.proj; // before the jitter below
         this->current_ubo.prev_view_proj = this->current_image_index < this->image_view_proj.size() ? this->image_view_proj[this->current_image_index] : this->current_ubo.view_proj_unjittered;
+        // The frame's OUTLINE parameters (see camera_ubo::outline): the hull's two stages read them out of
+        // the camera block, which is why they are composed here with the rest of the frame's camera state
+        // rather than pushed per draw.
+        this->current_ubo.outline = glm::vec4(this->outline_color, this->outline_width);
         // TAA jitter: offset the projection by a sub-pixel amount so consecutive frames sample the
         // image at different positions. The offset lands in the projection's z-row (the only place a
         // perspective matrix carries an NDC translation), in NDC units derived from pixels, and it is
@@ -155,6 +159,14 @@ namespace vulkan {
             this->light_state.light_count.y = this->exposure_scale;
             this->light_state.light_count.z = this->toon_steps;
             this->light_state.light_count.w = this->toon_softness;
+            // the ZZZ-style half of the same path (see docs/zzz_shading.md). The rim's exponent is a
+            // constant here rather than a knob: the reference has no such parameter either, because its
+            // rim is a matcap lookup whose falloff the artist authored in the texture.
+            this->light_state.npr_shadow = glm::vec4(this->toon_shadow_tint, this->toon_shadow_band);
+            this->light_state.npr_rim = glm::vec4(this->toon_rim, 3.0f, this->toon_specular, this->toon_shadow_band_gain);
+            this->light_state.npr_face = glm::vec4(this->unlit_gain, this->face_nose_strength, this->face_gain, 0.0f);
+            this->light_state.npr_face_forward = glm::vec4(this->face_forward, 0.0f);
+            this->light_state.ambient_gain_tint = glm::vec4(this->ambient_tint, this->ambient_gain);
             // Ray-traced sun shadows: composed HERE rather than in set_rt_shadows, because the light UBO
             // is rebuilt from light_state every frame and a later enable_shadows() (main.cpp calls it
             // after the settings are applied, which is where this flag was first lost) resets fields of
@@ -867,6 +879,16 @@ namespace vulkan {
             this->gbuffer_pipeline->viewport = full_viewport;
             this->gbuffer_pipeline->scissor = full_scissor;
         }
+        // ... and the OUTLINE hull's pipeline is resynced HERE, for the same reason the G-buffer one is and
+        // with a bite this exact line was measured to have: it is a runtime member rather than a pass, so no
+        // pass declaration resyncs it, and `begin_pipeline` re-emits whatever viewport it cached at creation.
+        // Left alone it rasterizes the hull through the extent the swapchain had when the pipeline was built,
+        // which after a resize is not the frame's - the hull is recorded, the draws are valid, and nothing
+        // appears on screen (measured: a green hull at 0.5 world units, invisible).
+        if (this->outline_pipeline) {
+            this->outline_pipeline->viewport = full_viewport;
+            this->outline_pipeline->scissor = full_scissor;
+        }
         // ... and the debug view's pipeline is not resynced here either: it is its PASS's now (vulkan.pass.
         // gbuffer_debug), which declares resync_viewport like every other fullscreen pass in this chain.
         // ... and the deferred lighting stage's is not here either, for a stronger reason than the TAA
@@ -966,6 +988,18 @@ namespace vulkan {
             return std::unexpected(std::string(result.error()));
         }
         this->gbuffer_pipeline = std::move(result).value();
+        return {};
+    }
+
+    // The OUTLINE hull's pipeline (see docs/zzz_shading.md). ONE builder with the G-buffer pipeline, because a
+    // hull writes the same five targets with the same state: only the two stages differ, so the format list -
+    // which would otherwise be a second copy that has to be kept in step - is the same call.
+    std::expected<void, std::string> runtime::make_outline_pipeline(std::span<unsigned char const> const vertex_shader_code, std::span<unsigned char const> const fragment_shader_code) {
+        auto result = this->vulkan_core.make_gbuffer_pipeline(vertex_shader_code, fragment_shader_code);
+        if (!result) {
+            return std::unexpected(std::string(result.error()));
+        }
+        this->outline_pipeline = std::move(result).value();
         return {};
     }
 
@@ -1624,6 +1658,9 @@ namespace vulkan {
             .depth_format = vk.depth_format,
             .samples = VK_SAMPLE_COUNT_1_BIT,
             .gbuffer = true,
+            // The hull loop runs only when there is both a width to expand by and a pipeline to draw with:
+            // "outline off" then costs no commands at all, which is what makes it free in the gate.
+            .outline = this->outline_width > 0.0f && this->outline_pipeline.has_value(),
             .extent = vk.swap_chain_extent,
         };
     }
@@ -1660,6 +1697,17 @@ namespace vulkan {
         };
         // transparent leaves toggle depth writes off via this (core dynamic state, 1.3)
         env.set_depth_write_fn = [](VkCommandBuffer const cb, VkBool32 const enabled) { vkCmdSetDepthWriteEnable(cb, enabled); };
+        // THE OUTLINE HULL'S PIPELINE (see docs/zzz_shading.md): one binder for this session, presented to the
+        // leaves as render_environment::bind_outline. The G-buffer session is the only one that has it - a hull
+        // writes the G-buffer, and the forward path has no G-buffer to write - so the other sessions leave it
+        // empty and draw no hulls even if the frame asked for an outline.
+        if (gbuffer) {
+            env.bind_outline_fn = [&self](VkCommandBuffer const cb) {
+                if (self.outline_pipeline.has_value()) {
+                    self.outline_pipeline->begin_pipeline(cb);
+                }
+            };
+        }
         // single-sided materials keep back-face culling here (the shadow pass overrides it with env.two_sided;
         // the main pass must not, or double-sided handling would cost fill rate)
         env.set_cull_mode_fn = [](VkCommandBuffer const cb, VkCullModeFlags const mode) { vkCmdSetCullMode(cb, mode); };

@@ -101,7 +101,7 @@ vec2 motion_vector(vec3 world_pos, vec3 prev_world_pos) {
  *       is not lighting-independent is stored as-is, and the lighting stage decides what to do with it
  */
 void main() {
-    const surface_sample s = gather_surface(v_world_pos, v_normal, v_uv);
+    const surface_sample s = gather_surface(v_world_pos, v_normal, v_uv, mat3(camera[heap_camera_slot].view) * v_normal, light[heap_light_slot].npr_face.y);
 
     // the world normal needs no encoding in an RGBA16F target (see the file docs)
     out_albedo_metallic = vec4(s.albedo, s.metallic);

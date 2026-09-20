@@ -30,20 +30,27 @@ layout(location = 0) out vec4 out_color;
 #extension GL_EXT_nonuniform_qualifier : enable
 #include "heap_slots.glsl"
 
-// One entry of the material table; layout matches material_record (std430, 80 bytes) - must
+// One entry of the material table; layout matches material_record (std430, 96 bytes) - must
 // stay identical to pbr.frag's Material so both stages read the same record.
 struct Material {
     uvec4 tex_indices; // albedo, metallic-roughness, normal, occlusion (indices into textures[])
     uint emissive_index;
     float alpha_cutoff;       // alphaMode MASK threshold
     float occlusion_strength; // mix(1, sampled AO, strength)
-    uint _pad;
+    uint sphere_index; // MMD sphere map: the texture it was combined from (0 = none); flags bits 7-8 hold the mode
     vec4 base_color_factor;
     vec4 emissive_factor;
     float metallic_factor;
     float roughness_factor;
     float normal_scale;
     uint flags; // bit0: normal map, bit1: occlusion map, bit2: emissive map, bit3: double-sided, bit4: alphaMode MASK, bit5: alphaMode BLEND
+    // MMD's own outline inputs, from the glTF material's `extras` (see docs/zzz_shading.md): xyz is the
+    // line colour the model authored, w its thickness multiplier, and flags bit6 says whether the model
+    // authored an edge AT ALL - required, because black is a legitimate edge colour and 0 a legitimate
+    // size, so the values alone cannot say "absent". APPENDED, so every field above keeps its offset; and
+    // declared in EVERY copy of this record, because a storage buffer's array stride is the struct's own
+    // size - a copy that omits it indexes the table at the wrong pitch.
+    vec4 npr_edge;
 };
 layout(descriptor_heap, descriptor_stride = heap_slot_stride) readonly buffer Materials { Material materials[]; } heap_material_tables[];
 

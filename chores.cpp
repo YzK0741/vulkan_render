@@ -227,6 +227,16 @@ namespace chores {
             if (!gbuffer_result) {
                 utility::log("gbuffer pipeline disabled: {}", gbuffer_result.error());
             } else {
+                // The OUTLINE hull's pipeline (see docs/zzz_shading.md), created only when the G-buffer
+                // pipeline is: a hull writes the G-buffer, so a frame that shades forward has nowhere to put
+                // one. Optional like its G-buffer sibling - without it, runtime::set_outline has no effect and
+                // the scene pass records no hulls.
+                load_shader(shaders_dir, "outline.vert.spv", vertex_code);
+                load_shader(shaders_dir, "outline.frag.spv", fragment_code);
+                auto const outline_result = runtime.make_outline_pipeline(vertex_code, fragment_code);
+                if (!outline_result) {
+                    utility::log("outline pipeline disabled: {}", outline_result.error());
+                }
                 // The debug view is a PASS (vulkan.pass.geometry_buffer_debug): the app registers its two shaders and the
                 // pass builds its pipeline, which is all it owns. The samplers those declarations
                 // choose between are the device root's now (`core::create_samplers`).
@@ -482,6 +492,20 @@ namespace chores {
         // linear exposure applied before tonemapping (pbr.frag + skybox.frag); main pushes it
         // into the runtime every frame like the light slots
         panel.push_back(std::make_unique<vulkan::gui::slider_widget>("exposure", &bindings.exposure, 0.1f, 5.0f));
+        // the sun's own scale, next to the exposure it is easy to confuse it with: 1 = the shading
+        // path's constant 7.5, 0 = no sun at all (what furnace mode forces). main pushes it every frame
+        // like the exposure above.
+        panel.push_back(std::make_unique<vulkan::gui::slider_widget>("sun intensity", &bindings.sun_intensity, 0.0f, 3.0f));
+        // ... and the painted face's own two, which the sun cannot reach: the face takes its albedo and none
+        // of the lighting stack (see docs/zzz_shading.md), so without these a brightened frame brightens
+        // everything except the face.
+        panel.push_back(std::make_unique<vulkan::gui::slider_widget>("unlit gain", &bindings.unlit_gain, 0.0f, 3.0f));
+        panel.push_back(std::make_unique<vulkan::gui::slider_widget>("nose mark", &bindings.face_nose_strength, 0.0f, 1.0f));
+        panel.push_back(std::make_unique<vulkan::gui::slider_widget>("face gain", &bindings.face_gain, 0.0f, 2.0f));
+        panel.push_back(std::make_unique<vulkan::gui::slider_widget>("ambient gain", &bindings.ambient_gain, 0.0f, 2.0f));
+        panel.push_back(std::make_unique<vulkan::gui::slider_widget>("ambient r", &bindings.ambient_tint_r, 0.0f, 2.0f));
+        panel.push_back(std::make_unique<vulkan::gui::slider_widget>("ambient g", &bindings.ambient_tint_g, 0.0f, 2.0f));
+        panel.push_back(std::make_unique<vulkan::gui::slider_widget>("ambient b", &bindings.ambient_tint_b, 0.0f, 2.0f));
         // bloom (bright-pass threshold + blend weight); 0 intensity disables it
         // the useful ranges: a threshold above ~0.75 leaves almost no pixel over it (so nothing
         // glows), and the intensity needed for a visible glow grows with the threshold - keeping
@@ -553,7 +577,6 @@ namespace chores {
             std::vector<std::string>{"off (plain pbr)", "2 bands (hardest)", "3 bands", "4 bands", "5 bands", "6 bands", "8 bands (softest)"},
             &bindings.toon_bands_index));
         panel.push_back(std::make_unique<vulkan::gui::slider_widget>("toon softness", &bindings.toon_softness, 0.01f, 0.25f));
-        panel.push_back(std::make_unique<vulkan::gui::slider_widget>("sun intensity", &bindings.sun_intensity, 0.0f, 3.0f));
         // ---- punctual lights (demo lights; see apply_point_lights): the widgets edit
         //      bindings.point_lights live and main() pushes the enabled set once per frame.
         //      Each slot is a point light or - with `spot` checked - a cone light -------

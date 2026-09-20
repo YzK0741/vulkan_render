@@ -1,6 +1,6 @@
 // ============================================================================
 // module: app_config
-// module version: 0.30.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.40.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // Startup configuration: TOML file (config.toml / --config) merged with argv.
 // Pure CPU, no Vulkan dependency.
@@ -131,10 +131,59 @@ namespace app_config {
         // same two values as sliders.
         float shadow_bias_constant = 0.0f;
         float shadow_bias_slope = 1.5f;
-        // A SCALE ON THE SUN'S RADIANCE ([render] sun_intensity). The shading already multiplies the sun by
-        // this lane; without the key the only value reachable was the furnace mode's 0 or 1. 1.0 is the
-        // shading path's own constant 7.5 unchanged; the gui exposes it as "sun intensity".
+        // ---- ZZZ-style NPR ([render] toon_steps / toon_softness / toon_shadow_tint / toon_rim): the
+        // cel/toon path plus the two knobs that XIYAG's ZZZ shader adds to it - a diffuse WARP towards a
+        // tinted shadow colour, and a view-space rim (see docs/zzz_shading.md for the credit and for
+        // what this engine's version leaves out). EVERY DEFAULT HERE IS THE NEUTRAL VALUE: 0 steps, a
+        // (1,1,1) tint, a 0 rim - so a config that omits all four shades exactly as the renderer did
+        // before these keys existed, which is what the gate's references rely on. `toon_steps` is
+        // matched into the band counts the overlay offers (main.cpp), so a value the combo does not
+        // offer lands on the nearest one.
+        int toon_steps = 0;
+        float toon_softness = 0.15f;
+        std::array<float, 3> toon_shadow_tint = {1.0f, 1.0f, 1.0f};
+        // The linear exposure scale applied before the tonemapper (README's "Exposure"), which used to
+        // be reachable only through the GUI slider. It is a config key now because matching a reference
+        // render needs it reproducible: it decides how far into the tonemapper's flat, desaturating
+        // region the lit side sits, which is measurable (see docs/zzz_shading.md).
+        float exposure = 1.0f;
+        // A scale on the sun's radiance (the shading path's constant 7.5). The reference render's lit side is
+        // cooler than ours in the tonemapper's sense - ours sits deep in the flat, desaturating region - and
+        // this is the knob for that, independent of the exposure, which scales the whole frame.
         float sun_intensity = 1.0f;
+        // THE NON-PBR BRIGHTNESS COEFFICIENT, and the strength of the nose mark. `unlit_gain` scales every
+        // surface this engine draws from its albedo rather than from the lighting stack - today that is the
+        // painted face (see docs/zzz_shading.md), and the name says so rather than calling it a face knob:
+        // the sun scale deliberately cannot reach these surfaces, so this is their brightness.
+        float unlit_gain = 1.3f;
+        float face_nose_strength = 1.0f;
+        // The LIT face's brightness multiplier ([render] face_gain): a face material's lit result is scaled
+        // by it, so a frame can bring the face down without touching the sun every surface shares. 1.0 is
+        // neutral; the gui exposes it as "face gain".
+        float face_gain = 1.0f;
+        // The environment light's brightness and colour ([render] ambient_gain / ambient_tint). The ambient
+        // is the sky, so it is bright and blue; these are what a frame uses to take it down and warm it.
+        float ambient_gain = 1.0f;
+        std::array<float, 3> ambient_tint = {1.0f, 1.0f, 1.0f};
+        float toon_rim = 0.0f;
+        // The reference's own two shading parameters, which a ZZZ model carries in its ILM light map and a
+        // PMX does not: the band factor its five-colour shadow cascade is walked with (0 = its deepest
+        // shadow colour, 1 = its lit end) and the mask on its stepped highlight term (0 = no highlight).
+        float toon_shadow_band = 0.3f;
+        float toon_specular = 0.0f;
+        // How much of each surface's own albedo luminance is added to `toon_shadow_band`, i.e. the
+        // per-texel half of the reference's light-map input (it reads its band from an ILM texture's R
+        // channel; a PMX carries none). 0 = the frame-wide constant, the neutral default.
+        float toon_shadow_band_gain = 0.0f;
+        // ---- the OUTLINE ([render] outline_color / outline_width; see docs/zzz_shading.md): an inverted
+        // hull of the scene, drawn into the G-buffer in `outline_color`, expanded by `outline_width` WORLD
+        // units. Width 0 is the default and means the hull is not recorded at all, so the default frame is
+        // the frame recorded before this existed. The width is absolute rather than relative to the scene,
+        // which is the honest form for a per-model look: a model ten times larger wants a width ten times
+        // larger, and the value that suits a given asset is measured rather than guessed (the reference
+        // takes it per-vertex from the model's own edge scale instead - see the doc's "not here yet").
+        std::array<float, 3> outline_color = {0.0f, 0.0f, 0.0f};
+        float outline_width = 0.0f;
         // Clustered light culling ([render] clustered_lights, M5): the punctual lights are sorted
         // into a screen-tile x depth-slice grid once per frame and the shading stage loops only its
         // own cluster's list. false = the brute-force loop over every active light - the reference

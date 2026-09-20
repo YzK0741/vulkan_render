@@ -23,6 +23,10 @@ name: ci
 
 on:
   push:
+    # master alone, as it was before: npr-zzz-shading was on this list only so the un-pinning of the toolchain
+    # could be TESTED without merging first (a change to this file is otherwise only exercised after it lands).
+    # Both jobs went green on run 35442375749 - un-pinned, i.e. on clang 22.1.8-3 / libc++ 22.1.8-1 / headers
+    # 1.4.357 - so the branch is off the list again.
     branches: [master]
   pull_request:
 
@@ -34,12 +38,21 @@ jobs:
       run:
         shell: msys2 {0}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Set up MSYS2 (clang64)
         uses: msys2/setup-msys2@v2
         with:
           msystem: clang64
+          # update: true - deliberately CURRENT, and measured rather than assumed. This project is C++23 modules
+          # on clang+libc++ whose STL module (vstd/vstd.cppm) is byte-bound to libc++ (see vstd/README.md), so what
+          # matters is which libc++ the runner resolves; with update: true it is exactly the one this project is
+          # developed against - measured on run 35441060587: clang 22.1.8-3, libc++ 22.1.8-1, vulkan-headers
+          # 1.4.357, i.e. this machine's set. update: false does NOT pin that set: it freezes the runner at the
+          # image's OLDER one (clang 22.1.7, headers 1.4.350, measured on run 35442034147), which is a larger
+          # drift - and it is the one that broke the build there, on an extension name 1.4.350 does not define
+          # while 1.4.357 does (VK_KHR_EXTENDED_FLAGS_EXTENSION_NAME). Nothing was ever fixed by pinning: see the
+          # ASan job's build-step note for what actually turned that job red.
           update: true
           install: >-
             mingw-w64-clang-x86_64-clang
@@ -105,7 +118,7 @@ jobs:
           clang-tidy -p build --warnings-as-errors='*' $TIDY_FILES
 
       - name: Upload the Release executable
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: vulkan_render-windows-x64
           path: build/vulkan_render.exe
@@ -118,12 +131,21 @@ jobs:
       run:
         shell: msys2 {0}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Set up MSYS2 (clang64)
         uses: msys2/setup-msys2@v2
         with:
           msystem: clang64
+          # update: true - deliberately CURRENT, and measured rather than assumed. This project is C++23 modules
+          # on clang+libc++ whose STL module (vstd/vstd.cppm) is byte-bound to libc++ (see vstd/README.md), so what
+          # matters is which libc++ the runner resolves; with update: true it is exactly the one this project is
+          # developed against - measured on run 35441060587: clang 22.1.8-3, libc++ 22.1.8-1, vulkan-headers
+          # 1.4.357, i.e. this machine's set. update: false does NOT pin that set: it freezes the runner at the
+          # image's OLDER one (clang 22.1.7, headers 1.4.350, measured on run 35442034147), which is a larger
+          # drift - and it is the one that broke the build there, on an extension name 1.4.350 does not define
+          # while 1.4.357 does (VK_KHR_EXTENDED_FLAGS_EXTENSION_NAME). Nothing was ever fixed by pinning: see the
+          # ASan job's build-step note for what actually turned that job red.
           update: true
           install: >-
             mingw-w64-clang-x86_64-clang
@@ -197,4 +219,3 @@ jobs:
           ASAN_OPTIONS: halt_on_error=1
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
         run: ctest --test-dir build-asan --output-on-failure
-

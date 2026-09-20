@@ -133,7 +133,6 @@ def write_toml(path: str, cfg: dict) -> None:
         f"model = \"{fmt_toml_string(cfg['model'])}\"",
         "",
         f"grid_side = {cfg['grid_side']}",
-        f"sun_intensity = {cfg['sun_intensity']}",
         "",
         "# ---- [paths] resource directories (empty = auto-locate) ----",
         "[paths]",
@@ -174,8 +173,26 @@ def write_toml(path: str, cfg: dict) -> None:
         f"ssao_intensity = {cfg['ssao_intensity']}",
         f"ssao_samples = {cfg['ssao_samples']}",
         "",
+        "# ---- [render] cel/toon + ZZZ-style NPR (see docs/zzz_shading.md) ----",
+        f"exposure = {cfg['exposure']}",
+        f"sun_intensity = {cfg['sun_intensity']}",
+        f"unlit_gain = {cfg['unlit_gain']}",
+        f"face_nose_strength = {cfg['face_nose_strength']}",
+        f"face_gain = {cfg['face_gain']}",
+        f"ambient_gain = {cfg['ambient_gain']}",
+        "ambient_tint = [{0}, {1}, {2}]".format(*cfg["ambient_tint"]),
+        f"toon_steps = {cfg['toon_steps']}",
+        f"toon_softness = {cfg['toon_softness']}",
+        "toon_shadow_tint = [{0}, {1}, {2}]".format(*cfg["toon_shadow_tint"]),
+        f"toon_rim = {cfg['toon_rim']}",
+        f"toon_shadow_band = {cfg['toon_shadow_band']}",
+        f"toon_specular = {cfg['toon_specular']}",
+        f"toon_shadow_band_gain = {cfg['toon_shadow_band_gain']}",
         "# camera_pose = [yaw_deg, pitch_deg, distance, tx, ty, tz]   # a PINNED initial pose; absent\n"
         "#   leaves camera_fit in charge. F12 and exit print one (`camera pose: ...`) to paste back.\n"
+        "outline_color = [{0}, {1}, {2}]".format(*cfg["outline_color"]),
+        f"outline_width = {cfg['outline_width']}",
+        "",
         "# ---- [render] ray-traced effects ----",
         f"rt_shadows = {str(cfg['rt_shadows']).lower()}",
         f"rt_mask_bake = {str(cfg['rt_mask_bake']).lower()}",
@@ -278,6 +295,92 @@ def ask_all(output_dir: str) -> dict:
     ssao_intensity = ask_float("render.ssao_intensity", 1.0, 0.0, 1.0, hint="1 = full occlusion, 0 = off")
     ssao_samples = ask_int("render.ssao_samples", 8, 1, 16, hint="samples per pixel")
 
+    print("\n-- render (cel/toon + ZZZ-style NPR; see docs/zzz_shading.md) --")
+    ambient_tint = ask_float3(
+        "render.ambient_tint",
+        (1.0, 1.0, 1.0),
+    )
+    ambient_gain = ask_float(
+        "render.ambient_gain",
+        1.0,
+        0.0,
+        2.0,
+        hint="a multiplier on the environment light (the sky); 1.0 leaves it as the sky has it",
+    )
+    face_gain = ask_float(
+        "render.face_gain",
+        1.0,
+        0.0,
+        2.0,
+        hint="the LIT face's brightness multiplier; 1.0 leaves the lit face alone",
+    )
+    unlit_gain = ask_float(
+        "render.unlit_gain",
+        1.3,
+        0.0,
+        3.0,
+        hint="the painted face's gain on its albedo (the sun scale cannot move the face - see docs/zzz_shading.md)",
+    )
+    face_nose_strength = ask_float(
+        "render.face_nose_strength",
+        1.0,
+        0.0,
+        1.0,
+        hint="how far the redrawn nose mark darkens toward black at its centre (0 = no mark)",
+    )
+    exposure = ask_float(
+        "render.exposure",
+        1.0,
+        0.05,
+        4.0,
+        hint="linear exposure scale applied before the tonemapper (see docs/zzz_shading.md)",
+    )
+    toon_steps = ask_int(
+        "render.toon_steps",
+        0,
+        0,
+        8,
+        hint="cel-shading bands (0 = plain PBR); main.cpp matches this onto the band counts the overlay offers",
+    )
+    toon_softness = ask_float(
+        "render.toon_softness", 0.15, 0.01, 0.5, hint="band edge width; smaller = harder cel edges"
+    )
+    toon_shadow_tint = ask_float3(
+        "render.toon_shadow_tint (RGB multipliers; the colour the shadowed end of the ramp lerps"
+        " towards, (1,1,1) = the warp is OFF)",
+        (1.0, 1.0, 1.0),
+    )
+    toon_rim = ask_float(
+        "render.toon_rim", 0.0, 0.0, 2.0, hint="rim strength along the silhouette (0 = off)"
+    )
+    toon_shadow_band = ask_float(
+        "render.toon_shadow_band",
+        0.3,
+        0.0,
+        1.0,
+        hint="the reference shader's five-colour shadow cascade: 0 = its deepest shadow colour, 1 = its lit end",
+    )
+    toon_specular = ask_float(
+        "render.toon_specular", 0.0, 0.0, 2.0, hint="the reference shader's stepped highlight mask (0 = off)"
+    )
+    toon_shadow_band_gain = ask_float(
+        "render.toon_shadow_band_gain",
+        0.0,
+        0.0,
+        1.0,
+        hint="how much of each surface's albedo luminance is added to toon_shadow_band (0 = the frame-wide constant)",
+    )
+    outline_color = ask_float3(
+        "render.outline_color (RGB; the inverted hull's colour)", (0.0, 0.0, 0.0)
+    )
+    outline_width = ask_float(
+        "render.outline_width",
+        0.0,
+        0.0,
+        2.0,
+        hint="the hull's expansion in WORLD units (0 = off); absolute, so it scales with the model",
+    )
+
     print("\n-- render (ray-traced effects) --")
     furnace = ask_bool(
         "render.furnace",
@@ -327,7 +430,6 @@ def ask_all(output_dir: str) -> dict:
     print(f"\nwriting config.toml to: {output_dir}")
     return {
         "model": model,
-        "sun_intensity": sun_intensity,
         "grid_side": grid_side,
         "shaders_dir": shaders_dir,
         "model_dir": model_dir,
@@ -356,6 +458,22 @@ def ask_all(output_dir: str) -> dict:
         "ssao_radius": ssao_radius,
         "ssao_intensity": ssao_intensity,
         "ssao_samples": ssao_samples,
+        "exposure": exposure,
+        "sun_intensity": sun_intensity,
+        "unlit_gain": unlit_gain,
+        "ambient_gain": ambient_gain,
+        "ambient_tint": ambient_tint,
+        "face_gain": face_gain,
+        "face_nose_strength": face_nose_strength,
+        "toon_steps": toon_steps,
+        "toon_softness": toon_softness,
+        "toon_shadow_tint": toon_shadow_tint,
+        "toon_rim": toon_rim,
+        "toon_shadow_band": toon_shadow_band,
+        "toon_specular": toon_specular,
+        "toon_shadow_band_gain": toon_shadow_band_gain,
+        "outline_color": outline_color,
+        "outline_width": outline_width,
         "rt_shadows": rt_shadows,
         "rt_mask_bake": rt_mask_bake,
         "rt_skin_bake": rt_skin_bake,

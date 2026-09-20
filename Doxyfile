@@ -1037,6 +1037,7 @@ INPUT                  = ./shaders \
 				./vstd \
 				./docs/mainpage.md \
 				./docs/shaders.md \
+				./docs/zzz_shading.md \
 				./docs/conventions.md
 
 # This tag can be used to specify the character encoding of the source files

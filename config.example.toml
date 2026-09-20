@@ -126,6 +126,38 @@ shadow_cascade_blend = 0.1
 shadow_bias_constant = 0.0
 shadow_bias_slope = 1.5
 
+# ---- cel/toon shading, and the ZZZ-style NPR half of it (see docs/zzz_shading.md) ----
+# toon_steps: quantize the direct-light diffuse falloff (and harden the shadow edge / the specular lobe)
+# into N bands, for a cel look. 0 = plain PBR, which is the default. main.cpp matches this onto the band
+# counts the debug overlay offers (0/2/3/4/5/6/8), because the FRAME LOOP is what calls the runtime - a
+# value the combo does not offer lands on the nearest one.
+toon_steps = 0
+# toon_softness: the band edge width in normalized [0,1] space; smaller = harder cel edges (0.01..0.5).
+toon_softness = 0.15
+# toon_shadow_tint: THE ZZZ DIFFUSE WARP. Where a plain cel ramp darkens the base colour by the band, this
+# makes the shadowed end of the ramp lerp towards `base_color * tint` instead - the reference shader
+# (XIYAG's ZZZ shader) authors five ShadowColor values per material and this is the one tint the five bands
+# are walked across. Stylised models ask for a tint that is lower in value but MORE saturated than the
+# base, often rotated towards the cool end. (1,1,1) = the warp is OFF, and that is the default, so a stock
+# frame shades exactly as it did before this key existed.
+toon_shadow_tint = [1.0, 1.0, 1.0]
+# toon_rim: strength of the view-space rim added along the silhouette (0 = off, default; clamped 0..2).
+# The reference takes its rim from the matcap half of "CombineMESphere" - the model's own MMD sphere
+# texture combined with an authored matcap - so it is a view term rather than a light one. This is that
+# term with the texture left out; docs/zzz_shading.md records what is still missing.
+toon_rim = 0.0
+
+# ---- the outline (an inverted hull; see docs/zzz_shading.md) ----
+# A second copy of the model is expanded along its own normals by `outline_width` WORLD units and drawn with
+# its FRONT faces culled, so the only part that survives the depth test is the sliver the real surface does
+# not cover - a silhouette. The colour goes into the G-buffer's albedo rather than on top of the frame, which
+# is what makes the line lit, shadowed and tonemapped with the model it surrounds. `outline_width = 0` (the
+# default) records no hull at all. THE WIDTH IS ABSOLUTE, not a fraction of the scene: a model ten times
+# larger wants a width ten times larger, and that is per-asset (the reference takes it from the model's own
+# per-vertex edge scale, which this engine does not import yet).
+outline_color = [0.0, 0.0, 0.0]
+outline_width = 0.0
+
 # clustered_lights: sort the punctual lights into a screen-tile x depth-slice grid once per frame (a
 # compute pass, shaders/light_cluster.comp) and evaluate only the pixel own cluster list instead of
 # every active light. This is what makes a light count far past the old four affordable: measured on
