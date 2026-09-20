@@ -1,6 +1,6 @@
 // ============================================================================
 // module: app_config
-// module version: 0.37.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.38.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // Startup configuration: TOML file (config.toml / --config) merged with argv.
 // Pure CPU, no Vulkan dependency.
@@ -157,6 +157,10 @@ namespace app_config {
         // the sun scale deliberately cannot reach these surfaces, so this is their brightness.
         float unlit_gain = 1.3f;
         float face_nose_strength = 1.0f;
+        // The LIT face's brightness multiplier ([render] face_gain): a face material's lit result is scaled
+        // by it, so a frame can bring the face down without touching the sun every surface shares. 1.0 is
+        // neutral; the gui exposes it as "face gain".
+        float face_gain = 1.0f;
         float toon_rim = 0.0f;
         // The reference's own two shading parameters, which a ZZZ model carries in its ILM light map and a
         // PMX does not: the band factor its five-colour shadow cascade is walked with (0 = its deepest

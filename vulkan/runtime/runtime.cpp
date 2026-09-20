@@ -948,9 +948,12 @@ namespace vulkan {
         this->sun_intensity = std::clamp(scale, 0.0f, 3.0f);
     }
 
-    void runtime::set_face_shading(float const gain, float const nose_strength) noexcept {
+    void runtime::set_face_shading(float const gain, float const nose_strength, float const face_gain) noexcept {
         this->unlit_gain = std::clamp(gain, 0.0f, 3.0f);
         this->face_nose_strength = std::clamp(nose_strength, 0.0f, 1.0f);
+        // 2 is generous rather than arbitrary: a face lit by a wrapped falloff can want a lift as well as a
+        // cut, and the clamp only has to stop a typo from producing a black or a blown face.
+        this->face_gain = std::clamp(face_gain, 0.0f, 2.0f);
     }
 
     void runtime::set_toon_warp(glm::vec3 const& shadow_tint, float const rim, float const shadow_band, float const specular, float const shadow_band_gain) noexcept {

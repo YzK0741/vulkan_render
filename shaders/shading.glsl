@@ -130,12 +130,12 @@ layout(descriptor_heap, descriptor_stride = heap_slot_stride) uniform LightUBO {
     //                  the frame's toon_shadow_band (0 = the frame-wide constant, the compiled default).
     vec4 npr_shadow;
     vec4 npr_rim;
+    vec4 npr_face;
     // npr_face_forward xyz = the FACE BLOCK's own plane in world space, i.e. the direction the face is
     // facing (the converter averages its vertex normals). The face's shading normal is blended towards it
     // so that a face that is nearly flat in the art STOPS being shaded by its nose, lips and cheeks - and
     // so that the blend does not follow the camera (which made the face right at one angle only).
     vec4 npr_face_forward;
-    vec4 npr_face;
 } light[];
 
 // Per-cluster light lists (scene set bindings 11/12), written by shaders/light_cluster.comp: one
@@ -979,6 +979,12 @@ vec3 shade_surface(shade_input s) {
 
     // The nose mark is NOT here: it needs the surface uv, which this stage does not have in the deferred
     // path, so gather_surface draws it on the albedo instead (see surface.glsl).
+
+    // ---- THE LIT FACE'S OWN BRIGHTNESS (light UBO's npr_face.z, [render] face_gain). The face is lit now,
+    // so the sun scale reaches it and the painted path's unlit_gain does not apply; what a face wants is a
+    // multiplier of its own, applied to the WHOLE lit result (ambient included) so it dims evenly rather than
+    // going flat or dark on one side. 1.0 is the neutral value.
+    color *= mix(1.0, light[heap_light_slot].npr_face.z, s.face_mask);
 
     color = mix(color, painted_color, s.painted_mask);
 

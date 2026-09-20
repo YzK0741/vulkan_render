@@ -501,6 +501,7 @@ namespace chores {
         // everything except the face.
         panel.push_back(std::make_unique<vulkan::gui::slider_widget>("unlit gain", &bindings.unlit_gain, 0.0f, 3.0f));
         panel.push_back(std::make_unique<vulkan::gui::slider_widget>("nose mark", &bindings.face_nose_strength, 0.0f, 1.0f));
+        panel.push_back(std::make_unique<vulkan::gui::slider_widget>("face gain", &bindings.face_gain, 0.0f, 2.0f));
         // bloom (bright-pass threshold + blend weight); 0 intensity disables it
         // the useful ranges: a threshold above ~0.75 leaves almost no pixel over it (so nothing
         // glows), and the intensity needed for a visible glow grows with the threshold - keeping

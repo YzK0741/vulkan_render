@@ -8,7 +8,7 @@
 // ============================================================================
 // ============================================================================
 // module: vulkan.runtime
-// module version: 0.85.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.86.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // The renderer core: per-frame-slot frame facade (pace/record/submit phases,
 // scene resources, parallel secondary-CB recording). It re-exports its peer
@@ -844,6 +844,10 @@ namespace vulkan {
         // copied into light_state.npr_face every frame.
         float unlit_gain = 1.3f;
         float face_nose_strength = 1.0f;
+        // The LIT face's own brightness multiplier - the knob the face needs now that it is lit rather than
+        // painted. The painted path had unlit_gain for this; a lit face is scaled by its own gain instead,
+        // because the sun scale is shared with everything else in the frame. Rides light_state.npr_face.z.
+        float face_gain = 1.0f;
         // the FACE BLOCK's own plane in world space, adopted from the imported materials (all of them agree,
         // because the converter averages over the whole block). Written into light_state.npr_face_forward
         // every frame; (0,0,1) until a face material is seen, and harmless then because no face is drawn.
@@ -2167,7 +2171,14 @@ namespace vulkan {
          *       the lighting stack (see docs/zzz_shading.md), which is the reference's own arrangement - so
          *       a frame that brightens its lit objects with set_sun_intensity needs this for the face
          */
-        void set_face_shading(float gain, float nose_strength) noexcept;
+        /**
+         * @brief the face's own look: the painted path's gain, the redrawn nose's strength, and the LIT
+         *        face's brightness multiplier.
+         * @param gain the painted path's gain on the albedo (unused while nothing is painted)
+         * @param nose_strength 0 disables the redrawn nose mark
+         * @param face_gain multiplied into a face material's lit result; 1.0 leaves it as lit
+         */
+        void set_face_shading(float gain, float nose_strength, float face_gain) noexcept;
 
         /**
          * @ingroup vulkan_runtime

@@ -296,6 +296,16 @@ washes the hair towards white (mean 225.1 against the reference's 216.9) while 1
 1.1 is the arm that keeps the flat look at the reference's level. Three prefixes in
 `scripts/pmx_to_glb.py` are the whole revert.
 
+
+**Two knobs and one layout trap came out of making the face lit.** `[render] face_gain` (the gui's "face gain",
+0..2, neutral 1.0) multiplies a face material's lit result, ambient included, so a face can be brought down
+without touching the sun every other surface shares - measured on a region the flags channel confirmed is face
+material: 203.3 before, 196.0 at 1.0, 16.8 at 0.0. And the light UBO is read by OFFSET: the new
+`npr_face_forward` lane was declared in the GLSL before `npr_face` while the CPU struct declared it after, so
+for one commit the shader's `npr_face` read the CPU's `npr_face_forward` (a constant z of 1.0, which is why the
+gain did nothing) and the flatten target was `normalize(unlit_gain, nose, gain)` rather than the model's face
+plane. The orders agree now, member for member.
+
 ### Option 2: the face back in the LIGHT, with its own shading normal
 
 The painted face is flat but deaf: the sun scale cannot reach it (measured earlier: `sun_intensity` 0.5 moves

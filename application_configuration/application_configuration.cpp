@@ -245,6 +245,11 @@ namespace app_config {
                     settings.render.unlit_gain = static_cast<float>(std::clamp(*value, 0.0, 3.0));
                 }
             }
+            if (toml::node const* node = render->get("face_gain")) {
+                if (std::optional<double> const value = node->value<double>()) {
+                    settings.render.face_gain = static_cast<float>(std::clamp(*value, 0.0, 2.0));
+                }
+            }
             if (toml::node const* node = render->get("face_nose_strength")) {
                 if (std::optional<double> const value = node->value<double>()) {
                     settings.render.face_nose_strength = static_cast<float>(std::clamp(*value, 0.0, 1.0));
