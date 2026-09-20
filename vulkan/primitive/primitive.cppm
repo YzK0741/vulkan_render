@@ -427,11 +427,15 @@ namespace vulkan {
 
     /**
      * @ingroup vulkan_primitive
-     * @brief byte capacity of the scene morph buffer (set 0 binding 10 storage buffer, floats):
+     * @brief capacity of the scene morph buffer IN FLOATS (set 0 binding 10 storage buffer); the buffer
+     *        itself is this many floats, i.e. four times as many bytes:
      *        per-morphable-primitive blocks of vertex deltas + morph weights, laid out by the
      *        caller (see the material_push_constants morph fields); 0 = no morph buffer
      */
-    export constexpr std::size_t scene_morph_capacity = std::size_t{8u} * 1024u * 1024u; // 8 MiB of floats
+    // EIGHT MIB WORTH OF FLOATS, which is 32 MiB of buffer. The controller's capacity check compares FLOAT
+    // counts against this, and the allocation multiplies it by sizeof(float), so the two agree; calling it a
+    // "byte capacity" (as this comment did) is what made a reader suspect an overflow that is not there.
+    export constexpr std::size_t scene_morph_capacity = std::size_t{8u} * 1024u * 1024u;
 
     /**
      * @ingroup vulkan_primitive

@@ -26,3 +26,7 @@ config.toml
 # A plain out-of-source build directory (cmake -B build): not part of the repository, same as the
 # per-configuration ones above. Found tracked once by accident, via compile_commands.json.
 /build/
+
+# python bytecode from the project's own tools
+__pycache__/
+*.pyc
