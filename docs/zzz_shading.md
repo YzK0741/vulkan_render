@@ -200,7 +200,11 @@ Measured against the in-game reference, same masks and same lit/shadow quartiles
 
 The three luma and ratio numbers agree within about one percent, and the two saturations agree to 0.019 and
 0.004 ABSOLUTE - which is 5.6% and 4.2% in relative terms, so "all five within two percent" was too loose a
-way to say it. This is what the parameters were tuned against. Two of them are
+way to say it. This is what the parameters were tuned against - AND IT IS A FIT, NOT A GENERAL RESULT. One asset, one
+lighting setup, one camera, and the parameters chosen by looking at the same masks that then measure them:
+it shows the port can be brought to this reference's numbers, and says nothing about another character,
+another sun or another view. Treating it as evidence for those would be reading a fit as a proof.
+Two of the numbers are
 tuning artefacts rather than the reference's constants, and both are now `[render]` keys so the next
 measurement can move them without a rebuild:
 
@@ -270,9 +274,10 @@ numbers rather than by eye.
 **The face does get its own path now, as far as this asset allows.** What the reference does with a shader,
 this port does with a flag and one number: the converter marks the model's face block by material NAME
 (`mmd_face`, the prefixes every PMX shares - on this asset exactly materials 0..11, the skin, mouth, teeth,
-lashes, brows, eyes and eye shadow), the flag rides `material_record` bit7, and the lighting gives those
-materials a shallower band, because the one thing the reference's face shader changes that is measurable
-here is that its shadow is far lighter than the body's.
+lashes, brows, eyes and eye shadow), the flag rides `material_record` bit7, and the lighting uses it for the
+three things the face needs: a flattened shading normal, a wrapped falloff, and no cast shadow at all (see
+the option-2 section below - an earlier version gave those materials a shallower light band instead, which
+this file records and the code no longer does).
 
 Bit **7** is not a free choice: the deferred path's only channel for material flags is ONE BYTE in the
 G-buffer (`out_material.a`), so a flag the LIGHTING stage needs has to fit inside it. The sphere mode moved
@@ -364,7 +369,9 @@ The sun moves the cheek by 15.9 luma now, where the painted face's cheek did not
 looks the same: the lit half's saturation is 0.104 against the reference's 0.102, where the painted face
 measured 0.080 - lighting the face back up is what puts that saturation there.
 
-The two constants (`face_normal_flatten` 0.85, `face_shadow_retain` 0.35) are documented in place; they are
+The flatten constant (`face_normal_flatten` 0.85) is documented in place. The OLDER `face_shadow_retain`
+constant is gone: the face takes no shadow map at all now, which is a stronger statement than keeping 35%
+of it. `[render] face_gain` and `[render] ambient_gain` / `ambient_tint` are on the panel as sliders.
 
 **And the face takes NO shadow map at all**, which is the fix for the grey speckle a user reported and
 diagnosed ("the shadow computed wrongly, and the cause is the normal"): the shadow lookup offsets its
@@ -422,14 +429,21 @@ engine, because the face uses the same path whenever a frame wants it painted.
 The face is not the only thing on this model that should be DRAWN rather than lit. Sunna's ears live in the
 head-wear material, and the geometry says so without any guessing: its vertices reach y 18.842, the tallest thing
 in the model and 0.7 above the hair, and an ear lit like a surface reads as a lump of plastic where a drawn
-ear should read as a shape. The converter's painted set is therefore the face block PLUS the ear/head-wear
-names (the converter's ear and head-wear prefixes), and the two facts are two flags rather than one:
+ear should read as a shape. That is what the converter's painted set was FOR - and what it was, until
+painting the head wear turned out to render the ears SOLID BLACK, which is the next section: the set is
+EMPTY now, so this paragraph describes the reasoning and not the current state. The two facts it splits
+into are still two flags:
 
-- **bit7 = PAINTED**, which is what the lighting reads out of the G-buffer's one-byte material channel - so it
-  has to be bit7 for the same reason the face bit did - and which decides that a material takes its albedo
-  times `unlit_gain` instead of the lighting stack;
-- **bit8 = FACE**, which only the G-buffer pass can see, and that is enough: the one thing that needs it is
-  the redrawn nose mark, which is drawn on the albedo there.
+- **bit6 = PAINTED**, which decides that a material takes its albedo times `unlit_gain` instead of the
+  lighting stack, and which the LIGHTING has to see - so it lives inside the G-buffer's one-byte material
+  channel, as does the face bit below;
+- **bit7 = FACE**, which the lighting also reads from that byte (the flattening, the wrapped falloff and the
+  shadow exemption), and which the G-buffer pass reads from the record for the redrawn nose mark.
+
+The two low bits are 6 and 7 rather than anything higher for that reason, the MMD sphere MODE sits at bits
+8-9 (where it always was) and the MMD EDGE flag moved UP to bit10, because only the outline stages read it
+and they index the record directly. The face bit was on bit8 before the relayout and overlapped the sphere
+mode there - latent, since no material on this asset carried both, and gone now.
 
 Measured with the non-PBR coefficient, on fixed patches, `unlit_gain` 1.3 -> 2.5:
 
@@ -447,13 +461,16 @@ Two pieces of code became MOOT in the same change and were removed rather than l
 and its cast-shadow retention. Both tuned a lighting result that a painted material now discards entirely -
 their measurements stand above, and the band still serves every material that IS lit.
 
-### The face is PAINTED, not lit - and its nose mark is redrawn
+### The face was PAINTED, not lit - and its nose mark is redrawn (SUPERSEDED: the face is lit now)
 
 The reference's `- Face` shader reads a face light map and a `TData` mask, and never the sun. That is not an
 optimisation, it is the whole point of a face in this style: an anime face IS its painting - the eyes, the
-blush, the mouth and the nose mark - and lighting it means washing that painting out. So face materials (the
-converter's `mmd_face`) now take `albedo * face_gain` and NONE of the stack above it: no sun, no IBL
-ambient, no AO, no rim, no specular.
+blush, the mouth and the nose mark - and lighting it means washing that painting out. THIS SECTION IS
+HISTORY: face materials were painted for a while (`albedo * unlit_gain`, none of the lighting stack), and
+that is what the numbers below measure, but a painted face cannot be reached by the sun, the exposure or
+the ambient knobs at all - which is the complaint that led to option 2, where the face is LIT again with a
+flattened normal and `[render] face_gain` as its own brightness. What survives from here is the nose mark
+and the measured reason the painting's colour matters.
 
 Measured, and the reason it is worth doing rather than a matter of taste: the face's CHROMA (the mean
 sRGB max-minus-min over the skin mask) sits at 38.3 with the painted path against the reference's 31.1,
@@ -486,8 +503,9 @@ differences between a marked and an unmarked frame are the debug overlay's own f
 what shows it: in the face box the mark's pixels go from (232,228,225) to (113,101,97) - a 125-luma drop -
 and a fixed patch over them measures luma 228.2 at strength 0, 225.8 at 0.5, 217.1 at 1.0.
 
-Two honest notes about the numbers above. `unlit_gain` (1.3) - the NON-PBR brightness coefficient, renamed from `face_gain` because the face is
-not the only thing it could scale: it multiplies every surface drawn from its albedo - is a LOOK constant rather than a fitted one,
+Two honest notes about the numbers above. `unlit_gain` (1.3) - the NON-PBR brightness coefficient, called
+`face_gain` for a while because the face was the only thing that used it: it multiplies every surface drawn
+from its albedo - is a LOOK constant rather than a fitted one,
 because neither metric can fit it: the skin-mask quartiles are not comparable between arms (a brighter face
 admits more of its own dark pixels, so the mean can move the wrong way - the same trap recorded above), and
 a mask-free box has to be mostly hair and background to avoid that, which makes it insensitive to the face.
@@ -602,7 +620,8 @@ behind, and "the model authored an edge at all" is a separate flag - black is a 
 0 a legitimate size, so the values cannot be asked to imply their own absence.
 
 The GPU side is one lane APPENDED to the material record (`npr_edge`: xyz the colour, w the thickness) plus
-flag bit6. Appending matters twice over: the fields above keep their offsets, and - because a storage
+flag bit10 - it was bit6 until the painted/face relayout moved it up, which is safe precisely because the
+outline stages index the record and never read the G-buffer's byte. Appending matters twice over: the fields above keep their offsets, and - because a storage
 buffer's array stride is the struct's own size - EVERY copy of the record in the shaders has to grow with
 it (seven files declare one; a copy that stopped early would index the table at the wrong pitch).
 
