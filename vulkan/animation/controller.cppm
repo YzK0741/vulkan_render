@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.animation
-// module version: 0.1.2a  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.1.3a  (independent of the app version in CMakeLists project(VERSION))
 //
 // Keyframe playback / skinning / morph targets, format-neutral and runtime-agnostic:
 // driven through an injected `backend` surface and structural `source` concepts -
@@ -413,15 +413,15 @@ namespace vulkan::animation {
                 uint32_t next_block = 4; // identity block occupies indices 0-3
                 for (std::size_t skin_id = 0; skin_id < scenes.skins.size(); ++skin_id) {
                     auto const& loader_skin = scenes.skins[skin_id];
-                    // the first source node referencing this skin that is present in the tree
-                    std::size_t mesh_source = std::numeric_limits<std::size_t>::max();
+                    // EVERY source node referencing this skin that is present in the tree - not the first
+                    // one: see skin_rig::mesh_sources.
+                    std::vector<std::size_t> mesh_sources = {};
                     for (auto const& [source, loader_node] : scenes.node_by_source) {
                         if (loader_node->skin_index && *loader_node->skin_index == skin_id && this->source_nodes.contains(source)) {
-                            mesh_source = source;
-                            break;
+                            mesh_sources.push_back(source);
                         }
                     }
-                    if (mesh_source == std::numeric_limits<std::size_t>::max()) {
+                    if (mesh_sources.empty()) {
                         continue; // the skin is not used by the imported scene
                     }
                     bool const all_joints_present = std::ranges::all_of(loader_skin.joints, [this](std::size_t const joint) { return this->source_nodes.contains(joint); });
@@ -435,30 +435,40 @@ namespace vulkan::animation {
                     }
                     uint32_t const block_base = next_block;
                     next_block += static_cast<uint32_t>(loader_skin.joints.size());
-                    // point every primitive leaf of the skinned node at the block: the node's own
+                    // point every primitive leaf of every skinned node at the block: the node's own
                     // leaf plus extra-primitive child leaves (import adds them under the node with
-                    // source_index 0); real child nodes keep skin_base 0
-                    vulkan::scene_tree::scene_node* const mesh_node = this->source_nodes.at(mesh_source).front().node;
-                    auto const assign_block = [block_base, mesh_source](auto&& self, vulkan::scene_tree::scene_node& node) -> void {
-                        if (node.primitive_leaf != nullptr && (node.source_index == 0 || node.source_index == mesh_source)) {
+                    // source_index 0); real child nodes keep skin_base 0. MULTIPLE NODES, NOT JUST THE
+                    // FIRST: two nodes may reference this skin, and each of them may be instantiated
+                    // several times (source_nodes maps a source index to every node using it).
+                    auto const assign_block = [block_base](auto&& self, vulkan::scene_tree::scene_node& node, std::size_t const source) -> void {
+                        if (node.primitive_leaf != nullptr && (node.source_index == 0 || node.source_index == source)) {
                             static_cast<vulkan::primitive*>(node.primitive_leaf.get())->push.skin_base = block_base;
                         }
                         for (vulkan::scene_tree::scene_node& child : node.children) {
-                            self(self, child);
+                            self(self, child, source);
                         }
                     };
-                    assign_block(assign_block, *mesh_node);
+                    for (std::size_t const source : mesh_sources) {
+                        for (auto const& entry : this->source_nodes.at(source)) {
+                            assign_block(assign_block, *entry.node, source);
+                        }
+                    }
+                    if (mesh_sources.size() > 1) {
+                        utility::log("skinning: skin '{}' is used by {} nodes; all of them now point at its joint block", display_name(loader_skin.name), mesh_sources.size());
+                    }
                     // value-copy the skin (joints + inverse bind matrices) into the rig
                     skin s = {};
                     s.name = loader_skin.name;
                     s.joints = loader_skin.joints;
                     s.inverse_bind = loader_skin.inverse_bind_matrices;
-                    this->skin_rigs.push_back(skin_rig{std::move(s), mesh_source, block_base});
+                    this->skin_rigs.push_back(skin_rig{std::move(s), std::move(mesh_sources), block_base});
                 }
                 // wanted set for the per-frame world collection: every accepted rig's mesh node +
                 // every joint it references (deduplicated; fixed after this init pass)
                 for (skin_rig const& rig : this->skin_rigs) {
-                    this->skin_sources.insert(rig.mesh_source);
+                    for (std::size_t const source : rig.mesh_sources) {
+                        this->skin_sources.insert(source);
+                    }
                     for (std::size_t const joint : rig.s.joints) {
                         this->skin_sources.insert(joint);
                     }
@@ -665,9 +675,12 @@ namespace vulkan::animation {
             bool scene_root = false;
         };
         struct skin_rig {
-            skin s = {};                 // value-copied joints + inverse bind matrices
-            std::size_t mesh_source = 0; // asset node index of the skinned mesh node
-            uint32_t block_base = 0;     // block start in the skin buffer (after identity)
+            skin s = {}; // value-copied joints + inverse bind matrices
+            // EVERY asset node that references this skin. glTF lets several nodes share one skin - two
+            // meshes, or one mesh instanced twice - and all of them have to point at this rig's joint
+            // block and have their world matrices collected; a single index here rigged only the first.
+            std::vector<std::size_t> mesh_sources = {};
+            uint32_t block_base = 0; // block start in the skin buffer (after identity)
         };
         struct morph_rig {
             vulkan::primitive* prim = nullptr;

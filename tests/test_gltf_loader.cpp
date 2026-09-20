@@ -177,11 +177,34 @@ namespace {
     }
 } // namespace
 
+// ONE SKIN, TWO NODES. glTF allows it (two meshes, or one mesh instanced twice) and the runtime's
+// skin binding used to rig only the first node it found. That binding needs a device, so what this
+// test holds still is the DATA it depends on: both nodes reach the scene carrying skin_index 0, and
+// the skin is not folded away.
+void test_one_skin_used_by_two_nodes() {
+    auto const result = gltf::load_model(VR_TEST_SOURCE_DIR "/tests/fixtures/shared_skin_two_nodes.gltf");
+    CHECK(result.has_value());
+    if (!result.has_value()) {
+        return;
+    }
+    gltf::scenes const& scenes = *result;
+    CHECK(scenes.skins.size() == 1);
+    std::size_t skinned = 0;
+    for (auto const& [source, loader_node] : scenes.node_by_source) {
+        (void)source;
+        if (loader_node->skin_index && *loader_node->skin_index == 0) {
+            ++skinned;
+        }
+    }
+    CHECK(skinned == 2); // both users of the skin, not just the first
+}
+
 int main() {
     test_load_damaged_helmet();
     test_async_load_matches_sync();
     test_missing_file_reports_file_not_found();
     test_khr_lights_punctual_minimal();
+    test_one_skin_used_by_two_nodes();
     test_quantized_attributes();
     return vk_test::finish("test_gltf_loader");
 }
