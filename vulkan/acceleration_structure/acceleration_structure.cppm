@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.acceleration_structure
-// module version: 0.4.0  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.4.1  (independent of the app version in CMakeLists project(VERSION))
 //
 // Ray-tracing acceleration structures: the bottom level structures of the
 // scene's shadow casters, built from the geometry buffers the raster passes
@@ -172,10 +172,12 @@ namespace vulkan::acceleration_structure {
     /**
      * @ingroup vulkan_acceleration_structure
      * @brief the scene's bottom level structures, built in one command
-     * @note the builds are batched into ONE `vkCmdBuildAccelerationStructuresKHR` call, which is why
-     *       the scratch space is one buffer with a per-geometry aligned range: the driver executes the
-     *       builds of a single call in order, and giving each its own range is what keeps that
-     *       ordering out of the correctness argument entirely.
+     * @note the builds are batched into ONE `vkCmdBuildAccelerationStructuresKHR` call, which is why the
+     *       scratch space is one buffer with a per-geometry aligned range. THE REASON IS NOT THAT THE
+     *       BUILDS RUN IN ORDER: Vulkan gives no ordering between the builds of a single call, and a
+     *       build that reads another's output needs its own synchronization. The per-geometry ranges are
+     *       what remove the QUESTION instead of relying on an answer - no two builds share scratch, so no
+     *       ordering is needed, and the batching is purely a CPU-side win.
      */
     export class bottom_level_structures {
         struct entry {
