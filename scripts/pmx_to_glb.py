@@ -413,9 +413,16 @@ def write_glb(out_path: Path, model: dict) -> dict:
     # OPTION 2: the face is NOT painted any more - it is LIT again, with its own flattened shading normal
     # (see gather_surface) and its own cast-shadow retention, which is what the reference's `- Face`
     # group stands in for. This set is therefore only the head's PROPS.
+    # EMPTY, and deliberately so. `头饰` (the ears and the head's pins) was in here, and painting it renders
+    # the whole material SOLID BLACK: measured in the ear crop, 1653 black pixels with it painted against 28
+    # without, and the ears' own cyan and the pins' detail come back when it is out. The painted path is not
+    # obviously at fault - those pixels hold a pale albedo and the painted bit in the G-buffer - so the cause
+    # is still open; the OUTLINE was ruled out by recolouring it magenta (0 magenta pixels, the wedges stayed
+    # black), the forward/blend pass by the material being OPAQUE, the flag byte by its target being UNORM,
+    # and MSAA by the key being inert in this engine's config. Black ears are worse than the flat cyan inner
+    # they replaced, so the set is empty until that is understood - the MECHANISM stays in the engine (the
+    # record's painted bit, the lighting override and its unlit_gain knob) for the face, which is lit now.
     MMD_UNLIT_MATERIAL_PREFIXES = (
-        "耳",  # ears
-        "头饰",  # ... and the head wear they are modelled in on this asset
     )
 
     gltf_materials = []

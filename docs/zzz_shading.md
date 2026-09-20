@@ -361,7 +361,21 @@ the sun's cel ramp, the artistic term; the environment is a property of where th
 Its irradiance is low-frequency, so the face stays flat either way (measured: face mean 235/221/214 ->
 235/220/211, i.e. a colour this small, but the lookup is now the right one).
 
-### The painted set is wider than the face: the ears are in it too
+### The painted set is EMPTY: a painted `头饰` renders its ears solid black
+
+`头饰` (the ears and the head's pins) was in the painted set. Painting it renders the whole material SOLID
+BLACK - measured in the ear crop at one camera, 1653 black pixels of 22400 against 28 with the material
+out, and the ears' cyan and the pins' detail come back when it is out. Four other explanations were
+eliminated first, each by experiment: the OUTLINE (recolouring it magenta left 0 magenta pixels and the
+same black wedges), the FORWARD/BLEND pass (the material is OPAQUE), the FLAG BYTE (the G-buffer's
+material target is UNORM, so the byte survives exactly - and those pixels hold a PALE albedo with the
+painted bit set), and MSAA (an inert key in this engine's config).
+
+So the cause is OPEN: a material with the painted bit set and a healthy albedo renders black in the
+deferred lighting path. The painted set is empty until that is understood; the MECHANISM stays in the
+engine, because the face uses the same path whenever a frame wants it painted.
+
+### What the painted set was, historically
 
 The face is not the only thing on this model that should be DRAWN rather than lit. 千夏's ears live in the
 material `头饰`, and the geometry says so without any guessing: its vertices reach y 18.842, the tallest thing
