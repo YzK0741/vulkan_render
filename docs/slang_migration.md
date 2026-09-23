@@ -545,3 +545,18 @@ TWO ROUTES EXIST FOR THOSE STAGES, and neither needs the gate's references to be
    and `scripts/windows/compile_shaders.ps1` / `compile_shaders.sh`. CI cannot get `slangc` from MSYS2
    (`pacman -Ss slang` has no package), so the release job needs the LunarG SDK's `Bin` on PATH or a Slang
    build step.
+
+   `Doxyfile` IS DONE (`.slang` maps to C++ exactly as `.glsl`/`.vert`/`.frag` do, and `*.slang` is in
+   FILE_PATTERNS - without that Doxygen does not read the files at all). It was verified by RUNNING doxygen:
+   801 HTML files and, as the proof that the files are now read, a warning that names a `.slang` file
+   (`shaders/pbr.slang:81`, an initializer-list confusion from Doxygen parsing shader syntax as C++ - the
+   same class of warning the GLSL files produce).
+
+   THE COMPILE SCRIPTS ARE A LIVE HAZARD UNTIL THEY ARE CONVERTED, and that is why they are called out here
+   rather than left to the last commit: `compile_shaders.ps1` and `.sh` compile a HARDCODED list of `.glsl`
+   sources with glslc only. Run today, they would overwrite the `.spv` files of all fourteen ported stages
+   with GLSL-derived modules - the runtime would then load something the build never produced, and nothing
+   would say so. They are the documented escape hatch for recompiling shaders by hand, so the fix is part of
+   the endgame step that moves the `.glsl` sources away (after which the scripts cannot compile them at all
+   and must be rewritten around `VR_SLANG_SOURCES` anyway). Until then, the canonical build is CMake's.
+
