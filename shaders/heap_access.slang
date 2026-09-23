@@ -95,6 +95,21 @@ float4 heap_texel(DescriptorHandle<Texture2D<float4>> texture, uint sampler_slot
     return texture.Sample(heap_at<SamplerState>(sampler_slot), uv);
 }
 
+/// one texel at an EXPLICIT mip 0, for the stages that are not allowed an implicit-LOD fetch.
+/// @note WHY THIS EXISTS, MEASURED THE HARD WAY: `Sample` lowers to `OpImageSampleImplicitLod`, which the
+///       SPIR-V environment only allows in the Fragment, GLCompute, MeshEXT and TaskEXT execution models -
+///       implicit LOD needs derivatives, and a RAYTRACING stage has none. The GLSL spelling of the same fetch
+///       (`texture(sampler2D(tex, samp), uv)`) is lowered by glslc to an explicit-Lod fetch for exactly this
+///       reason, so an RT or compute leaf that reaches for `heap_texel` produces a module that spirv-val
+///       REJECTS (`ImplicitLod instructions require Fragment, GLCompute, MeshEXT or TaskEXT execution model:
+///       ImageSampleImplicitLod`, caught by the validation layer at vkCreateShaderModule) while the driver
+///       still runs it and renders the RIGHT frame - which is why this was found by the gate's LOG check and
+///       not by its frame comparison. Any non-fragment stage that samples a heap image wants this function.
+float4 heap_texel_lod0(DescriptorHandle<Texture2D<float4>> texture, uint sampler_slot, float2 uv)
+{
+    return texture.SampleLevel(heap_at<SamplerState>(sampler_slot), uv, 0.0);
+}
+
 /// the size of a heap image at a mip, as a float2 - GLSL's `vec2(textureSize(sampler2D(tex, samp), lod))`
 /// @note the post chain's filters derive their tap spacing from the level they are reading, so they need the
 ///       SIZE of a slot rather than a resolution constant; the GLSL side spells `textureSize` inline.

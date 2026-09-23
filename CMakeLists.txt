@@ -761,6 +761,7 @@ set(VR_SLANG_SOURCES
     # rt_shadows, so this port is shape-verified and belongs to the A/B capture route in docs/slang_migration.md.
     rt_shadow.slang:chit_main:closesthit:rt_shadow.rchit.spv
     rt_shadow.slang:miss_main:miss:rt_shadow.rmiss.spv
+    rt_shadow.slang:rgen_main:raygeneration:rt_shadow.rgen.spv
 
     # deferred.slang IS WRITTEN BUT NOT WIRED: it is a faithful port of deferred.frag (same push layout
     # 0/64/80/84/88/92, zero descriptor sets, 94 heap accesses, 0 transposed multiplies, the TBN built with

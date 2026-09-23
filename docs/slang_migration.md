@@ -185,8 +185,7 @@ WHAT HAS LANDED (each entry: verified by the gate, not by inspection):
 | `post.frag` | `shaders/post.slang` (entry `frag_main`) | all THREE post modes (bright pass, 13-tap downsample, composite), so every frame of every scenario records it - the widest verification a single port can get. 24896 B, 0 descriptor sets, 107 heap accesses, 51 `OpSampledImage` (the two filter kernels), 5 image-size queries for the tap spacing, push block at 0..36. It also carries the one place where the Slang side is SIMPLER than the GLSL: the GLSL filters take a heap SLOT and index the array inside, because a `texture2D` parameter does not survive a function boundary in glslang, while Slang passes the texture handle itself into `heap_texel` |
 | `light_cluster.comp` | `shaders/light_cluster.slang` | **the first COMPUTE stage**, dispatched once per frame by default (`clustered_lights = true`), so every scenario records it. 11232 B, 0 descriptor sets, 14 heap accesses, `LocalSize 64 1 1`, `OpAtomicIAdd` for the per-cluster counter from `atomicAdd`, and the two writable buffers are the same heap slots the GLSL declares `writeonly buffer`, read as `RWStructuredBuffer<uint>`. It also settles the builtin that looked riskiest: `inverse()` is NOT expanded inline by either compiler - glslang and slangc both emit `OpExtInst MatrixInverse` from GLSL.std.450 - so the cluster boxes agree bit for bit and the `inverse` needs no workaround |
 | `heap_probe.vert` + `.frag` | `shaders/heap_probe.slang` (entries `main`, `frag_main`) | the graphics half of the heap-native probe: a fullscreen triangle and the fragment stage that reads element 0 of the material table at the pushed slot. **No gate scenario renders it, and it does not need one** - the runtime dispatches it during initialization, reads a pixel back and logs it against the value it knows, so this port is verified by comparing LOG LINES, which is the first use of that route: both `descriptor heap: the heap-native GRAPHICS probe rendered grid slot ...` lines come out byte-identical to the GLSL build's, including the deliberately WRONG slot (16897 -> `0,0,0,255`), and that wrong slot is what makes the probe able to fail rather than always say "fine" |
-| `rt_shadow.rchit` | `shaders/rt_shadow.slang` (entry `chit_main`) | the ray-traced shadow's closest-hit stage, whose whole job is the payload contract: the raygen deliberately does NOT initialise the payload, so this `1.0` and the miss shader's `0.0` are the two halves of it. 400 B, 0 descriptor sets, `OpEntryPoint ClosestHitKHR ... "main"`, `OpCapability RayTracingKHR`, and the store lands as `OpStore %payload %float_1` exactly as the GLSL's `rayPayloadInEXT` write did. **Shape-verified only**, and the one thing the A/B route must check first: Slang declares the payload as a 4-byte STRUCT where the GLSL declares a bare `float`, which is the same payload SIZE (all stages of one RT pipeline must agree on the size, not the type) - a difference worth watching when the raygen lands, since the raygen is the stage that declares it in GLSL |
-| `rt_shadow.rmiss` | `shaders/rt_shadow.slang` (entry `miss_main`) | the other half of that contract: the ray escaped, so the light is not blocked. 400 B, `OpEntryPoint MissKHR ... "main"`. The check that matters here is CODEGEN, not structure: the GLSL file records that a payload store the compiler can prove redundant gets DROPPED (a raygen storing 0.0 plus a miss that does not write made every escaped ray come back occluded - 61.22 mean over the DamagedHelmet model against 76.48 for the raster shadow map, 100% of differing pixels darker), so the acceptance for this port is that `OpStore %12 %float_0` SURVIVES - and it does, in a module with no raygen-side initialisation to make it redundant |
+| `rt_shadow.rchit` + `.rmiss` + `.rgen` | `shaders/rt_shadow.slang` (entries `chit_main`, `miss_main`, `rgen_main`) | the whole ray-traced shadow path, and **A/B-VERIFIED rather than shape-verified**: with `rt_shadow = true` and the animation sweep pinning the fixture, the GLSL build's frame and the Slang build's frame are **0/1036800 pixels apart** - the same standard the gate applies, applied by hand to a path no scenario reaches. The three stages carry one contract between them: the raygen writes NOTHING to the payload (a raygen storing what the miss shader stores makes that store look redundant, and the device's compiler then drops it - 61.22 mean over the model against 76.48 for the raster reference, every differing pixel darker), the hit group writes 1.0 and the miss writes 0.0. Confirmed in the modules: no store precedes `OpTraceRayKHR`, and `OpStore %12 %float_0` survives in the miss. The raygen also confirmed the two new mechanisms the remaining RT work needs: the TLAS arrives through the heap as `OpConvertUToAccelerationStructureKHR`, and `gl_RayFlagsTerminateOnFirstHitEXT` is spelled `RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH` in Slang (the GLSL name does not exist there) |
 
 The five non-`gbuffer` stages above were already byte-identical to their GLSL builds; `gbuffer` is the one that
 needed a fix outside the shader (the camera's descriptor type), so it moved the GLSL side too - see section 9.
@@ -454,6 +453,29 @@ WHAT TO TRY NEXT, in this order, if that pixel is worth chasing:
     written down, which is what the gate's `-Update` exists for - rather than quietly accepting a one-pixel
     difference.
 
+**TRAP 4: AN IMPLICIT-LOD FETCH IS ILLEGAL OUTSIDE A FRAGMENT (OR COMPUTE) STAGE, AND THE FRAME WILL NOT
+TELL YOU.** Found by the `rt_shadow.rgen` port, and it is the sharpest lesson in this document because of HOW
+it was caught. The raygen samples two G-buffer images with the shim's `heap_texel`, whose body is
+`texture.Sample(...)`; Slang lowers that to `OpImageSampleImplicitLod`, and the SPIR-V environment allows
+implicit LOD only in the Fragment, GLCompute, MeshEXT and TaskEXT models - implicit LOD needs derivatives, and
+a raygeneration stage has none. glslc lowers the SAME GLSL source (`texture(sampler2D(tex, samp), uv)`) to an
+explicit-Lod fetch, which is why the GLSL module was always valid.
+
+    vkCreateShaderModule(): pCreateInfo->pCode (spirv-val produced an error):
+    ImplicitLod instructions require Fragment, GLCompute, MeshEXT or TaskEXT execution model: ImageSampleImplicitLod
+
+The fix is one call: `heap_texel_lod0` (`SampleLevel(..., 0.0)`) in `heap_access.slang`, plus the rule that any
+non-fragment stage sampling a heap image wants it - COMPUTE STAGES INCLUDED, which is why it is in the shared
+shim and not in the RT file.
+
+WHY THIS ONE MATTERS: **the frame was byte-identical while the module was invalid.** The RT A/B had already
+reported 0/1036800 pixels different against the GLSL reference, because the driver validated nothing and
+happily ran the illegal module. The gate caught it on its LOG check - `FAIL: validation/log problems` on all
+ten scenarios - and that is the whole argument for the acceptance rule being "byte-identical frames AND
+validation-clean", not frames alone. It also produced a cheaper instrument than the gate, now used before
+every commit: **`spirv-val <module> --target-env vulkan1.3` over every built `.spv`**, which is exactly what the
+validation layer runs and takes seconds. All 24 modules pass it as of this entry.
+
 **A NEARBY HAZARD from the same driver area**, worth knowing before the matrix-heavy stages are ported:NVIDIA has an open report of a different descriptor-heap defect on this driver family - a whole-matrix
 `OpLoad` through an untyped pointer ignoring `MatrixStride` (it gathers 4-bytes-apart columns), with
 per-element loads correct and a per-element + `dot` workaround:
@@ -518,16 +540,20 @@ TWO ROUTES EXIST FOR THOSE STAGES, and neither needs the gate's references to be
   which is a DIFFERENT mechanism from everything ported so far and has no Slang spelling established yet. So
   it needs either a host-side log line added first (a runtime change, not a shader port) or shape-only
   verification, and it should not be described as self-verifying until one of those exists.
-- **An A/B capture covers the RT path.** For `rt_shadow.*`, `compute_skin.comp` and `mask_bake.comp`, the
-  verification is the same standard applied by hand: capture a frame with `rt_shadow = true` from the GLSL
-  build, capture the same frame from the Slang build, and compare the two PNGs pixel for pixel. That is what
-  the gate does for its ten scenarios; doing it manually for one RT config extends the same standard to stages
-  the scenario list does not reach, without re-baselining anything. THE CONFIG KEY IS SINGULAR - `rt_shadow`,
-  from `runtime.cpp`'s `ask("rt_shadow")` - and that matters because the plural spelling is accepted by the
-  parser and simply IGNORED: a run with `rt_shadows = true` renders the raster shadows and looks perfectly
-  healthy. Measured the difference the key makes on one config: **21.90% of the frame's pixels** change when
-  the singular key is used, and the log then names the `rt_shadow.*` shaders it loads - which is also how to
-  confirm the RT path is the one being tested before comparing anything.
+- **An A/B capture covers the RT path, AND IT IS NOW IN USE.** For `rt_shadow.*`, `compute_skin.comp` and
+  `mask_bake.comp`, the verification is the same standard applied by hand: capture a frame with
+  `rt_shadow = true` from the GLSL build, capture the same frame from the Slang build, and compare the two
+  PNGs pixel for pixel. Proven on the RT trio (`rgen` + `rchit` + `rmiss`): **0/1036800 pixels apart**. Three
+  things the route needs, all measured:
+  - THE CONFIG KEY IS SINGULAR - `rt_shadow`, from `runtime.cpp`'s `ask("rt_shadow")`. The plural spelling is
+    accepted by the parser and IGNORED, and that run renders raster shadows and looks perfectly healthy;
+    changing one config to the singular key moved **21.90% of the pixels**, and the log then names the
+    `rt_shadow.*` shaders it loads, which is how to confirm the RT path is what is being compared.
+  - THE ANIMATION SWEEP IS REQUIRED for a fixture that animates: two runs of the SAME binary differed in
+    **2077 pixels** without `--capture-animation-sweep`, and in **0** with it. The gate's own scenarios pass
+    the same flag, and this is why.
+  - AND THE FRAME IS NOT THE WHOLE ANSWER: the first version of the raygen was byte-identical AND invalid
+    (TRAP 4). Both halves of the acceptance rule have to be applied to an A/B, not just the picture.
 
 
 3. **Compute stages**: `compute_skin.comp`, `mask_bake.comp`, `megalights_trace.comp`,
