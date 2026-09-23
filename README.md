@@ -262,6 +262,15 @@ Two extra dev-tool flags make a render reproducible without a human at the keybo
 ./build-release/vulkan_render --capture-frames 120 --capture-camera 31,0,10,0,-18,0
 ```
 
+Two more make a capture of something that MOVES as reproducible as a still one, for the same reason: both advance by the **frame index** rather than by the wall clock, so two runs of one capture are byte-identical. `--capture-sweep <deg of yaw per frame>` orbits the camera (without it every reprojection path in the renderer is only ever exercised in its trivial case - a motion vector of zero), and `--capture-animation-sweep <seconds per frame>` advances the keyframe animation:
+
+```bash
+# move the camera 0.5 deg per frame, and the animation 0.02 s per frame
+./build-release/vulkan_render --capture-frames 40 --capture-sweep 0.5 --capture-animation-sweep 0.02
+```
+
+`--capture-animation-sweep` is what makes a **deforming** mesh measurable at all: pinning the pose with `[render] animation_time` makes a capture reproducible but uploads the same skin matrices every frame, so the deformation term of every motion vector is exactly zero and the frame cannot tell a deformation-aware renderer from one that ignores deformation. The two flags are mutually exclusive - a pinned pose never advances the clock, and the run logs that it ignored the sweep.
+
 The PNG goes to `[paths] screenshot_dir` and the log line prints its full path. Note the scene is placed in world space around the **orbit target** (`main` sinks the imported model so its centre sits at the target), so a "inside the building" camera needs target coordinates in that shifted space, not the loader's.
 
 ### Screenshot regression check (local)

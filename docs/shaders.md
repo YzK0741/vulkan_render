@@ -72,14 +72,19 @@
  *   shadow map's texel grid alternates between two alignments and a grazing-angle surface flickers
  *   between lit and shadowed - the TAA history then averages that flicker into a dark band.
  *
- * The motion vectors carry CAMERA motion and RIGID object motion both. The camera half is the
- * unjittered view-projection pair; the object half is binding 13, where `pbr.vert` reads the world
- * matrix this draw had one frame ago (`runtime::advance_motion_transforms()` publishes it, once per
- * frame, before anything is recorded) and passes the resulting previous world position down as
- * `v_prev_world_pos`. A deforming mesh is still approximate: a skinned or morphed vertex moves inside
- * its own object space as well, and the previous-frame skin matrices / morph weights that would
- * describe that are not stored - so such an object gets its rigid part right and its deformation
- * wrong, which is the same residual it had before object motion existed.
+ * The motion vectors carry CAMERA motion, RIGID object motion and a DEFORMING mesh's own movement. The
+ * camera half is the unjittered view-projection pair; the object half is binding 13, where `pbr.vert`
+ * reads the world matrix this draw had one frame ago (`runtime::advance_motion_transforms()` publishes
+ * it, once per frame, before anything is recorded) and passes the resulting previous world position down
+ * as `v_prev_world_pos`. A vertex's movement INSIDE its own object space is the second half of that
+ * position, and both of its sources are stored: the four joint matrices as they were one frame ago, from
+ * a per-frame heap family of their own (`runtime::advance_motion_deformations()` publishes them into the
+ * CURRENT frame slot's buffer, so the shader reads them at the same `skin_base` and the same frame slot
+ * it already carried), and the morph weights as they were one frame ago, which live in a second weight
+ * region of each morph block (see `runtime::morph_scratch()` for the writer's side of that contract).
+ * NOT COVERED, stated rather than implied: alpha-blended geometry, which is composited outside the
+ * G-buffer and writes no motion vector at all - see `docs/deformation_motion_vectors.md`, which carries
+ * the measurements for both halves that ARE covered.
  *
  * Which pipeline a primitive draws with is decided per leaf: a default-semantics primitive asks
  * the pass for its default pipeline, so the same geometry renders through `pbr` (lit), `unlit`

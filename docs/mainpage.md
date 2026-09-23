@@ -86,7 +86,11 @@ revision) changed
 since that slot last rendered them, so the skip is byte-identical by construction - a skinned caster
 keeps a constant world matrix, which is why the skin upload has to be part of the signal or an
 animated model silently keeps a frozen map. Still ahead on this
-path: alpha-blended geometry in the deferred path and per-object motion vectors.
+path: alpha-blended geometry in the deferred path (it is composited outside the G-buffer and so writes
+no motion vector at all), and anything else that moves inside its own object space. What a DEFORMING mesh
+needs is done: the previous-frame skin matrices and the previous-frame morph weights are both stored, so a
+skinned or morphed vertex reprojects where it actually was - see `docs/deformation_motion_vectors.md` for
+the design, the measurements and the two half-steps it was built in.
 
 ## Modular composition
 
