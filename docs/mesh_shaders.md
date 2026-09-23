@@ -340,6 +340,21 @@ workflow, `README` and this document.
 
 ## 6. Traps already measured (so nobody re-measures them)
 
+- **A shader the build compiles and the escape-hatch scripts do not is invisible until someone uses the
+  scripts.** `shaders/compile_shaders.ps1`/`.sh` MIRROR `CMakeLists.txt`'s `VR_SLANG_SOURCES` by hand, and the
+  mesh migration left `heap_probe.slang:mesh_main:mesh:heap_probe.mesh.spv` out of both - so a machine without
+  CMake would have lost the mesh probe and its log-line proof. `tests/test_shader_sources.cpp` now parses all
+  four places a `.spv` is named (the CMake list, both scripts, and `chores.cpp`'s loads) and requires them to
+  agree, requires the three `.mesh.spv` names to exist, and requires every `mesh_main` a `.slang` file declares
+  to have an entry. It runs in CI (both jobs) and is written to FAIL: deleting a mesh entry, or a script entry,
+  fails it by name.
+- **AN INCLUDE THE BUILD DOES NOT KNOW ABOUT IS STALE SPIR-V.** `mesh_geometry.slang` (and, since the Slang
+  migration, `heap_access.slang`) were included by every geometry leaf and absent from CMakeLists'
+  `VR_SHADER_INCLUDES`, so the build tree held binaries compiled before the geometry lanes existed while the
+  mesh entries sharing their source had been rebuilt - one pipeline whose two stages declared different push
+  blocks, and no validation finding, no wrong picture and no build error anywhere. It surfaced as a byte
+  difference against the scripts' output (21 of 27 identical, 6 not) and is now a test check: every `#include`
+  found in `shaders/` must be in `VR_SHADER_INCLUDES`.
 - **A mesh stage's outputs are WRITE-ONLY.** `E54005: cannot read values from mesh shader outputs` - so
   the "keep a fetch alive through a branch the fragment stage never takes" idiom does not compile. The
   probe writes the fetched value into an output lane no fragment stage reads

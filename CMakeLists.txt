@@ -448,7 +448,7 @@ option(VR_BUILD_TESTS "Build the headless unit tests" ON)
 if(VR_BUILD_TESTS)
     enable_testing()
 
-    set(VR_TEST_TARGETS test_app_config test_utility test_math test_animation test_gltf_loader test_shadow_fit test_render_resources test_pass)
+    set(VR_TEST_TARGETS test_app_config test_utility test_math test_animation test_gltf_loader test_shadow_fit test_render_resources test_pass test_shader_sources)
     file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/test-run")
 
     foreach(test_target IN ITEMS ${VR_TEST_TARGETS})
@@ -465,6 +465,10 @@ if(VR_BUILD_TESTS)
     # test_render_resources reads shaders/heap_slots.glsl and vulkan/core/core.declarations.cppm to compare the slot grid's two
     # sources of truth (see the last block of that test): both are text, neither is generated from the other.
     target_compile_definitions(test_render_resources PRIVATE VR_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+    # test_shader_sources parses the FOUR places a .spv is named (VR_SLANG_SOURCES, the two compile scripts, and
+    # chores.cpp's load_shader calls) and compares them: one shader built by the build and not by the scripts is
+    # the drift that test exists for, and it is the mesh path's CI gate (see the test's header).
+    target_compile_definitions(test_shader_sources PRIVATE VR_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 
     target_link_libraries(test_app_config
             app_config
@@ -686,6 +690,16 @@ set(VR_SHADER_INCLUDES
     # arrays and the fetch helper) includes it.
     "${VR_SHADER_SRC_DIR}/heap_slot_constants.glsl"
     "${VR_SHADER_SRC_DIR}/heap_slots.glsl"
+    # heap_access.slang and mesh_geometry.slang are the two OTHER includes every leaf pulls in - the shim's heap
+    # accessors, and the device-address geometry fetch a mesh stage uses instead of the input assembler. Both were
+    # missing from this list, and the mesh one cost a measurement to find: the build tree's pbr.vert.spv and
+    # shadow.frag.spv were STALE (built before the geometry lanes existed) while the mesh entries sharing their
+    # source had been rebuilt, so the two halves of one pipeline declared different blocks - visible only as a
+    # byte difference against the escape-hatch scripts' output, never as a wrong picture.
+    # `test_shader_sources` now compares this list against every #include in shaders/, so the next include cannot
+    # be forgotten the same way.
+    "${VR_SHADER_SRC_DIR}/heap_access.slang"
+    "${VR_SHADER_SRC_DIR}/mesh_geometry.slang"
 )
 # (THE GLSL STAGE LIST USED TO LIVE HERE: twenty-four names, glslc's input, kept in step with the sources by
 # hand. Every one of them is in shaders/glsl.old/ now and built from Slang instead, so the list is gone -
@@ -732,18 +746,20 @@ set(VR_SLANG_SOURCES
     # forward default too.
     pbr.slang:main:fragment:pbr.frag.spv
     pbr.slang:vertex_main:vertex:pbr.vert.spv
-# ... and the same file's MESH entry (docs/mesh_shaders.md step 2): the G-buffer/forward geometry as dispatches.
-pbr.slang:mesh_main:mesh:pbr.mesh.spv
+    # ... and the same file's MESH entry (docs/mesh_shaders.md step 2): the G-buffer/forward geometry as
+    # dispatches, which is what the scene's opaque, forward and transparent leaves are drawn with.
+    pbr.slang:mesh_main:mesh:pbr.mesh.spv
     # shadow.slang shares no body: the material table and the albedo fetch through the shim's accessors
     # (`material_at`, `heap_sample`), and the entry returns void because a depth-only stage has no output.
     # Its vertex entry reuses the same matrix-array accessors pbr.vert does, which is the point of the pair:
     # both stages must place the geometry identically or the shadow silhouette detaches from the surface.
     shadow.slang:main:fragment:shadow.frag.spv
     shadow.slang:vertex_main:vertex:shadow.vert.spv
-# ... and the SAME file's MESH entry (docs/mesh_shaders.md step 1): the depth pass drawn as dispatches instead
-# of indexed draws. It replaces the vertex entry rather than joining it (one pipeline is MESH + fragment), and
-# the host keeps both - a device without VK_EXT_mesh_shader has no mesh stage at all.
-shadow.slang:mesh_main:mesh:shadow.mesh.spv    # light_cluster.slang is the FIRST compute stage: the clustered-light sort, dispatched once per frame by
+    # ... and the SAME file's MESH entry (docs/mesh_shaders.md step 1): the depth pass drawn as dispatches
+    # instead of indexed draws. It REPLACES the vertex entry rather than joining it (one pipeline is MESH +
+    # fragment), and the host keeps both - a device without VK_EXT_mesh_shader has no mesh stage at all.
+    shadow.slang:mesh_main:mesh:shadow.mesh.spv
+    # light_cluster.slang is the FIRST compute stage: the clustered-light sort, dispatched once per frame by
     # default (clustered_lights = true), so every scenario records it. Its writable buffers are the heap slots
     # the GLSL declares as `writeonly buffer`.
     light_cluster.slang:main:compute:light_cluster.comp.spv

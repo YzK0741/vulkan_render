@@ -15,19 +15,15 @@ name: ci
 # and clang-tidy over the pure-CPU modules (app_config + utility), which is
 # kept warning-free so --warnings-as-errors fails on any regression.
 #
-# glslc comes from the MSYS2 shaderc package, NOT from the Vulkan SDK: this
-# runner has no SDK installed, and CMakeLists requires glslc (the compiled
-# SPIR-V is no longer committed, so a configuration without the compiler is
-# exactly the one that could silently run stale shaders). FindVulkan picks it up
-# off PATH, which is why the package is enough.
-#
-# SLANGC IS NOW REQUIRED TOO, AND FOR A SHARPER REASON: twenty-three of the twenty-four shader stages are
-# built from .slang sources, and CMakeLists' shader rule FALLS BACK to glslc when slangc is absent. A CI
-# without it would therefore compile the GLSL sources of the ported stages instead and report a green compile
-# gate over modules the project no longer uses - the exact silent failure the glslc note above is about. MSYS2
-# has no slang package (`pacman -Ss slang` matches nothing, measured), so both jobs install the pinned
-# upstream release, verify its checksum, and then ASSERT that CMake found it (the configure step greps for the
-# `slangc:` line CMakeLists prints), which is what stops the fallback from coming back unnoticed.
+# SLANGC IS THE ONLY SHADER COMPILER, AND IT IS REQUIRED: every shader stage in this project is built from a
+# .slang source, and CMakeLists REFUSES to configure without slangc (`find_program(VR_SLANGC_EXECUTABLE ...)`
+# followed by FATAL_ERROR) since the GLSL fallback and the GLSL stage sources were both removed. MSYS2 has no
+# slang package (`pacman -Ss slang` matches nothing, measured), so both jobs install the pinned upstream
+# release, verify its checksum, and then ASSERT that CMake found it (the configure step greps for the
+# `slangc:` line CMakeLists prints) - and `test_shader_sources` closes the other half of the same gap: it
+# compares the build's shader list against the two escape-hatch scripts and requires the MESH entries to be
+# there, so a shader the build compiles and the scripts do not (or a mesh stage that stops being built at all)
+# fails a job rather than a picture.
 
 on:
   push:
@@ -195,8 +191,9 @@ jobs:
       # that is what turned this job red, not a sanitizer finding).
       #
       # The Vulkan packages are needed for two separate reasons: vulkancorekit links Vulkan::Vulkan as
-      # a PUBLIC dependency, and CMakeLists requires glslc to compile the shaders even in a build that
-      # asks for test targets only - the requirement is checked at configure time.
+      # a PUBLIC dependency, and CMakeLists requires a shader compiler to compile the shaders even in a
+      # build that asks for test targets only - the requirement is checked at configure time (slangc; the
+      # glslc package stays installed because FindVulkan's shaderc search is what satisfies it here).
       #
       # Why this gate earns its place: the whole test suite is pure CPU with no GPU anywhere, so
       # memory errors in the loader / utility / config paths are invisible to the Release run. The
@@ -238,15 +235,20 @@ jobs:
 
       - name: Build the headless tests
         # This list must stay equal to CMakeLists.txt's VR_TEST_TARGETS: ctest below runs every test
-        # that build registers (all eight), and a target missing here is a missing executable, which
+        # that build registers (all nine), and a target missing here is a missing executable, which
         # ctest reports as "Not Run" - the job goes red for a reason that looks like a test bug. That is
         # exactly what made this job red on master, twice (runs 34844586370 and 35441060587): the last
         # two targets were absent from this list, ctest could not find either executable, and every test
         # it DID run passed. No sanitizer has ever reported anything in this job.
+        #
+        # test_shader_sources IS THE SHADER PIPELINE'S OWN GATE and it is deliberately here as well as in the
+        # Release job: it compares the four places a .spv is named (VR_SLANG_SOURCES, the two compile scripts,
+        # chores.cpp's loads) and requires the MESH entries to exist, so a mesh stage that silently stops being
+        # built - or a build rule the escape-hatch scripts do not mirror - fails a job rather than a picture.
         run: >-
           cmake --build build-asan --target
           test_app_config test_utility test_math test_animation test_gltf_loader test_shadow_fit
-          test_render_resources test_pass
+          test_render_resources test_pass test_shader_sources
 
       - name: Run the headless tests under the sanitizers
         # ASAN_OPTIONS/UBSAN_OPTIONS: halt on the first finding and print a stack trace, so a report

@@ -69,6 +69,7 @@ shadow.slang:mesh_main:mesh:shadow.mesh.spv
 light_cluster.slang:main:compute:light_cluster.comp.spv
 heap_probe.slang:main:vertex:heap_probe.vert.spv
 heap_probe.slang:frag_main:fragment:heap_probe.frag.spv
+heap_probe.slang:mesh_main:mesh:heap_probe.mesh.spv
 heap_probe_comp.slang:comp_main:compute:heap_probe.comp.spv
 rt_shadow.slang:chit_main:closesthit:rt_shadow.rchit.spv
 rt_shadow.slang:miss_main:miss:rt_shadow.rmiss.spv
