@@ -725,12 +725,16 @@ set(VR_SLANG_SOURCES
     post.slang:main:vertex:post.vert.spv
     gbuffer_debug.slang:main:fragment:gbuffer_debug.frag.spv
     taa.slang:main:fragment:taa.frag.spv
-    # gbuffer.slang IS WRITTEN BUT NOT WIRED YET: with it built, `deferred_taa_fxaa` and `deformation`
-    # (the two scenarios that consume motion vectors) changed frame, and a manual capture of the fixture
-    # came back fully black while every pipeline except the scene one logged its creation - so the port is
-    # wrong somewhere the gate can see and I have not found yet. It stays out of the build until it is
-    # byte-identical; see docs/slang_migration.md's note on it.
+    # gbuffer.slang IS the first stage that reads a shared body AND a heap UBO, and it cost two bugs, both
+    # documented in docs/slang_migration.md section 9 because neither is visible in the SPIR-V's shape:
+    # `mul(M, v)` on a `row_major float4x4` emits the TRANSPOSED product (the GLSL spelling `M * v` does
+    # not), and a heap descriptor's TYPE has to match the storage class the shader reads it through - a
+    # UNIFORM descriptor read through Slang's StorageBuffer pointer returns zeros with NO validation
+    # finding. That is also why the camera and the light are written as STORAGE descriptors.
     gbuffer.slang:main:fragment:gbuffer.frag.spv
+    # pbr.slang is the FORWARD path's fragment stage: the same shared shading code as the deferred path,
+    # so it is where the sun/shadow/punctual/cluster/IBL fetches are proven under Slang.
+    pbr.slang:main:fragment:pbr.frag.spv
 )
 find_program(VR_SLANGC_EXECUTABLE NAMES slangc slangc.exe)
 set(VR_SLANG_OUTPUTS "")
