@@ -196,5 +196,44 @@ int main() {
         CHECK(std::isfinite(fallback[0].radius));
     }
 
+    // ---- 5. THE RECORD RULE the upload applies, asserted here so the two cannot drift ----
+    // `runtime::create_primitive` checks every record it copies into the GPU table with this function, and the
+    // shader downstream trusts the result: a MESH stage hands `index_count` to `SetMeshOutputCounts`, so a record
+    // that breaks the rule is a dispatch asking the device for output it does not have (the first consumer attempt
+    // hung the GPU that way rather than drawing something wrong).
+    {
+        mesh_fixture const fixture = make_fixture(200u);
+        std::vector<vulkan::meshlet> const meshlets = vulkan::build_meshlets(input_for(fixture));
+        CHECK(!meshlets.empty());
+        for (vulkan::meshlet const& m : meshlets) {
+            CHECK_MSG(vulkan::meshlet_record_sound(m, fixture.vertex_count), "the splitter's own records pass the upload's rule");
+        }
+        vulkan::meshlet const good = meshlets.front();
+
+        vulkan::meshlet zero_count = good;
+        zero_count.index_count = 0u;
+        CHECK(!vulkan::meshlet_record_sound(zero_count, fixture.vertex_count)); // an empty meshlet
+
+        vulkan::meshlet over_budget = good;
+        over_budget.index_count = vulkan::meshlet_max_indices + 3u;
+        CHECK(!vulkan::meshlet_record_sound(over_budget, fixture.vertex_count)); // more output than the device has
+
+        vulkan::meshlet partial_triangle = good;
+        partial_triangle.index_count = good.index_count - 1u;
+        CHECK(!vulkan::meshlet_record_sound(partial_triangle, fixture.vertex_count)); // not whole triangles
+
+        vulkan::meshlet past_window = good;
+        past_window.first_index = fixture.vertex_count;
+        CHECK(!vulkan::meshlet_record_sound(past_window, fixture.vertex_count)); // outside the draw
+
+        vulkan::meshlet bad_radius = good;
+        bad_radius.radius = -1.0f;
+        CHECK(!vulkan::meshlet_record_sound(bad_radius, fixture.vertex_count));
+
+        // ... and a draw that is SHORTER than the window the splitter saw is rejected too: the rule is relative to
+        // the draw, which is why it takes the index count rather than assuming it
+        CHECK(!vulkan::meshlet_record_sound(good, good.index_count - 3u));
+    }
+
     return vk_test::finish("test_meshlet");
 }

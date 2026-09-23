@@ -79,6 +79,25 @@ namespace vulkan {
 
     /**
      * @ingroup vulkan_meshlet
+     * @brief whether @p record is a window a MESH stage can act on inside a draw of @p index_count indices
+     *
+     * THE RULE LIVES HERE, not in the upload and not in the shader, because two places need the same answer and
+     * neither can afford to guess: `runtime::create_primitive` checks every record as it leaves the host, and
+     * tests/test_meshlet.cpp asserts that the check rejects what it should. A record that breaks it is not a wrong
+     * PICTURE - a MESH stage hands `index_count` to `SetMeshOutputCounts` and reads its indices with the rest, so a
+     * malformed one is a dispatch asking the device for output it does not have (measured: a first consumer attempt
+     * with a table read at the wrong index hung the GPU rather than drawing something wrong).
+     *
+     * @param record the meshlet record, as the splitter produced it or as the GPU table would return it
+     * @param index_count how many indices the draw it belongs to covers
+     */
+    export bool meshlet_record_sound(meshlet const& record, uint32_t index_count) noexcept {
+        return record.index_count != 0u && record.index_count % 3u == 0u && record.index_count <= meshlet_max_indices &&
+               record.first_index + record.index_count <= index_count && std::isfinite(record.radius) && record.radius >= 0.0f;
+    }
+
+    /**
+     * @ingroup vulkan_meshlet
      * @brief the geometry one draw window is split over, exactly as the primitive upload hands it over
      * @note the index bytes are read with `index_width` (2 or 4) and the vertex bytes with `vertex_stride`, so
      *       the split sees the same bytes the mesh stage will fetch - no second interpretation of the layout.

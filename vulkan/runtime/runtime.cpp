@@ -1189,13 +1189,12 @@ namespace vulkan {
         // ---- AND THE RECORDS ARE CHECKED AS THEY GO OUT, because everything downstream of them trusts them ----
         // A meshlet's window is what a MESH stage passes to `SetMeshOutputCounts` and to its index fetch, so a
         // record that is malformed is not a wrong picture: it is a dispatch asking for more output than the device
-        // has (the hang the first consumer attempt measured) or a fetch outside the buffer. tests/test_meshlet.cpp
-        // pins the splitter's own invariants on the CPU; this is the second line of defence, at the boundary where
-        // the records leave the host - and it is one `if` per primitive rather than per meshlet.
+        // has (the hang the first consumer attempt measured) or a fetch outside the buffer. THE RULE ITSELF IS
+        // `vulkan::meshlet_record_sound` - one definition, asserted by tests/test_meshlet.cpp - and this is the
+        // boundary where the records leave the host.
         bool records_sound = true;
         for (vulkan::meshlet const& meshlet : result->meshlets) {
-            records_sound = records_sound && meshlet.index_count != 0u && meshlet.index_count % 3u == 0u && meshlet.index_count <= vulkan::meshlet_max_indices &&
-                            meshlet.first_index + meshlet.index_count <= info.index_count && std::isfinite(meshlet.radius) && meshlet.radius >= 0.0f;
+            records_sound = records_sound && vulkan::meshlet_record_sound(meshlet, info.index_count);
         }
         if (!records_sound && !this->meshlet_records_unsound_logged) {
             this->meshlet_records_unsound_logged = true;
