@@ -360,9 +360,12 @@ offsets (0, 64, 128, 144, 208) and the same 272 bytes, because the `vec3 camera_
 Verified by capture: the albedo channel comes back to the identical two-value plateau it had before.
 
 WHAT THIS MEANS FOR EVERY STAGE STILL TO PORT: every heap buffer a Slang stage reads has to be a storage
-descriptor. `LightUBO` is still `VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER` with a GLSL `uniform` block because only
-GLSL reads it today - the stage that ports a light reader (`deferred.frag`, `shadow.frag`, `pbr.frag`) has
-to make the same three-part change for it.
+descriptor, and both of the scene's buffers are now converted. The camera first, and then the LIGHT, whose
+offsets were checked member by member BEFORE the change rather than after (that is the habit this section
+exists to teach): every member is a vec4/mat4 or a scalar in a packed run, and its only array holds a
+16-aligned 64-byte struct, so std430 lands `punctual_lights` on 352, `cluster_grid` on 8544 and
+`cluster_depth` on 8560 exactly where std140 had them - 8576 bytes either way, confirmed against the
+compiled modules. No scene buffer remains that a Slang stage would have to read through a `Uniform` pointer.
 
 **RULED OUT, so a next attempt does not re-check it:**
 
@@ -425,12 +428,13 @@ applied per stage, easy ones first so that each new hazard is met in isolation. 
    `megalights_trace.comp`, `megalights_temporal.comp`. These are the ones that WRITE heap buffers, so
    their storage-image/buffer declarations are the mirror of the read-side contract - the same
    class/type agreement applies, and a mismatch is equally silent.
-4. **The LIGHT buffer has to make the same three-part change the camera did** (section 9) before any Slang
-   stage reads it: `VK_DESCRIPTOR_TYPE_STORAGE_BUFFER` in `runtime.constructor.cppm`, a
-   `VK_BUFFER_USAGE_STORAGE_BUFFER_BIT` on the buffer, and `buffer` instead of `uniform` in whichever GLSL
-   files declare the block (`shading.glsl`, `light_cluster.comp`, `rt_shadow.rgen`, ...). Check the offsets
-   first: unlike `CameraUBO`, a `LightUBO` with ARRAYS is exactly where std140 and std430 can disagree, so
-   the offsets have to be compared before the layout is changed rather than after.
+4. **DONE, and it was item 1 of the critical path**: the LIGHT buffer has made the same three-part change
+   the camera did (section 9) - `VK_DESCRIPTOR_TYPE_STORAGE_BUFFER`, a `VK_BUFFER_USAGE_STORAGE_BUFFER_BIT`
+   on the buffer, and `buffer` instead of `uniform` in the four files that declare the block
+   (`shading.glsl`, `shadow.vert`, `light_cluster.comp`, `rt_shadow.rgen`). Its layout was verified equal
+   BEFORE the switch, which is the opposite of the order that cost this session a day on the camera: a
+   block with an ARRAY is exactly where std140 and std430 can disagree, so it is compared first. This is
+   what unblocks every light-reading stage below.
 5. **Ray tracing**: `rt_shadow.rgen/.rchit/.rmiss/.rahit`. The rgen already has the camera as a `buffer`
    block; it also declares the TLAS and the visibility storage image, so this is where the acceleration
    structure and the storage-image declarations get their Slang spelling (the shim's `Texture2D`/heap

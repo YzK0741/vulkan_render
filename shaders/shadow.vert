@@ -52,7 +52,9 @@ layout(descriptor_heap, descriptor_stride = heap_slot_stride) readonly buffer Mo
 // one per cascade. Only the matrices and the direction are declared: the vertex stage needs nothing
 // else from the block, and a stage may declare fewer members than the CPU writes.
 const int MAX_SHADOW_CASCADES = 4; // vulkan::max_shadow_cascades
-layout(descriptor_heap, descriptor_stride = heap_slot_stride) uniform LightUBO {
+// A `buffer`, not a `uniform`: the heap descriptor is a STORAGE descriptor and the storage class a shader
+// reads it through has to match it (see shading.glsl's note).
+layout(descriptor_heap, descriptor_stride = heap_slot_stride) buffer LightUBO {
     mat4 light_view_proj[MAX_SHADOW_CASCADES];
     vec4 light_dir;
     vec4 cascade_splits;

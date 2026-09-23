@@ -47,7 +47,8 @@ struct PunctualLight {
 // HEAP-NATIVE: the arrays ARE the heap and the slots carry the FRAME (see heap_slots.glsl's index rule), so a read
 // is `light[heap_light_slot].field` and a write is `cluster_counts[heap_cluster_count_slot].counts[...]`. The block
 // layouts are unchanged - they are CPU/GPU contracts.
-layout(descriptor_heap, descriptor_stride = heap_slot_stride) uniform LightUBO {
+// A `buffer`, not a `uniform`: see the camera block's note above.
+layout(descriptor_heap, descriptor_stride = heap_slot_stride) buffer LightUBO {
     mat4 light_view_proj[4];
     vec4 light_dir;
     vec4 cascade_splits;

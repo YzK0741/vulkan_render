@@ -92,12 +92,16 @@ descriptor's type, the USAGE BIT on the buffer (`VK_BUFFER_USAGE_STORAGE_BUFFER_
 descriptor - without it the validation layer rejects the heap write itself, with the render still looking
 right), and the shader's declaration.
 
-THE CAMERA IS A STORAGE DESCRIPTOR FOR THIS REASON (see `runtime.constructor.cppm`'s
-`write_heap_scene_buffer` call and `shading.glsl`'s camera block): Slang's `DescriptorHandle<ConstantBuffer<T>>`
-always fetches through a `StorageBuffer`-class pointer - a Slang `ConstantBuffer` handle never emits
-`Uniform` - so the GLSL side had to declare the block `buffer` as well. The layout did not move: std430 and
-std140 place `CameraUBO`'s members at the same offsets. The full finding, including what it cost to find and
-the two ruled-out suspects, is docs/slang_migration.md section 9.
+THE CAMERA AND THE LIGHT ARE STORAGE DESCRIPTORS FOR THIS REASON (see `runtime.constructor.cppm`'s two
+heap writes and `shading.glsl`'s camera/light blocks): Slang's
+`DescriptorHandle<ConstantBuffer<T>>` always fetches through a `StorageBuffer`-class pointer - a Slang
+`ConstantBuffer` handle never emits `Uniform` - so the GLSL side had to declare those blocks `buffer` as
+well. The layout did not move, and that was CHECKED RATHER THAN ASSUMED: `CameraUBO` keeps its offsets
+(0, 64, 128, 144, 208) and the light block keeps every one of its members where std140 had them - including
+the 8576-byte size that comes from `punctual_lights[128]` at 352, `cluster_grid` at 8544 and
+`cluster_depth` at 8560, which is the member list a std140/std430 mismatch would have moved. The full
+finding, including what it cost to find and the two ruled-out suspects, is docs/slang_migration.md
+section 9.
 
 ## Shader inventory (what each file declares today, from `grep layout(set =`)
 

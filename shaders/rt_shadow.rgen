@@ -51,7 +51,10 @@ layout(descriptor_heap, descriptor_stride = heap_slot_stride) buffer CameraUBO {
     mat4 proj;
     vec4 camera_pos;
 } camera[];
-layout(descriptor_heap, descriptor_stride = heap_slot_stride) uniform LightUBO {
+// A `buffer`, not a `uniform`: see the camera block's note above. It is declared SHORTER than the CPU's
+// struct on purpose - only light_dir is read - and std430 places the members it does declare at the
+// offsets std140 did.
+layout(descriptor_heap, descriptor_stride = heap_slot_stride) buffer LightUBO {
     mat4 light_view_proj[4]; // MAX_SHADOW_CASCADES: not read here, only here to keep light_dir's offset
     vec4 light_dir;          // xyz = surface-to-light direction (see shading.glsl)
 } light[];

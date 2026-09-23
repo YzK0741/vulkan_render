@@ -539,8 +539,11 @@ namespace vulkan {
                                         &this->light_mapped,
                                         // it goes on the descriptor heap (a heap descriptor for a buffer is its
                                         // device address), so the address has to exist - validation states it as
-                                        // VUID-VkBufferDeviceAddressInfo-buffer-02601 the moment it is queried
-                                        VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT);
+                                        // VUID-VkBufferDeviceAddressInfo-buffer-02601 the moment it is queried -
+                                        // and it is written as a STORAGE descriptor, so the buffer needs the
+                                        // matching usage bit (see the camera UBO above and the note on
+                                        // write_heap_scene_buffer)
+                                        VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     }
 
     namespace {
@@ -722,7 +725,7 @@ namespace vulkan {
                 VkBufferDeviceAddressInfo const address_info = {.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .pNext = nullptr, .buffer = light_detail->buffer};
                 VkDeviceAddress const light_address = vkGetBufferDeviceAddress(this->vulkan_core.device, &address_info);
                 VkDeviceSize const heap_offset = core::heap_slot_offset(core::heap_slots::scene_light + slot);
-                if (!this->vulkan_core.descriptor_heaps.write_buffer(heap_offset, light_address, sizeof(light_ubo), VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER)) {
+                if (!this->vulkan_core.descriptor_heaps.write_buffer(heap_offset, light_address, sizeof(light_ubo), VK_DESCRIPTOR_TYPE_STORAGE_BUFFER)) {
                     utility::log("descriptor heap: the light UBO did not fit slot {}'s block at offset {}", slot, heap_offset);
                 }
             }

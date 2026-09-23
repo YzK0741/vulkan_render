@@ -44,7 +44,7 @@
 // needs the same member list as a plain struct to build its `ConstantBuffer<X>` handles from. VR_MAT4 is
 // `mat4` in GLSL and `row_major float4x4` in Slang (see heap_slots.glsl).
 //
-// WHY THIS BLOCK IS A `buffer` AND NOT A `uniform`, measured: THE STORAGE CLASS A SHADER READS A HEAP
+// WHY THESE BLOCKS ARE `buffer` AND NOT `uniform`, measured: THE STORAGE CLASS A SHADER READS A HEAP
 // DESCRIPTOR THROUGH MUST MATCH THE DESCRIPTOR'S TYPE, and a mismatch is SILENT - no validation finding,
 // just zeros. The host writes the camera as VK_DESCRIPTOR_TYPE_STORAGE_BUFFER and Slang's
 // `DescriptorHandle<ConstantBuffer<T>>` always fetches through a StorageBuffer-class pointer (a Slang
@@ -53,7 +53,11 @@
 // (Slang's camera read: zeros, the velocity came out NaN and the motion channel went black) and a STORAGE
 // descriptor read through a Uniform pointer (the GLSL block as `uniform`: albedo went black, geometry
 // gone). The layout does not move: std430 and std140 give this struct the same offsets (0, 64, 128, 144,
-// 208) and the same 272-byte size, because the vec3 sits where a mat4 has to be 16-aligned anyway.
+// 208) and the same 272-byte size, because the vec3 sits where a mat4 has to be 16-aligned anyway. The
+// LIGHT block below follows for the same reason, and its offsets were checked member by member rather than
+// assumed: every member is a vec4/mat4 or a scalar in a packed run, and its only array holds a 16-aligned
+// 64-byte struct, so std430 lands `punctual_lights` on 352, `cluster_grid` on 8544 and `cluster_depth` on
+// 8560 exactly as std140 did (verified against the glslc-built modules).
 // See docs/slang_migration.md section 9, "the first leaf port: two traps, both measured, both fixed", and
 // docs/descriptor_heap_migration.md.
 #ifndef VR_SLANG
@@ -109,7 +113,7 @@ struct PunctualLight {
 };
 
 #ifndef VR_SLANG
-layout(descriptor_heap, descriptor_stride = heap_slot_stride) uniform LightUBO {
+layout(descriptor_heap, descriptor_stride = heap_slot_stride) buffer LightUBO {
 #else
 struct LightUBO {
 #endif
