@@ -70,12 +70,32 @@ namespace vulkan {
         uint32_t first_index = 0; ///< first index of this meshlet inside the draw's index window
         uint32_t index_count = 0; ///< indices it covers (always a multiple of three, never zero)
         int32_t base_vertex = 0;  ///< the draw's base vertex, repeated per meshlet: it is added to every index
-        float center_x = 0.0f;    ///< object-space centre of the bounding sphere
+        /**
+         * @brief padding, and it is a MEASURED requirement rather than tidiness: the GPU-side struct is a Vulkan
+         *        std430 `StructuredBuffer` element, where a `float3` has a 16-byte ALIGNMENT - so the shader puts
+         *        `center` at byte 16 and `radius` at 28, and a 28-byte host record (center at 12, radius at 24) made
+         *        every record after the first read four bytes off, with the sphere fields landing in the wrong
+         *        members entirely. The symptom was not a wrong picture but a WEDGED GPU: the window and base vertex
+         *        came out of the wrong bytes, the index fetch left the buffer, and the device never signalled another
+         *        fence (validation reported only the reuse of a command buffer whose work had not finished).
+         */
+        uint32_t _pad = 0;
+        float center_x = 0.0f; ///< object-space centre of the bounding sphere
         float center_y = 0.0f;
         float center_z = 0.0f;
         float radius = 0.0f; ///< object-space radius (0 for a single vertex or a fully degenerate window)
     };
-    static_assert(sizeof(meshlet) == 28, "a meshlet is 28 bytes: three 4-byte window fields (first index, count, base vertex) and the sphere");
+    // THE LAYOUT IS THE SHADER'S, asserted field by field, because it has to survive a look at the SPIR-V rather
+    // than a hope: `spirv-dis shadow.meshlet.spv` shows exactly these offsets (0, 4, 8, 16 with the sphere at
+    // 16/20/24 and the radius at 28, stride 32). A host record that disagrees is a GPU fault, not a wrong pixel.
+    static_assert(offsetof(meshlet, first_index) == 0);
+    static_assert(offsetof(meshlet, index_count) == 4);
+    static_assert(offsetof(meshlet, base_vertex) == 8);
+    static_assert(offsetof(meshlet, center_x) == 16);
+    static_assert(offsetof(meshlet, center_y) == 20);
+    static_assert(offsetof(meshlet, center_z) == 24);
+    static_assert(offsetof(meshlet, radius) == 28);
+    static_assert(sizeof(meshlet) == 32, "a meshlet is 32 bytes: the window, the 16-byte-aligned sphere, and the padding std430 requires");
 
     /**
      * @ingroup vulkan_meshlet

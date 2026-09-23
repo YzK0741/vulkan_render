@@ -68,7 +68,7 @@ export namespace vulkan::pass {
         /// @param mesh_stage whether @p pipeline is a MESH pipeline, i.e. whether the casters must be drawn as
         ///        dispatches (vkCmdDrawMeshTasksEXT) instead of indexed draws - the pipeline and the way to feed
         ///        it are one fact, so they travel together (see docs/mesh_shaders.md step 1)
-        bool (*record_cascade)(void* owner, VkCommandBuffer secondary, uint32_t cascade_index, VkPipeline pipeline, bool mesh_stage) = nullptr;
+        bool (*record_cascade)(void* owner, VkCommandBuffer secondary, uint32_t cascade_index, VkPipeline pipeline, bool mesh_stage, bool meshlets) = nullptr;
         /// the frame loop's scheduler: one task per cascade, each recording into its own secondary
         void (*run_tasks)(void* owner, std::span<std::function<void()>> tasks) = nullptr;
         void* owner = nullptr;
@@ -117,6 +117,9 @@ export namespace vulkan::pass {
         /// 1). It replaces the vertex entry rather than joining it: the pipeline is built with MESH + the same
         /// fragment stage, and the two pipelines are the same depth pass drawn two ways.
         static constexpr std::string_view mesh_shader_name = "shadow.mesh.spv";
+        /// THE MESHLET FORM of the same pass (docs/mesh_shaders.md step 3): one workgroup per meshlet, each
+        /// reading its window out of the table. Preferred over both others when it exists.
+        static constexpr std::string_view meshlet_shader_name = "shadow.meshlet.spv";
         /// the CREATE-time half of the bias state: slope-scaled rasterization bias pushes a caster's depth away from
         /// the light proportionally to its slope, which is what removes acne on angled surfaces. The per-frame half
         /// is dynamic state and belongs to the renderer's content callback.
@@ -143,6 +146,8 @@ export namespace vulkan::pass {
         /// with it whenever it exists, and a device that cannot run it (or a shader that failed to build) keeps
         /// the vertex form. The two are one pass in the frame's eyes: same targets, same viewport, same casters.
         std::optional<vk_pipeline> mesh_pipeline_ = std::nullopt;
+        /// ... and the MESHLET form of the same pass (see meshlet_shader_name)
+        std::optional<vk_pipeline> meshlet_pipeline_ = std::nullopt;
         shadow_frame frame_ = {};
     };
 

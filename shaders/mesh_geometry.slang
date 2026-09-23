@@ -116,6 +116,22 @@ uint mesh_index_at(const MeshGeometryLanes geometry, const uint i)
     return words[0];
 }
 
+/// @brief one MESHLET RECORD: exactly the 28 bytes `vulkan::meshlet` holds and the GPU table stores, in byte order
+struct MeshletRecord
+{
+    uint first_index;
+    uint index_count;
+    int base_vertex;
+    float3 center;
+    float radius;
+};
+
+/// @brief one record of the meshlet table (grid slot `heap_slots_meshlets`)
+/// @note ONE descriptor rather than a per-frame array: the table is written once while the scene imports.
+MeshletRecord meshlet_at(const uint index)
+{
+    return heap_at<StructuredBuffer<MeshletRecord>>(heap_slots_meshlets)[index];
+}
 /// @brief how many triangles one mesh workgroup emits, and the vertices that costs
 ///
 /// @note BOTH NUMBERS ARE LIMITS OF THE DEVICE, measured on this one and reported at startup (see

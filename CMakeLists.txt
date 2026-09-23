@@ -766,6 +766,8 @@ set(VR_SLANG_SOURCES
     # instead of indexed draws. It REPLACES the vertex entry rather than joining it (one pipeline is MESH +
     # fragment), and the host keeps both - a device without VK_EXT_mesh_shader has no mesh stage at all.
     shadow.slang:mesh_main:mesh:shadow.mesh.spv
+    # ... and the MESHLET entry (docs/mesh_shaders.md step 3): one workgroup per meshlet, window read from the table.
+    shadow.slang:meshlet_main:mesh:shadow.meshlet.spv
     # light_cluster.slang is the FIRST compute stage: the clustered-light sort, dispatched once per frame by
     # default (clustered_lights = true), so every scenario records it. Its writable buffers are the heap slots
     # the GLSL declares as `writeonly buffer`.

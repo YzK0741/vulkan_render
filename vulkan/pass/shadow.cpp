@@ -30,6 +30,7 @@ namespace vulkan::pass {
     void shadow_pass::release_owned() noexcept {
         this->pipeline_.reset();
         this->mesh_pipeline_.reset();
+        this->meshlet_pipeline_.reset();
     }
 
     render_resource::pass_io const& shadow_pass::io() const noexcept {
@@ -94,6 +95,18 @@ namespace vulkan::pass {
             return;
         }
         this->mesh_pipeline_ = std::move(*mesh_built);
+        // ---- ... and the MESHLET form (docs/mesh_shaders.md step 3): only the MESH module differs (same fragment
+        // stage), and a missing shader or a refusal is a log line - the two pipelines above are complete answers.
+        std::span<unsigned char const> const meshlet_spirv = context.shader != nullptr ? context.shader(context.owner, meshlet_shader_name) : std::span<unsigned char const>{};
+        if (!meshlet_spirv.empty()) {
+            auto meshlet_built = pipelines::build_shadow(context.device, context.depth_format, create_bias_constant, create_bias_slope, create_bias_clamp, meshlet_spirv, fragment_spirv, VK_SHADER_STAGE_MESH_BIT_EXT);
+            if (meshlet_built) {
+                this->meshlet_pipeline_ = std::move(*meshlet_built);
+                utility::log("SUCCESS: shadow MESHLET pipeline created (one workgroup per meshlet, window read from the table)");
+            } else {
+                utility::log("shadow: the meshlet pipeline was refused ({}), so the pass keeps the mesh form", meshlet_built.error());
+            }
+        }
         utility::log("SUCCESS: shadow MESH pipeline created (the same depth-only pass, fed by mesh dispatches)");
     }
 
@@ -111,6 +124,9 @@ namespace vulkan::pass {
         // same fragment stage, so which pipeline draws is not the frame's business. A device that cannot run one
         // (or a refused pipeline) leaves the vertex form, which is why the fallback is a fallback rather than a
         // configuration (see create).
+        if (this->meshlet_pipeline_.has_value()) {
+            return this->meshlet_pipeline_->get_pipeline();
+        }
         if (this->mesh_pipeline_.has_value()) {
             return this->mesh_pipeline_->get_pipeline();
         }
@@ -139,7 +155,8 @@ namespace vulkan::pass {
         VkPipeline const pipeline = this->pipeline();
         // ... and HOW it must be fed travels with it: a mesh pipeline has no input assembler, so its casters are
         // dispatched rather than drawn (see the frame's record_cascade).
-        bool const mesh_stage = this->mesh_pipeline_.has_value();
+        bool const meshlets = this->meshlet_pipeline_.has_value();
+        bool const mesh_stage = meshlets || this->mesh_pipeline_.has_value();
         // ---- THE CONTENT: one task per cascade, each into its OWN secondary ----
         // A VkCommandPool is not thread safe, which is why every cascade has its own {pool, buffer} pair (the same
         // rule the main pass's workers follow). Only the CONTENT moves off the primary thread: the barriers, the
@@ -149,12 +166,12 @@ namespace vulkan::pass {
         tasks.reserve(layers);
         std::vector<bool> recorded(layers, false);
         for (uint32_t cascade = 0; cascade < layers; ++cascade) {
-            tasks.emplace_back([this, cascade, pipeline, mesh_stage, &recorded] {
+            tasks.emplace_back([this, cascade, pipeline, mesh_stage, meshlets, &recorded] {
                 VkCommandBuffer const secondary = this->frame_.cascades[cascade];
                 if (secondary == VK_NULL_HANDLE) {
                     return;
                 }
-                recorded[cascade] = this->frame_.record_cascade(this->frame_.owner, secondary, cascade, pipeline, mesh_stage);
+                recorded[cascade] = this->frame_.record_cascade(this->frame_.owner, secondary, cascade, pipeline, mesh_stage, meshlets);
             });
         }
         this->frame_.run_tasks(this->frame_.owner, tasks);

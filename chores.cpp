@@ -213,6 +213,9 @@ namespace chores {
             // so both are registered and a missing one is a log line rather than a failure.
             load_shader(shaders_dir, "shadow.mesh.spv", mesh_code);
             runtime.register_shader("shadow.mesh.spv", mesh_code);
+            // ... and the MESHLET form of the same pass (docs/mesh_shaders.md step 3): one workgroup per meshlet.
+            load_shader(shaders_dir, "shadow.meshlet.spv", mesh_code);
+            runtime.register_shader("shadow.meshlet.spv", mesh_code);
         }
 
         {

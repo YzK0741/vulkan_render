@@ -60,9 +60,12 @@ namespace vulkan {
         mesh_geometry_lanes lanes;
         lanes.vertex_address = env.buffer_address(env.push_owner, geometry.vertex_detail->buffer);
         lanes.index_address = env.buffer_address(env.push_owner, geometry.index_detail->buffer);
-        lanes.first_index = first_index;
-        lanes.index_count = index_count;
-        lanes.base_vertex = base_vertex;
+        // A MESHLET SESSION CARRIES THE MESHLET RUN HERE (docs/mesh_shaders.md step 3): the meshlet entry reads each
+        // record's own window, so these two fields describe WHICH RECORDS this draw owns; the buffer addresses and
+        // the index width are still the draw's, which is why the lanes carry both kinds of fact.
+        lanes.first_index = env.meshlets ? geometry.meshlet_base : first_index;
+        lanes.index_count = env.meshlets ? geometry.meshlet_count : index_count;
+        lanes.base_vertex = env.meshlets ? 0 : base_vertex;
         // the buffer's own index type, which the shader needs because a raw load has no format: 4 for UINT32,
         // 2 for UINT16 (the shader reads the 16-bit case as the half of a 32-bit word its index falls in)
         lanes.index_width = geometry.index_type == VK_INDEX_TYPE_UINT16 ? 2u : 4u;
@@ -99,7 +102,7 @@ namespace vulkan {
         [[maybe_unused]] bool const pushed = env.push_at(env.push_owner, env.command_buffer, env.mesh_geometry_push_offset, std::span<std::byte const>(payload.data(), bytes));
     }
 
-    void primitive::mesh_dispatch(render_environment const& env, uint32_t const index_count, uint32_t const instance_count) const {
+    void primitive::mesh_dispatch(render_environment const& env, primitive const& geometry, uint32_t const index_count, uint32_t const instance_count) const {
         // ---- the dispatch: one workgroup per `mesh_triangles_per_workgroup` triangles of THIS draw ----
         // The workgroup budget is the shader's (see shaders/mesh_geometry.slang: 85 triangles, 255 vertices,
         // because a triangle costs three of the device's 256 output vertices), and the group count has to cover
@@ -107,7 +110,9 @@ namespace vulkan {
         // window that is not a multiple of 85 work without a second command.
         constexpr uint32_t triangles_per_workgroup = 85u;
         uint32_t const triangles = index_count / 3u;
-        uint32_t const groups = (triangles + triangles_per_workgroup - 1u) / triangles_per_workgroup;
+        // A MESHLET SESSION DISPATCHES ONE WORKGROUP PER MESHLET: each one reads its own window out of the table and
+        // emits the whole meshlet, so the group count is the primitive's run - not a slice of a triangle count.
+        uint32_t const groups = env.meshlets ? geometry.meshlet_count : (triangles + triangles_per_workgroup - 1u) / triangles_per_workgroup;
         if (groups != 0u) {
             [[maybe_unused]] bool const dispatched = env.draw_mesh_tasks(env.push_owner, env.command_buffer, groups, instance_count, 1u);
         }
@@ -138,7 +143,7 @@ namespace vulkan {
             // would be a command with no effect.
             push_stage_block(env, this->push);
             this->push_geometry_lanes(env, *this, 0u, this->index_count, 0);
-            this->mesh_dispatch(env, this->index_count, 1u);
+            this->mesh_dispatch(env, *this, this->index_count, 1u);
             return;
         }
         this->bind_geometry_and_push(env);
@@ -176,7 +181,7 @@ namespace vulkan {
             // which is exactly what the vertex path's SV_InstanceID meant here (see shadow.slang's mesh entry).
             push_stage_block(env, this->push);
             this->push_geometry_lanes(env, geometry_source, 0u, geometry_source.index_count, 0);
-            this->mesh_dispatch(env, geometry_source.index_count, this->instance_count);
+            this->mesh_dispatch(env, geometry_source, geometry_source.index_count, this->instance_count);
             return;
         }
         constexpr VkDeviceSize vertex_offset = 0;
@@ -226,7 +231,7 @@ namespace vulkan {
             // paths push them per chunk (the vertex path's stages declare them too - see push_geometry_lanes).
             this->push_geometry_lanes(env, *this, chunk.first_index, chunk.index_count, static_cast<int32_t>(chunk.vertex_offset));
             if (env.mesh_stage) {
-                this->mesh_dispatch(env, chunk.index_count, 1u);
+                this->mesh_dispatch(env, *this, chunk.index_count, 1u);
                 continue;
             }
             vkCmdDrawIndexed(command_buffer,

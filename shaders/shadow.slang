@@ -235,3 +235,43 @@ void mesh_main(out vertices shadow_vertex_output verts[mesh_vertices_per_workgro
     }
 }
 
+
+// =============================================================================================================
+// THE MESHLET ENTRY (entry `meshlet_main`): ONE workgroup per MESHLET, its window read out of the table.
+//
+// `group_id.x` is the meshlet's index inside this draw's run (the host dispatches `meshlet_count` groups), and
+// `group_id.y` is still the instance. The lanes carry what no record can know - the draw's vertex/index buffer
+// addresses and the index width - while the record carries what the lanes no longer describe: the window.
+//
+// THE EMIT LOOP IS `mesh_main`'s, written out rather than shared: the two differ in where the window comes from
+// and nothing else, and threading an `out vertices` array through a Slang function boundary is a construct this
+// project has not measured. What must stay IDENTICAL is the projection - both call `shadow_shade_vertex` - because
+// that is what makes the capture gate a valid acceptance for either path.
+//
+// THE CLAMP IS NOT CAUTION, IT IS THE MEASURED ONE: `SetMeshOutputCounts` may never exceed the device's
+// 85-triangle / 255-vertex budget, and a record read at the wrong index would otherwise ask for an unbounded
+// output - which hangs the GPU instead of drawing something wrong.
+// =============================================================================================================
+[shader("mesh")]
+[outputtopology("triangle")]
+[numthreads(1, 1, 1)]
+void meshlet_main(out vertices shadow_vertex_output verts[mesh_vertices_per_workgroup], out indices uint3 tris[mesh_triangles_per_workgroup], uint3 group_id : SV_GroupID)
+{
+    const MeshGeometryLanes geometry = push.geometry;
+    const MeshletRecord meshlet = meshlet_at(geometry.first_index + group_id.x);
+    const uint triangle_count = min(meshlet.index_count, mesh_triangles_per_workgroup * mesh_indices_per_triangle) / mesh_indices_per_triangle;
+
+    SetMeshOutputCounts(triangle_count * mesh_indices_per_triangle, triangle_count);
+
+    for (uint t = 0u; t < triangle_count; ++t)
+    {
+        for (uint corner = 0u; corner < mesh_indices_per_triangle; ++corner)
+        {
+            const uint raw_index = mesh_index_at(geometry, meshlet.first_index + t * mesh_indices_per_triangle + corner);
+            const uint vertex_index = uint(int(raw_index) + meshlet.base_vertex);
+            const MeshVertex v = mesh_vertex_at(geometry, vertex_index);
+            verts[t * mesh_indices_per_triangle + corner] = shadow_shade_vertex(v, vertex_index, group_id.y);
+        }
+        tris[t] = uint3(t * mesh_indices_per_triangle + 0u, t * mesh_indices_per_triangle + 1u, t * mesh_indices_per_triangle + 2u);
+    }
+}

@@ -727,7 +727,7 @@ namespace vulkan {
     // (`ensure_shadow_resources`). What is left here is what the pass genuinely cannot know: which secondaries to
     // record into, and what a caster's draw state is (the scene block, the live depth-bias state, the two-sided
     // policy, the secondary's own begin info) - so that arrives as a callback, and the map's edge with it.
-    bool runtime::record_shadow_cascade(void* const owner, VkCommandBuffer const secondary, uint32_t const cascade_index, VkPipeline const pipeline, bool const mesh_stage) {
+    bool runtime::record_shadow_cascade(void* const owner, VkCommandBuffer const secondary, uint32_t const cascade_index, VkPipeline const pipeline, bool const mesh_stage, bool const meshlets) {
         runtime* const self = static_cast<runtime*>(owner);
         core const& vk = self->vulkan_core;
         // The secondary inherits ONLY the depth attachment (no colour one): dynamic rendering 1.3, single-sampled,
@@ -761,7 +761,7 @@ namespace vulkan {
         // index's own offset - while the rest of the block is the material's, pushed per caster below. A
         // secondary records its own state (nothing is inherited from the primary), which is why it is set here.
         [[maybe_unused]] bool const pushed = vk.descriptor_heaps.push_data(secondary, render_resource::shadow_io.push->offset, std::as_bytes(std::span(&index, 1)));
-        self->record_shadow_content(secondary, pipeline, mesh_stage);
+        self->record_shadow_content(secondary, pipeline, mesh_stage, meshlets);
         vkEndCommandBuffer(secondary);
         return true;
     }
@@ -925,7 +925,7 @@ namespace vulkan {
     // scene casts shadows). Pure bind/push/draw commands - the caller owns the barriers and
     // the depth-only rendering instance around it. Recorded inline today; stage 2 records the
     // same content into a per-slot secondary command buffer for parallel pass recording.
-    void runtime::record_shadow_content(VkCommandBuffer const command_buffer, VkPipeline const pipeline, bool const mesh_stage) const {
+    void runtime::record_shadow_content(VkCommandBuffer const command_buffer, VkPipeline const pipeline, bool const mesh_stage, bool const meshlets) const {
         core const& vk = this->vulkan_core;
         // NO SET IS BOUND (see the heap bind in begin_recording): the light matrices, the camera and the shadow map
         // are heap slots, and the shadow stage's push block carries the two indices that pick this frame's
@@ -974,6 +974,8 @@ namespace vulkan {
         //      primitive::mesh_dispatch). `mesh_stage` is the pass's answer - it is the side that chose which
         //      pipeline to bind - and the three endpoints are this class's because the device is. ----
         env.mesh_stage = mesh_stage;
+        // ... AND WHETHER THIS SESSION DRAWS MESHLETS (docs/mesh_shaders.md step 3).
+        env.meshlets = meshlets;
         // THE SHADOW BLOCK'S OWN END: its cascade lane is declared after the three heap index lanes, so the geometry
         // lanes start one word later than the scene block's (see mesh_geometry_offset_shadow). Set for BOTH forms
         // of the pass, because both stage blocks declare the lanes - the vertex entry simply never reads them, and

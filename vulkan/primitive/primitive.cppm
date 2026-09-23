@@ -709,7 +709,7 @@ namespace vulkan {
          *       would be a command with no effect - the stage reaches them through the pushed lanes instead,
          *       which is the whole difference between this and bind_geometry_and_push.
          */
-        void mesh_dispatch(render_environment const& env, uint32_t index_count, uint32_t instance_count) const;
+        void mesh_dispatch(render_environment const& env, primitive const& geometry, uint32_t index_count, uint32_t instance_count) const;
     };
 
     /**

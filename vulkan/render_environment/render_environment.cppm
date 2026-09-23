@@ -95,6 +95,13 @@ namespace vulkan {
          */
         bool mesh_stage = false;
         /**
+         * WHETHER THIS SESSION DRAWS MESHLETS (docs/mesh_shaders.md step 3): its leaves are dispatched ONE WORKGROUP
+         * PER MESHLET, and the geometry lanes carry the primitive's meshlet run (`meshlet_base` as the lane's first
+         * index, `meshlet_count` as its count) instead of the draw's index window - which is what the meshlet entry
+         * reads: its own record out of the table, and the buffers' addresses out of the lanes.
+         */
+        bool meshlets = false;
+        /**
          * WHERE THIS SESSION'S STAGE BLOCK STARTS RECEIVING THE GEOMETRY LANES, in bytes - i.e. the end of the last
          * member the block's earlier pushes covered (see vulkan::primitive's `mesh_geometry_push_offset_*` and
          * `mesh_geometry_lanes_offset`). It is per SESSION rather than a constant because the two blocks in this
