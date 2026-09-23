@@ -29,3 +29,21 @@ void chit_main(inout shadow_payload payload)
 {
     payload.occluded = 1.0;
 }
+
+/// @brief the ray escaped the scene: nothing blocked the light
+/// @note THIS STORE IS LOAD-BEARING AND MUST SURVIVE CODEGEN, which is the opposite of what an "empty miss
+///       shader" suggests. The payload is the only channel a traversal's outcome comes back through, and
+///       leaving the miss case to a value the raygen initialised is what this pass did first: measured on an
+///       NVIDIA RTX 4060, a raygen storing 0.0 before the trace plus a miss shader that does not write the
+///       payload made EVERY escaped ray come back occluded (a DamagedHelmet capture measured 61.22 mean over
+///       the model against 76.48 for the raster shadow map, with 100% of the differing pixels DARKER - the
+///       whole sunlit ground had its sun killed). Storing the SAME 0.0 the raygen stored is not enough
+///       either, because then the store is redundant and the compiler drops it. What works is exactly one
+///       store per path with the raygen initialising NOTHING: the raygen writes nothing, the hit group
+///       writes 1.0 and this writes 0.0 - which is why the built module is checked for this store rather
+///       than assumed (see docs/slang_migration.md).
+[shader("miss")]
+void miss_main(inout shadow_payload payload)
+{
+    payload.occluded = 0.0; // "nothing blocked the light": the ray escaped the scene unoccluded
+}
