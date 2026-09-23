@@ -1,7 +1,9 @@
 # Mesh shaders: what the stage buys here, and how the migration runs
 
-**STATUS: step 0 is DONE and measured (the heap-native probe runs through a mesh pipeline and reports the
-same pixel as the vertex one). Steps 1-4 are planned, not started.**
+**STATUS: steps 0 and 1 are DONE and measured - the binding model is proven (the heap-native probe runs through a
+mesh pipeline and reports the same pixel as the vertex one), and the SHADOW PASS draws its casters with mesh
+dispatches: the capture gate is byte-identical to the vertex path's references, and a forced probe proves the mesh
+stage is the one that produced those frames. Steps 2-4 are planned, not started.**
 
 This document exists for the same reason `docs/slang_migration.md` does: the work spans sessions, so the
 recipe, the acceptance route and the traps belong somewhere durable. Every number below was measured on
@@ -165,26 +167,85 @@ vulkan1.3` on every emitted `.spv`, and zero validation findings.
 Acceptance: **log comparison** (section 3). Gate stays byte-identical: the mesh feature changes no
 existing pass.
 
-### Step 1 - `shadow.vert` becomes a mesh stage
+### Step 1 - `shadow.vert` becomes a mesh stage (DONE)
 
-The smallest real geometry stage: one vertex stream (position only, the shadow pass's shader reads no
-material), a depth-only fragment stage, and a pass whose only variability is the cascade's projection -
-which is a uniform, not a per-vertex input. Its vertex-fetch function is also the one `pbr.vert` needs, so
-porting it first produces the shared function the second port consumes.
+The smallest real geometry stage: one vertex stream, a depth-only fragment stage, and a pass whose only variability
+is the cascade's projection - a uniform, not a per-vertex input. `shaders/shadow.slang` now carries a third entry,
+`mesh_main`, and the pass builds a second pipeline from it (`shadow.mesh.spv`, MESH + the SAME fragment stage).
+`shadow_pass::pipeline()` answers with the mesh form whenever it exists, so the frame loop is unchanged: the two
+pipelines are one pass drawn two ways, and `record_cascade` now says which one it handed over.
 
-The interesting part is the two mirrored vertex-input declarations (`shadow.slang`'s and `pbr.slang`'s)
-collapsing into one fetch that takes a buffer address and an index - a mesh stage cannot use the input
-assembler, so the fetch is explicit and the two stages can share it.
+**How the geometry reaches the stage.** `shaders/mesh_geometry.slang` is the shared fetch: a device address cast to
+a pointer, the engine's 64-byte interleaved vertex read as untyped words bit-cast to float, and the index buffer
+read as 32-bit words with the 16-bit case taken as the half its index falls in (the same two tricks
+`compute_skin.slang` and `rt_shadow.slang` already use). The DRAW hands the stage its whole geometry window -
+two addresses, first index, index count, base vertex, index width - as push data, because a mesh dispatch
+(`vkCmdDrawMeshTasksEXT`) has no vertex binding, no index buffer, no `firstIndex`, no `baseVertex` and no
+`instanceCount`:
 
-Acceptance: **gate** - all ten scenarios record the shadow pass, so a wrong vertex, a wrong cascade or a
-wrong winding changes pixels. `shadow_single` is the one-cascade case and the most sensitive.
+| what the input assembler had | where a mesh stage gets it now |
+| --- | --- |
+| `vkCmdBindVertexBuffers` | `MeshGeometryLanes::vertex_address` (device address, pushed per draw) |
+| `vkCmdBindIndexBuffer` | `MeshGeometryLanes::index_address` + `index_width` |
+| the draw's `firstIndex` / `baseVertex` | the same lanes (a static draw's CHUNK is exactly this window) |
+| `instanceCount` | the dispatch's `groupCountY`, read as `SV_GroupID.y` - a mesh workgroup grid has three dimensions and a mesh stage has no `SV_InstanceID` |
+| the vertex input layout's stride | a renderer constant (64 B), refused rather than guessed for any other layout |
+
+**The output budget is why one workgroup emits 85 triangles.** `maxMeshOutputVertices` and
+`maxMeshOutputPrimitives` are both 256 here, and a stage that writes each triangle's three vertices separately -
+which is the direct port of what the input assembler produced - spends three of the former per one of the latter:
+85 triangles = 255 vertices fits both, 86 would want 258. The host dispatches `ceil(triangles / 85)` workgroups and
+the STAGE decides how many of its 85 are real, so an index window that is not a multiple of 85 needs no second
+command.
+
+**The push budget, and the one measured deviation from the engine's 128-byte rule.** The stage block is
+`96` (material) + `12` (the three heap index lanes the frame's endpoint appends) + `4` (the cascade) + `32` (the
+geometry lanes) = **144 bytes**, and the engine's rule is to stay inside the 128 bytes every implementation
+guarantees. Sixteen free bytes cannot hold two device addresses and a draw window, so the honest options were a
+144-byte block or a new per-frame geometry TABLE in the heap (4 bytes of lanes, the rest read through a slot).
+The table is the better long-term shape - it is what step 3's meshlets need anyway - but it is a new heap resource,
+slot region and upload path for one consumer, while the block is measurable NOW. So: the mesh path is enabled only
+when the device reports room for it, and the vertex path stays where it does not.
+
+```
+mesh shaders: available - a pass may build a MESH pipeline (push block 144 B, within 256 B push constants / 256 B push data)
+```
+
+That line is the gate: `core::mesh_shader_available` AND `maxPushConstantsSize >= 144` AND the heap's
+`maxPushDataSize >= 144`, checked once in `runtime::create_passes` before any pass is created (a pass that tried
+and was refused would already have produced a validation ERROR at `vkCreateShaderModule`). On this device the two
+limits are 256/256; the same box's other GPU reports 128, which is exactly why the check exists and why the
+fallback is the vertex path rather than a failure. A mesh pipeline also has to be built before `create_passes`
+returns, and it is not: the pass builds it at create time only when `pass_context::mesh_shaders` says the device
+can run one.
+
+**Acceptance: the gate, both ways.** The ten scenarios were captured with the VERTEX path (the committed
+references), and the mesh path reproduces every one of them **byte for byte**:
+
+| run | result |
+| --- | --- |
+| step 0 (mesh feature enabled, vertex shadow path) | 10/10 passed, 0 changed, 0 flaky |
+| step 1 (mesh shadow path, `shadow.mesh.spv` in use) | 10/10 passed, 0 changed, 0 flaky - the SAME 10 hashes |
+| forced probe: `SetMeshOutputCounts(0, 0)` in the mesh entry, then reverted | `deferred` CHANGED (61770EA9EBFE0714 vs FA1C1BED4DD611C5), and the reference came back on revert |
+
+The third row is what makes the second one mean something: a mesh stage that emits the same triangles produces the
+same picture BY CONSTRUCTION, so a green gate alone cannot distinguish "the mesh path drew this" from "the mesh
+path was never used". The startup log says which one it was (`shadow: the casters are DISPATCHED (mesh stage) - 103
+casters`), and the forced probe proves the log is telling the truth.
+
+The vertex entry, the fragment entry and the pass's fallback are all still there, and `ctest` (8/8), `spirv-val`
+(26 modules) and the validation layer stay clean with the mesh path active.
 
 ### Step 2 - `pbr.vert` becomes a mesh stage
 
 `pbr.vert` is loaded by three consumers (G-buffer opaque, forward default, transparent), so the gate
 covers it broadly - and the transparent pass is the one whose ORDER is decided on the CPU (back to front
 by transformed origin), which a mesh stage must preserve: a mesh stage changes who emits the triangles,
-not which draw is issued when.
+not which draw is issued when. The geometry fetch, the lanes and the dispatch are `mesh_geometry.slang`'s
+and the draw path's already (step 1 built them), so this step is: a `mesh_main` in `pbr.slang` that shares
+its vertex body the way `shadow.slang` does, the MESH form of the G-buffer/forward pipeline
+(`make_pipeline`'s `first_stage` is what it needs), and the scene pass's session setting `mesh_stage` the
+way the shadow pass's now does.
 
 Acceptance: **gate** (all ten scenarios; `transparent_blend` and `sponza` are the sensitive ones), plus a
 per-draw comparison against the archived vertex-stage captures if any scenario moves.
@@ -221,17 +282,31 @@ workflow, `README` and this document.
   the "keep a fetch alive through a branch the fragment stage never takes" idiom does not compile. The
   probe writes the fetched value into an output lane no fragment stage reads
   (`[[vk::location(1)]] float heap_probe_lane`); a multiply by zero would be folded away WITH the fetch.
+- **The vertex-input state must not be PARSED from a mesh module.** `make_pipeline` derives a raster pipeline's
+  vertex input (and therefore its buffer stride) from the first stage's Input variables; a mesh stage declares
+  none, so the derived list is empty and the pipeline would silently read no geometry. Its `first_stage`
+  parameter is what turns that branch off, and the shader must be passed as the first stage either way.
+- **The normal has to stay "used" in the shared depth body.** `shadow.vert`'s vertex input layout is derived from
+  its own declarations, so a normal that Slang can prove unused disappears from the module and the stride shrinks
+  from 64 to 52 with no error anywhere. The never-taken `isnan && isinf` branch that keeps it alive now lives in
+  the SHARED body, so both entries keep it - and both entries must keep reading the same five attributes.
+- **Slang rejects west-const in a parameter list and in a pointer declarator.** `MeshVertex const v` /
+  `uint const* words` are both `E20001 unexpected token`; Slang's spelling is `const MeshVertex v` and `uint*`.
 - **`vkCmdDrawMeshTasksEXT` is not exported by the import library.** Calling it directly is a link error
-  (`ld.lld: undefined symbol: vkCmdDrawMeshTasksEXT`); it is fetched with `vkGetDeviceProcAddr` into
-  `PFN_vkCmdDrawMeshTasksEXT` and the probe is skipped with a log line when that returns null.
+  (`ld.lld: undefined symbol: vkCmdDrawMeshTasksEXT`); it is fetched with `vkGetDeviceProcAddr` (into
+  `core::mesh_dispatch` for the draw path, and ad hoc for the probe) and a null answer means "skip the dispatch".
 - **Slang names every SPIR-V entry `main`** regardless of the source function's name, which is why three
   entries of one `.slang` file are three `-entry`/`-stage` pairs (`main`/`vertex`, `mesh_main`/`mesh`,
   `frag_main`/`fragment`).
-- **`topology` must be `TRIANGLE_LIST`** for a mesh pipeline, and the vertex-input state is IGNORED for
-  one - so the pipeline builder keeps passing its existing state and no host change is needed for it.
-- **`serialize` the strings, not the code**: the mesh `.spv` is 3660 B against the vertex entry's 920 B for
-  the same triangle, which is a cheap way to tell which compiler produced the module you are looking at
-  when a probe's result does not move.
+- **`topology` must be `TRIANGLE_LIST`** for a mesh pipeline - the engine's builders already are - and the
+  vertex-input state is IGNORED for one, so a mesh draw binds nothing: `vkCmdBindVertexBuffers` on a session whose
+  pass dispatched would be a command with no effect (the draw paths skip it for that reason).
+- **A 144-byte push block is legal on THIS device and not on every device.** The check is
+  `maxPushConstantsSize` (256 here, 128 on the same box's other GPU) and the heap's `maxPushDataSize` (256 here);
+  see step 1 for why the block is that size and why the gate exists.
+- **`serialize` the strings, not the code**: the mesh `.spv` is 12996 B against the vertex entry's 8288 B for the
+  same depth pass (and 3660 B against 920 B for the probe's one triangle), which is a cheap way to tell which
+  compiler produced the module you are looking at when a probe's result does not move.
 
 ## 7. Open questions
 

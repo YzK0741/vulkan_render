@@ -455,6 +455,18 @@ export namespace vulkan::pass {
          */
         VkFormat depth_format = VK_FORMAT_UNDEFINED;
         /**
+         * Whether the DEVICE can run a mesh pipeline, i.e. whether a pass may build one at all (see
+         * docs/mesh_shaders.md).
+         *
+         * WHY A PASS MUST BE TOLD RATHER THAN ASK: `vkCreateShaderModule` REFUSES a module that declares the
+         * SPIR-V `MeshShadingEXT` capability unless VK_EXT_mesh_shader and its `meshShader` feature are enabled
+         * on the device, and it says so through the validation layer as an ERROR - which this renderer does not
+         * accept even when the failure is caught. A pass therefore must not even TRY on a device without them.
+         * The owner knows the answer from its capability query; a pass has no physical device to ask, and the
+         * shader file's presence says nothing about the device.
+         */
+        bool mesh_shaders = false;
+        /**
          * One of THIS pass's declared resources, at CREATE time: the handles its own resources are, or all-null
          * when the owner has none.
          *

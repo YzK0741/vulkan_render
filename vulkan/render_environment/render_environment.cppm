@@ -74,6 +74,29 @@ namespace vulkan {
          */
         void* push_owner = nullptr;
         bool (*push_block)(void* owner, VkCommandBuffer command_buffer, std::span<std::byte const> bytes, uint32_t extra_lane) = nullptr;
+        /**
+         * MESH RECORDING, in the three pieces a draw without an input assembler needs (docs/mesh_shaders.md
+         * step 1). A mesh pipeline replaces the vertex stage AND the input assembler, so `vkCmdDrawIndexed`
+         * - which names a vertex binding, an index buffer and a first index - has no mesh equivalent: the
+         * dispatch is `vkCmdDrawMeshTasksEXT(groupCountX, groupCountY, groupCountZ)` and the geometry has to
+         * reach the shader as DATA instead.
+         *
+         * These are set only on a session whose pass draws with a mesh pipeline (`mesh_stage`), and every one
+         * of them is a raw owner/function-pointer pair for the same reason `push_block` is: this struct is
+         * copied into every worker's session every frame, once per draw.
+         *
+         * - `buffer_address`: the device address of a bound buffer. The primitive knows WHICH buffer and the
+         *   runtime knows the device, and `vkGetBufferDeviceAddress` is the latter's to call.
+         * - `push_at`: a push at a raw block offset, for the geometry lanes that sit past the block
+         *   `push_block` sends (which appends the heap indices at its own end and cannot place them).
+         * - `draw_mesh_tasks`: the dispatch itself. The entry point is not exported by the loader's import
+         *   library (`vkCmdDrawMeshTasksEXT` is an extension command), so the runtime resolves it once and
+         *   answers null when the device has none - which is the answer "draw nothing" rather than a crash.
+         */
+        bool mesh_stage = false;
+        VkDeviceAddress (*buffer_address)(void* owner, VkBuffer buffer) = nullptr;
+        bool (*push_at)(void* owner, VkCommandBuffer command_buffer, uint32_t offset, std::span<std::byte const> bytes) = nullptr;
+        bool (*draw_mesh_tasks)(void* owner, VkCommandBuffer command_buffer, uint32_t groups_x, uint32_t groups_y, uint32_t groups_z) = nullptr;
         std::string_view bound = {}; // currently bound name
         // injected cull-mode setter (core dynamic state since Vulkan 1.3, so one pipeline serves
         // single- and double-sided materials)

@@ -443,6 +443,16 @@ namespace vulkan {
 
         this->device = device;
 
+        // ---- MESH SHADERS: the capability half (docs/mesh_shaders.md). The extension is enabled above only when
+        //      the feature is there, so `mesh_shader_available` and "the feature struct is in the device chain" are
+        //      the same fact; the dispatch command is an EXTENSION command the loader's import library does not
+        //      export (`vkCmdDrawMeshTasksEXT` is an undefined symbol if called directly), which is why it is
+        //      resolved here through vkGetDeviceProcAddr. Null means the extension is absent.
+        this->mesh_shader_available = capabilities.mesh_shader_available;
+        if (this->mesh_shader_available) {
+            this->mesh_dispatch = reinterpret_cast<PFN_vkCmdDrawMeshTasksEXT>(vkGetDeviceProcAddr(device, "vkCmdDrawMeshTasksEXT"));
+        }
+
         // ---- THE DESCRIPTOR HEAP's LIMITS, recorded here and not created here: the heap's buffers come from the
         //      ALLOCATOR, and vma.init() runs at the END of the constructor (after every init_* step), so a
         //      create_buffer at this point is a call on an uninitialised allocator - which is an access violation

@@ -727,7 +727,7 @@ namespace vulkan {
     // (`ensure_shadow_resources`). What is left here is what the pass genuinely cannot know: which secondaries to
     // record into, and what a caster's draw state is (the scene block, the live depth-bias state, the two-sided
     // policy, the secondary's own begin info) - so that arrives as a callback, and the map's edge with it.
-    bool runtime::record_shadow_cascade(void* const owner, VkCommandBuffer const secondary, uint32_t const cascade_index, VkPipeline const pipeline) {
+    bool runtime::record_shadow_cascade(void* const owner, VkCommandBuffer const secondary, uint32_t const cascade_index, VkPipeline const pipeline, bool const mesh_stage) {
         runtime* const self = static_cast<runtime*>(owner);
         core const& vk = self->vulkan_core;
         // The secondary inherits ONLY the depth attachment (no colour one): dynamic rendering 1.3, single-sampled,
@@ -761,7 +761,7 @@ namespace vulkan {
         // index's own offset - while the rest of the block is the material's, pushed per caster below. A
         // secondary records its own state (nothing is inherited from the primary), which is why it is set here.
         [[maybe_unused]] bool const pushed = vk.descriptor_heaps.push_data(secondary, render_resource::shadow_io.push->offset, std::as_bytes(std::span(&index, 1)));
-        self->record_shadow_content(secondary, pipeline);
+        self->record_shadow_content(secondary, pipeline, mesh_stage);
         vkEndCommandBuffer(secondary);
         return true;
     }
@@ -912,7 +912,7 @@ namespace vulkan {
     // scene casts shadows). Pure bind/push/draw commands - the caller owns the barriers and
     // the depth-only rendering instance around it. Recorded inline today; stage 2 records the
     // same content into a per-slot secondary command buffer for parallel pass recording.
-    void runtime::record_shadow_content(VkCommandBuffer const command_buffer, VkPipeline const pipeline) const {
+    void runtime::record_shadow_content(VkCommandBuffer const command_buffer, VkPipeline const pipeline, bool const mesh_stage) const {
         core const& vk = this->vulkan_core;
         // NO SET IS BOUND (see the heap bind in begin_recording): the light matrices, the camera and the shadow map
         // are heap slots, and the shadow stage's push block carries the two indices that pick this frame's
@@ -956,6 +956,28 @@ namespace vulkan {
         // method is; the endpoint only records into the command buffer, so the cast is a formality.
         env.push_owner = const_cast<runtime*>(this);
         env.push_block = &runtime::push_stage_block;
+        // ---- ... AND HOW THIS SESSION FEEDS ITS GEOMETRY: a mesh pipeline has no input assembler, so a caster is
+        //      DISPATCHED and its buffers travel as addresses in the stage block instead of being bound (see
+        //      primitive::mesh_dispatch). `mesh_stage` is the pass's answer - it is the side that chose which
+        //      pipeline to bind - and the three endpoints are this class's because the device is. ----
+        env.mesh_stage = mesh_stage;
+        if (mesh_stage) {
+            env.buffer_address = &runtime::mesh_buffer_address;
+            env.push_at = &runtime::push_geometry_block;
+            env.draw_mesh_tasks = &runtime::draw_mesh_tasks;
+            // ONE LINE, ONCE, SAYING HOW THE CASTERS ARE FED - because a mesh stage produces the SAME picture as
+            // the vertex stage by construction, so "which one drew this frame" is deliberately invisible in the
+            // output and must not be inferred from it. (Measured both ways: the capture gate is byte-identical
+            // with either pipeline, and forcing the mesh entry to emit nothing changes it - see
+            // docs/mesh_shaders.md step 1.)
+            static bool logged = false;
+            if (!logged) {
+                logged = true;
+                utility::log("shadow: the casters are DISPATCHED (mesh stage) - {} casters, {} triangles per workgroup",
+                             this->shadow_casters.size(),
+                             85u);
+            }
+        }
         // draw only the casters that can throw a shadow into the camera frustum (see
         // shadow_casters in begin_recording); the whole scene only when culling is disabled.
         // BLEND (transparent) leaves are skipped: a depth-only pass has no sensible way to blend
@@ -1272,6 +1294,38 @@ namespace vulkan {
         // bind_frame_chain). The chain is the application's (see set_pass_chain) - this class owns no passes, so
         // there is no chain of its own for this to bind.
         this->bind_frame_chain(*this->chain_);
+        // ---- MESH SHADERS: MAY A PASS BUILD ONE ON THIS DEVICE? (docs/mesh_shaders.md) ----
+        // THE THREE CONDITIONS ARE MEASURED HERE, once, before any pass is created - because a pass that already
+        // built a mesh pipeline on a device that cannot run one is a validation ERROR at vkCreateShaderModule, and
+        // "the pass asked and was refused" is too late. The answer is logged either way: whether the shadow pass
+        // drew its casters as dispatches must not be something a reader has to infer from a picture.
+        //  1. the extension and its `meshShader` feature (core::mesh_shader_available), and
+        //  2. the device's push-constant budget, and the heap's push-data window, both >= the stage block a mesh
+        //     stage needs (`mesh_stage_block_size`): a mesh stage is handed the draw's whole geometry window as
+        //     data because it has no input assembler to take it from, and that block is larger than the 128 bytes
+        //     the spec guarantees - so the path is available where the device reports room and the VERTEX path
+        //     stays where it does not.
+        {
+            uint32_t const push_constants = this->vulkan_core.device_properties.limits.maxPushConstantsSize;
+            uint32_t const push_data = this->vulkan_core.descriptor_heap_limits.max_push_data;
+            if (!this->vulkan_core.mesh_shader_available) {
+                this->mesh_shaders_unavailable_reason = "the device has no VK_EXT_mesh_shader meshShader feature";
+            } else if (push_constants < vulkan::mesh_stage_block_size) {
+                this->mesh_shaders_unavailable_reason = std::format("maxPushConstantsSize is {} B, under the {} B block a mesh stage needs", push_constants, vulkan::mesh_stage_block_size);
+            } else if (push_data < vulkan::mesh_stage_block_size) {
+                this->mesh_shaders_unavailable_reason = std::format("the heap's maxPushDataSize is {} B, under the {} B block a mesh stage needs", push_data, vulkan::mesh_stage_block_size);
+            } else {
+                this->mesh_shaders = true;
+            }
+            if (this->mesh_shaders) {
+                utility::log("mesh shaders: available - a pass may build a MESH pipeline (push block {} B, within {} B push constants / {} B push data)",
+                             vulkan::mesh_stage_block_size,
+                             push_constants,
+                             push_data);
+            } else {
+                utility::log("mesh shaders: not used - {} (the vertex stage stays)", this->mesh_shaders_unavailable_reason);
+            }
+        }
         pass::pass_context const build = this->make_pass_context();
         // ONE CREATE STEP OVER EVERY PASS, in the order the OWNING chain holds them (see the member block in the
         // header): the chain owns the passes and its `init` IS the whole create step, in the order the application
@@ -1364,6 +1418,9 @@ namespace vulkan {
             // ... and the DEPTH format, which the shadow pass`s pipeline needs (it has a depth attachment and no
             // colour one): the same kind of session-stable device fact, and the second one a context carries.
             .depth_format = this->vulkan_core.depth_format,
+            // ... and whether the device can run a MESH pipeline at all, which a pass must not try to find out by
+            // attempting it (see the metric above and pass_context::mesh_shaders).
+            .mesh_shaders = this->mesh_shaders,
             // The channel a pass uses to build what it owns over resources the RENDERER holds: the handles of the
             // resources this runtime published (`pass_resources`). It forwards to the filter, which is the object
             // that knows what a pass may reach - the context itself stays a plain struct of callbacks, so the

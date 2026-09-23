@@ -64,6 +64,7 @@ pbr.slang:main:fragment:pbr.frag.spv
 pbr.slang:vertex_main:vertex:pbr.vert.spv
 shadow.slang:main:fragment:shadow.frag.spv
 shadow.slang:vertex_main:vertex:shadow.vert.spv
+shadow.slang:mesh_main:mesh:shadow.mesh.spv
 light_cluster.slang:main:compute:light_cluster.comp.spv
 heap_probe.slang:main:vertex:heap_probe.vert.spv
 heap_probe.slang:frag_main:fragment:heap_probe.frag.spv

@@ -492,6 +492,48 @@ namespace vulkan {
 
     /**
      * @ingroup vulkan_primitive
+     * @brief WHERE A MESH STAGE'S GEOMETRY LANES SIT IN ITS STAGE BLOCK, in bytes (docs/mesh_shaders.md step 1)
+     *
+     * A mesh stage replaces the input assembler, so `vkCmdDrawMeshTasksEXT` carries no vertex binding, no index
+     * buffer and no first index - the DRAW has to hand all of that over as data, and this is the offset it
+     * lands at. The arithmetic is the block contract, stated once: the scene's material block (96 B), then the
+     * three heap index lanes the frame's push endpoint appends (frame slot, swapchain image, spare = 12 B),
+     * then the shadow pass's own cascade lane (4 B) - which is `shadow_io.push->offset` - so a geometry lane
+     * starts at 112.
+     */
+    export constexpr uint32_t mesh_geometry_offset = 112;
+    /**
+     * @ingroup vulkan_primitive
+     * @brief what a mesh stage needs to know about the geometry a draw covers, pushed at
+     *        `mesh_geometry_offset` (the shader's copy is `MeshGeometryLanes` in shaders/mesh_geometry.slang)
+     * @note the layout is std430 as the shader declares it: two addresses as 32-bit halves first (8-byte
+     *       aligned, so 112 and 120), then four uints. The static_asserts below are what keep a field added
+     *       here from silently shifting a lane the shader reads at a literal offset.
+     * @note THE WHOLE WINDOW IS HERE, not only the addresses: a mesh dispatch has no `firstIndex` and no
+     *       `baseVertex` arguments either, and a static draw's chunk is exactly a window into a merged buffer -
+     *       so a lane left out is a draw that cannot be ported rather than a draw that is slightly wrong.
+     */
+    export struct mesh_geometry_lanes {
+        uint64_t vertex_address = 0; // the vertex buffer's device address (base, vertex 0)
+        uint64_t index_address = 0;  // the index buffer's device address (base, index 0)
+        uint32_t first_index = 0;    // the draw's first index inside the index buffer
+        uint32_t index_count = 0;    // indices this draw covers (triangles)
+        int32_t base_vertex = 0;     // added to every fetched index (static-draw chunks; 0 otherwise)
+        uint32_t index_width = 4;    // bytes per index: 2 (uint16) or 4 (uint32)
+    };
+    static_assert(offsetof(mesh_geometry_lanes, vertex_address) == 0);
+    static_assert(offsetof(mesh_geometry_lanes, index_address) == 8);
+    static_assert(offsetof(mesh_geometry_lanes, first_index) == 16);
+    static_assert(offsetof(mesh_geometry_lanes, index_count) == 20);
+    static_assert(offsetof(mesh_geometry_lanes, base_vertex) == 24);
+    static_assert(offsetof(mesh_geometry_lanes, index_width) == 28);
+    static_assert(sizeof(mesh_geometry_lanes) == 32);
+    /// the stage block a mesh pass needs, from its start through those lanes: what the device's push limits
+    /// have to cover for the path to be available at all (see the runtime's capability gate)
+    export constexpr uint32_t mesh_stage_block_size = mesh_geometry_offset + sizeof(mesh_geometry_lanes);
+
+    /**
+     * @ingroup vulkan_primitive
      * @brief base class of every GPU primitive: owns geometry buffers + material push constants
      *        and declares the draw strategy interface. Derived classes implement how the
      *        geometry is drawn (single draw, instanced grid, ...), so the runtime's frame loop
@@ -610,6 +652,21 @@ namespace vulkan {
         // shared scene layout, valid for every pipeline - push does not depend on which pipeline
         // is currently bound)
         void bind_geometry_and_push(render_environment const& env) const;
+        /**
+         * @brief record ONE MESH DISPATCH over @p geometry's index window, for a session whose pass draws with
+         *        a mesh pipeline (docs/mesh_shaders.md step 1)
+         * @param env the session; it must have `mesh_stage` set and its three mesh endpoints filled
+         * @param geometry the primitive whose vertex/index buffers the stage fetches from
+         * @param first_index the draw's first index, @p index_count how many, @p base_vertex what every
+         *        fetched index is offset by (the three values `vkCmdDrawIndexed` would have taken - see
+         *        mesh_geometry_lanes)
+         * @param instance_count how many instances to dispatch: a mesh command has no instanceCount, so the
+         *        INSTANCE becomes the workgroup grid's Y and the stage reads it as its instance index
+         * @note nothing is BOUND here: a mesh pipeline ignores the vertex input state, so binding the buffers
+         *       would be a command with no effect - the stage reaches them through the pushed addresses
+         *       instead, which is the whole difference between this and bind_geometry_and_push.
+         */
+        void mesh_dispatch(render_environment const& env, primitive const& geometry, uint32_t first_index, uint32_t index_count, int32_t base_vertex, uint32_t instance_count) const;
     };
 
     /**

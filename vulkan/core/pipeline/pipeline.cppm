@@ -51,7 +51,13 @@ namespace vulkan {
         // such as the shadow map): slope-scaled bias removes shadow acne on angled surfaces
         float depth_bias_constant_factor = 0.0f,
         float depth_bias_slope_factor = 0.0f,
-        float depth_bias_clamp = 0.0f);
+        float depth_bias_clamp = 0.0f,
+        // THE STAGE THAT EMITS THE GEOMETRY, and it is a parameter because a MESH stage replaces the vertex
+        // stage rather than sitting beside it (see docs/mesh_shaders.md): the mesh module is passed in
+        // `vertex_shader_code` (it is the pipeline's first stage either way), its module is created as
+        // VK_SHADER_STAGE_MESH_BIT_EXT, and the VERTEX INPUT STATE is not derived from it - a mesh stage
+        // fetches its own vertices, so there is no input interface to parse and no binding to describe.
+        VkShaderStageFlagBits first_stage = VK_SHADER_STAGE_VERTEX_BIT);
 
     /**
      * @ingroup vulkan_pipeline
@@ -85,5 +91,8 @@ namespace vulkan {
         float depth_bias_constant_factor = 0.0f,
         float depth_bias_slope_factor = 0.0f,
         float depth_bias_clamp = 0.0f,
-        std::span<VkPipelineColorBlendAttachmentState const> blend_attachments = {});
+        std::span<VkPipelineColorBlendAttachmentState const> blend_attachments = {},
+        /// @copydoc make_pipeline(VkDevice, VkFormat, VkFormat, std::span<unsigned char const>, std::span<unsigned char const>, VkSampleCountFlagBits, bool, bool, float, float, float)
+        /// (the same `first_stage`: VERTEX derives the vertex input state from the module, MESH does not)
+        VkShaderStageFlagBits first_stage = VK_SHADER_STAGE_VERTEX_BIT);
 } // namespace vulkan

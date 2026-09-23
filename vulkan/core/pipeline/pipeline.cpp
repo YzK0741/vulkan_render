@@ -41,7 +41,8 @@ namespace vulkan {
         bool const has_color_attachment,
         float const depth_bias_constant_factor,
         float const depth_bias_slope_factor,
-        float const depth_bias_clamp) {
+        float const depth_bias_clamp,
+        VkShaderStageFlagBits const first_stage) {
         // Single-target convenience form: forward the (0 or 1)-element format list to the
         // multi-target implementation below, with the engine's standard src-alpha blending (the
         // forward pipelines' convention: alpha is coverage, and an opaque draw's alpha 1 reduces the
@@ -60,7 +61,8 @@ namespace vulkan {
                              depth_bias_constant_factor,
                              depth_bias_slope_factor,
                              depth_bias_clamp,
-                             blend_attachments);
+                             blend_attachments,
+                             first_stage);
     }
 
     std::expected<vk_pipeline, std::string_view> make_pipeline( // NOLINT(*-function-cognitive-complexity)
@@ -74,33 +76,40 @@ namespace vulkan {
         float const depth_bias_constant_factor,
         float const depth_bias_slope_factor,
         float const depth_bias_clamp,
-        std::span<VkPipelineColorBlendAttachmentState const> const blend_attachments) {
+        std::span<VkPipelineColorBlendAttachmentState const> const blend_attachments,
+        VkShaderStageFlagBits const first_stage) {
         using fail = std::unexpected<std::string_view>;
         if (!blend_attachments.empty() && blend_attachments.size() != color_formats.size()) {
             return fail("make_pipeline: a blend attachment per color format is required");
         }
 
-        // ---- 1. Parse the vertex stage interface, filter builtins, build vertex input ----
-        auto vertex_interface_expected = pipeline::parse_shader_stage_interface(vertex_shader_code, VK_SHADER_STAGE_VERTEX_BIT);
-        if (!vertex_interface_expected) {
-            return fail(vertex_interface_expected.error());
-        }
-        auto const vertex_interface = std::move(vertex_interface_expected).value();
-
+        // ---- 1. Parse the first stage's interface, filter builtins, build vertex input ----
+        // A MESH FIRST STAGE HAS NO VERTEX INPUT, and this branch is not a shortcut: the mesh stage fetches
+        // its own vertices, the vertex-input state is ignored for such a pipeline, and parsing a mesh module
+        // as a VERTEX interface would derive nothing (it declares no Input variables) - an empty attribute
+        // list that silently reads no geometry. See docs/mesh_shaders.md.
         std::vector<VkVertexInputAttributeDescription> attribute_descriptions;
-        attribute_descriptions.reserve(vertex_interface.inputs.size());
         uint32_t stride = 0;
-        for (auto const& variable : vertex_interface.inputs) {
-            if (variable.is_builtin || variable.format == VK_FORMAT_UNDEFINED) {
-                continue;
+        if (first_stage == VK_SHADER_STAGE_VERTEX_BIT) {
+            auto vertex_interface_expected = pipeline::parse_shader_stage_interface(vertex_shader_code, VK_SHADER_STAGE_VERTEX_BIT);
+            if (!vertex_interface_expected) {
+                return fail(vertex_interface_expected.error());
             }
-            attribute_descriptions.push_back(VkVertexInputAttributeDescription{
-                .location = variable.location,
-                .binding = 0,
-                .format = variable.format,
-                .offset = stride,
-            });
-            stride += pipeline::format_size(variable.format);
+            auto const vertex_interface = std::move(vertex_interface_expected).value();
+
+            attribute_descriptions.reserve(vertex_interface.inputs.size());
+            for (auto const& variable : vertex_interface.inputs) {
+                if (variable.is_builtin || variable.format == VK_FORMAT_UNDEFINED) {
+                    continue;
+                }
+                attribute_descriptions.push_back(VkVertexInputAttributeDescription{
+                    .location = variable.location,
+                    .binding = 0,
+                    .format = variable.format,
+                    .offset = stride,
+                });
+                stride += pipeline::format_size(variable.format);
+            }
         }
 
         VkVertexInputBindingDescription vertex_input_binding = {};
@@ -128,7 +137,7 @@ namespace vulkan {
 
         // ---- 3. Fixed-function pipeline state (constexpr factories, see above) ----
         std::array<VkPipelineShaderStageCreateInfo, 2> shader_stage_create_infos = {
-            make_shader_stage(**vertex_shader_module, VK_SHADER_STAGE_VERTEX_BIT),
+            make_shader_stage(**vertex_shader_module, first_stage),
             make_shader_stage(**fragment_shader_module, VK_SHADER_STAGE_FRAGMENT_BIT),
         };
 

@@ -738,7 +738,10 @@ set(VR_SLANG_SOURCES
     # both stages must place the geometry identically or the shadow silhouette detaches from the surface.
     shadow.slang:main:fragment:shadow.frag.spv
     shadow.slang:vertex_main:vertex:shadow.vert.spv
-    # light_cluster.slang is the FIRST compute stage: the clustered-light sort, dispatched once per frame by
+# ... and the SAME file's MESH entry (docs/mesh_shaders.md step 1): the depth pass drawn as dispatches instead
+# of indexed draws. It replaces the vertex entry rather than joining it (one pipeline is MESH + fragment), and
+# the host keeps both - a device without VK_EXT_mesh_shader has no mesh stage at all.
+shadow.slang:mesh_main:mesh:shadow.mesh.spv    # light_cluster.slang is the FIRST compute stage: the clustered-light sort, dispatched once per frame by
     # default (clustered_lights = true), so every scenario records it. Its writable buffers are the heap slots
     # the GLSL declares as `writeonly buffer`.
     light_cluster.slang:main:compute:light_cluster.comp.spv

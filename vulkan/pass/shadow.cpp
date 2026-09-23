@@ -29,6 +29,7 @@ namespace vulkan::pass {
 
     void shadow_pass::release_owned() noexcept {
         this->pipeline_.reset();
+        this->mesh_pipeline_.reset();
     }
 
     render_resource::pass_io const& shadow_pass::io() const noexcept {
@@ -72,6 +73,28 @@ namespace vulkan::pass {
         }
         this->pipeline_ = std::move(*built);
         utility::log("SUCCESS: shadow pipeline created (directional depth-only cascade pass)");
+        // ---- ... and the MESH form of the same pass, when the device can run one (docs/mesh_shaders.md step 1).
+        // The two differ in ONE stage type: `shadow.mesh.spv`'s mesh entry fetches the vertices the input
+        // assembler would have bound and emits the same triangles, through the same fragment stage - so the two
+        // pipelines are interchangeable per frame, and `pipeline()` answers with the mesh one whenever it is
+        // there. A device without mesh shaders (`context.mesh_shaders` false) must not even create the module,
+        // and a shader file that is missing is the same answer: keep the vertex form and say so.
+        if (!context.mesh_shaders) {
+            utility::log("shadow: the device has no mesh shaders, so the pass keeps its vertex stage");
+            return;
+        }
+        std::span<unsigned char const> const mesh_spirv = context.shader != nullptr ? context.shader(context.owner, mesh_shader_name) : std::span<unsigned char const>{};
+        if (mesh_spirv.empty()) {
+            utility::log("shadow: no {} beside {}, so the pass keeps its vertex stage", mesh_shader_name, vertex_shader_name);
+            return;
+        }
+        auto mesh_built = pipelines::build_shadow(context.device, context.depth_format, create_bias_constant, create_bias_slope, create_bias_clamp, mesh_spirv, fragment_spirv, VK_SHADER_STAGE_MESH_BIT_EXT);
+        if (!mesh_built) {
+            utility::log("shadow: the mesh pipeline was refused ({}), so the pass keeps its vertex stage", mesh_built.error());
+            return;
+        }
+        this->mesh_pipeline_ = std::move(*mesh_built);
+        utility::log("SUCCESS: shadow MESH pipeline created (the same depth-only pass, fed by mesh dispatches)");
     }
 
     void shadow_pass::on_swapchain_recreated(pass_host const&) {
@@ -84,6 +107,13 @@ namespace vulkan::pass {
     }
 
     VkPipeline shadow_pass::pipeline() const noexcept {
+        // THE MESH FORM WHEN THERE IS ONE, because it is the same pass: it emits the same triangles through the
+        // same fragment stage, so which pipeline draws is not the frame's business. A device that cannot run one
+        // (or a refused pipeline) leaves the vertex form, which is why the fallback is a fallback rather than a
+        // configuration (see create).
+        if (this->mesh_pipeline_.has_value()) {
+            return this->mesh_pipeline_->get_pipeline();
+        }
         return this->pipeline_.has_value() ? this->pipeline_->get_pipeline() : VK_NULL_HANDLE;
     }
 
@@ -107,6 +137,9 @@ namespace vulkan::pass {
             return;
         }
         VkPipeline const pipeline = this->pipeline();
+        // ... and HOW it must be fed travels with it: a mesh pipeline has no input assembler, so its casters are
+        // dispatched rather than drawn (see the frame's record_cascade).
+        bool const mesh_stage = this->mesh_pipeline_.has_value();
         // ---- THE CONTENT: one task per cascade, each into its OWN secondary ----
         // A VkCommandPool is not thread safe, which is why every cascade has its own {pool, buffer} pair (the same
         // rule the main pass's workers follow). Only the CONTENT moves off the primary thread: the barriers, the
@@ -116,12 +149,12 @@ namespace vulkan::pass {
         tasks.reserve(layers);
         std::vector<bool> recorded(layers, false);
         for (uint32_t cascade = 0; cascade < layers; ++cascade) {
-            tasks.emplace_back([this, cascade, pipeline, &recorded] {
+            tasks.emplace_back([this, cascade, pipeline, mesh_stage, &recorded] {
                 VkCommandBuffer const secondary = this->frame_.cascades[cascade];
                 if (secondary == VK_NULL_HANDLE) {
                     return;
                 }
-                recorded[cascade] = this->frame_.record_cascade(this->frame_.owner, secondary, cascade, pipeline);
+                recorded[cascade] = this->frame_.record_cascade(this->frame_.owner, secondary, cascade, pipeline, mesh_stage);
             });
         }
         this->frame_.run_tasks(this->frame_.owner, tasks);

@@ -16,6 +16,7 @@
 // push-constant range across both stages.
 
 #include "heap_access.slang"
+#include "mesh_geometry.slang"
 
 /// One entry of the material table; layout matches material_record in vulkan/model.cppm (std430)
 struct Material
@@ -53,6 +54,11 @@ struct ShadowPush
     uint image_index;
     uint spare_lane;   // every stage gets three lanes; the third is the post chain's own source slot
     uint cascade;      // which shadow-map layer this pass renders into (offset 108)
+    // THE MESH ENTRY'S GEOMETRY LANES (docs/mesh_shaders.md step 1), at offset 112 - after the three heap
+    // index lanes and the cascade, so every field above keeps its offset. The VERTEX and FRAGMENT entries
+    // declare the same block and simply never read them: the host pushes the same first 112 bytes for
+    // every caster and appends these only when the mesh path is the one drawing.
+    MeshGeometryLanes geometry;
 };
 [[vk::push_constant]] ConstantBuffer<ShadowPush> push;
 #define heap_frame_slot (push.frame_slot)
@@ -96,21 +102,23 @@ struct shadow_vertex_output
 };
 
 /// @brief morph, skin, transform into light clip space, and pass the albedo UV through
+/// @param v the vertex record, from the input assembler (the vertex entry) or fetched by address (the
+///        mesh entry) - the two paths differ ONLY in how the bytes arrive
+/// @param vertex_index SV_VertexID in the vertex entry, the fetched index in the mesh entry
+/// @param instance_index SV_InstanceID in the vertex entry, the mesh workgroup's Y in the mesh entry
 /// @note the morph/skin order and math are identical to pbr.vert; the only differences are the final
 ///       projection (the cascade's light view-projection instead of camera.proj * camera.view) and the
-///       UV passthrough. The vertex input layout must stay identical to pbr.vert's.
-[shader("vertex")]
-shadow_vertex_output vertex_main(
-    [[vk::location(0)]] float3 in_position : POSITION0,
-    [[vk::location(1)]] float3 in_normal : NORMAL0,
-    [[vk::location(2)]] float2 in_uv : UV_IN,
-    [[vk::location(4)]] uint4 in_joints : JOINTS0,
-    [[vk::location(5)]] float4 in_weights : WEIGHTS0,
-    uint vertex_index : SV_VertexID,
-    uint instance_index : SV_InstanceID)
+///       UV passthrough.
+/// @note THE NORMAL IS READ HERE even though a depth pass has no use for it, and that is not dead code:
+///       the raster pipelines derive their vertex INPUT STATE from the vertex stage's declarations
+///       (vulkan::make_pipeline), so a normal that Slang can prove unused is dropped from the module and
+///       the input's stride silently shrinks by 12 bytes - every vertex after the first would then be
+///       read from the wrong place. The never-taken branch is what keeps it declared; it is the same
+///       guard the pre-mesh version of this file carried, now shared by both entries.
+shadow_vertex_output shadow_shade_vertex(const MeshVertex v, const uint vertex_index, const uint instance_index)
 {
     // morph blend first (same layout as pbr.vert): only the POSITION deltas matter in a depth pass
-    float4 local_pos = float4(in_position, 1.0);
+    float4 local_pos = float4(v.position, 1.0);
     if (push.morph_targets > 0u)
     {
         const uint vert = vertex_index;
@@ -122,18 +130,18 @@ shadow_vertex_output vertex_main(
             const uint base = push.morph_base + (vert * push.morph_targets + t) * 6u;
             pos_delta += w * float3(morph_value_at(heap_morph_slot, base), morph_value_at(heap_morph_slot, base + 1u), morph_value_at(heap_morph_slot, base + 2u));
         }
-        local_pos = float4(in_position + pos_delta, 1.0);
+        local_pos = float4(v.position + pos_delta, 1.0);
     }
 
     // skinning (identical to pbr.vert: weighted joint transforms, identity block at skin_base 0)
-    const float wsum = in_weights.x + in_weights.y + in_weights.z + in_weights.w;
+    const float wsum = v.weights.x + v.weights.y + v.weights.z + v.weights.w;
     if (wsum > 0.0)
     {
         float4 pos = float4(0.0, 0.0, 0.0, 0.0);
-        pos += in_weights.x * (skin_matrix_at(heap_skin_slot, push.skin_base + in_joints.x) * local_pos);
-        pos += in_weights.y * (skin_matrix_at(heap_skin_slot, push.skin_base + in_joints.y) * local_pos);
-        pos += in_weights.z * (skin_matrix_at(heap_skin_slot, push.skin_base + in_joints.z) * local_pos);
-        pos += in_weights.w * (skin_matrix_at(heap_skin_slot, push.skin_base + in_joints.w) * local_pos);
+        pos += v.weights.x * (skin_matrix_at(heap_skin_slot, push.skin_base + v.joints.x) * local_pos);
+        pos += v.weights.y * (skin_matrix_at(heap_skin_slot, push.skin_base + v.joints.y) * local_pos);
+        pos += v.weights.z * (skin_matrix_at(heap_skin_slot, push.skin_base + v.joints.z) * local_pos);
+        pos += v.weights.w * (skin_matrix_at(heap_skin_slot, push.skin_base + v.joints.w) * local_pos);
         local_pos = pos / wsum;
     }
 
@@ -146,14 +154,84 @@ shadow_vertex_output vertex_main(
     // light_matrix_at, not `light_at(...).light_view_proj[...]`: see heap_access.slang (a matrix ARRAY inside
     // a Slang block loses its majorness decoration, and the block read came back unusable).
     o.position = light_matrix_at(heap_light_slot, push.cascade) * world_pos;
-    o.uv = in_uv;
+    o.uv = v.uv;
 
-    // Keep the input without a role in the depth pass (location 1, the normal) alive so the vertex input
-    // layout - and thus the bound buffer stride - stays identical to pbr.vert's (64 bytes, locations
-    // 0,1,2,4,5). This branch can never run.
-    if (isnan(in_position.x) && isinf(in_normal.x))
+    // Keep the input without a role in the depth pass (the normal) alive so the vertex input layout - and
+    // thus the bound buffer stride - stays identical to pbr.vert's (64 bytes, locations 0,1,2,4,5). This
+    // branch can never run.
+    if (isnan(v.position.x) && isinf(v.normal.x))
     {
         o.position = float4(0.0, 0.0, 0.0, 0.0);
     }
     return o;
 }
+
+/// @brief morph, skin, transform into light clip space, and pass the albedo UV through
+/// @note the vertex INPUT LAYOUT must stay identical to pbr.vert's, and the body is shared with the mesh
+///       entry below (see shadow_shade_vertex).
+[shader("vertex")]
+shadow_vertex_output vertex_main(
+    [[vk::location(0)]] float3 in_position : POSITION0,
+    [[vk::location(1)]] float3 in_normal : NORMAL0,
+    [[vk::location(2)]] float2 in_uv : UV_IN,
+    [[vk::location(4)]] uint4 in_joints : JOINTS0,
+    [[vk::location(5)]] float4 in_weights : WEIGHTS0,
+    uint vertex_index : SV_VertexID,
+    uint instance_index : SV_InstanceID)
+{
+    MeshVertex v;
+    v.position = in_position;
+    v.normal = in_normal;
+    v.uv = in_uv;
+    v.joints = in_joints;
+    v.weights = in_weights;
+    return shadow_shade_vertex(v, vertex_index, instance_index);
+}
+
+// =============================================================================================================
+// THE MESH STAGE (entry `mesh_main`), which replaces the input assembler AND the vertex entry above:
+// docs/mesh_shaders.md step 1. It fetches the same vertices the input assembler would have bound (through
+// the geometry lanes the host pushes), projects them with THE SAME shared body, and emits exactly the
+// triangles the draw's index window describes - so the two paths must produce the same depth map, and the
+// capture gate is what decides that they do.
+//
+// IT EXISTS TO BE MEASURED, NOT TO BE FASTER: one workgroup emits up to 85 triangles with 1 invocation
+// doing the work, which is strictly worse than the vertex path. What it establishes is the two facts a
+// meshlet path (step 3) is built on: that this renderer can feed geometry to a mesh stage at all, and how
+// much of a draw one workgroup's output budget covers.
+//
+// `group_id.y` IS THE INSTANCE COUNT: vkCmdDrawMeshTasksEXT has no instanceCount and a mesh stage has no
+// SV_InstanceID, so the host dispatches (triangle groups, instance_count, 1) and the instanced draw this
+// engine issues as one vkCmdDrawIndexed becomes one dispatch whose Y is the instance. The transform body
+// above reads it exactly as the vertex entry reads SV_InstanceID, so `push.flags & 1` keeps its meaning.
+// =============================================================================================================
+[shader("mesh")]
+[outputtopology("triangle")]
+[numthreads(1, 1, 1)]
+void mesh_main(out vertices shadow_vertex_output verts[mesh_vertices_per_workgroup], out indices uint3 tris[mesh_triangles_per_workgroup], uint3 group_id : SV_GroupID)
+{
+    const MeshGeometryLanes geometry = push.geometry;
+    const uint triangle_count = geometry.index_count / mesh_indices_per_triangle;
+    // this workgroup's first triangle and how many of the draw's triangles are left for it
+    const uint first_triangle = group_id.x * mesh_triangles_per_workgroup;
+    const uint remaining = first_triangle < triangle_count ? triangle_count - first_triangle : 0u;
+    const uint emit = min(remaining, mesh_triangles_per_workgroup);
+
+    // ONE SetMeshOutputCounts for the whole workgroup, before any output is written.
+    SetMeshOutputCounts(emit * mesh_indices_per_triangle, emit);
+
+    for (uint t = 0u; t < emit; ++t)
+    {
+        for (uint corner = 0u; corner < mesh_indices_per_triangle; ++corner)
+        {
+            // the triangle's corner vertex, exactly as the input assembler would have assembled it: the
+            // index at (first_index + triangle * 3 + corner), plus the draw's base vertex
+            const uint raw_index = mesh_index_at(geometry, geometry.first_index + (first_triangle + t) * mesh_indices_per_triangle + corner);
+            const uint vertex_index = uint(int(raw_index) + geometry.base_vertex);
+            const MeshVertex v = mesh_vertex_at(geometry, vertex_index);
+            verts[t * mesh_indices_per_triangle + corner] = shadow_shade_vertex(v, vertex_index, group_id.y);
+        }
+        tris[t] = uint3(t * mesh_indices_per_triangle + 0u, t * mesh_indices_per_triangle + 1u, t * mesh_indices_per_triangle + 2u);
+    }
+}
+

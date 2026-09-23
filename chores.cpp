@@ -194,10 +194,16 @@ namespace chores {
             // make_* here any more. Optional: without the pipeline the scene simply renders without shadows.
             std::vector<unsigned char> vertex_code;
             std::vector<unsigned char> fragment_code;
+            std::vector<unsigned char> mesh_code;
             load_shader(shaders_dir, "shadow.vert.spv", vertex_code);
             load_shader(shaders_dir, "shadow.frag.spv", fragment_code);
             runtime.register_shader("shadow.vert.spv", vertex_code);
             runtime.register_shader("shadow.frag.spv", fragment_code);
+            // ... and the SAME pass's MESH stage (docs/mesh_shaders.md step 1), which replaces the vertex entry when
+            // the device can run one: the pass prefers it and falls back to the vertex shader above when it cannot,
+            // so both are registered and a missing one is a log line rather than a failure.
+            load_shader(shaders_dir, "shadow.mesh.spv", mesh_code);
+            runtime.register_shader("shadow.mesh.spv", mesh_code);
         }
 
         {

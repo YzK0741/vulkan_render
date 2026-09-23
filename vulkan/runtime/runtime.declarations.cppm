@@ -1064,6 +1064,27 @@ namespace vulkan {
         // ray queries must run the cascaded maps exactly as before, silently, rather than fail or log
         // once per frame.
         bool rt_shadows = false;
+
+        // ---- mesh shaders (see docs/mesh_shaders.md) ----
+        /**
+         * @brief whether a pass may build and use a MESH pipeline on this device
+         *
+         * THE THREE CONDITIONS, all measured, and they are deliberately kept in one place because each one is a
+         * different kind of fact:
+         *  1. VK_EXT_mesh_shader AND its `meshShader` feature are enabled (`core.mesh_shader_available`) - without
+         *     them `vkCreateShaderModule` refuses the module, and validation says so as an ERROR.
+         *  2. the device's push-constant budget covers `mesh_stage_block_size`: a mesh stage must be handed the
+         *     draw's whole geometry window as data (there is no input assembler to take it), and that block is
+         *     larger than the 128 bytes the spec guarantees - so the path is available where the device reports
+         *     room for it and the VERTEX path remains where it does not. The number is logged either way.
+         *  3. the heap's push-data window covers it too, which is the limit `vkCmdPushDataEXT` actually obeys.
+         */
+        bool mesh_shaders = false;
+        /// the reason `mesh_shaders` is false, for the one startup log line (empty when it is true)
+        std::string mesh_shaders_unavailable_reason = {};
+        /// `vkCmdDrawMeshTasksEXT`, resolved once from the device because the loader's import library does not
+        /// export an extension command (null on a device without the mesh shader extension)
+        PFN_vkCmdDrawMeshTasksEXT mesh_dispatch = nullptr;
         /**
          * THE STRUCTURE PHASE ITSELF, which is one value now (see `vulkan.ray_tracing`): the bottom and top level
          * structures, the map from their indices back to the casters they were built from, and the MASK/skin
@@ -1161,6 +1182,18 @@ namespace vulkan {
         /// @brief a block pushed VERBATIM, with no index lanes: the mask bake declares none (it addresses its
         ///        sources and its destination through device addresses and reads one material table)
         static bool push_raw_block(void* owner, VkCommandBuffer command_buffer, std::span<std::byte const> bytes);
+        /**
+         * @brief the MESH session's three endpoints (docs/mesh_shaders.md step 1), each the runtime's because it
+         *        owns the device: the device address of a bound buffer, a push at a RAW offset (the geometry lanes
+         *        sit past the block `push_stage_block` sends, which appends the heap indices at its own end), and
+         *        the dispatch itself.
+         * @note `draw_mesh_tasks` answers false when the device has no `vkCmdDrawMeshTasksEXT` at all: the command
+         *       is an EXTENSION command that the loader's import library does not export, so it is resolved
+         *       through `vkGetDeviceProcAddr` once and the answer is cached (see mesh_dispatch_).
+         */
+        static VkDeviceAddress mesh_buffer_address(void* owner, VkBuffer buffer);
+        static bool push_geometry_block(void* owner, VkCommandBuffer command_buffer, uint32_t offset, std::span<std::byte const> bytes);
+        static bool draw_mesh_tasks(void* owner, VkCommandBuffer command_buffer, uint32_t groups_x, uint32_t groups_y, uint32_t groups_z);
         /**
          * @brief hand a SECONDARY the two heap bind infos it must inherit (see scene_frame::fill_heap_bind)
          * @note the caller owns the storage, because VkCommandBufferInheritanceDescriptorHeapInfoEXT points at the
@@ -1740,10 +1773,12 @@ namespace vulkan {
         /// @brief record ONE cascade's content into its secondary: the begin (with the depth-only inheritance), the
         ///        cascade index's push, the scene block, the live bias state and every caster - the frame's callback
         /// @return whether the secondary was recorded (a failed begin must not be executed)
-        static bool record_shadow_cascade(void* owner, VkCommandBuffer secondary, uint32_t cascade_index, VkPipeline pipeline);
+        static bool record_shadow_cascade(void* owner, VkCommandBuffer secondary, uint32_t cascade_index, VkPipeline pipeline, bool mesh_stage);
         /// @brief the frame loop's scheduler, handed to the pass so one task per cascade records a secondary
         static void run_shadow_tasks(void* owner, std::span<std::function<void()>> tasks);
-        void record_shadow_content(VkCommandBuffer command_buffer, VkPipeline pipeline) const;
+        /// @brief record the casters of one cascade, with either pipeline: @p mesh_stage says whether they are
+        ///        DISPATCHED (the mesh form, see docs/mesh_shaders.md step 1) or drawn with the input assembler
+        void record_shadow_content(VkCommandBuffer command_buffer, VkPipeline pipeline, bool mesh_stage) const;
 
         /**
          * @ingroup vulkan_runtime

@@ -47,6 +47,40 @@ namespace vulkan {
         push_stage_block(env, this->push);
     }
 
+    void primitive::mesh_dispatch(render_environment const& env, primitive const& geometry, uint32_t const first_index, uint32_t const index_count, int32_t const base_vertex, uint32_t const instance_count) const {
+        VkCommandBuffer const command_buffer = env.command_buffer;
+        // ---- the geometry lanes: what the input assembler used to consume, as data ----
+        mesh_geometry_lanes lanes;
+        lanes.vertex_address = env.buffer_address(env.push_owner, geometry.vertex_detail->buffer);
+        lanes.index_address = env.buffer_address(env.push_owner, geometry.index_detail->buffer);
+        lanes.first_index = first_index;
+        lanes.index_count = index_count;
+        lanes.base_vertex = base_vertex;
+        // the buffer's own index type, which the shader needs because a raw load has no format: 4 for UINT32,
+        // 2 for UINT16 (the shader reads the 16-bit case as the half of a 32-bit word its index falls in)
+        lanes.index_width = geometry.index_type == VK_INDEX_TYPE_UINT16 ? 2u : 4u;
+        if (lanes.vertex_address == 0 || lanes.index_address == 0) {
+            // A buffer without a device address cannot be fetched by a mesh stage at all, and drawing it anyway
+            // would read address 0. The primitive upload asks for SHADER_DEVICE_ADDRESS_BIT whenever the device
+            // has buffer device addresses, so this is the "device does not" case - and the vertex path is the
+            // answer, which the caller has to make (it can see this only here).
+            utility::log("[mesh] a caster at slot {} has no device address (vertex {}, index {}) - the mesh path cannot draw it", this->push.material_index.value, lanes.vertex_address, lanes.index_address);
+            return;
+        }
+        [[maybe_unused]] bool const pushed = env.push_at(env.push_owner, command_buffer, mesh_geometry_offset, std::as_bytes(std::span(&lanes, 1)));
+        // ---- the dispatch: one workgroup per `mesh_triangles_per_workgroup` triangles of THIS draw ----
+        // The workgroup budget is the shader's (see shaders/mesh_geometry.slang: 85 triangles, 255 vertices,
+        // because a triangle costs three of the device's 256 output vertices), and the group count has to cover
+        // the window: the stage itself decides how many of its 85 triangles are real, which is what makes a
+        // window that is not a multiple of 85 work without a second command.
+        constexpr uint32_t triangles_per_workgroup = 85u;
+        uint32_t const triangles = index_count / 3u;
+        uint32_t const groups = (triangles + triangles_per_workgroup - 1u) / triangles_per_workgroup;
+        if (groups != 0u) {
+            [[maybe_unused]] bool const dispatched = env.draw_mesh_tasks(env.push_owner, command_buffer, groups, instance_count, 1u);
+        }
+    }
+
     // Default-semantics draws (normal / instanced / static): request the recording session's
     // default pipeline - bind_default() no-ops when it is already bound, so consecutive leaves
     // of the same pass share one bind. Cull mode stays per draw (dynamic state, pipeline
@@ -67,6 +101,13 @@ namespace vulkan {
         env.set_depth_write(!this->transparent);
         VkCommandBuffer const command_buffer = env.command_buffer;
         env.set_cull_mode(this->double_sided);
+        if (env.mesh_stage) {
+            // A MESH SESSION DOES NOT BIND GEOMETRY: the stage fetches it from the addresses this pushes
+            // (see mesh_dispatch), so binding would be a command with no effect.
+            push_stage_block(env, this->push);
+            this->mesh_dispatch(env, *this, 0u, this->index_count, 0, 1u);
+            return;
+        }
         this->bind_geometry_and_push(env);
         vkCmdDrawIndexed(command_buffer, this->index_count, 1, 0, 0, 0);
     }
@@ -96,6 +137,14 @@ namespace vulkan {
         // push flag bit0 makes pbr.vert pick instances[gl_InstanceIndex] per instance
         primitive const& geometry_source = *this->source;
         env.set_cull_mode(this->double_sided);
+        if (env.mesh_stage) {
+            // THE INSTANCE COUNT BECOMES THE DISPATCH'S Y: vkCmdDrawMeshTasksEXT has no instanceCount and a mesh
+            // stage has no SV_InstanceID, so the stage reads its instance index from the workgroup grid's Y -
+            // which is exactly what the vertex path's SV_InstanceID meant here (see shadow.slang's mesh entry).
+            push_stage_block(env, this->push);
+            this->mesh_dispatch(env, geometry_source, 0u, geometry_source.index_count, 0, this->instance_count);
+            return;
+        }
         constexpr VkDeviceSize vertex_offset = 0;
         vkCmdBindVertexBuffers(command_buffer, 0, 1, &geometry_source.vertex_detail->buffer, &vertex_offset);
         vkCmdBindIndexBuffer(command_buffer, geometry_source.index_detail->buffer, 0, geometry_source.index_type);
@@ -119,8 +168,10 @@ namespace vulkan {
         // ONE bind for the whole merged geometry, then one offset draw per chunk (each chunk
         // pushes its own material_index — the batch shares push.model, set by update_world)
         constexpr VkDeviceSize vertex_offset_bytes = 0;
-        vkCmdBindVertexBuffers(command_buffer, 0, 1, &this->vertex_detail->buffer, &vertex_offset_bytes);
-        vkCmdBindIndexBuffer(command_buffer, this->index_detail->buffer, 0, this->index_type);
+        if (!env.mesh_stage) {
+            vkCmdBindVertexBuffers(command_buffer, 0, 1, &this->vertex_detail->buffer, &vertex_offset_bytes);
+            vkCmdBindIndexBuffer(command_buffer, this->index_detail->buffer, 0, this->index_type);
+        }
 
         // chunked: per chunk set the cull mode + material_index (push.material_index is the
         // first field, so only that slice needs re-pushing; model stays from the base push).
@@ -134,6 +185,12 @@ namespace vulkan {
                 return p;
             }();
             push_stage_block(env, chunk_push);
+            if (env.mesh_stage) {
+                // A CHUNK IS EXACTLY THE WINDOW mesh_geometry_lanes CARRIES: first index, count, base vertex -
+                // the three arguments of the vkCmdDrawIndexed below, which a mesh dispatch has no place for.
+                this->mesh_dispatch(env, *this, chunk.first_index, chunk.index_count, static_cast<int32_t>(chunk.vertex_offset), 1u);
+                continue;
+            }
             vkCmdDrawIndexed(command_buffer,
                              chunk.index_count,
                              1,

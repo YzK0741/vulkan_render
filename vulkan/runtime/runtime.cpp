@@ -882,6 +882,44 @@ namespace vulkan {
         return push_with_lanes(self->vulkan_core, 0u, 0u, command_buffer, bytes, 0u, 0u);
     }
 
+    // ---- the MESH session's endpoints (docs/mesh_shaders.md step 1): what a draw without an input assembler
+    //      needs and only the device's owner can answer. ----
+
+    VkDeviceAddress runtime::mesh_buffer_address(void* const owner, VkBuffer const buffer) {
+        runtime* const self = static_cast<runtime*>(owner);
+        // A buffer carries an address only when it was created with SHADER_DEVICE_ADDRESS_BIT, which the primitive
+        // upload asks for whenever the device has buffer device addresses - so a zero here is "this device does
+        // not", and the caller reports the caster rather than drawing from address 0. (No error is raised by the
+        // query itself: a null handle is a validation ERROR, so it is not asked about.)
+        if (buffer == VK_NULL_HANDLE) {
+            return 0;
+        }
+        VkBufferDeviceAddressInfo const info = {.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .pNext = nullptr, .buffer = buffer};
+        return vkGetBufferDeviceAddress(self->vulkan_core.device, &info);
+    }
+
+    bool runtime::push_geometry_block(void* const owner, VkCommandBuffer const command_buffer, uint32_t const offset, std::span<std::byte const> const bytes) {
+        runtime* const self = static_cast<runtime*>(owner);
+        // A raw push at an offset the STAGE declares (see mesh_geometry_offset): the block `push_stage_block` sends
+        // already ends with the three heap index lanes, so the geometry lanes of a mesh stage's block cannot ride
+        // along with it - they are appended after them, which is a second push rather than a second block.
+        return self->vulkan_core.descriptor_heaps.push_data(command_buffer, offset, bytes);
+    }
+
+    bool runtime::draw_mesh_tasks(void* const owner, VkCommandBuffer const command_buffer, uint32_t const groups_x, uint32_t const groups_y, uint32_t const groups_z) {
+        runtime* const self = static_cast<runtime*>(owner);
+        core const& vk = self->vulkan_core;
+        if (vk.mesh_dispatch == nullptr) {
+            // Unreachable while the mesh path is gated on the capability (see runtime::create_passes), and answered
+            // rather than asserted: a dispatch that cannot be recorded draws NOTHING, which is the same picture a
+            // caster with no geometry produces - and it is logged, so it cannot pass unnoticed.
+            utility::log("mesh dispatch: the device has no vkCmdDrawMeshTasksEXT, so the dispatch was skipped");
+            return false;
+        }
+        vk.mesh_dispatch(command_buffer, groups_x, groups_y, groups_z);
+        return true;
+    }
+
     void runtime::fill_heap_bind(void* const owner, VkBindHeapInfoEXT& resource, VkBindHeapInfoEXT& sampler) {
         static_cast<runtime*>(owner)->vulkan_core.descriptor_heaps.bind_infos(resource, sampler);
     }

@@ -136,9 +136,13 @@ namespace vulkan::pipelines {
      * a PASS reaches neither - the device and the format arrive through `pass_context`. The three
      * BIAS factors are parameters for the same reason the depth format is: they are the pipeline's, not the
      * device's, and the depth pass is the one pipeline in this renderer created with slope-scaled bias.
+     * @param first_stage the stage that emits the geometry: VERTEX for the input-assembler path, MESH for the
+     *        one that fetches its own vertices - the FRAGMENT stage is the same shader either way, which is
+     *        what makes the two paths comparable (see docs/mesh_shaders.md step 1)
      */
     export std::expected<vk_pipeline, std::string> build_shadow(VkDevice device, VkFormat depth_format, float depth_bias_constant_factor, float depth_bias_slope_factor,
-                                                                float depth_bias_clamp, std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code);
+                                                                float depth_bias_clamp, std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code,
+                                                                VkShaderStageFlagBits first_stage = VK_SHADER_STAGE_VERTEX_BIT);
     /// @brief what the FXAA pass's own create step needs: the anti-aliasing pipeline
     export struct fxaa_owned {
         std::optional<vk_pipeline> antialias;
@@ -752,7 +756,12 @@ namespace vulkan::pipelines {
 
     std::expected<vk_pipeline, std::string> build_shadow(VkDevice const device, VkFormat const depth_format, float const depth_bias_constant_factor,
                                                          float const depth_bias_slope_factor, float const depth_bias_clamp, std::span<unsigned char const> const vertex_shader_code,
-                                                         std::span<unsigned char const> const fragment_shader_code) {
+                                                         std::span<unsigned char const> const fragment_shader_code,
+                                                         // THE STAGE THAT EMITS THE GEOMETRY: VERTEX for the input-assembler path, MESH
+                                                         // for the one that fetches its own vertices (docs/mesh_shaders.md step 1 - the
+                                                         // fragment stage is the SAME shader either way, which is what makes the two
+                                                         // paths comparable at all).
+                                                         VkShaderStageFlagBits first_stage) {
         using fail = std::unexpected<std::string>;
         // No color attachment, depth test + write, single-sampled, and the slope-scaled bias the shadow pass needs
         // (it removes acne on surfaces angled away from the light, in units of depth per depth-unit of slope - the
@@ -767,7 +776,8 @@ namespace vulkan::pipelines {
                                             false, // no color attachment
                                             depth_bias_constant_factor,
                                             depth_bias_slope_factor,
-                                            depth_bias_clamp);
+                                            depth_bias_clamp,
+                                            first_stage);
         if (!result) {
             return fail(std::string(result.error()));
         }

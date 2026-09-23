@@ -65,7 +65,10 @@ export namespace vulkan::pass {
          */
         /// @return whether the secondary was recorded: a begin that FAILED must not be executed (that is a VUID
         ///         and can wedge the frame slot), so the answer travels back rather than being assumed
-        bool (*record_cascade)(void* owner, VkCommandBuffer secondary, uint32_t cascade_index, VkPipeline pipeline) = nullptr;
+        /// @param mesh_stage whether @p pipeline is a MESH pipeline, i.e. whether the casters must be drawn as
+        ///        dispatches (vkCmdDrawMeshTasksEXT) instead of indexed draws - the pipeline and the way to feed
+        ///        it are one fact, so they travel together (see docs/mesh_shaders.md step 1)
+        bool (*record_cascade)(void* owner, VkCommandBuffer secondary, uint32_t cascade_index, VkPipeline pipeline, bool mesh_stage) = nullptr;
         /// the frame loop's scheduler: one task per cascade, each recording into its own secondary
         void (*run_tasks)(void* owner, std::span<std::function<void()>> tasks) = nullptr;
         void* owner = nullptr;
@@ -110,6 +113,10 @@ export namespace vulkan::pass {
     private:
         static constexpr std::string_view vertex_shader_name = "shadow.vert.spv";
         static constexpr std::string_view fragment_shader_name = "shadow.frag.spv";
+        /// THE MESH STAGE'S OWN MODULE, from the same shader file's `mesh_main` entry (docs/mesh_shaders.md step
+        /// 1). It replaces the vertex entry rather than joining it: the pipeline is built with MESH + the same
+        /// fragment stage, and the two pipelines are the same depth pass drawn two ways.
+        static constexpr std::string_view mesh_shader_name = "shadow.mesh.spv";
         /// the CREATE-time half of the bias state: slope-scaled rasterization bias pushes a caster's depth away from
         /// the light proportionally to its slope, which is what removes acne on angled surfaces. The per-frame half
         /// is dynamic state and belongs to the renderer's content callback.
@@ -132,6 +139,10 @@ export namespace vulkan::pass {
 
         VkDevice device_ = VK_NULL_HANDLE;
         std::optional<vk_pipeline> pipeline_ = std::nullopt;
+        /// the MESH form of the same pass, built beside it when the device can run one: `pipeline()` answers
+        /// with it whenever it exists, and a device that cannot run it (or a shader that failed to build) keeps
+        /// the vertex form. The two are one pass in the frame's eyes: same targets, same viewport, same casters.
+        std::optional<vk_pipeline> mesh_pipeline_ = std::nullopt;
         shadow_frame frame_ = {};
     };
 

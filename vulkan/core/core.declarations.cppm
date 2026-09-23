@@ -242,6 +242,19 @@ namespace vulkan {
         /// @brief the SBT numbers (handle size, region base alignment, handle alignment, recursion depth)
         ///        a ray-tracing pipeline's shader binding table has to be built against
         VkPhysicalDeviceRayTracingPipelinePropertiesKHR ray_tracing_pipeline_properties = {};
+        /**
+         * @brief VK_EXT_mesh_shader: whether the device runs a MESH pipeline at all, and the dispatch command
+         *        that goes with it (docs/mesh_shaders.md)
+         * @note the command is fetched through `vkGetDeviceProcAddr` because `vkCmdDrawMeshTasksEXT` is an
+         *       EXTENSION command that the loader's import library does not export - calling it directly is a
+         *       link error (`undefined symbol: vkCmdDrawMeshTasksEXT`), which is how this was learned. It is
+         *       resolved once here rather than per use, and it is null on a device without the extension.
+         * @note this is the FEATURE half only (extension + `meshShader`); whether a pass may use it also depends
+         *       on the push budget the stage block needs, and that decision is the RUNTIME's (see
+         *       runtime::mesh_shaders), because a pass is not the only thing that could want it.
+         */
+        bool mesh_shader_available = false;
+        PFN_vkCmdDrawMeshTasksEXT mesh_dispatch = nullptr;
         uint32_t graphics_family_index = 0;
         uint32_t present_family_index = 0;
         VkDebugUtilsMessengerEXT debug_messenger = VK_NULL_HANDLE;
