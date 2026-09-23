@@ -10,6 +10,12 @@
  *
  * @section shader_passes The pass chain
  *
+ * THE NAMES BELOW ARE STAGE NAMES, and they are also the `.spv` file names the runtime loads. The SOURCES
+ * are Slang (`.slang` files, one per shader family - a family with several stages has several entries in one
+ * file, which is why this list names stages rather than files). The former GLSL sources are archived in
+ * `shaders/glsl.old/` and are not built; the four shared bodies still carry GLSL syntax and are `#include`d
+ * by the Slang leaves (see docs/slang_migration.md for how that works).
+ *
  * @code
  *  light_cluster.comp            compute: sorts the punctual lights into the frame cluster grid (M5)
  *  shadow.vert + shadow.frag     depth-only, from the sun, into the per-slot shadow map array
@@ -221,13 +227,17 @@
  *
  * @section shader_compile Compiling
  *
- * The build owns this step: `cmake --build` regenerates every `.spv` from its `.glsl` (and from the
+ * The build owns this step: `cmake --build` regenerates every `.spv` from its `.slang` source (and from the
  * shared includes it lists as dependencies), so editing a shader is just editing a shader. The binaries
  * are **not** tracked in the repository and are not hand-synced - they are a build output, and the
  * directory is mirrored next to the executable, which is the copy the runtime loads
  * (`chores::locate_shaders_dir` prefers a `shaders/` sibling of the running binary over anything found
- * by walking up from the working directory). glslc is required, not optional: without a shader compiler
- * there would be nothing to run, and an optional step is how a stale binary gets loaded unnoticed.
+ * by walking up from the working directory). **slangc is required, not optional** - every stage is built from
+ * a `.slang` source and the rule has no GLSL fallback any more, so a configuration without the compiler
+ * fails loudly instead of compiling modules the project no longer uses. The retired GLSL stage sources are
+ * archived in `shaders/glsl.old/`; the shared bodies (`surface.glsl`, `shading.glsl`, `sky.glsl`,
+ * `ibl_specular.glsl`, `heap_slots.glsl`, `heap_slot_constants.glsl`) stay in `shaders/`, because the Slang
+ * leaves include them.
  *
  * `shaders/compile_shaders.ps1` / `.sh` remain as a manual escape hatch for a machine without CMake -
  * they compile in place, which is what the build does too:
@@ -237,7 +247,9 @@
  *  sh shaders/compile_shaders.sh                                          # POSIX
  * @endcode
  *
- * Both scripts pass `-I shaders/`, which is what lets the fragment stages `#include "surface.glsl"`.
+ * Both scripts mirror `CMakeLists.txt`'s `VR_SLANG_SOURCES` (source, entry point, stage, output) and pass the
+ * same flags, including `-I shaders/`, which is what lets a leaf `#include "surface.glsl"`. They are verified
+ * by running them and comparing their output with the build's, byte for byte.
  *
  * @section shader_conventions Conventions and pitfalls
  *

@@ -635,10 +635,10 @@ target_sources(utility PRIVATE
         utility/platform_path.cpp
         utility/platform_dialog.cpp
 )
-# ---- GLSL -> SPIR-V: the build owns the step ----
+# ---- SLANG -> SPIR-V: the build owns the step (docs/slang_migration.md) ----
 # Editing a .glsl without recompiling used to leave you running stale SPIR-V ("my shader change does
 # nothing"), so the compiled binaries are no longer committed and are never hand-synced: every build
-# regenerates them from the sources (and the shared includes they pull in). glslc is REQUIRED rather
+# regenerates them from the sources (and the shared includes they pull in). SLANGC IS REQUIRED rather
 # than optional - a configuration without the compiler is exactly the one where a stale binary could
 # be used without anyone noticing, which is the failure this removes.
 #
@@ -659,11 +659,14 @@ target_sources(utility PRIVATE
 # compile in place, which is what a reader of the source tree would expect from a manual tool.
 set(VR_SHADER_SRC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/shaders")
 set(VR_SHADER_OUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/shaders")
-if(NOT Vulkan_GLSLC_EXECUTABLE)
+find_program(VR_SLANGC_EXECUTABLE NAMES slangc slangc.exe)
+if(NOT VR_SLANGC_EXECUTABLE)
     message(FATAL_ERROR
-        "glslc not found (it ships with the Vulkan SDK, and CMake's FindVulkan reports it as "
-        "Vulkan_GLSLC_EXECUTABLE). The shaders have no prebuilt fallback anymore - install the "
-        "Vulkan SDK, or add glslc to PATH.")
+        "slangc not found. It ships with a Slang release (the Vulkan SDK's Bin directory carries one too), "
+        "and every shader in this project is built from a .slang source - the GLSL FALLBACK THIS RULE USED "
+        "TO HAVE IS GONE, along with the GLSL stage sources themselves (shaders/glsl.old/) - so a build "
+        "without it would be the one that silently compiles modules the project no longer uses. Install "
+        "Slang or the Vulkan SDK, or add slangc to PATH.")
 endif()
 # the shared includes: every generated shader lists them all as dependencies. The chain is three
 # files and glslc takes milliseconds, so recompiling an unaffected shader is cheaper than the
@@ -684,21 +687,9 @@ set(VR_SHADER_INCLUDES
     "${VR_SHADER_SRC_DIR}/heap_slot_constants.glsl"
     "${VR_SHADER_SRC_DIR}/heap_slots.glsl"
 )
-set(VR_SHADER_SOURCES
-    pbr.vert pbr.frag unlit.frag gbuffer.frag gbuffer_debug.frag deferred.frag taa.frag
-    light_cluster.comp
-    megalights_trace.comp
-    megalights_temporal.comp
-    rt_shadow.rgen rt_shadow.rchit rt_shadow.rmiss rt_shadow.rahit
-    mask_bake.comp
-    compute_skin.comp
-    # the heap-native probe: not part of any frame, run once at setup in a command buffer of its own (see
-    # runtime::run_heap_probe and docs/descriptor_heap_migration.md). The .vert/.frag pair is its GRAPHICS half -
-    # a fragment stage reading the heap through a heap-flagged, layout-less pipeline.
-    heap_probe.comp
-    heap_probe.vert heap_probe.frag
-    shadow.vert shadow.frag post.vert post.frag fxaa.frag
-)
+# (THE GLSL STAGE LIST USED TO LIVE HERE: twenty-four names, glslc's input, kept in step with the sources by
+# hand. Every one of them is in shaders/glsl.old/ now and built from Slang instead, so the list is gone -
+# VR_SLANG_SOURCES below IS the list of what this build compiles.)
 set(VR_SHADER_OUTPUTS "")
 # ---- SLANG SOURCES: the GLSL -> Slang migration, one shader at a time (docs/slang_migration.md) --------
 #
@@ -786,83 +777,49 @@ set(VR_SLANG_SOURCES
     # docs/slang_migration.md section 9, "the last stage, and the one-pixel re-baseline".
     deferred.slang:main:fragment:deferred.frag.spv
 )
-find_program(VR_SLANGC_EXECUTABLE NAMES slangc slangc.exe)
 set(VR_SLANG_OUTPUTS "")
-if(VR_SLANGC_EXECUTABLE)
-    foreach(entry IN LISTS VR_SLANG_SOURCES)
-        string(REPLACE ":" ";" parts "${entry}")
-        list(GET parts 0 slang_source)
-        list(GET parts 1 slang_entry)
-        list(GET parts 2 slang_stage)
-        list(GET parts 3 slang_output)
-        add_custom_command(
-            OUTPUT "${VR_SHADER_OUT_DIR}/${slang_output}"
-            COMMAND ${CMAKE_COMMAND} -E make_directory "${VR_SHADER_OUT_DIR}"
-            COMMAND "${VR_SLANGC_EXECUTABLE}" "${VR_SHADER_SRC_DIR}/${slang_source}" -I "${VR_SHADER_SRC_DIR}" -allow-glsl -DVR_SLANG
-                    -target spirv -profile spirv_1_6 -capability spvDescriptorHeapEXT
-                    -spirv-resource-heap-stride 64 -spirv-sampler-heap-stride 32
-                    -fvk-use-gl-layout -matrix-layout-column-major
-                    # NO -fp-mode HERE, and that is a measurement rather than an omission: `-fp-mode precise`
-                    # was tried against the byte-identical standard and made NINE scenarios differ, including
-                    # two that had been identical for eleven stages - so Slang's DEFAULT mode is the one whose
-                    # codegen matches glslang's, and the alternative is strictly worse. The one difference the
-                    # default mode leaves is documented in docs/slang_migration.md section 9 (deferred.slang:
-                    # one pixel of 1036800, one 8-bit step in blue).
-                    -entry ${slang_entry} -stage ${slang_stage} -o "${VR_SHADER_OUT_DIR}/${slang_output}"
-            DEPENDS "${VR_SHADER_SRC_DIR}/${slang_source}" ${VR_SHADER_INCLUDES}
-            COMMENT "slangc ${slang_source} -> ${slang_output}"
-            VERBATIM
-        )
-        list(APPEND VR_SLANG_OUTPUTS "${VR_SHADER_OUT_DIR}/${slang_output}")
-    endforeach()
-    message(STATUS "slangc: ${VR_SLANGC_EXECUTABLE} - ${VR_SLANG_SOURCES}")
-else()
-    # PHASE ONE OF THE MIGRATION ONLY. While the ports are still landing, a machine without slangc builds the
-    # GLSL source of each migrated shader instead, so the build (and CI, which has no SDK and whose MSYS2 has no
-    # slang package - measured) stays green. The LAST step of the migration removes the GLSL sources and makes
-    # slangc required, which is when CI needs a source for it.
-    message(STATUS "slangc not found - the migrated shaders fall back to their GLSL sources (migration phase one)")
-endif()
-# a GLSL source whose .spv a Slang source now produces must NOT also be compiled by glslc: both would write the
-# same output file, and which one won would depend on the build order.
-set(VR_GLSL_SOURCES "")
-foreach(shader IN LISTS VR_SHADER_SOURCES)
-    if("${VR_SHADER_OUT_DIR}/${shader}.spv" IN_LIST VR_SLANG_OUTPUTS)
-        list(APPEND VR_SLANG_REPLACED "${shader}")
-    else()
-        list(APPEND VR_GLSL_SOURCES "${shader}")
-    endif()
-endforeach()
-if(VR_SLANG_REPLACED)
-    message(STATUS "compiled from Slang instead of GLSL: ${VR_SLANG_REPLACED}")
-endif()
-# --target-env=vulkan1.3 on EVERY shader, not just the ray-traced one. glslc defaults to vulkan1.0, and
-# under that target GL_EXT_ray_query is not a known extension at all ("undeclared identifier rayQueryEXT",
-# which is what this shader reported before the flag). The engine is Vulkan 1.3-only anyway - dynamic
-# rendering is core 1.3 and every pass records through vkCmdBeginRendering - so declaring the real target
-# is the honest setting rather than a per-file workaround. The 1.3 target changes the SPIR-V header
-# version and nothing else these shaders do: the seven capture scenarios hash identically after the
-# change (checked, because a codegen difference hidden under a flag change is exactly what a byte-exact
-# reference is for).
-foreach(shader IN LISTS VR_GLSL_SOURCES)
+foreach(entry IN LISTS VR_SLANG_SOURCES)
+    string(REPLACE ":" ";" parts "${entry}")
+    list(GET parts 0 slang_source)
+    list(GET parts 1 slang_entry)
+    list(GET parts 2 slang_stage)
+    list(GET parts 3 slang_output)
     add_custom_command(
-        OUTPUT "${VR_SHADER_OUT_DIR}/${shader}.spv"
+        OUTPUT "${VR_SHADER_OUT_DIR}/${slang_output}"
         COMMAND ${CMAKE_COMMAND} -E make_directory "${VR_SHADER_OUT_DIR}"
-        COMMAND "${Vulkan_GLSLC_EXECUTABLE}" -I "${VR_SHADER_SRC_DIR}" --target-env=vulkan1.3 "${VR_SHADER_SRC_DIR}/${shader}"
-                -o "${VR_SHADER_OUT_DIR}/${shader}.spv"
-        DEPENDS "${VR_SHADER_SRC_DIR}/${shader}" ${VR_SHADER_INCLUDES}
-        COMMENT "glslc ${shader} -> ${shader}.spv"
+        COMMAND "${VR_SLANGC_EXECUTABLE}" "${VR_SHADER_SRC_DIR}/${slang_source}" -I "${VR_SHADER_SRC_DIR}" -allow-glsl -DVR_SLANG
+                -target spirv -profile spirv_1_6 -capability spvDescriptorHeapEXT
+                -spirv-resource-heap-stride 64 -spirv-sampler-heap-stride 32
+                -fvk-use-gl-layout -matrix-layout-column-major
+                # NO -fp-mode HERE, and that is a measurement rather than an omission: `-fp-mode precise`
+                # was tried against the byte-identical standard and made NINE scenarios differ, including
+                # two that had been identical for eleven stages - so Slang's DEFAULT mode is the one whose
+                # codegen matches glslang's, and the alternative is strictly worse. The difference the
+                # default mode leaves is the one re-baselined for deferred.frag; see
+                # docs/slang_migration.md section 9, "the last stage, and the one-pixel re-baseline".
+                -entry ${slang_entry} -stage ${slang_stage} -o "${VR_SHADER_OUT_DIR}/${slang_output}"
+        DEPENDS "${VR_SHADER_SRC_DIR}/${slang_source}" ${VR_SHADER_INCLUDES}
+        COMMENT "slangc ${slang_source} -> ${slang_output}"
         VERBATIM
     )
-    list(APPEND VR_SHADER_OUTPUTS "${VR_SHADER_OUT_DIR}/${shader}.spv")
+    list(APPEND VR_SLANG_OUTPUTS "${VR_SHADER_OUT_DIR}/${slang_output}")
 endforeach()
+message(STATUS "slangc: ${VR_SLANGC_EXECUTABLE} - ${VR_SLANG_SOURCES}")
 list(APPEND VR_SHADER_OUTPUTS ${VR_SLANG_OUTPUTS})
-# the runtime's log names the GLSL file it is loading the SPIR-V for, and it looks for that name in
+# THERE IS NO glslc RULE ANY MORE, and no VR_GLSL_SOURCES to compute: every stage is built from a .slang
+# source above, so the split ("which sources does glslc still have to build?") that this section used to
+# compute while the migration ran has no members left. The retired GLSL stage sources are archived in
+# shaders/glsl.old/ and are NOT part of the build - they exist to be read next to their ports.
+# the runtime's log names the SOURCE file it is loading the SPIR-V for, and it looks for that name in
 # the same directory: copy the sources there so the log points at a file a reader of the build tree
-# can actually open. Not a correctness requirement - the .spv beside it is what gets loaded.
+# can actually open. Not a correctness requirement - the .spv beside it is what gets loaded. The list is
+# TAKEN FROM VR_SLANG_SOURCES rather than written out again: it used to be a hand-maintained GLSL list, which
+# is exactly the kind of duplication that goes stale (this one did, twice).
 set(VR_SHADER_SOURCE_COPIES "")
-foreach(shader IN LISTS VR_SHADER_SOURCES)
-    list(APPEND VR_SHADER_SOURCE_COPIES "${VR_SHADER_SRC_DIR}/${shader}")
+foreach(entry IN LISTS VR_SLANG_SOURCES)
+    string(REPLACE ":" ";" parts "${entry}")
+    list(GET parts 0 slang_source)
+    list(APPEND VR_SHADER_SOURCE_COPIES "${VR_SHADER_SRC_DIR}/${slang_source}")
 endforeach()
 add_custom_command(
     OUTPUT "${VR_SHADER_OUT_DIR}/.sources-copied"
@@ -874,4 +831,4 @@ add_custom_command(
 )
 add_custom_target(shaders ALL DEPENDS ${VR_SHADER_OUTPUTS} "${VR_SHADER_OUT_DIR}/.sources-copied")
 add_dependencies(vulkan_render shaders)
-message(STATUS "glslc: ${Vulkan_GLSLC_EXECUTABLE} - every build compiles shaders/*.spv into ${VR_SHADER_OUT_DIR}")
+message(STATUS "slangc: ${VR_SLANGC_EXECUTABLE} - every build compiles shaders/*.spv into ${VR_SHADER_OUT_DIR}")

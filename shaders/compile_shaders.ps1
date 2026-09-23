@@ -1,37 +1,30 @@
 # Recompile every shader in shaders/ to SPIR-V binaries, in place.
 #
-# The BUILD already does this (see the SHADERS section of CMakeLists.txt): `cmake --build` recompiles every
-# .spv from its source, and the resulting directory is mirrored next to the executable, which is the copy the
-# runtime loads. This script is the escape hatch for a machine without CMake - it produces the same binaries
-# in the same place.
+# The BUILD already does this (see the SLANG -> SPIR-V section of CMakeLists.txt): `cmake --build`
+# recompiles every .spv from its source, and the resulting directory is mirrored next to the executable,
+# which is the copy the runtime loads. This script is the escape hatch for a machine without CMake - it
+# produces the same binaries in the same place.
 #
-# THE SHADERS ARE MOSTLY SLANG NOW. The canonical list of what builds which .spv, and with which entry point
-# and stage, is VR_SLANG_SOURCES in CMakeLists.txt; the table below MIRRORS it, and every flag matches the
-# CMake rule exactly (verified by running both and comparing the binaries byte for byte). Keep the two in
-# step: the migration's endgame removes the GLSL sources, and this script is the list that has to survive it.
+# EVERY SHADER IS SLANG NOW. The canonical list of what builds which .spv, with which entry point and stage,
+# is VR_SLANG_SOURCES in CMakeLists.txt; the table below MIRRORS it and every flag matches the CMake rule
+# exactly (verified by running both and comparing the binaries byte for byte). The retired GLSL stage sources
+# live in shaders/glsl.old/ and are NOT compiled by anything; the shared bodies the Slang leaves include
+# (surface.glsl, shading.glsl, sky.glsl, ibl_specular.glsl, heap_slots.glsl, heap_slot_constants.glsl) stay
+# in shaders/ and are inputs to every one of these compilations.
 #
 # Usage: powershell -ExecutionPolicy Bypass -File shaders/compile_shaders.ps1
 
 $ErrorActionPreference = "Stop"
 
-function Find-Tool([string]$name, [string]$sdkRelative) {
-    $cmd = Get-Command $name -ErrorAction SilentlyContinue
-    if ($cmd) { return $cmd.Source }
-    if ($env:VULKAN_SDK) {
-        $candidate = Join-Path $env:VULKAN_SDK $sdkRelative
-        if (Test-Path $candidate) { return $candidate }
-    }
-    return ""
+$slangcPath = ""
+$cmd = Get-Command slangc -ErrorAction SilentlyContinue
+if ($cmd) { $slangcPath = $cmd.Source }
+if (-not $slangcPath -and $env:VULKAN_SDK) {
+    $candidate = Join-Path $env:VULKAN_SDK "Bin\slangc.exe"
+    if (Test-Path $candidate) { $slangcPath = $candidate }
 }
-
-$slangcPath = Find-Tool "slangc" "Bin\slangc.exe"
-$glslcPath = Find-Tool "glslc" "Bin\glslc.exe"
 if (-not $slangcPath) {
-    Write-Error "slangc not found. Install the Vulkan SDK or add slangc to PATH."
-    exit 1
-}
-if (-not $glslcPath) {
-    Write-Error "glslc not found. Install the Vulkan SDK or add glslc to PATH."
+    Write-Error "slangc not found. Install Slang or the Vulkan SDK, or add slangc to PATH."
     exit 1
 }
 
@@ -61,14 +54,8 @@ $slangSources = @(
     "compute_skin.slang:comp_main:compute:compute_skin.comp.spv",
     "mask_bake.slang:comp_main:compute:mask_bake.comp.spv",
     "megalights_temporal.slang:comp_main:compute:megalights_temporal.comp.spv",
-    "megalights_trace.slang:comp_main:compute:megalights_trace.comp.spv"
-)
-
-# The GLSL stages that are NOT ported yet - the SLANG-LESS remainder, which shrinks to nothing as the
-# migration finishes. `deferred.frag` is the last one, and the reason it is not in the list above is in
-# docs/slang_migration.md (one pixel of 1036800, a codegen difference rather than a porting mistake).
-$glslSources = @(
-    "deferred.frag"
+    "megalights_trace.slang:comp_main:compute:megalights_trace.comp.spv",
+    "deferred.slang:main:fragment:deferred.frag.spv"
 )
 
 foreach ($entry in $slangSources) {
@@ -91,16 +78,4 @@ foreach ($entry in $slangSources) {
     Write-Host "compiled: $src ($($parts[1])/$($parts[2])) -> $dst"
 }
 
-foreach ($src in $glslSources) {
-    $dst = Join-Path $shaderDir "$src.spv"
-    # Same as CMake's glslc rule: -I for the shared includes and --target-env=vulkan1.3 (glslc defaults to
-    # vulkan1.0, and the heap extensions need 1.3).
-    & $glslcPath -I $shaderDir --target-env=vulkan1.3 (Join-Path $shaderDir $src)
-    if ($LASTEXITCODE -ne 0) {
-        Write-Error "failed to compile $src"
-        exit $LASTEXITCODE
-    }
-    Write-Host "compiled: $src -> $dst"
-}
-
-Write-Host "all shaders compiled successfully ($($slangSources.Count) from Slang, $($glslSources.Count) still GLSL)."
+Write-Host "all shaders compiled successfully ($($slangSources.Count) from Slang)."
