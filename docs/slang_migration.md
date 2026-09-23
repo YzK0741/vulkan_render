@@ -504,10 +504,18 @@ limit that hid TRAP 3 in `pbr.frag` for four commits.
 
 TWO ROUTES EXIST FOR THOSE STAGES, and neither needs the gate's references to be touched:
 
-- **The probe stages verify themselves.** `heap_probe.comp/.vert/.frag` exist to READ the heap and compare it
-  against what the host wrote, and their answer is a LOG LINE: the demo registers all three at startup and the
-  runtime's `run_heap_probe` / `run_heap_graphics_probe` dispatch them, so porting them is verified by running
-  the app and reading that line - and the gate's own log check covers a probe that starts failing.
+- **The probe stages verify themselves - but only the GRAPHICS half does, measured.** `heap_probe.vert` and
+  `heap_probe.frag` are DONE and were accepted by comparing log lines: the runtime dispatches the graphics
+  probe during initialization, reads a 4x4 target back and logs the pixel against the value it knows, so the
+  two `descriptor heap: the heap-native GRAPHICS probe rendered grid slot ...` lines (including the
+  deliberately WRONG slot) are the acceptance, and they come out byte-identical to the GLSL build's. **The
+  COMPUTE half does not offer that**: `run_heap_probe` writes its answer into a buffer the host reads back and
+  this build logs NO comparable line for it - grepping `debug.log` for every `descriptor heap:` line finds the
+  graphics probe's two and nothing from the compute probe. `heap_probe.comp` also uses
+  `GL_EXT_buffer_reference` (a raw device address pushed as two 32-bit halves) rather than a heap handle,
+  which is a DIFFERENT mechanism from everything ported so far and has no Slang spelling established yet. So
+  it needs either a host-side log line added first (a runtime change, not a shader port) or shape-only
+  verification, and it should not be described as self-verifying until one of those exists.
 - **An A/B capture covers the RT path.** For `rt_shadow.*`, `compute_skin.comp` and `mask_bake.comp`, the
   verification is the same standard applied by hand: capture a frame with `rt_shadows = true` from the GLSL
   build, capture the same frame from the Slang build, and compare the two PNGs pixel for pixel. That is what
