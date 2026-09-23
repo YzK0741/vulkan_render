@@ -80,12 +80,12 @@ layout(location = 4) out vec4 out_scene_color;      // the EMISSIVE term, ADDED 
  * The previous position is projected with `prev_view_proj` alone, because the object's own motion
  * is already baked into it; the jitter-free pairing still holds on both sides.
  *
- * @note This covers CAMERA motion and RIGID object motion (a moving/rotating node, an instance).
- *       A deforming mesh is still approximate: a skinned or morphed vertex moves inside its own
- *       object space as well, and the previous-frame skin matrices / morph weights that would
- *       describe that are not stored yet. Such an object gets its rigid part right and its
- *       deformation wrong, which is the same residual it had before object motion existed - and
- *       TAA's neighborhood clamp rejects the worst of it.
+ * @note This covers CAMERA motion, RIGID object motion (a moving/rotating node, an instance) and a
+ *       DEFORMING mesh: `pbr.vert` computes the previous local position through the joint matrices as
+ *       they were one frame ago AND through the morph weights as they were one frame ago, so a vertex
+ *       that moved inside its own object space reports that movement instead of zero.
+ *       NOT COVERED: alpha-blended geometry, which is composited outside the G-buffer and writes no
+ *       velocity at all (see docs/deformation_motion_vectors.md).
  */
 vec2 motion_vector(vec3 world_pos, vec3 prev_world_pos) {
     const vec4 current_clip = camera[heap_camera_slot].view_proj_unjittered * vec4(world_pos, 1.0);

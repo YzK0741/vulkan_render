@@ -55,6 +55,11 @@ const uint heap_slots_instance_transforms = heap_slot_base + 522u;
 const uint heap_slots_previous_transforms = heap_slot_base + 524u;
 const uint heap_slots_skin_matrices = heap_slot_base + 526u;
 const uint heap_slots_morph_data = heap_slot_base + 528u;
+// the SAME joint blocks one frame ago, per frame slot: what makes a DEFORMING vertex's motion vector carry
+// its deformation instead of only its node's rigid motion (see runtime::advance_motion_deformations). Its
+// number is at the END of the used region rather than beside the current family above, because growing an
+// array in place would renumber every array after it (the rule the TLAS and the storage twins follow too).
+const uint heap_slots_skin_matrices_previous = heap_slot_base + 743u;
 const uint heap_slots_mask_instances = heap_slot_base + 530u;
 // frame-invariant images the shading stage samples
 const uint heap_slots_env_cube = heap_slot_base + 532u;
@@ -121,6 +126,7 @@ const uint heap_sampler_shadow = heap_sampler_base + 5u;         // depth compar
 #define heap_instance_slot (heap_slots_instance_transforms) // ONE descriptor, not a per-frame array
 #define heap_previous_slot (heap_slots_previous_transforms + heap_frame_slot)
 #define heap_skin_slot (heap_slots_skin_matrices + heap_frame_slot)
+#define heap_skin_previous_slot (heap_slots_skin_matrices_previous + heap_frame_slot)
 #define heap_morph_slot (heap_slots_morph_data + heap_frame_slot)
 #define heap_shadow_slot (heap_slots_shadow_map + heap_frame_slot)
 #define heap_rt_visibility_slot (heap_slots_rt_visibility + heap_frame_slot)

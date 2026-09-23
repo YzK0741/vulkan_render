@@ -252,7 +252,15 @@ namespace vulkan::animation {
                 std::span<float const> const weights = pose.weights.size() == rig.target_count
                                                            ? std::span<float const>(pose.weights)
                                                            : std::span<float const>(rig.default_weights);
-                std::memcpy(active_scratch + weight_offset, weights.data(), weights.size_bytes());
+                // Publish the weights this primitive had ONE FRAME AGO into the block's second weight
+                // region BEFORE overwriting the current one: that copy is the whole of the morph half of a
+                // morphing vertex's motion vector (see the layout note in shaders/pbr.vert, and
+                // docs/deformation_motion_vectors.md for why the previous weights are stored here rather
+                // than in a buffer of their own). Both regions are `rig.target_count` floats, so this is
+                // the ONLY place that has to keep them in step.
+                float* const weight_dst = active_scratch + weight_offset;
+                std::memcpy(weight_dst + rig.target_count, weight_dst, static_cast<std::size_t>(rig.target_count) * sizeof(float));
+                std::memcpy(weight_dst, weights.data(), weights.size_bytes());
             }
         }
         if (!pose.any_transform) {

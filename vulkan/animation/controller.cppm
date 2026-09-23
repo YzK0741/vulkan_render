@@ -1,6 +1,6 @@
 // ============================================================================
 // module: vulkan.animation
-// module version: 0.1.3a  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.2.0  (independent of the app version in CMakeLists project(VERSION))
 //
 // Keyframe playback / skinning / morph targets, format-neutral and runtime-agnostic:
 // driven through an injected `backend` surface and structural `source` concepts -
@@ -562,7 +562,15 @@ namespace vulkan::animation {
                             continue;
                         }
                         std::size_t const delta_floats = static_cast<std::size_t>(verts) * target_count * 6u;
-                        if (total_floats + delta_floats + target_count > vulkan::scene_morph_capacity) {
+                        // TWO weight regions per primitive, not one: the current weights and the weights
+                        // this vertex had ONE FRAME AGO. The second is what gives a MORPHING mesh a motion
+                        // vector that carries its deformation - the same job the previous-frame skin
+                        // matrices do for a skinned one - and it costs 2*target_count floats instead of the
+                        // 8 Mi-float scratch a whole-buffer mirror would need (see
+                        // docs/deformation_motion_vectors.md). Its layout is the LAST region of the block:
+                        // [per vertex per target: dpos(3) dnrm(3)][weights: targets][previous weights: targets]
+                        std::size_t const weight_floats = static_cast<std::size_t>(target_count) * 2u;
+                        if (total_floats + delta_floats + weight_floats > vulkan::scene_morph_capacity) {
                             utility::log("morph: scene morph buffer capacity exceeded, remaining primitives skipped");
                             break;
                         }
@@ -586,11 +594,19 @@ namespace vulkan::animation {
                             *dst++ = w;
                             rig_defaults.push_back(w);
                         }
+                        // ... and the previous-weights region starts out EQUAL to the current one, so a
+                        // morphable primitive that nothing animates reports no morph deformation at all
+                        // (its two regions stay equal) instead of reporting the distance from zero weights.
+                        // A per-frame writer keeps them in step by copying the current region forward before
+                        // it overwrites it - see the weight write in update().
+                        for (uint32_t t = 0; t < target_count; ++t) {
+                            *dst++ = rig_defaults[t];
+                        }
                         this->morph_rigs.push_back(morph_rig{leaves[i], verts, target_count, static_cast<uint32_t>(total_floats), source, std::move(rig_defaults)});
                         leaves[i]->push.morph_base = static_cast<uint32_t>(total_floats);
                         leaves[i]->push.morph_targets = target_count;
                         leaves[i]->push.morph_vertices = verts;
-                        total_floats += delta_floats + target_count;
+                        total_floats += delta_floats + weight_floats;
                     }
                 }
                 if (!this->morph_rigs.empty()) {

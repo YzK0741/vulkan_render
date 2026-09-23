@@ -570,6 +570,21 @@ namespace vulkan {
             ///       the used region for the same reason the others are there.
             static constexpr uint32_t ml_trace_storage = heap_slot_base + 719u;
             static constexpr uint32_t ml_resolved_storage = heap_slot_base + 735u;
+            /**
+             * @brief the joint blocks as they were ONE FRAME AGO, per frame slot: the deformation half of a
+             *        motion vector
+             *
+             * @note A SECOND per-frame family rather than more slots inside @ref skin_matrices, because a
+             *       vertex's motion vector needs the matrices the PREVIOUS frame drew with and the current
+             *       buffer has already been overwritten with this frame's by the time the frame records.
+             *       The layout, the indices and the frame-slot rule are identical to the current family's -
+             *       that is what lets the shader read the same `skin_base` from this slot and lets the
+             *       runtime publish into the CURRENT frame slot's buffer (see
+             *       runtime::advance_motion_deformations), exactly as @ref previous_transforms does for the
+             *       world matrices. It lives at the END of the used region for the same reason the TLAS and
+             *       the two storage twins do: growing an array in place would renumber every array after it.
+             */
+            static constexpr uint32_t skin_matrices_previous = heap_slot_base + 743u;
             static constexpr uint32_t ml_history = heap_slot_base + 599u;
             static constexpr uint32_t ml_resolved = heap_slot_base + 607u;
             static constexpr uint32_t taa_current = heap_slot_base + 623u; // per image: TAA's pair

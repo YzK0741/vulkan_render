@@ -250,10 +250,19 @@ namespace vulkan {
         // reference their block via material_push_constants::skin_base
         std::vector<vk_buffer> skin_buffers = {};
         std::vector<void*> skin_mapped = {};
+        // the SAME joint blocks at the time the PREVIOUS frame drew them (heap: skin_matrices_previous):
+        // one buffer per frame slot like the current ones, plus the CPU-side copy of "the matrices one
+        // frame ago" that advance_motion_deformations() publishes into the CURRENT slot's buffer and then
+        // refreshes - the exact arrangement motion_buffers/motion_previous uses for world matrices, and for
+        // the same reason: a deforming vertex's motion vector is the difference between the two. indices
+        // 0-3 are the identity block in both buffers, so an unskinned read is unchanged either way
+        std::vector<vk_buffer> skin_buffers_previous = {};
+        std::vector<void*> skin_previous_mapped = {};
+        std::vector<glm::mat4> skin_previous = {};
         // morph data (scene block slot 10): ONE buffer per frame slot, like the skin matrices.
         // scene_morph_capacity floats each, host-visible. The caller writes per-primitive blocks
-        // (morph deltas + weights) through morph_scratch() and points primitives at them via
-        // material_push_constants::morph_* fields
+        // (morph deltas + weights + the PREVIOUS frame's weights, see morph_scratch()'s note) through
+        // morph_scratch() and points primitives at them via material_push_constants::morph_* fields
         std::vector<vk_buffer> morph_buffers = {};
         std::vector<void*> morph_mapped = {};
         // per-slot scene resources: ONE buffer per frame slot, like the camera UBO - each slot's shader reads
@@ -1256,6 +1265,29 @@ namespace vulkan {
          *       that, which is why this is not worth a second walk over the whole tree.
          */
         void advance_motion_transforms();
+        /**
+         * @ingroup vulkan_runtime
+         * @brief publish the joint matrices ONE FRAME AGO into the current frame slot's previous-skin buffer,
+         *        then remember this frame's - the deformation half of every skinned vertex's motion vector
+         *
+         * WHY IT IS SEPARATE FROM advance_motion_transforms(). That function walks the scene tree, because a
+         * world matrix is a per-LEAF fact; a joint matrix is not - the animation controller uploads the whole
+         * block through set_skin_matrices() before this runs, so all this has to do is the same
+         * publish-then-refresh the motion transforms do, over the whole block instead of per leaf. Keeping
+         * them apart is also what keeps the controller out of it: no controller path can desync the two
+         * halves, because the ONLY writer here is this function.
+         *
+         * @note Called from begin_recording(), immediately after advance_motion_transforms() and therefore
+         *       after the animation controller's own write window (see animation::controller::update: after
+         *       pace_and_acquire(), before begin_recording()) - so what it reads has been written.
+         * @note A frame on which the controller does not run leaves the two copies equal, so the deformation
+         *       term of the motion vector is exactly zero, which is the correct answer for a pose that did
+         *       not change rather than a special case. The same holds after a PINNED animation_time.
+         * @note The identity block the controller bakes into every slot at setup (indices 0-3) is also this
+         *       buffer's initial content, so a vertex with no history reads the bind pose; the one frame that
+         *       could be wrong is a frame TAA gives no history to anyway (history_valid = 0).
+         */
+        void advance_motion_deformations();
         /**
          * @ingroup vulkan_runtime
          * @brief build a normal_draw_primitive from @p info WITHOUT attaching it to the scene tree:
@@ -2726,9 +2758,17 @@ namespace vulkan {
          * @brief host-visible scratch memory of the ACTIVE frame slot's morph buffer (scene set
          *        binding 10, scene_morph_capacity floats each). The caller lays out per-primitive
          *        morph blocks (per vertex per target pos-delta/nrm-delta floats, then the
-         *        per-target weights) and points primitives at their block through
-         *        material_push_constants::morph_base / morph_targets / morph_vertices (see those
-         *        fields for the layout convention).
+         *        per-target weights, then the per-target PREVIOUS weights) and points primitives at
+         *        their block through material_push_constants::morph_base / morph_targets /
+         *        morph_vertices (see those fields for the layout convention).
+         * @note THE TWO WEIGHT REGIONS ARE A CONTRACT, and the second one is why a morphing mesh has a
+         *       motion vector at all: the vertex stage reads the block's FIRST weight region as this
+         *       frame's weights and the SECOND as the weights one frame ago, so a caller that rewrites
+         *       weights per frame must copy the first region into the second BEFORE overwriting it -
+         *       otherwise its mesh reports a morph deformation that is not happening. A caller that sets
+         *       weights once (at setup) has nothing to do: animation::controller::update, which is the
+         *       only per-frame writer this renderer has, bakes both regions equal and then keeps them in
+         *       step. See docs/deformation_motion_vectors.md.
          * @return the mapped base of the slot paced by the last pace_and_acquire(), or nullptr when
          *         the morph buffer is unavailable
          */

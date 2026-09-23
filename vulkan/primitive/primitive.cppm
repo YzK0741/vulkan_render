@@ -3,7 +3,7 @@
 //         GPU primitives that live in the scene-tree leaves, plus the GPU
 //         material / camera / light UBO records of the scene block; versioned in
 //         lock-step with vulkan.runtime, see that module's banner)
-// module version: 0.8.1  (independent of the app version in CMakeLists project(VERSION))
+// module version: 0.8.1a  (independent of the app version in CMakeLists project(VERSION))
 //
 // GPU scene contents (namespace vulkan):
 //   - vulkan::primitive (owns geometry buffers + material push constants,
@@ -465,8 +465,11 @@ namespace vulkan {
         // matrices[skin_base + in_joints.x] etc. — set once per primitive after import
         uint32_t skin_base = 0;
         // morph blend (binding 10): float index of this primitive's morph block (deltas first:
-        // per vertex per target pos-delta/nrm-delta, then the per-target weights); morph_targets /
-        // morph_vertices describe the block stride. All three stay 0 for non-morphable draws.
+        // per vertex per target pos-delta/nrm-delta, then the per-target weights, then the per-target
+        // PREVIOUS weights); morph_targets / morph_vertices describe the block stride. All three stay 0
+        // for non-morphable draws. The vertex stage reads the FIRST weight region as this frame's weights
+        // and the SECOND as the weights one frame ago, which is the morph half of a deforming mesh's
+        // motion vector - see runtime::morph_scratch()'s note for the writer's side of that contract.
         uint32_t morph_base = 0;
         uint32_t morph_targets = 0;  // number of morph targets (0 = no morph)
         uint32_t morph_vertices = 0; // vertex count of this primitive (block stride)

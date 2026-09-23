@@ -350,6 +350,24 @@ namespace vulkan {
                                         &this->skin_mapped,
                                         VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT); // the heap writes this one's address
 
+        // The SAME joint blocks as of ONE FRAME AGO (heap: skin_matrices_previous), one buffer per frame
+        // slot: a DEFORMING vertex's motion vector is the difference between the two frames' skinning, so
+        // these are as load-bearing as the current ones, and a frame in flight must not share the buffer the
+        // next frame rewrites. Zero-filled on the GPU like its sibling; skin_previous is the CPU-side copy
+        // ("the matrices one frame ago") that advance_motion_deformations() publishes from, initialised to
+        // IDENTITY exactly as motion_previous is - an unskinned or not-yet-animated vertex then reports no
+        // deformation, and the one frame that could read it is a frame TAA gives no history to.
+        std::vector<unsigned char> const zeroed_previous_skins(static_cast<size_t>(vulkan::scene_skin_capacity) * sizeof(glm::mat4), 0);
+        init_utils::create_host_buffers(this->vulkan_core,
+                                        vulkan::core::MAX_FRAMES_IN_FLIGHT,
+                                        std::as_bytes(std::span(zeroed_previous_skins)),
+                                        vulkan::buffer_type::storage_coherent,
+                                        "previous skin matrix buffer",
+                                        this->skin_buffers_previous,
+                                        &this->skin_previous_mapped,
+                                        VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT); // the heap writes this one's address
+        this->skin_previous.assign(vulkan::scene_skin_capacity, glm::mat4(1.0f));
+
         // Morph data (set 0 binding 10): one buffer PER FRAME SLOT (scene_morph_capacity floats
         // each, host-visible); the caller bakes per-primitive morph blocks (deltas + weights)
         // into every slot's buffer at setup, then rewrites only the active slot's weights per frame.
@@ -620,6 +638,9 @@ namespace vulkan {
         // change per frame, and only the CONTENTS are rewritten (see the per-frame slot rule in runtime.cppm).
         write_heap_scene_buffer(this->vulkan_core, this->motion_buffers, core::heap_slots::previous_transforms, static_cast<VkDeviceSize>(vulkan::scene_motion_capacity) * sizeof(glm::mat4), VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
         write_heap_scene_buffer(this->vulkan_core, this->skin_buffers, core::heap_slots::skin_matrices, static_cast<VkDeviceSize>(vulkan::scene_skin_capacity) * sizeof(glm::mat4), VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+        // ... and the previous-frame twin of the skin block, whose CONTENTS advance_motion_deformations()
+        // rewrites per frame slot - so it is registered here, from the same size, for the same reason.
+        write_heap_scene_buffer(this->vulkan_core, this->skin_buffers_previous, core::heap_slots::skin_matrices_previous, static_cast<VkDeviceSize>(vulkan::scene_skin_capacity) * sizeof(glm::mat4), VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
         write_heap_scene_buffer(this->vulkan_core, this->morph_buffers, core::heap_slots::morph_data, static_cast<VkDeviceSize>(vulkan::scene_morph_capacity) * sizeof(float), VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
         // THE INSTANCE TRANSFORM TABLE (set 0 binding 6) is the odd one: a SINGLE buffer rather than one per frame
         // slot (see runtime.cppm's member), so it takes ONE grid slot instead of a two-slot array - which is what

@@ -243,6 +243,28 @@ namespace vulkan {
         }
     }
 
+    void runtime::advance_motion_deformations() {
+        if (this->skin_previous_mapped.empty() || this->skin_mapped.empty()) {
+            return;
+        }
+        uint32_t const slot = static_cast<uint32_t>(this->vulkan_core.current_frame);
+        if (slot >= this->skin_previous_mapped.size() || slot >= this->skin_mapped.size()) {
+            return; // no buffer for this slot: nothing to publish, and the shader reads slot 0's set
+        }
+        auto* const published = static_cast<glm::mat4*>(this->skin_previous_mapped[slot]);
+        auto const* const current = static_cast<glm::mat4 const*>(this->skin_mapped[slot]);
+        if (published == nullptr || current == nullptr || this->skin_previous.empty()) {
+            return;
+        }
+        // Publish what the PREVIOUS frame drew with, THEN remember this frame's - the same read-then-refresh
+        // advance_motion_transforms() does per leaf, here over the whole joint block in one memcpy each
+        // because the controller has already uploaded this frame's block through set_skin_matrices() (see the
+        // declaration for why the animation controller is deliberately not the writer).
+        size_t const bytes = this->skin_previous.size() * sizeof(glm::mat4);
+        std::memcpy(published, this->skin_previous.data(), bytes);
+        std::memcpy(this->skin_previous.data(), current, bytes);
+    }
+
     frame_status runtime::begin_recording() {
         vulkan::profiling::cpu_phase_timer const phase_timer{this->cpu_timings, vulkan::profiling::cpu_phase::begin};
         core& vk = this->vulkan_core;
@@ -333,6 +355,11 @@ namespace vulkan {
         // ... and, in the same walk's shadow, the previous-frame world matrices that give TAA its
         // object motion: see the declaration for why this has to happen here and not at draw time.
         this->advance_motion_transforms();
+        // ... and the joint matrices ONE FRAME AGO, which are the other half of a motion vector for a
+        // DEFORMING mesh: the rigid walk above cannot see that a skinned vertex moved inside its own object
+        // space, because that movement is not in any node's matrix. Runs here, immediately after the rigid
+        // publication and therefore after the animation controller's own write window.
+        this->advance_motion_deformations();
         // Collect the primitive leaves once (DFS over the whole scene): the shadow pass draws all
         // of them, the main pass draws the subset bound to each pipeline
         this->frame_leaves.clear();

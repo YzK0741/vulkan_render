@@ -62,9 +62,22 @@ layout(descriptor_heap, descriptor_stride = heap_slot_stride) readonly buffer Sk
     mat4 matrices[];
 } skins[];
 
+// THE SAME joint blocks as they were ONE FRAME AGO, read at the SAME skin_base: the two buffers share their
+// layout, their indices and their frame-slot rule, which is what makes the deformation half of a motion
+// vector a second read rather than a second addressing scheme. The runtime publishes the previous frame's
+// block into the CURRENT slot's buffer (runtime::advance_motion_deformations), so the slot macro is the
+// frame slot this stage already carries and no extra push lane names it.
+layout(descriptor_heap, descriptor_stride = heap_slot_stride) readonly buffer PreviousSkinMatrices {
+    mat4 matrices[];
+} previous_skins[];
+
 // Morph data (scene set binding 10): per-morphable-primitive block laid out by the caller as
-//   [ per vertex v: per target t: posDelta(xyz) normalDelta(xyz) ]  [ weights per target ]
-// referenced through push.morph_base (float index) / morph_targets / morph_vertices.
+//   [ per vertex v: per target t: posDelta(xyz) normalDelta(xyz) ] [ weights per target ] [ PREVIOUS weights per target ]
+// referenced through push.morph_base (float index) / morph_targets / morph_vertices. The SECOND weight
+// region holds the weights this vertex had ONE FRAME AGO - the caller (animation::controller::update)
+// copies the current region forward before it overwrites it - and reading it is what gives a MORPHING
+// vertex a motion vector that carries its morph deformation. The deltas are read once: they are static,
+// so only the weights moved between the two frames.
 layout(descriptor_heap, descriptor_stride = heap_slot_stride) readonly buffer MorphData {
     float morphs[];
 } morph_data[];
@@ -102,21 +115,32 @@ layout(location = 3) out vec3 v_prev_world_pos; // where this vertex was last fr
 void main() {
     // morph blend first (local deltas + active target weights; skipped when not morphable)
     vec4 local_pos = vec4(in_position, 1.0);
+    // ... and where this vertex was in object space BEFORE the morph blend, which is the same position
+    // whenever the primitive is not morphable (the copy is why the branch below can be a uniform one).
+    vec4 prev_local_pos = local_pos;
     vec3 morph_normal = in_normal;
     if (push.morph_targets > 0u) {
         const uint vert = gl_VertexIndex;
+        // TWO weight regions per morph block: the current weights, then the weights one frame ago (see the
+        // layout note on MorphData above and the weight write in animation::controller::update).
         const uint weight_base = push.morph_base + push.morph_targets * push.morph_vertices * 6u;
         vec3 pos_delta = vec3(0.0);
+        vec3 prev_pos_delta = vec3(0.0);
         vec3 nrm_delta = vec3(0.0);
         for (uint t = 0u; t < push.morph_targets; ++t) {
             const float w = morph_data[heap_morph_slot].morphs[weight_base + t];
+            const float w_prev = morph_data[heap_morph_slot].morphs[weight_base + push.morph_targets + t];
             const uint base = push.morph_base + (vert * push.morph_targets + t) * 6u;
             const vec3 dpos = vec3(morph_data[heap_morph_slot].morphs[base], morph_data[heap_morph_slot].morphs[base + 1u], morph_data[heap_morph_slot].morphs[base + 2u]);
             const vec3 dnrm = vec3(morph_data[heap_morph_slot].morphs[base + 3u], morph_data[heap_morph_slot].morphs[base + 4u], morph_data[heap_morph_slot].morphs[base + 5u]);
             pos_delta += w * dpos;
+            prev_pos_delta += w_prev * dpos;
             nrm_delta += w * dnrm;
         }
         local_pos = vec4(in_position + pos_delta, 1.0);
+        // the SAME blend with the previous weights: the morph half of the deformation term, and the deltas
+        // are read once because they are static - only the weights moved between the two frames
+        prev_local_pos = vec4(in_position + prev_pos_delta, 1.0);
         morph_normal = in_normal + nrm_delta;
     }
 
@@ -127,16 +151,25 @@ void main() {
     const float wsum = in_weights.x + in_weights.y + in_weights.z + in_weights.w;
     if (wsum > 0.0) {
         vec4 pos = vec4(0.0);
+        vec4 prev_pos = vec4(0.0);
         vec3 nrm = vec3(0.0);
         pos += in_weights.x * (skins[heap_skin_slot].matrices[push.skin_base + in_joints.x] * local_pos);
         pos += in_weights.y * (skins[heap_skin_slot].matrices[push.skin_base + in_joints.y] * local_pos);
         pos += in_weights.z * (skins[heap_skin_slot].matrices[push.skin_base + in_joints.z] * local_pos);
         pos += in_weights.w * (skins[heap_skin_slot].matrices[push.skin_base + in_joints.w] * local_pos);
+        // ... and the SAME blend through the matrices the previous frame drew with, applied to the position
+        // the previous frame morphed to: the two halves compose as skin_previous(morph_previous(v)), which
+        // is the deformation term for a mesh that both morphs and skins.
+        prev_pos += in_weights.x * (previous_skins[heap_skin_previous_slot].matrices[push.skin_base + in_joints.x] * prev_local_pos);
+        prev_pos += in_weights.y * (previous_skins[heap_skin_previous_slot].matrices[push.skin_base + in_joints.y] * prev_local_pos);
+        prev_pos += in_weights.z * (previous_skins[heap_skin_previous_slot].matrices[push.skin_base + in_joints.z] * prev_local_pos);
+        prev_pos += in_weights.w * (previous_skins[heap_skin_previous_slot].matrices[push.skin_base + in_joints.w] * prev_local_pos);
         nrm += in_weights.x * mat3(skins[heap_skin_slot].matrices[push.skin_base + in_joints.x]) * morph_normal;
         nrm += in_weights.y * mat3(skins[heap_skin_slot].matrices[push.skin_base + in_joints.y]) * morph_normal;
         nrm += in_weights.z * mat3(skins[heap_skin_slot].matrices[push.skin_base + in_joints.z]) * morph_normal;
         nrm += in_weights.w * mat3(skins[heap_skin_slot].matrices[push.skin_base + in_joints.w]) * morph_normal;
         local_pos = pos / wsum;
+        prev_local_pos = prev_pos / wsum;
         skinned_normal = nrm / wsum;
     }
 
@@ -146,12 +179,15 @@ void main() {
     v_normal = normalize(mat3(world) * skinned_normal);
     v_uv = in_uv;
 
-    // The SAME local position through the previous frame's world matrix: exact object motion for a
-    // rigid transform (the only kind of movement a model matrix can describe), and the standard
-    // approximation for a deforming one - a skinned or morphed vertex moved within its own object
-    // space too, and nothing here knows that yet.
+    // The previous LOCAL position through the previous frame's world matrix. The node's rigid motion comes
+    // from that matrix, and a vertex's own movement inside its object space comes from prev_local_pos
+    // above - the previous MORPH weights and the previous SKIN matrices, composed in that order. Which is
+    // why this is no longer "the current local position through last frame's model": that version reported
+    // a motion vector of exactly zero for a mesh whose node never moved, no matter how it deformed.
+    // NOT COVERED HERE, and not by anything in this stage: alpha-blended geometry, which is composited
+    // outside the G-buffer and so writes no motion vector at all.
     const uint motion_index = push.motion_base + ((push.flags & 1u) != 0u ? gl_InstanceIndex : 0u);
-    v_prev_world_pos = (previous_transforms[heap_previous_slot].matrices[motion_index] * local_pos).xyz;
+    v_prev_world_pos = (previous_transforms[heap_previous_slot].matrices[motion_index] * prev_local_pos).xyz;
 
     gl_Position = camera[heap_camera_slot].proj * camera[heap_camera_slot].view * world_pos;
 }
