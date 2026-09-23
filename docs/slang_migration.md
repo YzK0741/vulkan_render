@@ -523,7 +523,32 @@ applied per stage, easy ones first so that each new hazard is met in isolation. 
    shim's five matrix-array accessors plus `light_matrix_at`, which every remaining stage that samples the
    sun's shadow also needs.)
 
-### WHAT THE GATE CANNOT VERIFY, stated before the last stages are ported
+### WHAT CAN REACH EACH REMAINING STAGE, as a table rather than a paragraph
+
+TWO PLACES PARSE THE CONFIG, and looking at only one of them produced a wrong answer here: `runtime.cpp` reads
+`unlit`, `gbuffer-debug`, `shadow`, `rt_shadow`, `clustered`, `taa`, `ssao`, `bloom`, `fxaa`, `transparent`
+through `ask(...)`, while `application_configuration.cpp` reads the `[render]` keys that switch PASSES -
+`rt_mask_bake`, `rt_skin_bake` and the whole `megalights*` family (`megalights`, `_samples`,
+`_spatial_sigma`, `_history_tolerance`, `_light_angle`, `_bias`). Grepping the first file and concluding
+"unreachable" was a mistake made and corrected in the same session; the lesson is to grep the CONFIG PARSER,
+not the runtime, before declaring a stage unreachable.
+
+| stage | route | why |
+| --- | --- | --- |
+| `deferred.frag` | the gate (all ten scenarios) | it IS the default path's lighting stage |
+| `rt_shadow.rgen/.rchit/.rmiss` | A/B with `rt_shadow = true` | proven: 0/1036800 on two scenes |
+| `compute_skin.comp` | reachable, but NOT visible in the A/B scene tried | `rt_skin_bake = true` IS honoured (the loaded settings echo it, the pipeline is created), yet the frame does not change and shifting every skinned vertex by +1.0 changes nothing either - the skinned caster's effect is evidently not on screen in the fixture's framing. Needs a scene where that caster's shadow lands in view, or the probe technique applied until one is found |
+| `mask_bake.comp` | A/B with `rt_mask_bake = true` | the key exists and the pass is then dispatched (not yet ported) |
+| `megalights_trace/temporal.comp` | A/B with `megalights = true` | the keys exist (the feature defaults off) |
+| `rt_shadow.rahit` | shape + spirv-val, for now | the ANY-HIT is not reached in the Sponza RT configuration - proven by the forced-IgnoreHit probe (0 pixels changed). The mask bake is OFF by default and configurable, so that is NOT the reason; whatever keeps it off the path is still to be found, and the probe is how |
+| `heap_probe.*` | log comparison | the runtime logs the probe's own answer at startup, both halves |
+
+THE PATTERN WORTH NAMING: the migration's strongest evidence (byte-identical frames) covers the stages that
+are on a path a capture can reach, and a stage that a forced probe proves is NOT on it is not covered by a
+green comparison however identical that comparison looks. Two claims of that kind were made and one of them -
+"the bake has no config key" - was WRONG; the measurement it rested on (0 pixels changed) was right, and the
+table now separates the two.
+
 
 The gate records what the ten scenarios render, and three groups of shaders are NOT on any of their paths:
 `rt_shadow.*` (no scenario enables `rt_shadows`), `megalights_trace/temporal.comp` (no scenario enables the
@@ -571,15 +596,15 @@ TWO ROUTES EXIST FOR THOSE STAGES, and neither needs the gate's references to be
     something visible and see whether the frame moves - a green comparison is evidence about the stages that
     RAN, not about the ones that were merely loaded. Applied to every remaining port before its A/B is
     trusted.
-  - **AND TWO OF THESE STAGES ARE UNREACHABLE FROM A CONFIG, measured twice**: `rt_shadow.rahit` (the mask
-    bake replaces the MASK geometry) and `compute_skin.comp` (shifting EVERY skinned vertex by +1.0 changed
-    the skinned-fixture frame by 0 pixels). The cause is the same for both and it is a RUNTIME fact, not a
-    shader one: `set_rt_mask_bake` and `set_rt_skin_bake` exist as setters but neither is read from a config
-    key, so a capture cannot turn the bake off and reach the fallback stage. THE GLSL BUILD IS EQUALLY
-    UNEXERCISED THERE - the same frame is byte-identical either way - so the migration loses nothing it had;
-    but the honest status for both ports is "built, spirv-val clean, shape-verified, A/B frame byte-identical
-    and PROVEN NOT to be what that A/B exercised". Making them reachable is a host-side change (one config
-    key each), which is why it is written here rather than done quietly inside a shader port.
+  - **AND A GREEN COMPARISON CAN COVER LESS THAN IT LOOKS, measured twice**: `rt_shadow.rahit` (forcing
+    `IgnoreHit()` on every hit changed the Sponza RT frame by 0 pixels) and `compute_skin.comp` (shifting
+    EVERY skinned vertex by +1.0 changed the skinned-fixture frame by 0 pixels) - in both cases the stage was
+    not on the path the comparison exercised. The first explanation written down here ("the bake has no config
+    key") was WRONG: `rt_mask_bake` and `rt_skin_bake` are parsed by `application_configuration.cpp`, not by
+    `runtime.cpp`, and the compute-skin pass is reachable with `rt_skin_bake = true`. The MEASUREMENT was
+    right and the explanation was not, which is the reason the technique is stated as a technique: make the
+    stage do something visible, and see whether the frame moves - BEFORE trusting the comparison that says
+    the frame is identical.
 
 
 3. **Compute stages**: `compute_skin.comp`, `mask_bake.comp`, `megalights_trace.comp`,
