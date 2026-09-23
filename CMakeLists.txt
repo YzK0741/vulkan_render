@@ -758,6 +758,9 @@ set(VR_SLANG_SOURCES
     heap_probe.slang:frag_main:fragment:heap_probe.frag.spv
     # The COMPUTE half is its own file because it has its own push layout (one push block per stage).
     heap_probe_comp.slang:comp_main:compute:heap_probe.comp.spv
+    # compute_skin.slang feeds the acceleration structures the deformed vertex positions; its A/B needs the
+    # skinned fixture with rt_shadow on (see docs/slang_migration.md).
+    compute_skin.slang:comp_main:compute:compute_skin.comp.spv
     # rt_shadow.slang is the ray-traced shadow's shader file, growing one stage at a time; it starts with the
     # closest-hit stage, whose whole job is the payload contract (see the file). No gate scenario enables
     # rt_shadows, so this port is shape-verified and belongs to the A/B capture route in docs/slang_migration.md.

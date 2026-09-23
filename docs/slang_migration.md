@@ -571,6 +571,15 @@ TWO ROUTES EXIST FOR THOSE STAGES, and neither needs the gate's references to be
     something visible and see whether the frame moves - a green comparison is evidence about the stages that
     RAN, not about the ones that were merely loaded. Applied to every remaining port before its A/B is
     trusted.
+  - **AND TWO OF THESE STAGES ARE UNREACHABLE FROM A CONFIG, measured twice**: `rt_shadow.rahit` (the mask
+    bake replaces the MASK geometry) and `compute_skin.comp` (shifting EVERY skinned vertex by +1.0 changed
+    the skinned-fixture frame by 0 pixels). The cause is the same for both and it is a RUNTIME fact, not a
+    shader one: `set_rt_mask_bake` and `set_rt_skin_bake` exist as setters but neither is read from a config
+    key, so a capture cannot turn the bake off and reach the fallback stage. THE GLSL BUILD IS EQUALLY
+    UNEXERCISED THERE - the same frame is byte-identical either way - so the migration loses nothing it had;
+    but the honest status for both ports is "built, spirv-val clean, shape-verified, A/B frame byte-identical
+    and PROVEN NOT to be what that A/B exercised". Making them reachable is a host-side change (one config
+    key each), which is why it is written here rather than done quietly inside a shader port.
 
 
 3. **Compute stages**: `compute_skin.comp`, `mask_bake.comp`, `megalights_trace.comp`,
