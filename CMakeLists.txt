@@ -732,9 +732,12 @@ set(VR_SLANG_SOURCES
     # UNIFORM descriptor read through Slang's StorageBuffer pointer returns zeros with NO validation
     # finding. That is also why the camera and the light are written as STORAGE descriptors.
     gbuffer.slang:main:fragment:gbuffer.frag.spv
-    # pbr.slang is the FORWARD path's fragment stage: the same shared shading code as the deferred path,
-    # so it is where the sun/shadow/punctual/cluster/IBL fetches are proven under Slang.
+    # pbr.slang is the FORWARD path's shader PAIR: the fragment stage is where the sun/shadow/punctual/
+    # cluster/IBL fetches are proven under Slang, and the vertex stage is the one the G-BUFFER pass loads for
+    # every opaque draw - so the vertex entry is verified by all ten scenarios, and by the transparent pass's
+    # forward default too.
     pbr.slang:main:fragment:pbr.frag.spv
+    pbr.slang:vertex_main:vertex:pbr.vert.spv
     # shadow.slang shares no body: the material table and the albedo fetch through the shim's accessors
     # (`material_at`, `heap_sample`), and the entry returns void because a depth-only stage has no output.
     shadow.slang:main:fragment:shadow.frag.spv

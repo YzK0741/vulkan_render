@@ -69,7 +69,7 @@ vec4 heap_sample(uint texture_index, vec2 uv) {
        // DescriptorHandle<Sampler2D> whose .x names the texture slot and .y the sampler slot
 
 // Push constant block: must mirror the vertex stages and material_push_constants in the runtime
-// (seven uint fields first, then the aligned mat4) so member offsets agree across stages and with
+// (eight uint fields first, then the aligned mat4) so member offsets agree across stages and with
 // the CPU writes. A fragment stage typically reads material_index and flags only; the other fields
 // exist to keep the block layout identical.
 layout(push_constant) uniform PushConstants {
@@ -80,7 +80,17 @@ layout(push_constant) uniform PushConstants {
     uint morph_targets;  // number of morph targets (0 = not morphable)
     uint morph_vertices; // vertex count of this primitive (morph block stride)
     uint instance_base;  // mat4 start of this instanced primitive's transforms (unused here)
-    mat4 model;          // per-model world transform (kept out of the shared camera UBO; unused here)
+    // Declared rather than left as implicit padding, because the VERTEX stage reads it: pbr.vert turns
+    // push.motion_base into this draw's index into the previous-frame world matrices, which is where the
+    // rigid half of a motion vector comes from. It sits in the 4 bytes std430 leaves between instance_base
+    // and the 16-aligned `model`, so declaring it moves NO offset in any stage.
+    uint motion_base;    // start of this draw's previous-frame world matrices (pbr.vert: binding 13)
+    // VR_MAT4, not `mat4`, and that matters now that a VERTEX stage reads this member: Slang's default
+    // majorness is ROW-major, so a plain `mat4` here would compile to `RowMajor` and read the host's
+    // column-major glm::mat4 transposed. VR_MAT4 is `mat4` in GLSL (unchanged) and `row_major float4x4` in
+    // Slang, which is the spelling that emits `ColMajor`. The fragment stages never read `model`, which is
+    // why this stayed harmless until the vertex port - the same trap as docs/slang_migration.md section 6.
+    VR_MAT4 model;       // per-model world transform (kept out of the shared camera UBO; unused here)
     // THE HEAP INDICES (see heap_slots.glsl), shared by every stage that includes this file: which frame slot and
     // which swapchain image it runs for. LAST on purpose, so every field above keeps its offset, and delivered
     // through vkCmdPushDataEXT because a heap pipeline has no layout to hold push constants.

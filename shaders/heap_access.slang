@@ -55,6 +55,25 @@ DescriptorHandle<Sampler2D> combined_at(uint texture_slot, uint sampler_slot)
 #define cluster_count_at(slot, cluster) heap_at<StructuredBuffer<uint>>(slot)[cluster]
 #define cluster_indices_at(slot, i) heap_at<StructuredBuffer<uint>>(slot)[i]
 
+// ---- THE VERTEX-SIDE MATRIX ARRAYS, and why they are structured buffers here ----
+//
+// Each GLSL declaration in the vertex leaves is `readonly buffer X { mat4 arr[]; } x[];`, i.e. a heap slot
+// holding a runtime array of `mat4`. The Slang counterpart of "a runtime array of mat4" is a structured
+// buffer whose ELEMENT is the matrix, and the element type is `VR_MAT4` (`row_major float4x4`) for the same
+// measured reason a block member is: that spelling is what emits SPIR-V `ColMajor` with `MatrixStride 16`,
+// which is the layout the host's column-major glm::mat4 arrays have. The shared `= 0u`-style slot argument
+// is the caller's, so these macros only name the SHAPE.
+//
+// THEY ARE DEFINED HERE RATHER THAN IN A SHARED BODY because the families are read by the vertex LEAVES: a
+// leaf may touch the heap directly, and the GLSL side of these five spells the same reads inline in its own
+// file (there is no shared body to keep in step). They exist so that pbr.slang and the shadow.vert port
+// that follows it read the same way in both languages.
+#define instance_transform_at(slot, index) heap_at<StructuredBuffer<VR_MAT4>>(slot)[index]
+#define previous_transform_at(slot, index) heap_at<StructuredBuffer<VR_MAT4>>(slot)[index]
+#define skin_matrix_at(slot, index) heap_at<StructuredBuffer<VR_MAT4>>(slot)[index]
+#define skin_matrix_previous_at(slot, index) heap_at<StructuredBuffer<VR_MAT4>>(slot)[index]
+#define morph_value_at(slot, index) heap_at<StructuredBuffer<float>>(slot)[index]
+
 // ---- THE FETCH HELPERS the GLSL side defines as macros or functions ----
 
 /// one texel from a heap image, through the sampler at @p sampler_slot (the GLSL side is the
