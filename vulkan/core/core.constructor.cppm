@@ -421,6 +421,16 @@ namespace vulkan {
             }
             creation_info.extensions.push_back(VK_EXT_DESCRIPTOR_HEAP_EXTENSION_NAME);
         }
+        // ... and mesh shaders, the other independent extension: it replaces the VERTEX stage with a MESH
+        // stage (and, where the device has one, adds a TASK stage), so it neither needs nor is needed by
+        // anything above. Its feature struct is the second independent link in the query chain on the same
+        // rule - pushed only when the query proved both the extension and the meshShader feature, so an
+        // enabled extension and an available feature cannot disagree. No dependency name is pushed with it:
+        // VK_EXT_mesh_shader's dependencies (VK_KHR_spirv_1_4, VK_VERSION_1_2) are both satisfied by the 1.3
+        // device this renderer creates, unlike the heap's own pair.
+        if (capabilities.mesh_shader_available) {
+            creation_info.extensions.push_back(VK_EXT_MESH_SHADER_EXTENSION_NAME);
+        }
 
         if (!check_device_extension_support(physical_device, creation_info.extensions)) {
             utility::panic("Required device extensions not supported");

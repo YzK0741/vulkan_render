@@ -164,6 +164,30 @@ export struct device_capabilities {
     /// @brief whether the device has VK_EXT_descriptor_heap, its descriptorHeap feature, AND that dependency
     bool descriptor_heap_available = false;
 
+    /**
+     * @brief VK_EXT_mesh_shader: a MESH (and, when the device has it, a TASK) shader stage that REPLACES the
+     *        vertex stage rather than extending it, so it is the second independent link in the chains below
+     *
+     * @note like the heap, this is an extension of how work is SUBMITTED rather than of ray tracing, so it
+     *       joins the chains on its own. It has no extension dependency to resolve: VK_EXT_mesh_shader
+     *       depends on VK_KHR_spirv_1_4 and VK_VERSION_1_2, and the engine's 1.3 device already satisfies
+     *       the promoted one.
+     *
+     * @note the PROPERTIES are the limits a meshlet split cannot be sized without, and they are NOT readable
+     *       from the physical device once the extension is not enabled: maxMeshOutputVertices /
+     *       maxMeshOutputPrimitives / maxMeshOutputComponents / maxMeshOutputMemorySize are what one
+     *       workgroup may EMIT, maxMeshWorkGroupSize is how many invocations it may have, and
+     *       maxTaskWorkGroupSize is the same for the task stage. A device that reports the extension but
+     *       not the feature reports these as zero, which is exactly what a mesh pipeline created on such a
+     *       device fails on: "output vertices count exceeds the maxMeshOutputVertices of 0" (VUID
+     *       07115/07116) - measured, on the heap-native probe before this feature was enabled.
+     */
+    VkPhysicalDeviceMeshShaderFeaturesEXT mesh_shader_features = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT};
+    VkPhysicalDeviceMeshShaderPropertiesEXT mesh_shader_properties = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_PROPERTIES_EXT};
+    /// @brief whether the device has VK_EXT_mesh_shader AND its meshShader feature (taskShader is reported
+    ///        separately by mesh_shader_features.taskShader, which is what a task shader must be gated on)
+    bool mesh_shader_available = false;
+
     // ---- Property chain (query only, for renderer decisions/diagnostics) ----
     VkPhysicalDeviceProperties2 properties_2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
     VkPhysicalDeviceDriverProperties driver_properties = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
@@ -464,6 +488,11 @@ void device_capabilities::query(VkPhysicalDevice const physical_device, uint32_t
     // declared, but ... shaderUntypedPointers" - measured, on the probe's first run). It hangs off the heap's own
     // link because a device without the heap has no heap shaders to compile.
     bool const untyped_pointers_extension = descriptor_heap_extension && has_extension(VK_KHR_SHADER_UNTYPED_POINTERS_EXTENSION_NAME);
+    // MESH SHADERS, the other independent extension: like the heap it changes how work is submitted rather
+    // than how rays are traced, and unlike the heap it has no extension dependency left to resolve -
+    // VK_EXT_mesh_shader depends on VK_KHR_spirv_1_4 and VK_VERSION_1_2, and the second one is satisfied by
+    // the 1.3 device this engine creates.
+    bool const mesh_shader_extension = has_extension(VK_EXT_MESH_SHADER_EXTENSION_NAME);
 
     // ---- Feature pNext chain: features_2 -> 1_1 -> 1_2 -> 1_3 -> 1_4 (truncated by api_version),
     //      then the extension features when the device has them. The TAIL is tracked rather than
@@ -491,11 +520,25 @@ void device_capabilities::query(VkPhysicalDevice const physical_device, uint32_t
     }
     // (the cast is what the newer headers need: a concrete feature struct's pNext is void*, while
     // VkBaseOutStructure's own pNext is typed - and the tail is reached through the base type)
-    // THE DESCRIPTOR HEAP IS THE FIRST EXTENSION LINK, ahead of the ray-tracing chain, because the two are
-    // independent: a device can have the heap without ray tracing and the other way round, and each unlink
-    // below therefore cuts only its OWN link rather than everything downstream of it.
-    static_cast<VkBaseOutStructure*>(feature_tail)->pNext = descriptor_heap_extension ? reinterpret_cast<VkBaseOutStructure*>(&descriptor_heap_features) : nullptr;
-    descriptor_heap_features.pNext = ray_tracing_extensions ? reinterpret_cast<VkBaseOutStructure*>(&acceleration_structure_features) : nullptr;
+    //
+    // Chain order: core 1.x, then the INDEPENDENT extension links (descriptor heap, mesh shaders), then the
+    // ray-tracing chain. The two independent ones are ahead because neither depends on ray tracing: a device
+    // can have a heap and mesh shaders without RT and the other way round, so the RT chain hangs off whichever
+    // of them is LAST rather than off a fixed one - hanging it off the heap alone is what dropped mesh shaders
+    // on a device without the heap, whose feature struct then read back as zeros and looked unsupported.
+    // NOTE this pre-query chain is built from extension PRESENCE, because the feature bits are unknown until
+    // vkGetPhysicalDeviceFeatures2 has run; it is rebuilt from AVAILABILITY right after, and that rebuild is
+    // what the vkCreateDevice chain actually contains.
+    VkBaseOutStructure* independent_tail = static_cast<VkBaseOutStructure*>(feature_tail);
+    if (descriptor_heap_extension) {
+        independent_tail->pNext = reinterpret_cast<VkBaseOutStructure*>(&descriptor_heap_features);
+        independent_tail = reinterpret_cast<VkBaseOutStructure*>(&descriptor_heap_features);
+    }
+    if (mesh_shader_extension) {
+        independent_tail->pNext = reinterpret_cast<VkBaseOutStructure*>(&mesh_shader_features);
+        independent_tail = reinterpret_cast<VkBaseOutStructure*>(&mesh_shader_features);
+    }
+    independent_tail->pNext = ray_tracing_extensions ? reinterpret_cast<VkBaseOutStructure*>(&acceleration_structure_features) : nullptr;
     acceleration_structure_features.pNext = ray_tracing_extensions ? &ray_query_features : nullptr;
     // ... and the rest of the ray-tracing chain hangs off ray query, each link present only when its own
     // extensions are: an extension feature struct whose extension is NOT enabled must not appear in the
@@ -515,37 +558,49 @@ void device_capabilities::query(VkPhysicalDevice const physical_device, uint32_t
     opacity_micromap_available = opacity_micromap_extension && ray_tracing_pipeline_available && opacity_micromap_features.micromap == VK_TRUE;
     descriptor_heap_available = descriptor_heap_extension && descriptor_heap_features.descriptorHeap == VK_TRUE;
     untyped_pointers_available = untyped_pointers_extension && untyped_pointers_features.shaderUntypedPointers == VK_TRUE;
+    // The mesh shader is available when the extension is there and its meshShader feature is on. taskShader is
+    // NOT part of this flag: a device may have mesh shaders without task shaders, and a task stage must be
+    // gated on mesh_shader_features.taskShader instead (see the mesh shader pass).
+    mesh_shader_available = mesh_shader_extension && mesh_shader_features.meshShader == VK_TRUE;
     this->untyped_pointers_dependency = untyped_pointers_available ? VK_KHR_SHADER_UNTYPED_POINTERS_EXTENSION_NAME : nullptr;
     this->descriptor_heap_dependency = descriptor_heap_available ? descriptor_heap_dependency : nullptr; // the member, set from the local of the same name
-    // Unlink every struct whose feature came back false: the extension may be advertised by a device
-    // that does not actually support it, and an enabled-but-unsupported struct is a device-creation error.
-    if (!opacity_micromap_available) {
-        ray_tracing_maintenance1_features.pNext = nullptr;
-    }
-    if (!ray_tracing_pipeline_available) {
-        ray_query_features.pNext = nullptr;
-    }
-    if (!ray_query_available) {
-        descriptor_heap_features.pNext = nullptr; // cuts only the ray-tracing chain the heap link was holding
-        acceleration_structure_features.pNext = nullptr;
-    }
-    if (!descriptor_heap_available) {
-        // The heap is the FIRST link, so dropping it has to hand the tail to whatever it was pointing at -
-        // setting the tail to null here would silently take the ray-tracing chain with it.
-        static_cast<VkBaseOutStructure*>(feature_tail)->pNext = ray_query_available ? reinterpret_cast<VkBaseOutStructure*>(&acceleration_structure_features) : nullptr;
-    }
-    if (!untyped_pointers_available) {
-        opacity_micromap_features.pNext = nullptr; // the untyped-pointers link is the LAST one, so this cuts only it
+    // Rebuild the extension chain from the core tail with ONLY the available links: the extension may be
+    // advertised by a device that does not actually support it, and an enabled-but-unsupported struct is a
+    // device-creation error. Rebuilding rather than unlinking one link at a time is what makes the result
+    // independent of link ORDER: every cut below has to hand the tail to the next link still standing, and
+    // the heap link's cut used to have to know what it was holding - a link inserted or dropped after it
+    // would silently take the rest of the chain with it.
+    {
+        VkBaseOutStructure* tail = static_cast<VkBaseOutStructure*>(feature_tail);
+        auto const link = [&tail](bool const present, void* node) {
+            tail->pNext = present ? static_cast<VkBaseOutStructure*>(node) : nullptr;
+            if (present) {
+                tail = static_cast<VkBaseOutStructure*>(node);
+            }
+        };
+        link(descriptor_heap_available, &descriptor_heap_features);
+        link(mesh_shader_available, &mesh_shader_features);
+        link(ray_query_available, &acceleration_structure_features);
+        link(ray_query_available, &ray_query_features);
+        link(ray_tracing_pipeline_available, &ray_tracing_pipeline_features);
+        link(ray_tracing_pipeline_available, &ray_tracing_maintenance1_features);
+        link(opacity_micromap_available, &opacity_micromap_features);
+        link(untyped_pointers_available, &untyped_pointers_features);
+        link(false, nullptr); // terminate the chain at the last available link
     }
 
     // ---- Property pNext chain: properties_2 -> driver -> subgroup -> descriptor indexing -> maintenance4
-    //      -> acceleration structure (only when available) ----
+    //      -> descriptor heap -> mesh shader -> acceleration structure (only when available) ----
     properties_2.pNext = &driver_properties;
     driver_properties.pNext = &subgroup_properties;
     subgroup_properties.pNext = &descriptor_indexing_properties;
     descriptor_indexing_properties.pNext = &maintenance4_properties;
     maintenance4_properties.pNext = descriptor_heap_extension ? reinterpret_cast<VkBaseOutStructure*>(&descriptor_heap_properties) : nullptr;
-    descriptor_heap_properties.pNext = ray_query_available ? &acceleration_structure_properties : nullptr;
+    // The mesh shader limits are queried on extension PRESENCE rather than availability: the printout must be
+    // able to say what the device offers even when the feature is off, which is exactly the case the "of 0"
+    // failure above came from (the PROPERTIES are zero then, and only the QUERY is honest about it).
+    descriptor_heap_properties.pNext = mesh_shader_extension ? reinterpret_cast<VkBaseOutStructure*>(&mesh_shader_properties) : nullptr;
+    mesh_shader_properties.pNext = ray_query_available ? &acceleration_structure_properties : nullptr;
     acceleration_structure_properties.pNext = opacity_micromap_available ? reinterpret_cast<VkBaseOutStructure*>(&opacity_micromap_properties) : nullptr;
     opacity_micromap_properties.pNext = ray_tracing_pipeline_available ? reinterpret_cast<VkBaseOutStructure*>(&ray_tracing_pipeline_properties) : nullptr;
     ray_tracing_pipeline_properties.pNext = nullptr;
@@ -553,6 +608,14 @@ void device_capabilities::query(VkPhysicalDevice const physical_device, uint32_t
 
     // ---- Feature policy: pass through driver support except explicitly disabled ones (take most features except ray tracing) ----
     features_1_1.protectedMemory = VK_FALSE; // protected memory not needed for now
+    // The mesh-shader feature struct is passed through like the core ones, with ONE exception:
+    // primitiveFragmentShadingRateMeshShader is only legal when
+    // VkPhysicalDeviceFragmentShadingRateFeaturesKHR::primitiveFragmentShadingRate is enabled as well, and this
+    // renderer never enables that extension at all - so the bit is forced off
+    // (VUID-VkPhysicalDeviceMeshShaderFeaturesEXT-primitiveFragmentShadingRateMeshShader-07033, which validation
+    // reported as a vkCreateDevice error the first time the mesh feature was enabled). multiviewMeshShader needs
+    // no such handling: its dependency is the 1.1 multiview feature above, which this device has on.
+    mesh_shader_features.primitiveFragmentShadingRateMeshShader = VK_FALSE;
 }
 
 void const* device_capabilities::device_pnext() const noexcept {
@@ -772,6 +835,27 @@ void print_device_capabilities(device_capabilities const& capabilities) {
                      capabilities.descriptor_heap_properties.maxPushDataSize);
     } else {
         utility::log(" descriptor heap: not available (the heap is the only binding model this renderer has)");
+    }
+
+    // ---- Mesh shaders: independent of both of the above, so they report outside those blocks ----
+    if (capabilities.mesh_shader_available) {
+        utility::log(" mesh shaders  : available (VK_EXT_mesh_shader, task shaders {})",
+                     capabilities.mesh_shader_features.taskShader == VK_TRUE ? "available" : "NOT available");
+        utility::log("   output      : {} vertices / {} primitives / {} components / {} B per workgroup, {} invocations max",
+                     capabilities.mesh_shader_properties.maxMeshOutputVertices,
+                     capabilities.mesh_shader_properties.maxMeshOutputPrimitives,
+                     capabilities.mesh_shader_properties.maxMeshOutputComponents,
+                     capabilities.mesh_shader_properties.maxMeshOutputMemorySize,
+                     capabilities.mesh_shader_properties.maxMeshWorkGroupInvocations);
+        utility::log("   workgroup   : mesh {}x{}x{}, task {}x{}x{}",
+                     capabilities.mesh_shader_properties.maxMeshWorkGroupSize[0],
+                     capabilities.mesh_shader_properties.maxMeshWorkGroupSize[1],
+                     capabilities.mesh_shader_properties.maxMeshWorkGroupSize[2],
+                     capabilities.mesh_shader_properties.maxTaskWorkGroupSize[0],
+                     capabilities.mesh_shader_properties.maxTaskWorkGroupSize[1],
+                     capabilities.mesh_shader_properties.maxTaskWorkGroupSize[2]);
+    } else {
+        utility::log(" mesh shaders  : not available (geometry stays on the vertex stage)");
     }
 
     utility::log("{}", box_line);

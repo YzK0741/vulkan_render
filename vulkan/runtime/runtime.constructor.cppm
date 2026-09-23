@@ -920,6 +920,11 @@ namespace vulkan {
         if (this->vulkan_core.descriptor_heaps.ready() && this->vulkan_core.heap_grid_offset != VK_WHOLE_SIZE) {
             this->run_heap_graphics_probe(static_cast<uint32_t>(core::heap_slots::materials));
             this->run_heap_graphics_probe(static_cast<uint32_t>(core::heap_slots::materials) + 1u);
+            // ... AND THE MESH HALF OF THE SAME QUESTION (docs/mesh_shaders.md step 0): a MESH pipeline created
+            // with the heap flag and no layout, dispatched with vkCmdDrawMeshTasksEXT, must read the same slot
+            // and come back the same white value. That is the mechanism a mesh-shader geometry path would stand
+            // on, and the log line is the proof - the same comparison the other two lines make.
+            this->run_heap_graphics_probe(static_cast<uint32_t>(core::heap_slots::materials), true);
         }
 
         // SAY WHAT WENT INTO THE HEAP, because the success path of a heap write is silent by nature (it returns

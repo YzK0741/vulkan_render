@@ -328,6 +328,12 @@ namespace chores {
             std::vector<unsigned char> heap_probe_fragment_code;
             load_shader(shaders_dir, "heap_probe.frag.spv", heap_probe_fragment_code);
             runtime.register_shader("heap_probe.frag.spv", heap_probe_fragment_code);
+            // ... and its MESH half (docs/mesh_shaders.md step 0): the same triangle, emitted by a mesh stage
+            // through a heap-native pipeline. A mesh stage is a different stage type, so this binary has a name
+            // of its own rather than replacing the vertex one.
+            std::vector<unsigned char> heap_probe_mesh_code;
+            load_shader(shaders_dir, "heap_probe.mesh.spv", heap_probe_mesh_code);
+            runtime.register_shader("heap_probe.mesh.spv", heap_probe_mesh_code);
 
             // ... and now that every pass's and every job's shaders are registered, the pipelines can be built.
             // This block is where the SHADERS come from and nothing else: the ONE create step that builds what the

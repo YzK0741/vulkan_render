@@ -130,20 +130,38 @@ namespace vulkan {
         vkDestroyCommandPool(vk.device, pool, nullptr);
     }
 
-    void runtime::run_heap_graphics_probe(uint32_t const material_slot) {
-        // ---- THE GRAPHICS HALF OF THE HEAP-NATIVE PROBE (see shaders/heap_probe.vert/.frag) ----
+    void runtime::run_heap_graphics_probe(uint32_t const material_slot, bool const mesh_shader) {
+        // ---- THE GRAPHICS HALF OF THE HEAP-NATIVE PROBE (see shaders/heap_probe.slang) ----
         //
         // The compute probe proved the mechanism for a compute pipeline; this is the same question for the kind
         // the frame is mostly made of. It renders into a target CLEARED TO BLACK first, so a white pixel can only
         // have come from the fragment stage's read of the heap rather than from the clear or from a default.
+        //
+        // AND IT RUNS TWICE (docs/mesh_shaders.md step 0): once with the triangle emitted by a VERTEX stage and
+        // once by a MESH stage. Same fragment stage, same target, same readback, one different stage type - so
+        // the two log lines compare the two pipeline kinds directly, and the mesh one is what proves a mesh
+        // pipeline can be created heap-natively (the heap flag, a NULL layout) and dispatched with
+        // vkCmdDrawMeshTasksEXT at all.
         core& vk = this->vulkan_core;
-        std::span<unsigned char const> const vertex_code = this->registered_shader("heap_probe.vert.spv");
+        std::span<unsigned char const> const vertex_code = this->registered_shader(mesh_shader ? "heap_probe.mesh.spv" : "heap_probe.vert.spv");
         std::span<unsigned char const> const fragment_code = this->registered_shader("heap_probe.frag.spv");
         if (!vk.descriptor_heaps.ready() || vk.heap_grid_offset == VK_WHOLE_SIZE || vertex_code.empty() || fragment_code.empty()) {
             return;
         }
         constexpr VkFormat probe_format = VK_FORMAT_R8G8B8A8_UNORM;
-        auto const built = pipelines::build_heap_probe_graphics(vk.device, probe_format, vertex_code, fragment_code);
+        auto const built = pipelines::build_heap_probe_graphics(vk.device, probe_format, vertex_code, fragment_code, mesh_shader ? VK_SHADER_STAGE_MESH_BIT_EXT : VK_SHADER_STAGE_VERTEX_BIT);
+        // vkCmdDrawMeshTasksEXT IS AN EXTENSION ENTRY POINT and is loaded the way this project loads every other
+        // one (see acceleration_structure.cpp): the loader's import library does not export it, so it arrives
+        // through vkGetDeviceProcAddr - and a null there is the honest "this device cannot run this probe"
+        // instead of a link error. It is fetched only for the mesh arm, so the vertex arm cannot be affected.
+        PFN_vkCmdDrawMeshTasksEXT draw_mesh_tasks = nullptr;
+        if (mesh_shader) {
+            draw_mesh_tasks = reinterpret_cast<PFN_vkCmdDrawMeshTasksEXT>(vkGetDeviceProcAddr(vk.device, "vkCmdDrawMeshTasksEXT"));
+            if (draw_mesh_tasks == nullptr) {
+                utility::log("descriptor heap: the MESH probe is skipped - vkGetDeviceProcAddr returned null for vkCmdDrawMeshTasksEXT");
+                return;
+            }
+        }
         if (!built.has_value()) {
             utility::log("descriptor heap: the heap-native graphics probe's pipeline was refused: {}", built.error());
             return;
@@ -219,7 +237,15 @@ namespace vulkan {
         std::array<uint32_t, 4> const push = {material_slot, 0u, 0u, 0u};
         [[maybe_unused]] bool const pushed = vk.descriptor_heaps.push_data(command_buffer, 0u, std::as_bytes(std::span(push)));
         vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, built->get_pipeline());
-        vkCmdDraw(command_buffer, 3u, 1u, 0u, 0u); // the fullscreen triangle heap_probe.vert builds from gl_VertexIndex
+        if (mesh_shader) {
+            // ONE workgroup, ONE triangle: the mesh entry emits three vertices and one index triple, and the
+            // launch size is the dispatch's business (the shader's own [numthreads(1, 1, 1)] sizes the group).
+            // This call is the whole host-side difference between the two probes - there is no vertex buffer,
+            // no vertex input and no layout either way.
+            draw_mesh_tasks(command_buffer, 1u, 1u, 1u);
+        } else {
+            vkCmdDraw(command_buffer, 3u, 1u, 0u, 0u); // the fullscreen triangle the vertex entry builds from SV_VertexID
+        }
         vkCmdEndRendering(command_buffer);
 
         VkImageMemoryBarrier2 to_copy = {};
@@ -260,7 +286,8 @@ namespace vulkan {
         vkWaitForFences(vk.device, 1, &fence, VK_TRUE, UINT64_MAX);
 
         auto const* const pixel = static_cast<unsigned char const*>(readback_detail->allocation_info.pMappedData);
-        utility::log("descriptor heap: the heap-native GRAPHICS probe rendered grid slot {} into a {}x{} target and read back rgba {},{},{},{} (the default material's white base colour is 255,255,255,255, so the WRONG slot proves the index selects the descriptor)",
+        utility::log("descriptor heap: the heap-native {} probe rendered grid slot {} into a {}x{} target and read back rgba {},{},{},{} (the default material's white base colour is 255,255,255,255, so the WRONG slot proves the index selects the descriptor)",
+                     mesh_shader ? "MESH" : "GRAPHICS",
                      material_slot,
                      pipelines::heap_probe_extent,
                      pipelines::heap_probe_extent,

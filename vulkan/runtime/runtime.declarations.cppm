@@ -559,7 +559,10 @@ namespace vulkan {
          *       default material's base colour into a 4x4 target cleared to black first - so a white pixel can only
          *       have come from the shader - and reads it back.
          */
-        void run_heap_graphics_probe(uint32_t material_slot);
+        /// @param mesh_shader when true the SAME probe runs through a MESH pipeline instead of a vertex one
+        ///        (docs/mesh_shaders.md step 0): the same triangle, the same fragment stage, the same readback,
+        ///        which is what makes the mechanism comparable in the log rather than through a screenshot
+        void run_heap_graphics_probe(uint32_t material_slot, bool mesh_shader = false);
         /**
          * @brief the ONE create-time context every pass is built with
          *

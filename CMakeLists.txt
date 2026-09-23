@@ -747,6 +747,10 @@ set(VR_SLANG_SOURCES
     # against the value it knows, so this port is accepted by comparing those log lines (see the file).
     heap_probe.slang:main:vertex:heap_probe.vert.spv
     heap_probe.slang:frag_main:fragment:heap_probe.frag.spv
+    # The MESH half of the same probe (docs/mesh_shaders.md step 0): the same triangle, the same fragment
+    # stage, the same 4x4 readback, emitted by a mesh pipeline instead of a vertex one. A mesh stage is a
+    # different stage type, so this .spv name is new - the host learns it explicitly.
+    heap_probe.slang:mesh_main:mesh:heap_probe.mesh.spv
     # The COMPUTE half is its own file because it has its own push layout (one push block per stage).
     heap_probe_comp.slang:comp_main:compute:heap_probe.comp.spv
     # compute_skin.slang feeds the acceleration structures the deformed vertex positions; its A/B needs the

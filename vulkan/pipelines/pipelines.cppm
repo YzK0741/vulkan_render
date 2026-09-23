@@ -114,7 +114,10 @@ namespace vulkan::pipelines {
      *       heap through a graphics pipeline at all, and every one of those would be a second thing that could be
      *       wrong. The flag and the null layout are the rule the compute probe established.
      */
-    export std::expected<vk_pipeline, std::string> build_heap_probe_graphics(VkDevice device, VkFormat colour_format, std::span<unsigned char const> vertex_code, std::span<unsigned char const> fragment_code);
+    /// @param first_stage the stage that emits the geometry: VERTEX for the original probe, MESH for the
+    ///        mesh-shader mechanism proof (docs/mesh_shaders.md step 0). Everything else - the empty vertex
+    ///        input, the heap flag, the NULL layout, the fragment stage - is identical between the two.
+    export std::expected<vk_pipeline, std::string> build_heap_probe_graphics(VkDevice device, VkFormat colour_format, std::span<unsigned char const> vertex_code, std::span<unsigned char const> fragment_code, VkShaderStageFlagBits first_stage = VK_SHADER_STAGE_VERTEX_BIT);
 
     /// what build_resolve_pipeline() creates: the resolve pipeline
     export struct resolve_pipeline_owned {
@@ -380,11 +383,11 @@ namespace vulkan::pipelines {
     // the G-buffer images - so the caller's only variable is the push block size.
     // (Its old name, build_rt_shadow, is gone with the ray-query shadow pass: the shadow traces through a real
     // ray-tracing PIPELINE now, which is a different builder below.)
-    std::expected<vk_pipeline, std::string> build_heap_probe_graphics(VkDevice const device, VkFormat const colour_format, std::span<unsigned char const> const vertex_code, std::span<unsigned char const> const fragment_code) {
+    std::expected<vk_pipeline, std::string> build_heap_probe_graphics(VkDevice const device, VkFormat const colour_format, std::span<unsigned char const> const vertex_code, std::span<unsigned char const> const fragment_code, VkShaderStageFlagBits const first_stage) {
         using fail = std::unexpected<std::string>;
         auto const vertex_module = make_shader_module(vertex_code, device);
         if (!vertex_module.has_value()) {
-            return fail("heap probe (graphics): vertex shader module creation failed");
+            return fail("heap probe (graphics): the first shader module's creation failed");
         }
         auto const fragment_module = make_shader_module(fragment_code, device);
         if (!fragment_module.has_value()) {
@@ -392,7 +395,11 @@ namespace vulkan::pipelines {
         }
         std::array<VkPipelineShaderStageCreateInfo, 2> stages = {};
         stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-        stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+        // THE FIRST STAGE IS A PARAMETER, and that is the whole difference between the vertex probe and the
+        // MESH probe (docs/mesh_shaders.md step 0): a mesh pipeline substitutes VK_SHADER_STAGE_MESH_BIT_EXT
+        // here, keeps the same fragment stage, and ignores the (empty) vertex input state - so the same 4x4
+        // target and the same readback compare the two paths directly.
+        stages[0].stage = first_stage;
         stages[0].module = **vertex_module;
         stages[0].pName = "main";
         stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
