@@ -348,6 +348,24 @@ namespace vulkan {
             }
         }
 
+        // ---- THE INDIRECT MESH COMMANDS (docs/mesh_shaders.md step 3): one VkDrawMeshTasksIndirectCommandEXT per
+        //      mesh dispatch, per frame in flight, written by the recording workers and read by the GPU. Small,
+        //      host-visible and not on the heap: it is command data, not a resource a shader reads.
+        {
+            std::vector<unsigned char> const zeroed_indirect(static_cast<size_t>(core::MAX_FRAMES_IN_FLIGHT) * mesh_indirect_capacity * sizeof(VkDrawMeshTasksIndirectCommandEXT), 0);
+            init_utils::create_host_buffer(this->vulkan_core,
+                                           std::as_bytes(std::span(zeroed_indirect)),
+                                           vulkan::buffer_type::storage_coherent,
+                                           "mesh indirect command buffer",
+                                           this->mesh_indirect_buffer,
+                                           this->mesh_indirect_mapped,
+                                           VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT);
+            // the raw VkBuffer the command takes: vk_buffer::handle() is the allocator's id, not a VkBuffer - and a
+            // null here is what silently sent every dispatch down the DIRECT path until a one-shot log said so
+            if (auto const* const detail = this->vulkan_core.vma.get_buffer_detail(this->mesh_indirect_buffer.handle()); detail != nullptr) {
+                this->mesh_indirect = detail->buffer;
+            }
+        }
         // Per-instance transform buffer (set 0 binding 6): one mat4 per instance, host-visible;
         // filled by set_instanced_draw() for instanced stress draws (see pbr.vert)
         std::vector<unsigned char> const zeroed_instances(static_cast<size_t>(vulkan::instance_capacity) * sizeof(glm::mat4), 0);

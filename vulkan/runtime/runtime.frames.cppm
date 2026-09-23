@@ -87,6 +87,11 @@ namespace vulkan {
         //    acquire semaphore with pending operations (VUID-vkAcquireNextImageKHR-semaphore-01779)
         uint32_t const frame_slot = static_cast<uint32_t>(vk.current_frame);
         vk.wait_frame_slot(frame_slot);
+        // ... AND THIS IS WHERE THE INDIRECT COMMAND CURSOR RESTARTS (docs/mesh_shaders.md step 3): the wait above
+        // proves the slot's previous submission has completed, so its command slots are free to be written again -
+        // which is exactly the guarantee the reusable per-slot command array needs, and why the reset lives here
+        // rather than on a timer or a frame counter of its own.
+        this->mesh_indirect_cursor[frame_slot].store(0u, std::memory_order_relaxed);
         // The slot's previous submission is complete, so its timestamps are readable: collect them
         // here, where the wait already guarantees it, and before the slot is recorded again.
         this->collect_gpu_timings(frame_slot);

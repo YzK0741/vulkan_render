@@ -1111,6 +1111,29 @@ namespace vulkan {
         /// export an extension command (null on a device without the mesh shader extension)
         PFN_vkCmdDrawMeshTasksEXT mesh_dispatch = nullptr;
         /**
+         * @brief THE INDIRECT COMMANDS, and why every mesh dispatch goes through them (docs/mesh_shaders.md step 3)
+         *
+         * `vkCmdDrawMeshTasksIndirectEXT` reads its group counts from a buffer, which is the seam a COMPUTE culling
+         * pass writes into - the objective's second mechanism, and the one this toolchain allows (a task stage cannot
+         * be given push data; see the blocker note in that document). The host writes the same counts it would have
+         * passed directly, so the frame is identical - what changes is WHO decides the count. The command's three
+         * fields also settle the objective's measured constraint: there is no `instanceCount`, and `groupCountY` is
+         * where an instanced draw's instances go, exactly as in the direct call.
+         *
+         * ONE SLOT PER DISPATCH, per frame in flight, handed out by an atomic cursor: the commands are recorded by
+         * parallel workers into per-cascade/per-segment secondaries, so a single shared slot would be overwritten by
+         * the next draw before the GPU read it.
+         */
+        vk_buffer mesh_indirect_buffer = {};
+        void* mesh_indirect_mapped = nullptr;
+        /// the raw handle the command buffer takes (vk_buffer::handle() is the allocator's id, not a VkBuffer)
+        VkBuffer mesh_indirect = VK_NULL_HANDLE;
+        std::array<std::atomic<uint32_t>, core::MAX_FRAMES_IN_FLIGHT> mesh_indirect_cursor = {};
+        /// how many mesh dispatches one frame may record; a scene past it keeps drawing (the extra dispatches fall back to
+        /// the direct entry point), logged once
+        static constexpr uint32_t mesh_indirect_capacity = 4096;
+        bool mesh_indirect_overflow_logged = false;
+        /**
          * @brief the meshlet split's totals, for the one startup log line (docs/mesh_shaders.md step 3)
          *
          * The split itself is `vulkan.meshlet`'s and is asserted by tests/test_meshlet.cpp; what these two count is

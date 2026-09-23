@@ -255,6 +255,9 @@ namespace vulkan {
          */
         bool mesh_shader_available = false;
         PFN_vkCmdDrawMeshTasksEXT mesh_dispatch = nullptr;
+        /// ... and the INDIRECT form (`vkCmdDrawMeshTasksIndirectEXT`), resolved the same way: a compute pass decides
+        /// how many mesh workgroups a draw needs, so the count travels through a buffer instead of the call
+        PFN_vkCmdDrawMeshTasksIndirectEXT mesh_dispatch_indirect = nullptr;
         uint32_t graphics_family_index = 0;
         uint32_t present_family_index = 0;
         VkDebugUtilsMessengerEXT debug_messenger = VK_NULL_HANDLE;
