@@ -183,6 +183,7 @@ WHAT HAS LANDED (each entry: verified by the gate, not by inspection):
 | `pbr.vert` | `shaders/pbr.slang` (entry `vertex_main`) | **the G-buffer pass's VERTEX stage**, so it is the best-verified port: every opaque scenario records it, and the one that matters most is `deformation` - this is where the morph weights and the skin matrices are read TWICE, as they are now and as they were one frame ago. 15972 B, 0 descriptor sets, ONE BuiltIn heap (a vertex stage samples nothing), 24 heap accesses, and `OpVectorTimesMatrix` count **0**: every one of the 16 multiplies is the column-vector product glslc emits, with `proj * view` as a real `OpMatrixTimesMatrix`. It needed two shared-file fixes of the same kind: the push block's `model` had to be `VR_MAT4` (Slang's default majorness is ROW-major, so a plain `mat4` member is read transposed - harmless while only fragment stages included that block, since none of them read `model`), and `motion_base` had to be declared in it rather than riding the padding before `model` |
 | `shadow.vert` | `shaders/shadow.slang` (entry `vertex_main`) | the shadow pass's VERTEX stage, on the path of every shadow-casting scenario, reusing the vertex-side accessors `pbr.vert` introduced. 8836 B, 0 descriptor sets, 10 heap accesses, `OpVectorTimesMatrix` 0. It is where TRAP 3 was found (the first attempt failed 8 scenarios with an empty shadow map), and it is also the stage that needed the whole push block: `frame_slot`/`image_index`/`spare_lane` at 96/100/104 and `cascade` at **108** - reading the cascade from 96 is a bug the GLSL file already records, because `frame_slot` overwrites it |
 | `post.frag` | `shaders/post.slang` (entry `frag_main`) | all THREE post modes (bright pass, 13-tap downsample, composite), so every frame of every scenario records it - the widest verification a single port can get. 24896 B, 0 descriptor sets, 107 heap accesses, 51 `OpSampledImage` (the two filter kernels), 5 image-size queries for the tap spacing, push block at 0..36. It also carries the one place where the Slang side is SIMPLER than the GLSL: the GLSL filters take a heap SLOT and index the array inside, because a `texture2D` parameter does not survive a function boundary in glslang, while Slang passes the texture handle itself into `heap_texel` |
+| `light_cluster.comp` | `shaders/light_cluster.slang` | **the first COMPUTE stage**, dispatched once per frame by default (`clustered_lights = true`), so every scenario records it. 11232 B, 0 descriptor sets, 14 heap accesses, `LocalSize 64 1 1`, `OpAtomicIAdd` for the per-cluster counter from `atomicAdd`, and the two writable buffers are the same heap slots the GLSL declares `writeonly buffer`, read as `RWStructuredBuffer<uint>`. It also settles the builtin that looked riskiest: `inverse()` is NOT expanded inline by either compiler - glslang and slangc both emit `OpExtInst MatrixInverse` from GLSL.std.450 - so the cluster boxes agree bit for bit and the `inverse` needs no workaround |
 
 The five non-`gbuffer` stages above were already byte-identical to their GLSL builds; `gbuffer` is the one that
 needed a fix outside the shader (the camera's descriptor type), so it moved the GLSL side too - see section 9.
@@ -500,10 +501,11 @@ by its SHAPE (descriptor sets, heaps, the instructions the fetches land as) plus
 from section 3, and that limit should be stated in the commit rather than implied away. This is the same
 limit that hid TRAP 3 in `pbr.frag` for four commits.
 
-3. **Compute stages**: `compute_skin.comp`, `mask_bake.comp`, `light_cluster.comp`,
-   `megalights_trace.comp`, `megalights_temporal.comp`. These are the ones that WRITE heap buffers, so
-   their storage-image/buffer declarations are the mirror of the read-side contract - the same
-   class/type agreement applies, and a mismatch is equally silent.
+3. **Compute stages**: `compute_skin.comp`, `mask_bake.comp`, `megalights_trace.comp`,
+   `megalights_temporal.comp`. (`light_cluster.comp` is DONE - the first compute stage, and the one that
+   proves the compute spellings and `atomicAdd`/`inverse`.) These are the ones that WRITE heap buffers, so
+   their storage-buffer declarations are the mirror of the read-side contract - the same class/type agreement
+   applies, and a mismatch is equally silent.
 4. **DONE, and it was item 1 of the critical path**: the LIGHT buffer has made the same three-part change
    the camera did (section 9) - `VK_DESCRIPTOR_TYPE_STORAGE_BUFFER`, a `VK_BUFFER_USAGE_STORAGE_BUFFER_BIT`
    on the buffer, and `buffer` instead of `uniform` in the four files that declare the block

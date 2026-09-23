@@ -747,6 +747,11 @@ set(VR_SLANG_SOURCES
     # both stages must place the geometry identically or the shadow silhouette detaches from the surface.
     shadow.slang:main:fragment:shadow.frag.spv
     shadow.slang:vertex_main:vertex:shadow.vert.spv
+    # light_cluster.slang is the FIRST compute stage: the clustered-light sort, dispatched once per frame by
+    # default (clustered_lights = true), so every scenario records it. Its writable buffers are the heap slots
+    # the GLSL declares as `writeonly buffer`.
+    light_cluster.slang:main:compute:light_cluster.comp.spv
+
     # deferred.slang IS WRITTEN BUT NOT WIRED: it is a faithful port of deferred.frag (same push layout
     # 0/64/80/84/88/92, zero descriptor sets, 94 heap accesses, 0 transposed multiplies, the TBN built with
     # GLSL's column-constructing mat3), and it fails the byte-identical standard by ONE PIXEL of 1036800 -
