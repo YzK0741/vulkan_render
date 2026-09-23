@@ -1123,6 +1123,8 @@ namespace vulkan {
         void* meshlet_mapped = nullptr;
         /// one log line for the overflow path, so a scene past the capacity says so once rather than per primitive
         bool meshlet_overflow_logged = false;
+        /// one log line for a malformed record (see create_primitive): the second line of defence behind the splitter's own tests
+        bool meshlet_records_unsound_logged = false;
         /**
          * THE STRUCTURE PHASE ITSELF, which is one value now (see `vulkan.ray_tracing`): the bottom and top level
          * structures, the map from their indices back to the casters they were built from, and the MASK/skin

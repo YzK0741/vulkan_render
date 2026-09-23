@@ -1186,6 +1186,24 @@ namespace vulkan {
         if (!result->meshlets.empty()) {
             ++this->meshlet_primitives;
         }
+        // ---- AND THE RECORDS ARE CHECKED AS THEY GO OUT, because everything downstream of them trusts them ----
+        // A meshlet's window is what a MESH stage passes to `SetMeshOutputCounts` and to its index fetch, so a
+        // record that is malformed is not a wrong picture: it is a dispatch asking for more output than the device
+        // has (the hang the first consumer attempt measured) or a fetch outside the buffer. tests/test_meshlet.cpp
+        // pins the splitter's own invariants on the CPU; this is the second line of defence, at the boundary where
+        // the records leave the host - and it is one `if` per primitive rather than per meshlet.
+        bool records_sound = true;
+        for (vulkan::meshlet const& meshlet : result->meshlets) {
+            records_sound = records_sound && meshlet.index_count != 0u && meshlet.index_count % 3u == 0u && meshlet.index_count <= vulkan::meshlet_max_indices &&
+                            meshlet.first_index + meshlet.index_count <= info.index_count && std::isfinite(meshlet.radius) && meshlet.radius >= 0.0f;
+        }
+        if (!records_sound && !this->meshlet_records_unsound_logged) {
+            this->meshlet_records_unsound_logged = true;
+            utility::log("meshlet records: a primitive with {} indices produced a meshlet outside its window or over the "
+                         "{} index budget - a mesh stage would ask the device for invalid output (the splitter's invariants are tested in tests/test_meshlet.cpp)",
+                         info.index_count,
+                         vulkan::meshlet_max_indices);
+        }
 
         if (info.vertex_count > 0 && info.vertex_stride >= sizeof(glm::vec3) && !info.vertex_data.empty()) {
             glm::vec3 aabb_min = glm::vec3(std::numeric_limits<float>::infinity());

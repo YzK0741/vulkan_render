@@ -419,6 +419,22 @@ The suspects, in the order the next attempt should test them:
    ran before, which should be a non-issue (the write happens before any command buffer is recorded) but has not
    been proven with a barrier.
 
+**SUSPECT 3 IS ELIMINATED, AND SO IS "THE TABLE HOLDS GARBAGE".** `runtime::create_primitive` now checks every
+record as it leaves the host - non-zero, a multiple of three, at most `meshlet_max_indices`, entirely inside the
+draw's index window, and a finite non-negative radius - and logs once if any primitive fails. On the Sponza scene
+(3145 records over 103 primitives) it reports nothing:
+
+```
+no malformed records: every meshlet window is inside its draw and under the 255-index budget
+```
+
+So the records a mesh stage would read are sound, and the hang is not an over-large window arriving from the TABLE.
+What is left is how the SHADER gets to a record (the lanes' base, suspect 1) and how many times it is dispatched
+(the per-chunk loop of suspect 2) - both host-side facts, both testable without guessing at the GPU. That check is
+worth keeping for the same reason the splitter's own tests are: a record's window is what a MESH stage hands to
+`SetMeshOutputCounts`, so a malformed one is not a wrong picture but a dispatch asking for output the device does
+not have.
+
 The experiment was reverted in full (shader, lanes, session flag, pipeline, registration, both script lists and the
 CMake rule), and `cmake` was re-run so the build directory's rules match - `CMAKE_SUPPRESS_REGENERATION=ON` means a
 reverted `VR_SLANG_SOURCES` is otherwise still compiled. The tree after the revert: gate 10/10 passed, 0 changed, 0
