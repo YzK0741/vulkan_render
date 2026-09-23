@@ -84,6 +84,20 @@ namespace vulkan {
         float center_y = 0.0f;
         float center_z = 0.0f;
         float radius = 0.0f; ///< object-space radius (0 for a single vertex or a fully degenerate window)
+        /**
+         * THE NORMAL CONE, for culling a meshlet that faces entirely away from the eye (docs/mesh_shaders.md step
+         * 3): `axis` is the normalized average of the window's triangle normals and `cone_cos` the smallest dot
+         * product any of them has with it, so every face normal is within `acos(cone_cos)` of the axis. A culler
+         * can then reject the whole meshlet when even the cone's BEST-case normal points away from the eye, which
+         * is the conservative form of a back-face test: it errs towards drawing, like every other test here.
+         *
+         * @note a degenerate window (no non-zero-area triangle) sets `axis = 0` and `cone_cos = 1`, which the
+         *       test reads as "no statement about this meshlet's facing" and therefore never culls it.
+         */
+        float axis_x = 0.0f;
+        float axis_y = 0.0f;
+        float axis_z = 0.0f;
+        float cone_cos = 1.0f;
     };
     // THE LAYOUT IS THE SHADER'S, asserted field by field, because it has to survive a look at the SPIR-V rather
     // than a hope: `spirv-dis shadow.meshlet.spv` shows exactly these offsets (0, 4, 8, 16 with the sphere at
@@ -95,7 +109,9 @@ namespace vulkan {
     static_assert(offsetof(meshlet, center_y) == 20);
     static_assert(offsetof(meshlet, center_z) == 24);
     static_assert(offsetof(meshlet, radius) == 28);
-    static_assert(sizeof(meshlet) == 32, "a meshlet is 32 bytes: the window, the 16-byte-aligned sphere, and the padding std430 requires");
+    static_assert(offsetof(meshlet, axis_x) == 32);
+    static_assert(offsetof(meshlet, cone_cos) == 44);
+    static_assert(sizeof(meshlet) == 48, "a meshlet is 48 bytes: the window, the sphere, and the normal cone - each 16-byte block matching the shader's std430 layout");
 
     /**
      * @ingroup vulkan_meshlet
@@ -211,6 +227,51 @@ namespace vulkan {
                 float const dy = high[1] - out.center_y;
                 float const dz = high[2] - out.center_z;
                 out.radius = std::sqrt(dx * dx + dy * dy + dz * dz);
+            }
+            // ---- THE NORMAL CONE: the average of the window's face normals, and the worst dot product against it ----
+            // The average is accumulated UNNORMALIZED and normalized once at the end, which is the standard way to
+            // get a stable axis for a fan of normals. `cone_cos` is then the SMALLEST dot any face normal has with
+            // that axis, so every normal lies within `acos(cone_cos)` of it - the quantity a conservative back-face
+            // test needs. A window whose triangles are all degenerate keeps axis 0 and cone_cos 1, which reads as
+            // "no statement" and therefore never culls (see the shader's test).
+            float axis[3] = {0.0f, 0.0f, 0.0f};
+            float normals[meshlet_max_triangles][3] = {};
+            uint32_t normal_count = 0;
+            for (uint32_t triangle = 0; triangle < meshlet_triangles; ++triangle) {
+                float a[3] = {};
+                float b[3] = {};
+                float c[3] = {};
+                uint32_t const base = (first_triangle + triangle) * 3u;
+                if (!position_at(index_at(base), a) || !position_at(index_at(base + 1u), b) || !position_at(index_at(base + 2u), c)) {
+                    continue;
+                }
+                float const e0[3] = {b[0] - a[0], b[1] - a[1], b[2] - a[2]};
+                float const e1[3] = {c[0] - a[0], c[1] - a[1], c[2] - a[2]};
+                float const n[3] = {e0[1] * e1[2] - e0[2] * e1[1], e0[2] * e1[0] - e0[0] * e1[2], e0[0] * e1[1] - e0[1] * e1[0]};
+                float const length = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+                if (length <= 0.0f) {
+                    continue; // degenerate: it contributes no direction and no statement
+                }
+                normals[normal_count][0] = n[0] / length;
+                normals[normal_count][1] = n[1] / length;
+                normals[normal_count][2] = n[2] / length;
+                for (int axis_index = 0; axis_index < 3; ++axis_index) {
+                    axis[axis_index] += normals[normal_count][axis_index];
+                }
+                ++normal_count;
+            }
+            if (normal_count != 0u) {
+                float const length = std::sqrt(axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2]);
+                if (length > 0.0f) {
+                    out.axis_x = axis[0] / length;
+                    out.axis_y = axis[1] / length;
+                    out.axis_z = axis[2] / length;
+                    float worst = 1.0f;
+                    for (uint32_t normal = 0; normal < normal_count; ++normal) {
+                        worst = std::min(worst, normals[normal][0] * out.axis_x + normals[normal][1] * out.axis_y + normals[normal][2] * out.axis_z);
+                    }
+                    out.cone_cos = std::max(-1.0f, worst); // clamped: a dot product can only round below -1
+                }
             }
             meshlets.push_back(out);
         }

@@ -235,5 +235,45 @@ int main() {
         CHECK(!vulkan::meshlet_record_sound(good, good.index_count - 3u));
     }
 
+    // ---- 6. THE NORMAL CONE, asserted by its defining property ----
+    // A culler may only reject a meshlet as back-facing if EVERY face normal it holds lies inside the cone the
+    // record declares - so that is what is checked here, against the same triangles the splitter was given. A cone
+    // that is too narrow would cull a meshlet that is partly visible (a hole), and one that is too wide only costs
+    // culls; both directions of that trade are why the axis is the normal AVERAGE and `cone_cos` the worst dot.
+    {
+        mesh_fixture const fixture = make_fixture(200u);
+        std::vector<vulkan::meshlet> const meshlets = vulkan::build_meshlets(input_for(fixture));
+        CHECK(!meshlets.empty());
+        uint32_t cone_checked = 0;
+        for (vulkan::meshlet const& m : meshlets) {
+            CHECK(m.cone_cos <= 1.0f && m.cone_cos >= -1.0f);
+            for (uint32_t t = 0; t < m.index_count; t += 3u) {
+                float a[3] = {};
+                float b[3] = {};
+                float c[3] = {};
+                auto const read_position = [&fixture](uint32_t const index, float (&out)[3]) {
+                    std::memcpy(out, fixture.vertices.data() + static_cast<std::size_t>(index) * fixture.vertex_stride, sizeof(out));
+                };
+                // THE WINDOW STARTS AT first_index, not at zero: the fixture's indices are 0..n-1 in order, so an
+                // index IS the offset of the vertex it names - reading from `t` alone checks the WRONG triangles
+                // for every meshlet after the first, which is how this test failed the first time it ran.
+                read_position(m.first_index + t + 0u, a);
+                read_position(m.first_index + t + 1u, b);
+                read_position(m.first_index + t + 2u, c);
+                float const e0[3] = {b[0] - a[0], b[1] - a[1], b[2] - a[2]};
+                float const e1[3] = {c[0] - a[0], c[1] - a[1], c[2] - a[2]};
+                float const n[3] = {e0[1] * e1[2] - e0[2] * e1[1], e0[2] * e1[0] - e0[0] * e1[2], e0[0] * e1[1] - e0[1] * e1[0]};
+                float const length = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+                if (length <= 0.0f) {
+                    continue; // a degenerate triangle states nothing, and the splitter skips it too
+                }
+                float const dot = (n[0] * m.axis_x + n[1] * m.axis_y + n[2] * m.axis_z) / length;
+                CHECK_MSG(dot >= m.cone_cos - 1e-4f, "every face normal lies inside the cone");
+                ++cone_checked;
+            }
+        }
+        CHECK_MSG(cone_checked != 0u, "the cone was checked against real triangles");
+    }
+
     return vk_test::finish("test_meshlet");
 }

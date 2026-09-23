@@ -122,8 +122,10 @@ struct MeshletRecord
     uint first_index;
     uint index_count;
     int base_vertex;
-    float3 center;
+    float3 center;   // std430 puts a float3 on a 16-byte boundary: the host record carries the padding for it
     float radius;
+    float3 axis;     // the normal cone's axis (the average of the window's face normals)
+    float cone_cos;  // the smallest dot any face normal has with it; 1 means "no statement, never cull"
 };
 
 /// @brief one record of the meshlet table (grid slot `heap_slots_meshlets`)
@@ -159,6 +161,29 @@ float matrix_max_axis_scale(const VR_MAT4 m)
     return largest;
 }
 
+/// @brief whether a meshlet faces entirely AWAY from the eye, i.e. every triangle in it is back-facing
+/// @param axis_world the record's cone axis in world space (the caller transforms and normalizes it)
+/// @param cone_cos the record's cone cosine: `1` means the cone states nothing and this test never culls
+/// @param centre_world the meshlet's sphere centre in world space, @p radius_world its radius there
+/// @param eye the camera position, which is what "facing" is measured against
+/// @note THE TEST IS THE CONSERVATIVE ONE: a triangle is front-facing when its normal has a positive dot with the
+///       direction to the eye, and the cone's BEST-CASE normal is `axis` rotated `acos(cone_cos)` towards the eye -
+///       so the meshlet can only be rejected when even that one points away: `dot(axis, to_eye) < -sin(cone)`. A
+///       tighter test (using the axis alone) would cull more and would sometimes cull a meshlet with one visible
+///       triangle, which is a hole rather than a saving.
+/// @note AN EYE INSIDE THE SPHERE CANCELS THE TEST: the cone says nothing about which side the eye is on when the
+///       eye is surrounded by the geometry, and the standard guard is to draw in that case.
+bool meshlet_back_facing(const float3 axis_world, const float cone_cos, const float3 centre_world, const float radius_world, const float3 eye)
+{
+    const float3 to_eye = eye - centre_world;
+    const float distance_sq = dot(to_eye, to_eye);
+    if (distance_sq <= radius_world * radius_world)
+    {
+        return false;
+    }
+    const float3 direction = to_eye * rsqrt(distance_sq);
+    return dot(axis_world, direction) < -sqrt(max(0.0, 1.0 - cone_cos * cone_cos));
+}
 /// @brief whether a clip-space sphere can intersect the clip volume (x, y in [-w, w], z in [0, w], w > 0)
 /// @note the test uses `w + radius` on every plane, which is what makes it correct for a PERSPECTIVE projection
 ///       (where w varies per vertex) and trivially true for the shadow pass's orthographic one (w = 1).

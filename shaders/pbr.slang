@@ -262,11 +262,18 @@ void meshlet_main(out vertices pbr_vertex_output verts[mesh_vertices_per_workgro
     // instance table for an instanced draw) -> clip, with the radius scaled by an upper bound on both matrices'
     // axis scales. A rejected meshlet emits NOTHING, which is the whole effect a task stage would have had on the
     // frame (its advantage is skipping the launch, not the pixels).
+    // ---- A DEFORMING DRAW IS NEVER CULLED PER MESHLET, and that is a correctness rule rather than caution ----
+    // A meshlet's sphere and cone are built from the BIND-POSE vertices, while this draw's vertices are skinned
+    // (joint matrices, `skin_base != 0`) or morphed (`morph_targets > 0`) - so the bounds describe geometry the
+    // stage is not about to emit, and a cull against them can remove something visible. The gate's fixtures happen
+    // to deform little enough that it did not show, which is exactly why the rule is stated here instead of being
+    // left to a measurement: what a meshlet path wants for deformable geometry is bounds per FRAME, not per draw.
+    const bool deforming = push.morph_targets > 0u || push.skin_base != 0u;
     const VR_MAT4 world = (push.flags & 1u) != 0u ? instance_transform_at(heap_instance_slot, push.instance_base + group_id.y) : push.model;
     const VR_MAT4 view_proj = camera_at(heap_camera_slot).proj * camera_at(heap_camera_slot).view;
     const float4 clip = view_proj * (world * float4(meshlet.center, 1.0));
     const float radius = meshlet.radius * matrix_max_axis_scale(world) * matrix_max_axis_scale(view_proj);
-    if (!clip_sphere_visible(clip, radius))
+    if (!deforming && !clip_sphere_visible(clip, radius))
     {
         SetMeshOutputCounts(0u, 0u);
         return;
