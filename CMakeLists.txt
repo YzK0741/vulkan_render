@@ -751,6 +751,11 @@ set(VR_SLANG_SOURCES
     # default (clustered_lights = true), so every scenario records it. Its writable buffers are the heap slots
     # the GLSL declares as `writeonly buffer`.
     light_cluster.slang:main:compute:light_cluster.comp.spv
+    # heap_probe.slang is the graphics half of the heap-native probe. No gate scenario renders it, but it is
+    # the one group that VERIFIES ITSELF: the runtime dispatches it at startup, reads a pixel back and logs it
+    # against the value it knows, so this port is accepted by comparing those log lines (see the file).
+    heap_probe.slang:main:vertex:heap_probe.vert.spv
+    heap_probe.slang:frag_main:fragment:heap_probe.frag.spv
 
     # deferred.slang IS WRITTEN BUT NOT WIRED: it is a faithful port of deferred.frag (same push layout
     # 0/64/80/84/88/92, zero descriptor sets, 94 heap accesses, 0 transposed multiplies, the TBN built with
