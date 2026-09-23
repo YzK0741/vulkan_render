@@ -1923,6 +1923,14 @@ namespace vulkan {
         env.push_at = &runtime::push_geometry_block;
         env.draw_mesh_tasks = &runtime::draw_mesh_tasks;                   // only ever called when mesh_stage is true
         env.draw_mesh_tasks_indirect = &runtime::draw_mesh_tasks_indirect; // a meshlet session's dispatch (see above)
+        // ---- ... AND WHERE THE CULLING HAPPENS (docs/mesh_shaders.md step 3, the culling's cheapest stage): the
+        //      CAMERA's sessions are culled by the HOST while they are recorded - it already holds the primitive's
+        //      meshlets, the draw's model matrix and the camera - so the dispatch asks for the survivors only and a
+        //      rejected meshlet costs no workgroup launch at all. The shadow pass deliberately does NOT get this: its
+        //      frustum is per cascade, and it dispatches its casters once per cascade.
+        env.meshlet_culled = true;
+        env.meshlet_view_proj = &runtime::meshlet_view_proj;
+        env.meshlet_culled_write = &runtime::meshlet_culled_write;
         env.mesh_stage = gbuffer_mesh;
         return env;
     }

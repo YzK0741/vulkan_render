@@ -135,6 +135,23 @@ MeshletRecord meshlet_at(const uint index)
     return heap_at<StructuredBuffer<MeshletRecord>>(heap_slots_meshlets)[index];
 }
 
+/// @brief the same record out of the HOST-CULLED table for this frame (docs/mesh_shaders.md step 3)
+/// @param frame_slot the frame in flight (the push block's, which the caller has)
+/// @param index the record index INSIDE the primitive's run - the culled table uses the table's own layout, so the
+///        host's compaction is what makes `index` (a workgroup id) select the i-th SURVIVING meshlet
+/// @note a CULLED session passes its lanes' flag here: the host culled the primitive's run against the camera and
+///       wrote only the survivors out, so the workgroups the dispatch asks for are exactly the ones with work to do.
+///       The table's own indexing is unchanged, which is what keeps this a table SWAP rather than a second lookup.
+MeshletRecord culled_meshlet_at(const uint frame_slot, const uint index)
+{
+    return heap_at<StructuredBuffer<MeshletRecord>>(heap_slots_meshlet_culled)[frame_slot * meshlet_table_capacity + index];
+}
+
+/// @brief how many records one frame's lane of the culled table holds: the same budget as the table itself
+/// @note it is the value `core::meshlet_capacity` holds, and the host's `heap_slots::meshlet_culled` binding writes
+///       exactly this many records per frame slot - the two have to agree or a lane would read its neighbour's run.
+static const uint meshlet_table_capacity = 65536u;
+
 // =============================================================================================================
 // WHAT THE CULLING BUYS, COUNTED (docs/mesh_shaders.md step 3). The meshlet entry culls a whole meshlet against
 // the camera before it emits anything, and until this existed the LOOK of the frame was the only evidence that it

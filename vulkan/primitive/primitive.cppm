@@ -699,17 +699,37 @@ namespace vulkan {
          *       layouts for one shader file, which is the thing that cannot be expressed.
          */
         void push_geometry_lanes(render_environment const& env, primitive const& geometry, uint32_t first_index, uint32_t index_count, int32_t base_vertex) const;
+        /// the body both lane pushes share: @p host_culled is the flag the lanes carry (see push_meshlet_lanes)
+        void push_geometry_lanes_impl(render_environment const& env, primitive const& geometry, uint32_t first_index, uint32_t index_count, int32_t base_vertex, bool host_culled) const;
+        /**
+         * @brief CULL a meshlet session's run against the camera and push the geometry lanes for it
+         *
+         * @param env the session (see `render_environment::meshlet_culled`)
+         * @param geometry the primitive whose meshlets this draw covers
+         * @param first_index / @p index_count / @p base_vertex the draw's own window, used when the session is not a
+         *        meshlet one (a meshlet session's lanes carry the primitive's run instead, see the notes below)
+         * @return the number of meshlets LEFT after culling, or `not_culled` when this draw is not culled at all -
+         *         which `mesh_dispatch` reads as "dispatch the primitive's whole run" (the table-driven behaviour)
+         * @note the flag travels in the lanes' `base_vertex`, which a meshlet session never uses for anything else:
+         *       it is what tells the entry point to read this frame's CULLED table instead of the shared one.
+         */
+        uint32_t push_meshlet_lanes(render_environment const& env, primitive const& geometry, uint32_t first_index, uint32_t index_count, int32_t base_vertex) const;
+        /// the `push_meshlet_lanes` answer that means "not culled" (a real run cannot be this long: the table's
+        /// capacity is far below it, so no dispatch can collide with the sentinel)
+        static constexpr uint32_t not_culled = 0xFFFFFFFFu;
         /**
          * @brief record ONE MESH DISPATCH over a geometry window already pushed into the stage block
          * @param env the session; it must have `mesh_stage` set and its mesh endpoints filled
          * @param index_count how many indices the draw covers (the dispatch's group count follows from it)
          * @param instance_count how many instances to dispatch: a mesh command has no instanceCount, so the
          *        INSTANCE becomes the workgroup grid's Y and the stage reads it as its instance index
+         * @param survivors what the host's cull left, or `not_culled`: a culled run dispatches exactly the survivors,
+         *        which is the whole point of culling before the dispatch (see push_meshlet_lanes)
          * @note nothing is BOUND here: a mesh pipeline ignores the vertex input state, so binding the buffers
          *       would be a command with no effect - the stage reaches them through the pushed lanes instead,
          *       which is the whole difference between this and bind_geometry_and_push.
          */
-        void mesh_dispatch(render_environment const& env, primitive const& geometry, uint32_t index_count, uint32_t instance_count) const;
+        void mesh_dispatch(render_environment const& env, primitive const& geometry, uint32_t index_count, uint32_t instance_count, uint32_t survivors = not_culled) const;
     };
 
     /**

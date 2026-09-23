@@ -572,6 +572,18 @@ namespace vulkan {
              *       plain mapped read after `wait_idle`, which is why the buffer is host-visible and coherent.
              */
             static constexpr uint32_t meshlet_stats = heap_slot_base + 746u;
+            /**
+             * @brief THE HOST-CULLED MESHLET TABLE (docs/mesh_shaders.md step 3, the culling's cheapest stage): a
+             *        per-frame lane of `meshlet_capacity` records, written by the host while it records a CULLED
+             *        session's draws and read by that session's mesh entry
+             *
+             * @note per frame rather than one slot, unlike the table itself: this one is rewritten every frame from
+             *       the camera, so the frame in flight that is being recorded must not overwrite the one the GPU is
+             *       still reading - the rule every per-frame buffer in this renderer follows.
+             * @note the compaction is the whole point: the host writes SURVIVORS contiguously, so the dispatch's
+             *       group count is the survivor count and no workgroup is launched for a culled meshlet.
+             */
+            static constexpr uint32_t meshlet_culled = heap_slot_base + 747u;
             static constexpr uint32_t scene_camera = heap_slot_base + 514u;        // binding 0, per frame slot
             static constexpr uint32_t scene_light = heap_slot_base + 516u;         // binding 7, per frame slot
             static constexpr uint32_t cluster_counts = heap_slot_base + 518u;      // binding 11, per frame slot

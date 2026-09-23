@@ -52,7 +52,78 @@ namespace vulkan {
         this->push_geometry_lanes(env, *this, 0u, this->index_count, 0);
     }
 
+    // ---- THE HOST'S COPY OF THE SHADER'S CULLING MATHS (docs/mesh_shaders.md step 3) ----
+    // These are deliberate duplicates of `matrix_max_axis_scale` and `clip_sphere_visible` in
+    // shaders/mesh_geometry.slang, and the duplication IS the safety argument: the host must never reject a meshlet
+    // the stage would have kept, and the only way to be sure of that is to run the SAME conservative test - the
+    // radius bound is a row-sum bound on both matrices (|M v|_inf <= max_i sum_j |M_ij| |v|_inf), and the clip test
+    // uses `w + radius` on every plane so it is correct for a perspective projection too.
+    namespace {
+        float host_matrix_max_axis_scale(glm::mat4 const& m) {
+            float largest = 0.0f;
+            for (int row = 0; row < 3; ++row) {
+                // glm's operator[] hands back a COLUMN, so the shader's `m[row][0..2]` reads as these three entries
+                float const sum = std::abs(m[0][row]) + std::abs(m[1][row]) + std::abs(m[2][row]);
+                largest = std::max(largest, sum);
+            }
+            return largest;
+        }
+
+        bool host_clip_sphere_visible(glm::vec4 const& clip, float const radius) {
+            return clip.w + radius >= 0.0f && std::abs(clip.x) <= clip.w + radius && std::abs(clip.y) <= clip.w + radius &&
+                   clip.z >= -clip.w - radius && clip.z <= clip.w + radius;
+        }
+    } // namespace
+
+    uint32_t primitive::push_meshlet_lanes(render_environment const& env, primitive const& geometry, uint32_t const first_index, uint32_t const index_count, int32_t const base_vertex) const {
+        // WHETHER THIS DRAW CAN BE CULLED AT ALL, and every clause is one of the ways a host-side cull could remove
+        // something visible:
+        //  - only a meshlet session, only when the session asked for it, and only with both endpoints present;
+        //  - NEVER an instanced draw: its world matrix comes from the instance table per workgroup, so one run's
+        //    survivors differ per instance and a single compacted run cannot describe them;
+        //  - NEVER a deforming draw: the sphere is built from the BIND POSE, so it bounds geometry this draw is not
+        //    about to emit - the same rule the entries state for their own test.
+        bool const cullable = env.meshlets && env.meshlet_culled && env.meshlet_view_proj != nullptr && env.meshlet_culled_write != nullptr &&
+                              geometry.meshlet_count != 0u && (this->push.flags & 1u) == 0u && this->push.skin_base == 0u && this->push.morph_targets == 0u;
+        uint32_t survivors = not_culled;
+        std::vector<vulkan::meshlet> kept;
+        if (cullable) {
+            std::array<float, 16> view_proj = {};
+            if (env.meshlet_view_proj(env.push_owner, view_proj.data())) {
+                // the matrix arrives as 16 floats (the camera UBO's `proj * view`), copied rather than constructed
+                // through glm's type_ptr helpers: same layout, no extra include, and no doubt about transpose
+                glm::mat4 vp = {};
+                std::memcpy(&vp, view_proj.data(), sizeof(vp));
+                glm::mat4 const& world = this->push.model;
+                float const vp_scale = host_matrix_max_axis_scale(vp);
+                float const world_scale = host_matrix_max_axis_scale(world);
+                kept.reserve(geometry.meshlet_count);
+                for (vulkan::meshlet const& record : geometry.meshlets) {
+                    glm::vec4 const clip = vp * (world * glm::vec4(record.center_x, record.center_y, record.center_z, 1.0f));
+                    float const radius = record.radius * world_scale * vp_scale;
+                    if (host_clip_sphere_visible(clip, radius)) {
+                        kept.push_back(record);
+                    }
+                }
+                // the write has to succeed or the run stays unculled: a half-written culled table would make the
+                // entry read stale records, which is a wrong picture rather than a slow one
+                if (env.meshlet_culled_write(env.push_owner, geometry.meshlet_base, std::as_bytes(std::span(kept)))) {
+                    survivors = static_cast<uint32_t>(kept.size());
+                }
+            }
+        }
+        // the lanes carry the flag (see the declaration): 1 means "read this frame's culled table"
+        this->push_geometry_lanes_impl(env, geometry, first_index, index_count, base_vertex, survivors != not_culled);
+        return survivors;
+    }
+
     void primitive::push_geometry_lanes(render_environment const& env, primitive const& geometry, uint32_t const first_index, uint32_t const index_count, int32_t const base_vertex) const {
+        // the vertex path (and every session that does not cull): the lanes go out with the flag cleared, so a mesh
+        // entry reads the shared table exactly as it did before host-side culling existed
+        this->push_geometry_lanes_impl(env, geometry, first_index, index_count, base_vertex, false);
+    }
+
+    void primitive::push_geometry_lanes_impl(render_environment const& env, primitive const& geometry, uint32_t const first_index, uint32_t const index_count, int32_t const base_vertex, bool const host_culled) const {
         if (env.push_at == nullptr || env.buffer_address == nullptr || env.mesh_geometry_push_offset == 0u) {
             return; // a session that does not use the shared scene block (or a test one) has nothing to fill
         }
@@ -65,7 +136,10 @@ namespace vulkan {
         // the index width are still the draw's, which is why the lanes carry both kinds of fact.
         lanes.first_index = env.meshlets ? geometry.meshlet_base : first_index;
         lanes.index_count = env.meshlets ? geometry.meshlet_count : index_count;
-        lanes.base_vertex = env.meshlets ? 0 : base_vertex;
+        // ... AND, in a meshlet session, WHETHER THE RUN WAS HOST-CULLED: the field is otherwise unused there (a
+        // meshlet record carries its own base vertex), and the entry point reads it as "this frame's culled table,
+        // not the shared one" (docs/mesh_shaders.md step 3)
+        lanes.base_vertex = env.meshlets ? (host_culled ? 1 : 0) : base_vertex;
         // the buffer's own index type, which the shader needs because a raw load has no format: 4 for UINT32,
         // 2 for UINT16 (the shader reads the 16-bit case as the half of a 32-bit word its index falls in)
         lanes.index_width = geometry.index_type == VK_INDEX_TYPE_UINT16 ? 2u : 4u;
@@ -102,7 +176,7 @@ namespace vulkan {
         [[maybe_unused]] bool const pushed = env.push_at(env.push_owner, env.command_buffer, env.mesh_geometry_push_offset, std::span<std::byte const>(payload.data(), bytes));
     }
 
-    void primitive::mesh_dispatch(render_environment const& env, primitive const& geometry, uint32_t const index_count, uint32_t const instance_count) const {
+    void primitive::mesh_dispatch(render_environment const& env, primitive const& geometry, uint32_t const index_count, uint32_t const instance_count, uint32_t const survivors) const {
         // ---- the dispatch: one workgroup per `mesh_triangles_per_workgroup` triangles of THIS draw ----
         // The workgroup budget is the shader's (see shaders/mesh_geometry.slang: 85 triangles, 255 vertices,
         // because a triangle costs three of the device's 256 output vertices), and the group count has to cover
@@ -111,8 +185,12 @@ namespace vulkan {
         constexpr uint32_t triangles_per_workgroup = 85u;
         uint32_t const triangles = index_count / 3u;
         // A MESHLET SESSION DISPATCHES ONE WORKGROUP PER MESHLET: each one reads its own window out of the table and
-        // emits the whole meshlet, so the group count is the primitive's run - not a slice of a triangle count.
-        uint32_t const groups = env.meshlets ? geometry.meshlet_count : (triangles + triangles_per_workgroup - 1u) / triangles_per_workgroup;
+        // emits the whole meshlet, so the group count is the primitive's run - not a slice of a triangle count. A
+        // HOST-CULLED run dispatches its SURVIVORS instead, which is the point of culling before the dispatch: a
+        // meshlet the frustum rejected costs no workgroup at all (docs/mesh_shaders.md step 3).
+        uint32_t const groups = survivors != not_culled
+                                    ? survivors
+                                    : (env.meshlets ? geometry.meshlet_count : (triangles + triangles_per_workgroup - 1u) / triangles_per_workgroup);
         if (groups != 0u) {
             // A MESHLET SESSION DISPATCHES THROUGH THE INDIRECT ENTRY POINT (docs/mesh_shaders.md step 3, second
             // mechanism): the counts travel in the command table at the primitive's OWN slot (`meshlet_base`), so a
@@ -120,7 +198,11 @@ namespace vulkan {
             // up with no host change. The other mesh sessions keep the direct call - their counts are the host's,
             // and nothing will ever rewrite them - and the runtime logs which route was taken either way.
             if (env.meshlets && env.draw_mesh_tasks_indirect != nullptr) {
-                [[maybe_unused]] bool const dispatched = env.draw_mesh_tasks_indirect(env.push_owner, env.command_buffer, geometry.meshlet_base, groups, instance_count, 1u);
+                // THE COMMAND IS THE SLOT'S CLASS, one table capacity apart: a HOST-CULLED run and an unculled one
+                // (the shadow pass) dispatch the same primitive with DIFFERENT counts, so they cannot share a
+                // command - whichever wrote last would be the count both passes got.
+                uint32_t const slot = geometry.meshlet_base + (survivors != not_culled ? vulkan::meshlet_capacity : 0u);
+                [[maybe_unused]] bool const dispatched = env.draw_mesh_tasks_indirect(env.push_owner, env.command_buffer, slot, groups, instance_count, 1u);
             } else {
                 [[maybe_unused]] bool const dispatched = env.draw_mesh_tasks(env.push_owner, env.command_buffer, groups, instance_count, 1u);
             }
@@ -142,8 +224,8 @@ namespace vulkan {
             // A MESH SESSION DOES NOT BIND GEOMETRY: the stage fetches it from the lanes pushed below, so binding
             // would be a command with no effect.
             push_stage_block(env, this->push);
-            this->push_geometry_lanes(env, *this, 0u, this->index_count, 0);
-            this->mesh_dispatch(env, *this, this->index_count, 1u);
+            uint32_t const survivors = this->push_meshlet_lanes(env, *this, 0u, this->index_count, 0);
+            this->mesh_dispatch(env, *this, this->index_count, 1u, survivors);
             return;
         }
         this->bind_geometry_and_push(env);
@@ -180,8 +262,8 @@ namespace vulkan {
             // stage has no SV_InstanceID, so the stage reads its instance index from the workgroup grid's Y -
             // which is exactly what the vertex path's SV_InstanceID meant here (see shadow.slang's mesh entry).
             push_stage_block(env, this->push);
-            this->push_geometry_lanes(env, geometry_source, 0u, geometry_source.index_count, 0);
-            this->mesh_dispatch(env, geometry_source, geometry_source.index_count, this->instance_count);
+            uint32_t const survivors = this->push_meshlet_lanes(env, geometry_source, 0u, geometry_source.index_count, 0);
+            this->mesh_dispatch(env, geometry_source, geometry_source.index_count, this->instance_count, survivors);
             return;
         }
         constexpr VkDeviceSize vertex_offset = 0;
@@ -229,11 +311,16 @@ namespace vulkan {
             // THE CHUNK'S WINDOW IS THE LANES' WHOLE POINT: first index, count and base vertex are exactly the
             // three arguments the vkCmdDrawIndexed below takes and a mesh dispatch has no place for, so both
             // paths push them per chunk (the vertex path's stages declare them too - see push_geometry_lanes).
-            this->push_geometry_lanes(env, *this, chunk.first_index, chunk.index_count, static_cast<int32_t>(chunk.vertex_offset));
             if (env.mesh_stage) {
-                this->mesh_dispatch(env, *this, chunk.index_count, 1u);
+                // the cull is the SAME for every chunk of one primitive - the run covers the merged buffer, not the
+                // chunk - so the survivors come out identical and the culled table is rewritten with the same
+                // records. (That the dispatch happens once per chunk at all is a known defect of the meshlet
+                // session, recorded in docs/mesh_shaders.md: a chunk's material cannot reach a whole-run dispatch.)
+                uint32_t const survivors = this->push_meshlet_lanes(env, *this, chunk.first_index, chunk.index_count, static_cast<int32_t>(chunk.vertex_offset));
+                this->mesh_dispatch(env, *this, chunk.index_count, 1u, survivors);
                 continue;
             }
+            this->push_geometry_lanes(env, *this, chunk.first_index, chunk.index_count, static_cast<int32_t>(chunk.vertex_offset));
             vkCmdDrawIndexed(command_buffer,
                              chunk.index_count,
                              1,

@@ -1010,12 +1010,12 @@ namespace vulkan {
             }
             return direct();
         }
-        // A slot IS a meshlet record index, so one outside the table is impossible - and answered rather than
-        // trusted, because the command would make the GPU read whatever memory follows the table.
-        if (command_slot >= vulkan::meshlet_capacity) {
+        // A slot IS a meshlet record index plus its command class, so one past the table's two classes is impossible -
+        // and answered rather than trusted, because the command would make the GPU read whatever follows the table.
+        if (command_slot >= runtime::mesh_command_capacity) {
             if (!self->mesh_indirect_conflict_logged) {
                 self->mesh_indirect_conflict_logged = true;
-                utility::log("mesh indirect: slot {} is past the command table ({} records) - the dispatch goes through the DIRECT call", command_slot, vulkan::meshlet_capacity);
+                utility::log("mesh indirect: slot {} is past the command table ({} records) - the dispatch goes through the DIRECT call", command_slot, runtime::mesh_command_capacity);
             }
             return direct();
         }
@@ -1036,15 +1036,50 @@ namespace vulkan {
         // IF THE COUNTS EVER BECOME PER-FRAME (an animated instance count, say), this slot is the wrong key: it
         // needs one command per (frame, draw) instead of per primitive, which is exactly what the COMPUTE culling
         // pass this seam exists for will write.
-        commands[static_cast<std::size_t>(vk.current_frame) * vulkan::meshlet_capacity + command_slot] =
+        commands[static_cast<std::size_t>(vk.current_frame) * runtime::mesh_command_capacity + command_slot] =
             VkDrawMeshTasksIndirectCommandEXT{.groupCountX = groups_x, .groupCountY = groups_y, .groupCountZ = groups_z};
-        VkDeviceSize const offset = static_cast<VkDeviceSize>(vk.current_frame * vulkan::meshlet_capacity + command_slot) * sizeof(VkDrawMeshTasksIndirectCommandEXT);
+        VkDeviceSize const offset = static_cast<VkDeviceSize>(vk.current_frame * runtime::mesh_command_capacity + command_slot) * sizeof(VkDrawMeshTasksIndirectCommandEXT);
         vk.mesh_dispatch_indirect(command_buffer, self->mesh_indirect_table, offset, 1u, sizeof(VkDrawMeshTasksIndirectCommandEXT));
         self->mesh_indirect_dispatches.fetch_add(1u, std::memory_order_relaxed);
         if (!self->mesh_indirect_route_logged) {
             self->mesh_indirect_route_logged = true;
-            utility::log("mesh indirect: the meshlet dispatches go through vkCmdDrawMeshTasksIndirectEXT (table bound, {} records per frame in flight, a slot is the primitive's meshlet_base)", vulkan::meshlet_capacity);
+            utility::log("mesh indirect: the meshlet dispatches go through vkCmdDrawMeshTasksIndirectEXT (table bound, {} records per frame in flight - two command classes - a slot is the primitive's meshlet_base)", runtime::mesh_command_capacity);
         }
+        return true;
+    }
+
+    // ---- THE HOST'S SIDE OF MESHLET CULLING (docs/mesh_shaders.md step 3, the culling's cheapest stage) ----
+    // The camera's `proj * view`, for the recording path's frustum test: the same matrix the stage computes from the
+    // camera UBO, taken from the frame's own snapshot so the cull and the draw agree about where the camera is.
+    bool runtime::meshlet_view_proj(void* const owner, float* const out16) {
+        runtime const* const self = static_cast<runtime const*>(owner);
+        if (out16 == nullptr) {
+            return false;
+        }
+        std::memcpy(out16, &self->current_ubo.view_proj_unjittered, sizeof(glm::mat4));
+        return true;
+    }
+
+    // THIS FRAME'S COMPACTED RUN of a primitive's surviving meshlets. The layout is the shared table's, one frame
+    // lane apart, so a workgroup id selects the i-th SURVIVOR directly - and the entry point needs no second lookup.
+    bool runtime::meshlet_culled_write(void* const owner, uint32_t const base, std::span<std::byte const> const records) {
+        runtime* const self = static_cast<runtime*>(owner);
+        if (self->meshlet_culled_mapped == nullptr) {
+            return false;
+        }
+        uint32_t const count = static_cast<uint32_t>(records.size_bytes() / sizeof(vulkan::meshlet));
+        if (base > vulkan::meshlet_capacity || count > vulkan::meshlet_capacity - base) {
+            // a run past the table cannot be compacted into it: the caller answers by NOT culling (the whole run is
+            // dispatched and the entry culls itself), which is always correct - the table is the meshlet budget
+            static bool logged = false;
+            if (!logged) {
+                logged = true;
+                utility::log("mesh culling: a run of {} meshlets at {} does not fit the culled table ({} records) - that draw stays unculled", count, base, vulkan::meshlet_capacity);
+            }
+            return false;
+        }
+        auto* const table = static_cast<unsigned char*>(self->meshlet_culled_mapped);
+        std::memcpy(table + (static_cast<std::size_t>(self->vulkan_core.current_frame) * vulkan::meshlet_capacity + base) * sizeof(vulkan::meshlet), records.data(), records.size_bytes());
         return true;
     }
 

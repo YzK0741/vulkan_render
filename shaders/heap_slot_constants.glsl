@@ -61,6 +61,11 @@ const uint heap_slots_meshlets = heap_slot_base + 745u;
 // entries add to and the host reads back once, at shutdown - one descriptor with a per-frame lane inside it, like
 // every other per-frame buffer (see core::heap_slots::meshlet_stats).
 const uint heap_slots_meshlet_stats = heap_slot_base + 746u;
+// THE HOST-CULLED MESHLET TABLE (docs/mesh_shaders.md step 3, the culling's cheapest stage): a per-frame copy of the
+// primitives a CULLED session draws, compacted to the meshlets the host's frustum test kept - so the dispatch's
+// group count IS the survivor count and a workgroup is never launched for a meshlet nobody will see. One descriptor
+// with a per-frame lane, like every other per-frame buffer (see core::heap_slots::meshlet_culled).
+const uint heap_slots_meshlet_culled = heap_slot_base + 747u;
 const uint heap_slots_mask_instances = heap_slot_base + 530u;
 // frame-invariant images the shading stage samples
 const uint heap_slots_env_cube = heap_slot_base + 532u;

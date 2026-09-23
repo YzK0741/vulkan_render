@@ -1178,6 +1178,10 @@ namespace vulkan {
         /// "0 direct" is what says the seam is the one in use rather than a silent fall-back)
         std::atomic<uint64_t> mesh_indirect_dispatches = 0;
         std::atomic<uint64_t> mesh_indirect_direct_fallbacks = 0;
+        /// HOW MANY COMMANDS one frame's lane holds (docs/mesh_shaders.md step 3): TWO runs of `meshlet_capacity`, one
+        /// per COMMAND CLASS, because a HOST-CULLED run and an unculled one (the shadow pass) dispatch the same
+        /// primitive with DIFFERENT counts - and a shared slot would hand both passes whichever wrote last.
+        static constexpr uint32_t mesh_command_capacity = 2u * vulkan::meshlet_capacity;
         /**
          * @brief THE MESH CULLING COUNTERS (docs/mesh_shaders.md step 3, "what the culling buys"): a mesh entry adds
          *        to one per workgroup, the host reads the buffer back once at shutdown and logs the totals
@@ -1196,6 +1200,21 @@ namespace vulkan {
         void* meshlet_stats_mapped = nullptr;
         /// the one line per session, printed from the destructor (after `wait_idle`, so the counters are final)
         void log_meshlet_stats() const;
+        /**
+         * @brief THE HOST-CULLED MESHLET TABLE (docs/mesh_shaders.md step 3, the culling's cheapest stage): a per-frame
+         *        lane of `meshlet_capacity` records, written while a CULLED session's draws are recorded and read by
+         *        that session's mesh entry
+         *
+         * The host already holds the three things the stage's frustum test needs - the primitive's meshlets, the
+         * draw's model matrix and the camera - so the cull costs no pass, no command buffer and no draw list, which is
+         * why it is the stage that shipped. What it buys is measured: the same pixels with the culled workgroups never
+         * launched (see the counters above, and the table in the doc).
+         */
+        vk_buffer meshlet_culled_buffer = {};
+        void* meshlet_culled_mapped = nullptr;
+        /// the two endpoints the recording path calls (see render_environment::meshlet_view_proj / _write)
+        static bool meshlet_view_proj(void* owner, float* out16);
+        static bool meshlet_culled_write(void* owner, uint32_t base, std::span<std::byte const> records);
         /**
          * THE STRUCTURE PHASE ITSELF, which is one value now (see `vulkan.ray_tracing`): the bottom and top level
          * structures, the map from their indices back to the casters they were built from, and the MASK/skin

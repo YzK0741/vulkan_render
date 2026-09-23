@@ -102,6 +102,26 @@ namespace vulkan {
          */
         bool meshlets = false;
         /**
+         * WHETHER THIS SESSION'S MESHLET RUNS ARE CULLED BY THE HOST BEFORE THE DISPATCH (docs/mesh_shaders.md step 3,
+         * the culling's cheapest stage). A meshlet that the frustum rejects still costs a workgroup launch today,
+         * because the entry point is what discovers it; with this on, the recording path tests each of the
+         * primitive's meshlets against the camera, writes the survivors into this frame's culled table and asks the
+         * dispatch for exactly that many workgroups - so a culled meshlet costs nothing at all.
+         *
+         * THE HOST IS THE CHEAP STAGE HERE, not a fallback for one: it already holds the primitive's meshlets, the
+         * draw's model matrix and the camera (the same three things the stage reads), so the test costs no new pass,
+         * no command buffer, no ordering rule and no draw list. It is FALSE for the shadow pass on purpose - that
+         * pass's frustum is per cascade, and it dispatches its casters per cascade.
+         */
+        bool meshlet_culled = false;
+        /// the camera's `proj * view` as 16 floats, column-major, for the host-side cull; null means the session
+        /// cannot cull and falls back to dispatching the whole run, which is always correct
+        bool (*meshlet_view_proj)(void* owner, float* out16) = nullptr;
+        /// write this frame's compacted run of a primitive's meshlets: @p records are the survivors, @p base is where
+        /// the run starts in the table (the primitive's `meshlet_base`), and they go into the frame's own lane of the
+        /// culled table. Answers false when the run does not fit, which the caller answers by not culling.
+        bool (*meshlet_culled_write)(void* owner, uint32_t base, std::span<std::byte const> records) = nullptr;
+        /**
          * WHERE THIS SESSION'S STAGE BLOCK STARTS RECEIVING THE GEOMETRY LANES, in bytes - i.e. the end of the last
          * member the block's earlier pushes covered (see vulkan::primitive's `mesh_geometry_push_offset_*` and
          * `mesh_geometry_lanes_offset`). It is per SESSION rather than a constant because the two blocks in this

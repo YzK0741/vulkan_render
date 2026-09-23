@@ -276,7 +276,12 @@ void mesh_main(out vertices pbr_vertex_output verts[mesh_vertices_per_workgroup]
 void meshlet_main(out vertices pbr_vertex_output verts[mesh_vertices_per_workgroup], out indices uint3 tris[mesh_triangles_per_workgroup], uint3 group_id : SV_GroupID)
 {
     const MeshGeometryLanes geometry = push.geometry;
-    const MeshletRecord meshlet = meshlet_at(geometry.first_index + group_id.x);
+    // THE LANE'S base_vertex IS THE "THIS RUN WAS HOST-CULLED" FLAG in a meshlet session (the field is otherwise
+    // unused there, and the host zeroes it): when it is set, this workgroup's meshlet is the group-th SURVIVOR of the
+    // primitive's run rather than the group-th record, and it comes out of this frame's culled table
+    // (docs/mesh_shaders.md step 3 - the host culls what the dispatch would otherwise launch a workgroup for).
+    const bool host_culled = geometry.base_vertex != 0;
+    const MeshletRecord meshlet = host_culled ? culled_meshlet_at(push.frame_slot, geometry.first_index + group_id.x) : meshlet_at(geometry.first_index + group_id.x);
     // ONE ATOMIC PER WORKGROUP, counting what the culling below decided (docs/mesh_shaders.md step 3's measurement:
     // a rejected meshlet and a meshlet nobody dispatched are the same pixels, so the numbers are the only witness)
     mesh_stat_add(push.frame_slot, mesh_stat_workgroups, 1u);

@@ -10,11 +10,13 @@
   bounding spheres and normal cones (`vulkan.meshlet`, 3145 records over 103 primitives on Sponza), the records live
   in a heap table written once at import, and both geometry passes draw them ONE WORKGROUP PER MESHLET - the shadow
   pass and the G-buffer - each meshlet culled against its pass's clip volume before it emits anything. Every mesh
-  dispatch goes through `vkCmdDrawMeshTasksIndirectEXT`, which is the seam a compute culling pass writes into.
+  dispatch goes through `vkCmdDrawMeshTasksIndirectEXT`, and the CAMERA's runs are culled by the HOST before the
+  dispatch (33,866 of Sponza's 42,800 culled workgroups over 40 frames are never launched at all), so the culling has
+  both stages: the host removes the workgroup, the entry point still removes the meshlet.
 - What is NOT done, each measured and recorded above: per-meshlet BACKFACE culling (the cone is computed and
   tested, but enabling the test changes six scenarios, so it is reverted - see the negative result in step 3);
-  a COMPUTE pass that writes the indirect commands (the seam exists, the pass does not); and a measurement of what
-  the culling buys, which the log does not carry.
+  the SHADOW pass's share of the host culling (its frustum is per cascade); and a timing of any of it - the counters
+  measure work, not milliseconds.
 - Step 4 (removing the vertex path) has not started. It should now be possible - every geometry stage is
   gate-green in its mesh form - but the vertex forms are the only fallback a device without `VK_EXT_mesh_shader`
   has, so removing them is a portability decision rather than a cleanup, and the gate cannot see the difference
@@ -593,15 +595,58 @@ The same counter answers the question item ② is about: a rejected meshlet stil
 42,800 over 40 frames on Sponza, i.e. about 1070 a frame. Whether that is worth a pass of its own is a decision the
 counts inform and the timings (which do not exist yet) would settle.
 
-**WHAT REMAINS IN THIS STEP** is the pass that writes those counts: a compute pass that culls each meshlet against
-the cascade's (or the camera's) frustum - the meshlet table and the light matrices are both heap reads a compute
-stage can make - and writes the surviving counts into the command table slot the primitive already owns. One known
-defect has to be settled with it: **a static draw in a meshlet session dispatches its whole run once per CHUNK**
+**THE CULLING NOW HAPPENS BEFORE THE DISPATCH, AND IT CLOSED ON THE HOST RATHER THAN IN THE COMPUTE PASS THIS
+DOCUMENT HAD PLANNED.** The numbers above are what decided it: a rejected meshlet still cost a workgroup launch, and
+a compute pass would have moved that test off the entry point - but the HOST already holds the three things the test
+needs (the primitive's meshlets, the draw's model matrix and the camera), so it needs no new pass, no per-frame draw
+list, no ordering rule and no command buffer. Measured, `sponza`, 40 frames, one binary before and one after:
+
+| | meshlet workgroups | culled at the entry point | emitted | triangles |
+| --- | --- | --- | --- | --- |
+| before (every meshlet dispatched, the entry culls) | 118541 | 42800 | 75741 | 6325695 |
+| after (the CAMERA's runs culled while they are recorded) | **84675** | 8934 | 75741 | 6325695 |
+
+The 33866 workgroups that disappeared are exactly the camera's culled meshlets - `42800 - 33866 = 8934`, which is the
+share a shadow-off run measures independently (99671 workgroups, 33866 culled), i.e. the SHADOW pass still culls at
+the entry point because its frustum is per cascade. **The triangles emitted are identical to the digit, and every one
+of the ten scenarios is byte-identical** - so this is the same frame with a third of the geometry's workgroup
+launches never made.
+
+HOW IT IS WIRED, and the four things it deliberately does not do:
+
+- the host culls in `primitive::push_meshlet_lanes` with **copies of the shader's own two helpers**
+  (`matrix_max_axis_scale`, `clip_sphere_visible` in `shaders/mesh_geometry.slang`). The duplication is the safety
+  argument, not laziness: a meshlet the stage would have kept must never be rejected, and the only way to be sure is
+  to run the same conservative test - the radius bound is a row-sum bound on both matrices, and the clip test uses
+  `w + radius` on every plane.
+- the survivors are written COMPACTED into this frame's lane of a culled table (`heap_slots_meshlet_culled`, the same
+  layout as the table itself), so a workgroup id selects the i-th survivor and the entry point needs no second
+  lookup - it reads a different TABLE, not a different index.
+- the flag that says which table travels in the lanes' `base_vertex`, a field a meshlet session never uses for
+  anything else (a record carries its own base vertex). Zero keeps the table-driven path, which is what the shadow
+  pass and every non-meshlet session still do.
+- the command table gained a **second class** (`runtime::mesh_command_capacity` = two runs of `meshlet_capacity` per
+  frame): the shadow pass and the camera dispatch the SAME primitive with DIFFERENT counts, so they cannot share a
+  command - whichever wrote last would be the count both passes got.
+
+**NEVER CULLED, and each clause is a way a host-side cull could remove something visible**: an INSTANCED draw (its
+world matrix comes from the instance table per workgroup, so one run's survivors differ per instance and a single
+compacted run cannot describe them), a DEFORMING draw (the sphere bounds the bind pose, not what the draw emits), a
+run that does not fit the culled table, and any session without the camera endpoint. All four fall back to dispatching
+the whole run, where the entry point's own test still applies.
+
+Acceptance, both ways: `-Full` 10/10 passed, 0 changed, 0 flaky with references captured before host culling existed,
+plus a forced probe - `host_clip_sphere_visible` answering false - which turned `deferred` into `8687703DA3BCA7EF`,
+the no-geometry hash this document already records twice. `spirv-val --target-env vulkan1.3`: 29 modules, 0 failures.
+Zero validation findings, ctest 10/10.
+
+**WHAT REMAINS IN THIS STEP** is the shadow pass's half of that saving (8934 workgroups over 40 frames of `sponza`):
+its frustum is the cascade's, one per cascade, so host-culling it needs a per-cascade run - four tables or four
+command classes - and it is the pass whose casters are recorded in parallel secondaries. One other known defect has
+to be settled with it: **a static draw in a meshlet session dispatches its whole run once per CHUNK**
 (`static_draw_primitive::draw` loops chunks, and the lanes carry the primitive's run rather than the chunk's), which
 is invisible in a depth pass and wrong the moment two chunks of one primitive disagree about a material - so the
-culling pass either learns the per-chunk material or the meshlet record grows one. Acceptance stays the same:
-conservative culling must leave the gate byte-identical, and a forced probe that culls everything must change the
-picture.
+culling path either learns the per-chunk material or the meshlet record grows one.
 
 The constraints the objective measured still stand and are designed around: `vkCmdDrawMeshTasksEXT` has no
 `instanceCount` (the dispatch's Y carries it today, and the task payload will carry it once a task stage launches

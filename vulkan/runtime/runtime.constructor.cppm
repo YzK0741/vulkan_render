@@ -397,7 +397,7 @@ namespace vulkan {
         //      that cursor caused (see the member's note in runtime.declarations.cppm). Not on the heap: it is
         //      command data, not a resource any shader reads.
         {
-            constexpr std::size_t commands_per_frame = vulkan::meshlet_capacity;
+            constexpr std::size_t commands_per_frame = runtime::mesh_command_capacity;
             std::vector<unsigned char> const zeroed_commands(static_cast<size_t>(vulkan::core::MAX_FRAMES_IN_FLIGHT) * commands_per_frame * sizeof(VkDrawMeshTasksIndirectCommandEXT), 0);
             init_utils::create_host_buffer(this->vulkan_core,
                                            std::as_bytes(std::span(zeroed_commands)),
@@ -435,6 +435,34 @@ namespace vulkan {
                                                                                          VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
                     if (!written) {
                         utility::log("descriptor heap: the mesh culling counters were NOT written - the counters stay zero");
+                    }
+                }
+            }
+        }
+
+        // ---- THE HOST-CULLED MESHLET TABLE (docs/mesh_shaders.md step 3, the culling's cheapest stage): one lane of
+        //      `meshlet_capacity` records per frame in flight, host-visible because the HOST writes it while it
+        //      records and the heap-bound because the mesh entry reads it. Per frame rather than one slot, unlike the
+        //      table it shadows: this one is rewritten from the camera every frame.
+        {
+            std::vector<unsigned char> const zeroed_culled(static_cast<size_t>(vulkan::core::MAX_FRAMES_IN_FLIGHT) * vulkan::meshlet_capacity * sizeof(vulkan::meshlet), 0);
+            init_utils::create_host_buffer(this->vulkan_core,
+                                           std::as_bytes(std::span(zeroed_culled)),
+                                           vulkan::buffer_type::storage_coherent,
+                                           "culled meshlet table buffer",
+                                           this->meshlet_culled_buffer,
+                                           this->meshlet_culled_mapped,
+                                           VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT);
+            if (this->vulkan_core.descriptor_heaps.ready() && this->vulkan_core.heap_grid_offset != VK_WHOLE_SIZE) {
+                if (auto const* const detail = this->vulkan_core.vma.get_buffer_detail(this->meshlet_culled_buffer.handle()); detail != nullptr) {
+                    VkBufferDeviceAddressInfo const info = {.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .pNext = nullptr, .buffer = detail->buffer};
+                    VkDeviceAddress const address = vkGetBufferDeviceAddress(this->vulkan_core.device, &info);
+                    bool const written = this->vulkan_core.descriptor_heaps.write_buffer(static_cast<VkDeviceSize>(core::heap_slots::meshlet_culled) * core::heap_slot_stride,
+                                                                                         address,
+                                                                                         static_cast<VkDeviceSize>(vulkan::core::MAX_FRAMES_IN_FLIGHT) * vulkan::meshlet_capacity * sizeof(vulkan::meshlet),
+                                                                                         VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+                    if (!written) {
+                        utility::log("descriptor heap: the culled meshlet table was NOT written - the draws stay unculled");
                     }
                 }
             }
