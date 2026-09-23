@@ -756,6 +756,8 @@ set(VR_SLANG_SOURCES
     # against the value it knows, so this port is accepted by comparing those log lines (see the file).
     heap_probe.slang:main:vertex:heap_probe.vert.spv
     heap_probe.slang:frag_main:fragment:heap_probe.frag.spv
+    # The COMPUTE half is its own file because it has its own push layout (one push block per stage).
+    heap_probe_comp.slang:comp_main:compute:heap_probe.comp.spv
     # rt_shadow.slang is the ray-traced shadow's shader file, growing one stage at a time; it starts with the
     # closest-hit stage, whose whole job is the payload contract (see the file). No gate scenario enables
     # rt_shadows, so this port is shape-verified and belongs to the A/B capture route in docs/slang_migration.md.
