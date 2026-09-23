@@ -122,6 +122,19 @@ function Invoke-LatexManual {
 
 Set-Location 'docs\latex'
 
+# CLEAR THE CROSS-REFERENCE STATE FIRST, and this is a measured recovery rather than tidiness: doxygen
+# has just rewritten every .tex, but refman.aux survives from whatever ran before - and an aux that was
+# cut short (an interrupted run leaves its last \newlabel half-written) makes pdflatex die at
+# \begin{document} with "! File ended while scanning use of \@newl@bel." BEFORE it can rewrite the aux,
+# so with -halt-on-error every later run fails the same way and the manual pass loop below cannot
+# escape it. Measured once: refman.aux ended in "...pass_a96ba48ba179bae21943322ce7ad1e00a}{" and every
+# run failed at l.201 until the file was deleted. These three are pure derived state LaTeX regenerates.
+# refman.idx and refman.ind are deliberately NOT touched: the index is makeindex's input, and refman.tex
+# \inputs the .ind, so removing either would fail a pass that the loop has not reached makeindex by yet.
+foreach ($stale in 'refman.aux', 'refman.toc', 'refman.out') {
+    Remove-Item $stale -ErrorAction SilentlyContinue
+}
+
 if (Get-Command make -ErrorAction SilentlyContinue) {
     # doxygen generates docs/latex/Makefile with 'all' -> refman.pdf
     Write-Host '== latex via make (docs/latex/Makefile, output suppressed) =='
