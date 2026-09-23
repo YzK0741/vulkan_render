@@ -1,11 +1,26 @@
 # Mesh shaders: what the stage buys here, and how the migration runs
 
-**STATUS: steps 0, 1 and 2 are DONE and measured - the binding model is proven (the heap-native probe runs through
-a mesh pipeline and reports the same pixel as the vertex one), and EVERY geometry stage this renderer draws leaves
-with is a mesh stage: the shadow pass's casters, the G-buffer pass's opaque leaves, and the forward `pbr`/`unlit`
-pipelines the transparent pass and the flat render mode draw through. The capture gate is byte-identical to the
-committed vertex-path references with either path active, and forced probes prove the mesh stages are the ones that
-produced those frames. Steps 3-4 are planned (meshlets, a task stage, and removing the vertex path).**
+**STATUS: steps 0, 1, 2 and step 3's DATA half are DONE and measured; step 3's culling half and step 4 are not.**
+
+- The binding model is proven (the heap-native probe runs through a mesh pipeline and reports the same pixel as the
+  vertex one), and EVERY geometry stage this renderer draws leaves with is a mesh stage: the shadow pass's casters,
+  the G-buffer pass's opaque leaves, and the forward `pbr`/`unlit` pipelines the transparent pass and the flat
+  render mode draw through. The capture gate is byte-identical to the committed vertex-path references with either
+  path active, and forced probes prove the mesh stages are the ones that produced those frames.
+- Step 3's data half is in place: `vulkan.meshlet` cuts every draw into 85-triangle meshlets with object-space
+  bounding spheres (3145 over 103 primitives on the Sponza scene), the records live in a heap table written once at
+  import (`heap_slots_meshlets`, 65536 x 28 B), the splitter and the record rule are asserted by
+  `tests/test_meshlet.cpp`, and every record is checked as it leaves the host.
+- Step 3's culling half is BLOCKED BY A COMPILER BUG, not by design: `slangc` v2026.18.2 crashes (0xC0000005) on a
+  task stage that takes push data or touches the heap, with a six-line reproducer (section 5, step 3). A mesh entry
+  that reads its window out of the table does build, create a pipeline and dispatch - and wedges the GPU, with two
+  of its three suspects since eliminated. The remaining fork is the one the objective already names: cull in a
+  COMPUTE pass and dispatch with `vkCmdDrawMeshTasksIndirectEXT`.
+- Step 4 (removing the vertex path) has not started, and should not until a culling path exists, because the vertex
+  forms are the fallback every device without mesh shaders runs.
+
+The measurements behind each of those sentences - the device's limits, the two compiler crashes, the GPU hang and
+the exact next experiments - are in section 5, step by step.
 
 This document exists for the same reason `docs/slang_migration.md` does: the work spans sessions, so the
 recipe, the acceptance route and the traps belong somewhere durable. Every number below was measured on
