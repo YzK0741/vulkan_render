@@ -114,7 +114,16 @@ namespace vulkan {
         // emits the whole meshlet, so the group count is the primitive's run - not a slice of a triangle count.
         uint32_t const groups = env.meshlets ? geometry.meshlet_count : (triangles + triangles_per_workgroup - 1u) / triangles_per_workgroup;
         if (groups != 0u) {
-            [[maybe_unused]] bool const dispatched = env.draw_mesh_tasks(env.push_owner, env.command_buffer, groups, instance_count, 1u);
+            // A MESHLET SESSION DISPATCHES THROUGH THE INDIRECT ENTRY POINT (docs/mesh_shaders.md step 3, second
+            // mechanism): the counts travel in the command table at the primitive's OWN slot (`meshlet_base`), so a
+            // COMPUTE culling pass can rewrite that record with the counts culling left and the dispatch picks them
+            // up with no host change. The other mesh sessions keep the direct call - their counts are the host's,
+            // and nothing will ever rewrite them - and the runtime logs which route was taken either way.
+            if (env.meshlets && env.draw_mesh_tasks_indirect != nullptr) {
+                [[maybe_unused]] bool const dispatched = env.draw_mesh_tasks_indirect(env.push_owner, env.command_buffer, geometry.meshlet_base, groups, instance_count, 1u);
+            } else {
+                [[maybe_unused]] bool const dispatched = env.draw_mesh_tasks(env.push_owner, env.command_buffer, groups, instance_count, 1u);
+            }
         }
     }
 
@@ -125,15 +134,6 @@ namespace vulkan {
     // leaves disable depth writes so they blend onto whatever is behind them. All commands
     // record onto env.command_buffer.
     void normal_draw_primitive::draw(render_environment& env) const {
-        // DIAGNOSTIC (temporary): an indexed geometry draw that rasterises nothing can simply have no indices, and
-        // no shader-side experiment can tell that apart from a draw that never happens at all.
-        {
-            static int logged = 0;
-            if (logged < 4) {
-                ++logged;
-                utility::log("[diag] normal draw: index_count={} vertex_count={} vertex_detail={} index_detail={}", this->index_count, this->vertex_count, static_cast<void const*>(this->vertex_detail) != nullptr, static_cast<void const*>(this->index_detail) != nullptr);
-            }
-        }
         env.bind_default();
         env.set_depth_write(!this->transparent);
         VkCommandBuffer const command_buffer = env.command_buffer;

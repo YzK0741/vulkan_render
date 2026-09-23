@@ -316,7 +316,9 @@ namespace vulkan {
             }
         }
 
-        // ---- THE MESHLET TABLE (docs/mesh_shaders.md step 3): one 28-byte record per meshlet, appended by the
+        // ---- THE MESHLET TABLE (docs/mesh_shaders.md step 3): one `vulkan::meshlet` record per meshlet - 48 bytes,
+        //      the layout `static_assert`s in vulkan/meshlet/meshlet.cppm pin field by field, because a 28-byte
+        //      host record against the shader's std430 stride WEDGED the GPU before it was found - appended by the
         //      primitive upload while the scene imports and read by a task stage through the heap. Created here,
         //      with the material table's shape and for its reasons: fixed capacity, host-visible (direct mapping),
         //      and a device address because a heap descriptor for a buffer IS an address range.
@@ -345,6 +347,29 @@ namespace vulkan {
                                  sizeof(vulkan::meshlet),
                                  static_cast<VkDeviceSize>(core::heap_slots::meshlets) * core::heap_slot_stride);
                 }
+            }
+        }
+
+        // ---- THE INDIRECT MESH COMMANDS (docs/mesh_shaders.md step 3, second mechanism): one
+        //      VkDrawMeshTasksIndirectCommandEXT per (frame in flight, primitive), written by whichever thread
+        //      records that primitive's meshlet dispatch and read by the GPU. THE SLOT IS THE PRIMITIVE'S OWN
+        //      `meshlet_base`, which is what removes the cursor the first attempt used - and with it the flakiness
+        //      that cursor caused (see the member's note in runtime.declarations.cppm). Not on the heap: it is
+        //      command data, not a resource any shader reads.
+        {
+            constexpr std::size_t commands_per_frame = vulkan::meshlet_capacity;
+            std::vector<unsigned char> const zeroed_commands(static_cast<size_t>(vulkan::core::MAX_FRAMES_IN_FLIGHT) * commands_per_frame * sizeof(VkDrawMeshTasksIndirectCommandEXT), 0);
+            init_utils::create_host_buffer(this->vulkan_core,
+                                           std::as_bytes(std::span(zeroed_commands)),
+                                           vulkan::buffer_type::storage_coherent,
+                                           "mesh indirect command table",
+                                           this->mesh_indirect_buffer,
+                                           this->mesh_indirect_mapped,
+                                           VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT);
+            // the raw handle the command takes: vk_buffer::handle() is the allocator's id, and a null here is what
+            // silently sent every dispatch down the DIRECT path in the first version of this seam
+            if (auto const* const detail = this->vulkan_core.vma.get_buffer_detail(this->mesh_indirect_buffer.handle()); detail != nullptr) {
+                this->mesh_indirect_table = detail->buffer;
             }
         }
 

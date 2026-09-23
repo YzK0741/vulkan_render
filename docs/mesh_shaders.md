@@ -27,10 +27,16 @@ that wedged the GPU, the culling's two-way acceptance and the backface negative 
 
 
 - Step 3's culling half is BLOCKED BY A COMPILER BUG, not by design: `slangc` v2026.18.2 crashes (0xC0000005) on a
-  task stage that takes push data or touches the heap, with a six-line reproducer (section 5, step 3). A mesh entry
-  that reads its window out of the table does build, create a pipeline and dispatch - and wedges the GPU, with two
-  of its three suspects since eliminated. The remaining fork is the one the objective already names: cull in a
-  COMPUTE pass and dispatch with `vkCmdDrawMeshTasksIndirectEXT`.
+  task stage that takes push data or touches the heap, with a six-line reproducer (section 5, step 3).
+- The meshlet path ITSELF is in the tree and gate-green: the shadow pass and the G-buffer both prefer a meshlet
+  pipeline, one workgroup per meshlet, each meshlet culled against the pass's own frustum in the entry point. The GPU
+  hang that stood in its way first was a LAYOUT BUG - a 28-byte host record against the shader's std430 stride, so
+  every record after the first was read four bytes off - and not anything about meshlets.
+- The SECOND mechanism step 3 names - cull in a COMPUTE pass and dispatch with `vkCmdDrawMeshTasksIndirectEXT` - has
+  its SEAM in the tree: every meshlet dispatch already goes through the indirect entry point, reading its counts out
+  of a command table at a slot the primitive owns. What it lacks is the pass that writes those counts after culling.
+  (The first, cursor-driven version of that seam made `sponza` flaky and was reverted; the design that replaced it is
+  in section 5.)
 - Step 4 (removing the vertex path) has not started, and should not until a culling path exists, because the vertex
   forms are the fallback every device without mesh shaders runs.
 
@@ -379,9 +385,9 @@ forward `pbr` pipeline. The flat render mode reaches the same code path through 
 
 ### Step 3 - a TASK stage, meshlets, and indirect dispatch
 
-**STATUS: this step is DONE except for backface culling and the compute-driven form.** The splitter, the heap
-table, the meshlet entries and the per-meshlet frustum culling are in the tree and gate-green; every mesh dispatch
-goes through `vkCmdDrawMeshTasksIndirectEXT`; per-meshlet backface culling was implemented, measured to change six
+**STATUS: this step is DONE except for the compute-driven form.** The splitter, the heap table, the meshlet entries
+for both the shadow pass and the G-buffer, the per-meshlet frustum culling and the INDIRECT SEAM a compute culling
+pass writes into are in the tree and gate-green; per-meshlet backface culling was implemented, measured to change six
 scenarios, and reverted (see the negative result below); the task stage the objective names as the pre-culling
 mechanism is blocked by a compiler bug (see the blocker note at the top) and turned out not to be needed for the
 culling itself.
@@ -394,16 +400,26 @@ keeps the primitive's own run (`meshlet_base`/`meshlet_count`, which the geometr
 logs what it produced:
 
 ```
-descriptor heap: meshlet table written (address 0x1cc30290, 65536 records of 28 B, offset 1096256)
+descriptor heap: meshlet table written (address 0x1cc30290, 65536 records of 48 B, offset 1096256)
 meshlets: 3145 over 103 primitives (85 triangles each at most, object-space spheres)
 ```
 
 THE TABLE is `heap_slots_meshlets` (slot 745, at the end of the used region so nothing after it renumbers), one
-28-byte record per meshlet, host-visible and written ONCE while the scene imports - which is why it owns ONE slot
+48-byte record per meshlet, host-visible and written ONCE while the scene imports - which is why it owns ONE slot
 rather than the per-frame pair every frame-varying buffer has: there is no frame in flight whose contents could
 disagree with it (the TLAS is the counter-example, and the reason that rule exists). The host record's fields land
-at the same byte offsets the shader will read them at - first index (0), count (4), base vertex (8), centre
-(12/16/20), radius (24) - so the shader's `StructuredBuffer` copy is the same 28 bytes with no padding either side.
+at the same byte offsets the shader reads them at - first index (0), count (4), base vertex (8), a pad word (12),
+centre (16/20/24), radius (28), the normal cone's axis (32/36/40) and its cosine (44) - and `tests`-time
+`static_assert`s pin every one of them, because this layout is where the GPU hang below came from.
+
+**THE 48 BYTES ARE THE FIX FOR A WEDGED GPU, so the three blocks are not decoration.** The record started at 28
+bytes with `center` at 12, while the shader's copy is a std430 `StructuredBuffer` element where a `float3` has a
+16-byte ALIGNMENT - so the shader read `center` at 16, `radius` at 28 and the next record 32 bytes on. Every record
+after the first was read four bytes off, the fields landed in the wrong members, the index fetch left the buffer and
+the device never signalled another fence. The symptom was not a wrong picture but a hang, and validation said only
+that a command buffer was reused before its work finished. The normal cone (added for the backface experiment) then
+made it 48, and the lesson is the one the layout asserts encode: **a host struct that a shader reads as a buffer
+element is a LAYOUT, not a struct** - compare the declared offsets against `spirv-dis` before blaming the GPU.
 
 IT IS A MODULE OF ITS OWN AND A PURE ONE on purpose: the split is arithmetic over vertex and index bytes, and its
 bugs are the invisible kind - a sphere that is too small culls a visible meshlet (a hole in the shadow map, on the
@@ -505,19 +521,61 @@ worth keeping for the same reason the splitter's own tests are: a record's windo
 `SetMeshOutputCounts`, so a malformed one is not a wrong picture but a dispatch asking for output the device does
 not have.
 
-The experiment was reverted in full (shader, lanes, session flag, pipeline, registration, both script lists and the
-CMake rule), and `cmake` was re-run so the build directory's rules match - `CMAKE_SUPPRESS_REGENERATION=ON` means a
-reverted `VR_SLANG_SOURCES` is otherwise still compiled. The tree after the revert: gate 10/10 passed, 0 changed, 0
-flaky; ctest 10/10; zero validation findings; the mesh shadow pipeline and the meshlet table log lines unchanged.
+**THE HANG WAS NEITHER SUSPECT: IT WAS THE RECORD LAYOUT, AND THAT IS HOW IT WAS CLOSED.** The 28-byte host record
+against the shader's std430 stride (see THE TABLE above) was found by a diagnostic dispatch of one workgroup per DRAW
+instead of one per meshlet - which still wedged, ruling out the volume of work in one dispatch - and then by
+comparing the host struct's field offsets against what the shader declares, field by field. With the padding in and
+asserted, the consumer went in for real: `shadow.slang`'s `meshlet_main` reads its own window out of the table, the
+shadow pass prefers `shadow.meshlet.spv`, the lanes carry the primitive's run, and the gate came back 10/10 with 0
+changed and 0 flaky (commit `00b614f`, step by step below). (The first attempt was reverted in full first - shader,
+lanes, session flag, pipeline, registration, both script lists and the CMake rule, with `cmake` re-run because
+`CMAKE_SUPPRESS_REGENERATION=ON` otherwise keeps compiling a reverted `VR_SLANG_SOURCES` - and re-landed once the
+layout was fixed.) The G-buffer got the same treatment next (`f67c92a`),
+with the camera frustum as its plane, and the two named pipelines still have no meshlet form.
 
-The remaining work of this step is that consumer, on the compute path the task-stage crash left as the fork: a
-compute pass that culls each meshlet against the cascade's frustum (the meshlet table and the light matrices are
-both heap reads a compute stage can make) and writes one `VkDrawMeshTasksIndirectCommandEXT` per (draw, instance) -
-and a MESH entry of the shape above, which is now known to build, create and dispatch, with the GPU-side hang as
-the first thing it has to explain. The lanes need no new field: a meshlet session pushes the primitive's
-`meshlet_base` as `first_index` and `meshlet_count` as `index_count`. Acceptance: the gate staying byte-identical
-(conservative culling removes nothing visible) plus a forced probe that culls everything, which must change the
-picture - the same two-way evidence steps 1 and 2 were accepted by.
+**THE INDIRECT SEAM IS IN, AND ITS FIRST DESIGN IS THE REASON IT IS WORTH DESCRIBING.** `vkCmdDrawMeshTasksIndirectEXT`
+reads `{groupCountX, groupCountY, groupCountZ}` from a buffer, so the counts can be decided on the GPU - which is
+what a compute culling pass needs. Every meshlet dispatch now goes through it. The first attempt handed slots out
+from an atomic cursor reset per frame in flight, with a fixed capacity and a fall-back to the direct call on
+overflow; all ten scenarios stayed byte-identical, but `sponza` came out FLAKY (two runs, `FEF4F9E4AA0C2E6B` and
+`4AFE5C90284A1245`), i.e. a command the GPU read was not the command the host meant - a cursor makes WHEN a slot is
+rewritten a property of the frame's dispatch COUNT, and that count is not the same on every run. It was reverted in
+full (`ffe52fb`). THE REPLACEMENT MAKES THE SLOT THE PRIMITIVE'S OWN: it is `meshlet_base`, which the table's
+append-at-import order already makes stable and unique per primitive, so a dispatch rewrites the same slot with the
+same counts, a frame's region belongs to one frame in flight (whose previous read the frame-slot wait has already
+finished), there is no cursor and no capacity left to exhaust.
+
+Two measured notes on that seam, both worth keeping:
+
+- **a compare-and-fall-back guard cannot be written against a slot that parallel recordings share.** The first
+  version of the replacement compared the slot before writing it and sent a mismatch down the direct call; the
+  shadow pass's cascades record in PARALLEL, so one thread read another's half-finished store and the log said
+  `slot 0 already holds 4x1x1 and this dispatch wants 4x1x1` (the counts are re-read for the line, which is why
+  they printed equal). The write is unconditional instead, and safely so: every writer of a slot writes the same
+  bytes, because a primitive's meshlet run is cut once at import and its instance count is set when the draw
+  primitive is created. A primitive whose counts DID change per frame would need one command per (frame, draw) -
+  which is exactly what the compute pass will write.
+- **the route is logged, because a seam that silently falls back is a seam nobody tests.** The first version of the
+  ORIGINAL attempt resolved the entry point correctly and never bound the buffer (`vk_buffer::handle()` is the
+  allocator's id, not a `VkBuffer`), so every dispatch went down the direct path and looked perfect. There are now
+  three lines: which route a dispatch takes (once), how many went each way (once, after the first frame - the
+  acceptance is "0 through the direct call"), and any reason it fell back.
+
+Acceptance for the seam, both ways: the gate byte-identical on all ten scenarios (`-Full`, 10/10, 0 changed, 0
+flaky, `sponza` twice on one hash) with the log reading `4 meshlet dispatch(es) went through the INDIRECT entry
+point, 0 through the direct call`; and a FORCED PROBE - the command table written with zero counts - which turned
+`deferred` into `8687703DA3BCA7EF` (the no-geometry hash this document already recorded for the earlier probe), so
+the counts the GPU used are demonstrably the ones in the table.
+
+**WHAT REMAINS IN THIS STEP** is the pass that writes those counts: a compute pass that culls each meshlet against
+the cascade's (or the camera's) frustum - the meshlet table and the light matrices are both heap reads a compute
+stage can make - and writes the surviving counts into the command table slot the primitive already owns. One known
+defect has to be settled with it: **a static draw in a meshlet session dispatches its whole run once per CHUNK**
+(`static_draw_primitive::draw` loops chunks, and the lanes carry the primitive's run rather than the chunk's), which
+is invisible in a depth pass and wrong the moment two chunks of one primitive disagree about a material - so the
+culling pass either learns the per-chunk material or the meshlet record grows one. Acceptance stays the same:
+conservative culling must leave the gate byte-identical, and a forced probe that culls everything must change the
+picture.
 
 The constraints the objective measured still stand and are designed around: `vkCmdDrawMeshTasksEXT` has no
 `instanceCount` (the dispatch's Y carries it today, and the task payload will carry it once a task stage launches

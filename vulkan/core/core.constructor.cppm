@@ -451,6 +451,9 @@ namespace vulkan {
         this->mesh_shader_available = capabilities.mesh_shader_available;
         if (this->mesh_shader_available) {
             this->mesh_dispatch = reinterpret_cast<PFN_vkCmdDrawMeshTasksEXT>(vkGetDeviceProcAddr(device, "vkCmdDrawMeshTasksEXT"));
+            // the indirect twin comes from the same extension and is resolved the same way; it answers null
+            // independently, and the dispatch path treats that as "no indirect route" rather than as an error
+            this->mesh_dispatch_indirect = reinterpret_cast<PFN_vkCmdDrawMeshTasksIndirectEXT>(vkGetDeviceProcAddr(device, "vkCmdDrawMeshTasksIndirectEXT"));
         }
 
         // ---- THE DESCRIPTOR HEAP's LIMITS, recorded here and not created here: the heap's buffers come from the

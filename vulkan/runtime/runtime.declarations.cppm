@@ -1129,6 +1129,44 @@ namespace vulkan {
         /// one log line for a malformed record (see create_primitive): the second line of defence behind the splitter's own tests
         bool meshlet_records_unsound_logged = false;
         /**
+         * @brief THE INDIRECT MESH COMMANDS (docs/mesh_shaders.md step 3, the second mechanism), and why the slot is
+         *        the primitive's `meshlet_base` rather than a per-frame cursor
+         *
+         * `vkCmdDrawMeshTasksIndirectEXT` reads `{groupCountX, groupCountY, groupCountZ}` out of a buffer, which is
+         * the seam a COMPUTE culling pass needs: culling decides how many of a primitive's meshlets survive, and
+         * that number is only known on the GPU. This commit builds the SEAM - the counts written here are the ones
+         * the direct call would have carried, so the frame must not move - and the pass that writes them comes next.
+         *
+         * THE SLOT IS THE PRIMITIVE'S OWN, and that is the whole design. The first attempt handed slots out from an
+         * atomic cursor reset per frame in flight, with a fixed capacity and a fall-back to the direct call on
+         * overflow; every scenario stayed byte-identical, but `sponza` came out FLAKY (two runs, two hashes), i.e.
+         * a command the GPU read was not the command the host meant - a cursor makes WHEN a slot is rewritten a
+         * property of the frame's dispatch COUNT, and that count is not the same on every run. Here a slot belongs
+         * to one primitive forever (records are appended once, at import, so `meshlet_base` is stable and unique per
+         * primitive), so a dispatch rewrites the same slot with the same counts - and a frame's region is a frame
+         * in flight's, which the frame-slot wait already guarantees the GPU has finished with. There is no cursor,
+         * no capacity left to exhaust, and nothing to fall back for.
+         *
+         * IT IS COMMAND DATA, NOT A RESOURCE: it is not on the heap, no shader reads it, and the buffer exists only
+         * because the command's three arguments have to live somewhere the GPU can read. Host-visible and mapped,
+         * with INDIRECT usage, `MAX_FRAMES_IN_FLIGHT` regions of `meshlet_capacity` records.
+         */
+        vk_buffer mesh_indirect_buffer = {};
+        void* mesh_indirect_mapped = nullptr;
+        /// the raw `VkBuffer` the command takes: `vk_buffer::handle()` is the allocator's id, not a `VkBuffer`, and
+        /// resolving the entry point without binding the buffer is what silently sent every dispatch down the
+        /// DIRECT path in the first version of this seam - which is why the route is logged (see the counts below)
+        VkBuffer mesh_indirect_table = VK_NULL_HANDLE;
+        /// one line for the route actually taken, and one for the first slot that two draws disagree about: a
+        /// conflict is a DESIGN violation (the same primitive dispatched with two different counts), and it falls
+        /// back to the direct call for that dispatch rather than risking a command the GPU reads half-written
+        bool mesh_indirect_route_logged = false;
+        bool mesh_indirect_conflict_logged = false;
+        /// how many dispatches went each way, for the one line the first frame prints (and for the acceptance:
+        /// "0 direct" is what says the seam is the one in use rather than a silent fall-back)
+        std::atomic<uint64_t> mesh_indirect_dispatches = 0;
+        std::atomic<uint64_t> mesh_indirect_direct_fallbacks = 0;
+        /**
          * THE STRUCTURE PHASE ITSELF, which is one value now (see `vulkan.ray_tracing`): the bottom and top level
          * structures, the map from their indices back to the casters they were built from, and the MASK/skin
          * copies a hit's shading reads that geometry through. Built once (lazily, on the first frame the flag is
@@ -1237,6 +1275,10 @@ namespace vulkan {
         static VkDeviceAddress mesh_buffer_address(void* owner, VkBuffer buffer);
         static bool push_geometry_block(void* owner, VkCommandBuffer command_buffer, uint32_t offset, std::span<std::byte const> bytes);
         static bool draw_mesh_tasks(void* owner, VkCommandBuffer command_buffer, uint32_t groups_x, uint32_t groups_y, uint32_t groups_z);
+        /// the same dispatch through the INDIRECT entry point: `command_slot` names the primitive's own record (its
+        /// `meshlet_base`), and the counts are written there before the call - so a compute pass can later rewrite
+        /// that record with the counts culling left, without the recording path changing at all
+        static bool draw_mesh_tasks_indirect(void* owner, VkCommandBuffer command_buffer, uint32_t command_slot, uint32_t groups_x, uint32_t groups_y, uint32_t groups_z);
         /**
          * @brief hand a SECONDARY the two heap bind infos it must inherit (see scene_frame::fill_heap_bind)
          * @note the caller owns the storage, because VkCommandBufferInheritanceDescriptorHeapInfoEXT points at the

@@ -90,6 +90,20 @@ namespace vulkan {
         // The slot's previous submission is complete, so its timestamps are readable: collect them
         // here, where the wait already guarantees it, and before the slot is recorded again.
         this->collect_gpu_timings(frame_slot);
+        // ONE LINE, ONCE, SAYING HOW THE MESHLET DISPATCHES REACHED THE GPU (docs/mesh_shaders.md step 3): a frame
+        // has been recorded by now, so the two counters answer the question the frame itself cannot - "is the
+        // indirect seam the one in use, or did something fall back to the direct call". That is the exact hole a
+        // whole round fell through once (entry point resolved, buffer never bound), so it is printed rather than
+        // inferred. Both zero means no meshlet dispatch has been recorded at all.
+        {
+            static bool logged_mesh_indirect = false;
+            uint64_t const indirect_dispatches = this->mesh_indirect_dispatches.load(std::memory_order_relaxed);
+            uint64_t const direct_fallbacks = this->mesh_indirect_direct_fallbacks.load(std::memory_order_relaxed);
+            if (!logged_mesh_indirect && (indirect_dispatches != 0u || direct_fallbacks != 0u)) {
+                logged_mesh_indirect = true;
+                utility::log("mesh indirect: {} meshlet dispatch(es) went through the INDIRECT entry point, {} through the direct call", indirect_dispatches, direct_fallbacks);
+            }
+        }
 
         // Acquire the next swapchain image; on out-of-date (e.g. the window was resized)
         //    rebuild the swapchain and let the caller retry on the next iteration.
@@ -990,6 +1004,10 @@ namespace vulkan {
         env.push_at = &runtime::push_geometry_block;
         if (mesh_stage) {
             env.draw_mesh_tasks = &runtime::draw_mesh_tasks;
+            // ... and the INDIRECT twin the meshlet session dispatches through (docs/mesh_shaders.md step 3): the
+            // counts live in a command table at the primitive's own slot, which is what a compute culling pass
+            // will rewrite. The casters' form decides whether it is used, which is why it is set for both.
+            env.draw_mesh_tasks_indirect = &runtime::draw_mesh_tasks_indirect;
             // ONE LINE, ONCE, SAYING HOW THE CASTERS ARE FED - because a mesh stage produces the SAME picture as
             // the vertex stage by construction, so "which one drew this frame" is deliberately invisible in the
             // output and must not be inferred from it. (Measured both ways: the capture gate is byte-identical
@@ -1875,7 +1893,8 @@ namespace vulkan {
         env.mesh_geometry_push_offset = vulkan::mesh_geometry_push_offset_scene;
         env.buffer_address = &runtime::mesh_buffer_address;
         env.push_at = &runtime::push_geometry_block;
-        env.draw_mesh_tasks = &runtime::draw_mesh_tasks; // only ever called when mesh_stage is true
+        env.draw_mesh_tasks = &runtime::draw_mesh_tasks;                   // only ever called when mesh_stage is true
+        env.draw_mesh_tasks_indirect = &runtime::draw_mesh_tasks_indirect; // a meshlet session's dispatch (see above)
         env.mesh_stage = gbuffer_mesh;
         return env;
     }

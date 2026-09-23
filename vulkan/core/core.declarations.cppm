@@ -255,6 +255,11 @@ namespace vulkan {
          */
         bool mesh_shader_available = false;
         PFN_vkCmdDrawMeshTasksEXT mesh_dispatch = nullptr;
+        /// ... and the INDIRECT form (`vkCmdDrawMeshTasksIndirectEXT`), resolved the same way and null on the same
+        /// devices: it reads the three group counts out of a BUFFER instead of taking them as arguments, which is
+        /// the seam a COMPUTE culling pass needs - the counts are then decided on the GPU, after culling, rather
+        /// than by the host that recorded the draw (see runtime::draw_mesh_tasks_indirect)
+        PFN_vkCmdDrawMeshTasksIndirectEXT mesh_dispatch_indirect = nullptr;
         uint32_t graphics_family_index = 0;
         uint32_t present_family_index = 0;
         VkDebugUtilsMessengerEXT debug_messenger = VK_NULL_HANDLE;

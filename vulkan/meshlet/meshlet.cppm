@@ -48,7 +48,7 @@ namespace vulkan {
      * @ingroup vulkan_meshlet
      * @brief how many meshlets the GPU table holds, i.e. the renderer's whole-scene meshlet budget
      *
-     * @note 65536 records of 28 bytes is 1.75 MiB, which is nothing next to the geometry it describes, and it
+     * @note 65536 records of 48 bytes is 3 MiB, which is nothing next to the geometry it describes, and it
      *       covers the heaviest scene this renderer is tested against by a wide margin: the Sponza import cuts
      *       3145 meshlets out of 103 primitives (measured, docs/mesh_shaders.md step 3). A scene past the capacity
      *       keeps its GEOMETRY and loses the meshlet path's culling for the overflow: the upload clamps and says

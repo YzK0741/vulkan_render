@@ -118,6 +118,14 @@ namespace vulkan {
         VkDeviceAddress (*buffer_address)(void* owner, VkBuffer buffer) = nullptr;
         bool (*push_at)(void* owner, VkCommandBuffer command_buffer, uint32_t offset, std::span<std::byte const> bytes) = nullptr;
         bool (*draw_mesh_tasks)(void* owner, VkCommandBuffer command_buffer, uint32_t groups_x, uint32_t groups_y, uint32_t groups_z) = nullptr;
+        /**
+         * THE SAME DISPATCH, WITH ITS COUNTS IN A BUFFER (docs/mesh_shaders.md step 3, second mechanism). `slot` is
+         * the primitive's own command record - its `meshlet_base` - so a COMPUTE culling pass can rewrite that
+         * record with the counts culling left and the dispatch picks them up with no host change at all. Set beside
+         * `draw_mesh_tasks` wherever a mesh session is built; null means the device has no indirect entry point, and
+         * the dispatch then goes through the direct call (which the runtime logs once rather than hiding).
+         */
+        bool (*draw_mesh_tasks_indirect)(void* owner, VkCommandBuffer command_buffer, uint32_t slot, uint32_t groups_x, uint32_t groups_y, uint32_t groups_z) = nullptr;
         std::string_view bound = {}; // currently bound name
         // injected cull-mode setter (core dynamic state since Vulkan 1.3, so one pipeline serves
         // single- and double-sided materials)

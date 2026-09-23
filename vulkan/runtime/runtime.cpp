@@ -955,6 +955,69 @@ namespace vulkan {
         return true;
     }
 
+    // THE INDIRECT DISPATCH (docs/mesh_shaders.md step 3, second mechanism): the three counts travel through a
+    // buffer, at the primitive's OWN slot, so a COMPUTE culling pass can rewrite them later without the recording
+    // path changing. The counts written here are exactly the ones the direct call would have carried, which is why
+    // the frame must not move - and why the acceptance is the byte-identical gate PLUS a forced probe.
+    //
+    // IT ANSWERS RATHER THAN ASSERTS when the route is unavailable, and the reasons are all logged once: a silent
+    // fall-back is a seam nobody tests, which is exactly how the first version of this (entry point resolved,
+    // buffer never bound) went unnoticed for a whole round.
+    bool runtime::draw_mesh_tasks_indirect(void* const owner, VkCommandBuffer const command_buffer, uint32_t const command_slot, uint32_t const groups_x, uint32_t const groups_y, uint32_t const groups_z) {
+        runtime* const self = static_cast<runtime*>(owner);
+        core const& vk = self->vulkan_core;
+        auto const direct = [&]() {
+            self->mesh_indirect_direct_fallbacks.fetch_add(1u, std::memory_order_relaxed);
+            return runtime::draw_mesh_tasks(owner, command_buffer, groups_x, groups_y, groups_z);
+        };
+        if (vk.mesh_dispatch_indirect == nullptr || self->mesh_indirect_mapped == nullptr || self->mesh_indirect_table == VK_NULL_HANDLE) {
+            if (!self->mesh_indirect_route_logged) {
+                self->mesh_indirect_route_logged = true;
+                utility::log("mesh indirect: entry point {}, table {}, mapped {} - the meshlet dispatches go through the DIRECT call",
+                             vk.mesh_dispatch_indirect != nullptr ? "resolved" : "MISSING",
+                             self->mesh_indirect_table != VK_NULL_HANDLE ? "bound" : "missing",
+                             self->mesh_indirect_mapped != nullptr ? "yes" : "no");
+            }
+            return direct();
+        }
+        // A slot IS a meshlet record index, so one outside the table is impossible - and answered rather than
+        // trusted, because the command would make the GPU read whatever memory follows the table.
+        if (command_slot >= vulkan::meshlet_capacity) {
+            if (!self->mesh_indirect_conflict_logged) {
+                self->mesh_indirect_conflict_logged = true;
+                utility::log("mesh indirect: slot {} is past the command table ({} records) - the dispatch goes through the DIRECT call", command_slot, vulkan::meshlet_capacity);
+            }
+            return direct();
+        }
+        auto* const commands = static_cast<VkDrawMeshTasksIndirectCommandEXT*>(self->mesh_indirect_mapped);
+        // THE WRITE IS UNCONDITIONAL, and that is a measured decision rather than a shortcut. A slot belongs to one
+        // primitive, and every writer of it writes the SAME bytes: the group count is the primitive's meshlet run
+        // (cut once, at import) and the instance count is set when the draw primitive is created - so the shadow
+        // pass's parallel cascades and the G-buffer pass all write one command, and identical concurrent stores
+        // converge on it whatever the interleaving. The GPU reads the record long after recording ends (and the
+        // frame-slot wait is what says the previous frame's read is over), so a torn read is not a case that exists.
+        //
+        // A COMPARE-AND-FALL-BACK GUARD WAS TRIED AND REMOVED: it read the slot first, and with the shadow pass's
+        // cascades recording in parallel it saw another thread's half-finished store, reported "slot 0 already holds
+        // 4x1x1 and this dispatch wants 4x1x1" (the two counts are re-read for the log, which is why they printed
+        // equal) and sent one dispatch per frame down the DIRECT call. The invariant above makes the check
+        // impossible to write without that race, and it would hide the seam rather than protect it.
+        //
+        // IF THE COUNTS EVER BECOME PER-FRAME (an animated instance count, say), this slot is the wrong key: it
+        // needs one command per (frame, draw) instead of per primitive, which is exactly what the COMPUTE culling
+        // pass this seam exists for will write.
+        commands[static_cast<std::size_t>(vk.current_frame) * vulkan::meshlet_capacity + command_slot] =
+            VkDrawMeshTasksIndirectCommandEXT{.groupCountX = groups_x, .groupCountY = groups_y, .groupCountZ = groups_z};
+        VkDeviceSize const offset = static_cast<VkDeviceSize>(vk.current_frame * vulkan::meshlet_capacity + command_slot) * sizeof(VkDrawMeshTasksIndirectCommandEXT);
+        vk.mesh_dispatch_indirect(command_buffer, self->mesh_indirect_table, offset, 1u, sizeof(VkDrawMeshTasksIndirectCommandEXT));
+        self->mesh_indirect_dispatches.fetch_add(1u, std::memory_order_relaxed);
+        if (!self->mesh_indirect_route_logged) {
+            self->mesh_indirect_route_logged = true;
+            utility::log("mesh indirect: the meshlet dispatches go through vkCmdDrawMeshTasksIndirectEXT (table bound, {} records per frame in flight, a slot is the primitive's meshlet_base)", vulkan::meshlet_capacity);
+        }
+        return true;
+    }
+
     void runtime::fill_heap_bind(void* const owner, VkBindHeapInfoEXT& resource, VkBindHeapInfoEXT& sampler) {
         static_cast<runtime*>(owner)->vulkan_core.descriptor_heaps.bind_infos(resource, sampler);
     }
