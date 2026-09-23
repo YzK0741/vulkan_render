@@ -28,6 +28,21 @@
 #include "surface.glsl"
 #include "shading.glsl"
 
+// -------------------------------------------------------------------------------------------------------------
+// A DOXYGEN GUARD, and it is for the documentation tool rather than for any compiler.
+//
+// Doxygen parses this file as C++ (see Doxyfile's EXTENSION_MAPPING) and reads the fragment entry's trailing
+// `) : SV_Target` as the beginning of a CONSTRUCTOR-INITIALIZER LIST - so it warns about the next `;` it meets
+// ("Found ';' while parsing initializer list") and loses the rest of the file's documentation. Slang will not take
+// the equivalent attribute spelling either (`[[vk::location(0)]]` on the return type is `E31002: invalid attribute
+// placement`, measured), so the only way to keep both tools happy is to let each of them skip what it cannot read:
+// `DOXYGEN` is DEFINED for Doxygen alone (Doxyfile's PREDEFINED), so the compiler preprocesses this region away and
+// sees the stage exactly as it was - the module it produces is byte-identical (verified by hash).
+//
+// The entry's own documentation is inside the guard with it, so Doxygen has no dangling comment block to attach to
+// the wrong symbol; the file's header describes the pair.
+#ifndef DOXYGEN
+
 /// @brief shade one fragment: gather the surface, light it, apply the glTF output alpha
 /// @note glTF alpha semantics: only alphaMode BLEND materials carry real coverage in the output alpha.
 ///       OPAQUE and MASK outputs must write alpha = 1 (their base color alpha is ignored by the spec),
@@ -56,6 +71,8 @@ float4 main(
     const float out_alpha = ((s.flags & 32u) != 0u) ? s.alpha : 1.0;
     return float4(shade_surface(si), out_alpha);
 }
+
+#endif // DOXYGEN
 
 // =============================================================================================================
 // THE VERTEX STAGE, in the same file because it is the same CPU/GPU contract: the push block carries the
