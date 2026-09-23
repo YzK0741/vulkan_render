@@ -42,6 +42,19 @@ namespace {
         // per FRAME INDEX (not per wall-clock second), so a sweep capture is as reproducible as a still
         // one - the gate compares two runs of it like any other scenario.
         float sweep_yaw_deg_per_frame = 0.0f;
+        // Seconds of ANIMATION time added per PRESENTED frame (`--capture-animation-sweep`). 0 - the
+        // default - leaves playback on the wall clock, which is what an interactive run wants.
+        //
+        // WHY IT EXISTS, and it is the camera sweep's argument one member up, for the other half of the
+        // frame: a capture of a DEFORMING mesh is only reproducible if the pose is a function of the frame
+        // index. [render] animation_time makes such a capture reproducible and USELESS for this purpose - a
+        // pinned pose uploads the same skin matrices every frame, so the previous-frame deformation equals
+        // the current one and the deformation term of the motion vector is exactly zero, which is why a
+        // pinned-pose screenshot cannot tell a deformation-aware renderer from the one that ignores
+        // deformation. The wall clock (frame_clock::delta_seconds()) is reproducible in neither direction.
+        // So playback gets the frame-indexed clock the camera already has: the pose is a function of the
+        // frames PRESENTED, and two runs of one animation sweep are byte-identical.
+        float animation_seconds_per_frame = 0.0f;
     };
 
     // strtof with a full-string check (no exceptions: std::stof would abort under -fno-exceptions)
@@ -120,12 +133,24 @@ namespace {
                 }
                 continue;
             }
+            if (std::optional<std::string_view> const value = take_value(i, arg, "--capture-animation-sweep")) {
+                // seconds of animation time per presented frame - see capture_options::animation_seconds_per_frame
+                if (std::optional<float> const number = parse_number(*value)) {
+                    options.animation_seconds_per_frame = *number;
+                } else {
+                    utility::log("capture: ignoring '--capture-animation-sweep {}' (expected seconds per frame)", *value);
+                }
+                continue;
+            }
             filtered.push_back(argv[i]);
         }
         if (options.frames > 0) {
             utility::log("capture mode: {} frames, then screenshot + quit", options.frames);
             if (options.sweep_yaw_deg_per_frame != 0.0f) {
                 utility::log("capture camera sweep: {:.3f} deg of yaw per frame, from whatever pose the scene settled on", options.sweep_yaw_deg_per_frame);
+            }
+            if (options.animation_seconds_per_frame != 0.0f) {
+                utility::log("capture animation sweep: {:.4f} s of animation per frame, from the clip's own start", options.animation_seconds_per_frame);
             }
         }
         return options;
@@ -425,6 +450,9 @@ int main(int argc, char** argv) {
     if (settings.render.animation_time >= 0.0f) {
         animation.set_time(settings.render.animation_time);
         utility::log("animation: pinned at {:.2f}s by [render] animation_time (playback is wall-clock driven, so captures of an animated scene are only reproducible this way)", settings.render.animation_time);
+        if (capture.animation_seconds_per_frame != 0.0f) {
+            utility::log("capture: --capture-animation-sweep is IGNORED - [render] animation_time pins the pose, so the clock never advances (set animation_time = -1 to play)");
+        }
     }
     // Live gui widget state (chores::gui_bindings) is declared after the authored-camera
     // seeding below, right before chores::setup_gui() builds the overlay.
@@ -693,10 +721,14 @@ int main(int argc, char** argv) {
 
         // drive the animation controller: sample the active animation into node locals (T/R/S +
         // morph weights) and rebuild the skin matrices, into the frame slot pace_and_acquire()
-        // just paced. dt comes from frame_clock (stamped after the previous presented frame);
-        // clamp it so a pause (minimized / swapchain-recreate gaps that never stamped) does not
-        // fast-forward the animation by the whole gap - playback resumes where it paused.
-        float const dt = static_cast<float>(std::min(frame_clock.delta_seconds(), 0.25));
+        // just paced. dt is the WALL CLOCK - clamped, so a pause (minimized / swapchain-recreate
+        // gaps that never stamped) does not fast-forward the animation by the whole gap, and
+        // playback resumes where it paused - UNLESS --capture-animation-sweep asked for a
+        // frame-indexed clock instead, which is the only form a capture of a deforming mesh can
+        // be gated on (see capture_options::animation_seconds_per_frame).
+        float const dt = capture.animation_seconds_per_frame != 0.0f
+                             ? capture.animation_seconds_per_frame
+                             : static_cast<float>(std::min(frame_clock.delta_seconds(), 0.25));
         animation.update(dt);
         gui.anim_time = animation.current_time();  // keep the gui time slider in sync
         gui.anim_playing = animation.is_playing(); // reflect controller-side pauses (scrub / select)
