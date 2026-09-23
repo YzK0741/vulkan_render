@@ -371,7 +371,8 @@ OPTIMIZE_OUTPUT_SLICE  = NO
 
 EXTENSION_MAPPING      = vert=C++ \
                          frag=C++ \
-                         glsl=C++
+                         glsl=C++ \
+                         slang=C++
 
 # If the MARKDOWN_SUPPORT tag is enabled then Doxygen pre-processes all comments
 # according to the Markdown format, which allows for more readable
@@ -1129,7 +1130,8 @@ FILE_PATTERNS          = *.c \
                          *.ice \
                          *.vert \
                          *.frag \
-                         *.glsl
+                         *.glsl \
+                         *.slang
 
 # The RECURSIVE tag can be used to specify whether or not subdirectories should
 # be searched for input files as well.
