@@ -764,6 +764,9 @@ set(VR_SLANG_SOURCES
     # mask_bake.slang is the alphaMode MASK bake (off by default; [render] rt_mask_bake turns it on, which is
     # also how its A/B is run).
     mask_bake.slang:comp_main:compute:mask_bake.comp.spv
+    # megalights_temporal.slang is the stochastic lighting's denoise (off by default; [render] megalights = true
+    # turns the path on, which is also how its A/B is run).
+    megalights_temporal.slang:comp_main:compute:megalights_temporal.comp.spv
     # rt_shadow.slang is the ray-traced shadow's shader file, growing one stage at a time; it starts with the
     # closest-hit stage, whose whole job is the payload contract (see the file). No gate scenario enables
     # rt_shadows, so this port is shape-verified and belongs to the A/B capture route in docs/slang_migration.md.
