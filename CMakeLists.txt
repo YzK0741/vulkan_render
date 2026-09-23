@@ -723,6 +723,9 @@ set(VR_SLANG_SOURCES
     unlit.slang:main:fragment:unlit.frag.spv
     fxaa.slang:main:fragment:fxaa.frag.spv
     post.slang:main:vertex:post.vert.spv
+    # post.frag is the post chain's stage for ALL THREE modes (bright pass / downsample / composite), so every
+    # scenario records it - the widest verification a single port can have.
+    post.slang:frag_main:fragment:post.frag.spv
     gbuffer_debug.slang:main:fragment:gbuffer_debug.frag.spv
     taa.slang:main:fragment:taa.frag.spv
     # gbuffer.slang IS the first stage that reads a shared body AND a heap UBO, and it cost two bugs, both

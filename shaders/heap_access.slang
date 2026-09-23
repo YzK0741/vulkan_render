@@ -95,6 +95,16 @@ float4 heap_texel(DescriptorHandle<Texture2D<float4>> texture, uint sampler_slot
     return texture.Sample(heap_at<SamplerState>(sampler_slot), uv);
 }
 
+/// the size of a heap image at a mip, as a float2 - GLSL's `vec2(textureSize(sampler2D(tex, samp), lod))`
+/// @note the post chain's filters derive their tap spacing from the level they are reading, so they need the
+///       SIZE of a slot rather than a resolution constant; the GLSL side spells `textureSize` inline.
+float2 heap_size(DescriptorHandle<Texture2D<float4>> texture, uint lod)
+{
+    uint width, height, levels;
+    texture.GetDimensions(lod, width, height, levels);
+    return float2(float(width), float(height));
+}
+
 /// the bindless-array fetch the shared bodies call by name (the GLSL definition is in surface.glsl): the
 /// material's own image through the shared texture sampler. The GLSL side builds `sampler2D(tex, samp)` at
 /// the point of use; here the two slots travel in ONE combined handle instead.

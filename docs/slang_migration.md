@@ -182,6 +182,7 @@ WHAT HAS LANDED (each entry: verified by the gate, not by inspection):
 | `shadow.frag` | `shaders/shadow.slang` | the depth-only stage with the alphaMode MASK test: shares NO body, so it is the shape a leaf takes when the shim alone is enough (`material_at` + `heap_sample`), and its entry returns void because it has no output. 3496 B, 0 descriptor sets, 3 heap accesses. It also carries a measured codegen difference: **Slang lowers `discard` to `OpDemoteToHelperInvocation`** where glslang emits `OpKill`/`OpTerminateInvocation`, and the two behave identically here - the `sponza` scenario's masked casters (curtains, foliage) are byte-identical, and no validation finding asks for the demote capability, i.e. the device's 1.3 features are enabled |
 | `pbr.vert` | `shaders/pbr.slang` (entry `vertex_main`) | **the G-buffer pass's VERTEX stage**, so it is the best-verified port: every opaque scenario records it, and the one that matters most is `deformation` - this is where the morph weights and the skin matrices are read TWICE, as they are now and as they were one frame ago. 15972 B, 0 descriptor sets, ONE BuiltIn heap (a vertex stage samples nothing), 24 heap accesses, and `OpVectorTimesMatrix` count **0**: every one of the 16 multiplies is the column-vector product glslc emits, with `proj * view` as a real `OpMatrixTimesMatrix`. It needed two shared-file fixes of the same kind: the push block's `model` had to be `VR_MAT4` (Slang's default majorness is ROW-major, so a plain `mat4` member is read transposed - harmless while only fragment stages included that block, since none of them read `model`), and `motion_base` had to be declared in it rather than riding the padding before `model` |
 | `shadow.vert` | `shaders/shadow.slang` (entry `vertex_main`) | the shadow pass's VERTEX stage, on the path of every shadow-casting scenario, reusing the vertex-side accessors `pbr.vert` introduced. 8836 B, 0 descriptor sets, 10 heap accesses, `OpVectorTimesMatrix` 0. It is where TRAP 3 was found (the first attempt failed 8 scenarios with an empty shadow map), and it is also the stage that needed the whole push block: `frame_slot`/`image_index`/`spare_lane` at 96/100/104 and `cascade` at **108** - reading the cascade from 96 is a bug the GLSL file already records, because `frame_slot` overwrites it |
+| `post.frag` | `shaders/post.slang` (entry `frag_main`) | all THREE post modes (bright pass, 13-tap downsample, composite), so every frame of every scenario records it - the widest verification a single port can get. 24896 B, 0 descriptor sets, 107 heap accesses, 51 `OpSampledImage` (the two filter kernels), 5 image-size queries for the tap spacing, push block at 0..36. It also carries the one place where the Slang side is SIMPLER than the GLSL: the GLSL filters take a heap SLOT and index the array inside, because a `texture2D` parameter does not survive a function boundary in glslang, while Slang passes the texture handle itself into `heap_texel` |
 
 The five non-`gbuffer` stages above were already byte-identical to their GLSL builds; `gbuffer` is the one that
 needed a fix outside the shader (the camera's descriptor type), so it moved the GLSL side too - see section 9.
@@ -444,12 +445,26 @@ done too, and the UBO member lists are shared through the `VR_MAT4` type macro: 
 The mechanism is settled, the shim is proven, and six stages are wired: what is left is the same recipe
 applied per stage, easy ones first so that each new hazard is met in isolation. Ordered by what they read:
 
-1. **Push-block-only stages** (no heap reads at all, so the smallest possible ports): `post.frag`,
-   `shadow.vert`.
-2. **Heap readers that touch no buffer**: `deferred.frag`, `heap_probe.vert/.frag/.comp`.
+1. **Push-block-only stages** (no heap reads at all): DONE - `fxaa.frag`, `post.vert`, `taa.frag`, and now
+   `post.frag`, which turned out to read heap images after all and is on every scenario's path.
+2. **Heap readers that touch no buffer**: `deferred.frag` is the one left that the gate RECORDS, and it is
+   the best next port: it is the default path's lighting stage and reads the G-buffer, the light block, the
+   shadow map, the cluster lists and the ray-traced visibility image in one shader. Then `heap_probe.vert`,
+   `.frag` and `.comp` - the runtime's own heap probe, which nothing in the gate renders.
    (Both PBR stages and both shadow stages are DONE - see the table in section 6. The vertex leaves share the
    shim's five matrix-array accessors plus `light_matrix_at`, which every remaining stage that samples the
    sun's shadow also needs.)
+
+### WHAT THE GATE CANNOT VERIFY, stated before the last stages are ported
+
+The gate records what the ten scenarios render, and three groups of shaders are NOT on any of their paths:
+`rt_shadow.*` (no scenario enables `rt_shadows`), `megalights_trace/temporal.comp` (no scenario enables the
+megalights path) and `heap_probe.*` (the runtime's own PBR/heap probe, which the demo app does not run in
+capture mode). For those, "the gate stays 10/10" only proves nothing regressed; the port has to be verified
+by its SHAPE (descriptor sets, heaps, the instructions the fetches land as) plus the family-by-family proof
+from section 3, and that limit should be stated in the commit rather than implied away. This is the same
+limit that hid TRAP 3 in `pbr.frag` for four commits.
+
 3. **Compute stages**: `compute_skin.comp`, `mask_bake.comp`, `light_cluster.comp`,
    `megalights_trace.comp`, `megalights_temporal.comp`. These are the ones that WRITE heap buffers, so
    their storage-image/buffer declarations are the mirror of the read-side contract - the same
