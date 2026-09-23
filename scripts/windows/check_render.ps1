@@ -131,6 +131,19 @@ $scenarios = @(
        model = "C:\Users\23530\Desktop\yzk\glTF-Sample-Assets\Models\MetalRoughSpheres\glTF\MetalRoughSpheres.gltf"
        camera = ""
        sweep = "0.5" }
+    # THE ONE SCENARIO WHOSE MESH DEFORMS, and it captures the MOTION CHANNEL rather than a shaded frame:
+    # with TAA off, a wrong motion vector changes nothing a shaded frame would show, so the regression has
+    # to BE the channel-8 image (gbuffer_debug draws the velocity amplified and biased so that "did not
+    # move" is one flat value - see scripts/measure/motion_channel.py, which is how the before and after
+    # were read). The model is the repository's own fixture: a plane skinned to two joints with its MESH
+    # NODE STATIC and one joint pinned, so the rigid half of every motion vector is exactly zero and the
+    # deformation is the ONLY motion in the frame. Before deformation-aware motion vectors the whole
+    # swinging half reported "did not move": 229,267 px, ONE distinct value.
+    @{ name = "deformation"; desc = "a skinned mesh DEFORMING (the motion channel)";
+       extra = @{ taa = "false"; gbuffer_debug = "true"; gbuffer_channel = "8" }
+       model = "$repo\tests\fixtures\animated_skin_plane.gltf"
+       camera = "0,0,4,0,0,0"
+       animation_sweep = "0.02" }
 )
 
 if ($List) {
@@ -221,6 +234,13 @@ function Invoke-Scenario {
     # any of them passed this harness. The sweep is frame-indexed rather than clock-driven, so a sweeping
     # scenario is as reproducible as a still one (the two-run determinism check below is what proves it).
     if ($Scenario.ContainsKey('sweep')) { $launch += "--capture-sweep=$($Scenario.sweep)" }
+    # ... and a scenario may SWEEP THE ANIMATION instead (`animation_sweep` = seconds of animation per
+    # presented frame), which is the same argument one level further in: a mesh that DEFORMS is the other
+    # half of the reprojection story, and it cannot be reached by pinning the pose - a pinned pose uploads
+    # the same skin matrices every frame, so the deformation term of every motion vector is exactly zero
+    # and the frame cannot tell a deformation-aware renderer from one that ignores deformation. Also
+    # frame-indexed, so it is exactly as reproducible as the camera sweep.
+    if ($Scenario.ContainsKey('animation_sweep')) { $launch += "--capture-animation-sweep=$($Scenario.animation_sweep)" }
     $p = Start-Process -FilePath $exe -ArgumentList $launch -WorkingDirectory $workDir -PassThru -WindowStyle Hidden
     # the capture exits on its own; the timeout is a safety net, not the expected path
     if (-not $p.WaitForExit(180000)) { $p.Kill(); return @{ ok = $false; why = "timed out" } }
