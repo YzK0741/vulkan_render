@@ -246,7 +246,10 @@ namespace chores {
             // the device can run one: the runtime builds the mesh form beside the vertex one and the scene session
             // prefers it, so a missing or refused mesh shader is a log line rather than a failure.
             load_shader(shaders_dir, "pbr.mesh.spv", mesh_code);
-            auto const gbuffer_result = runtime.make_gbuffer_pipeline(vertex_code, fragment_code, mesh_code);
+            // ... and the MESHLET form (docs/mesh_shaders.md step 3): one workgroup per meshlet, camera-culled.
+            std::vector<unsigned char> meshlet_code;
+            load_shader(shaders_dir, "pbr.meshlet.spv", meshlet_code);
+            auto const gbuffer_result = runtime.make_gbuffer_pipeline(vertex_code, fragment_code, mesh_code, meshlet_code);
 
             if (!gbuffer_result) {
                 utility::log("gbuffer pipeline disabled: {}", gbuffer_result.error());

@@ -241,3 +241,49 @@ void mesh_main(out vertices pbr_vertex_output verts[mesh_vertices_per_workgroup]
         tris[t] = uint3(t * mesh_indices_per_triangle + 0u, t * mesh_indices_per_triangle + 1u, t * mesh_indices_per_triangle + 2u);
     }
 }
+
+// =============================================================================================================
+// THE MESHLET ENTRY (entry `meshlet_main`): ONE workgroup per meshlet, its window read out of the table, and the
+// same per-meshlet frustum culling the shadow pass's entry does - against the CAMERA's clip volume here, since
+// this is the pass the camera sees (docs/mesh_shaders.md step 3).
+//
+// The projection body is `pbr_shade_vertex`, shared with the vertex and mesh entries, so a kept meshlet lands
+// where the other two forms would have put it - which is what lets the capture gate accept this path.
+// =============================================================================================================
+[shader("mesh")]
+[outputtopology("triangle")]
+[numthreads(1, 1, 1)]
+void meshlet_main(out vertices pbr_vertex_output verts[mesh_vertices_per_workgroup], out indices uint3 tris[mesh_triangles_per_workgroup], uint3 group_id : SV_GroupID)
+{
+    const MeshGeometryLanes geometry = push.geometry;
+    const MeshletRecord meshlet = meshlet_at(geometry.first_index + group_id.x);
+
+    // PER-MESHLET CULLING against the camera's clip volume: object -> world (the push's model matrix, or the
+    // instance table for an instanced draw) -> clip, with the radius scaled by an upper bound on both matrices'
+    // axis scales. A rejected meshlet emits NOTHING, which is the whole effect a task stage would have had on the
+    // frame (its advantage is skipping the launch, not the pixels).
+    const VR_MAT4 world = (push.flags & 1u) != 0u ? instance_transform_at(heap_instance_slot, push.instance_base + group_id.y) : push.model;
+    const VR_MAT4 view_proj = camera_at(heap_camera_slot).proj * camera_at(heap_camera_slot).view;
+    const float4 clip = view_proj * (world * float4(meshlet.center, 1.0));
+    const float radius = meshlet.radius * matrix_max_axis_scale(world) * matrix_max_axis_scale(view_proj);
+    if (!clip_sphere_visible(clip, radius))
+    {
+        SetMeshOutputCounts(0u, 0u);
+        return;
+    }
+
+    const uint triangle_count = min(meshlet.index_count, mesh_triangles_per_workgroup * mesh_indices_per_triangle) / mesh_indices_per_triangle;
+    SetMeshOutputCounts(triangle_count * mesh_indices_per_triangle, triangle_count);
+
+    for (uint t = 0u; t < triangle_count; ++t)
+    {
+        for (uint corner = 0u; corner < mesh_indices_per_triangle; ++corner)
+        {
+            const uint raw_index = mesh_index_at(geometry, meshlet.first_index + t * mesh_indices_per_triangle + corner);
+            const uint vertex_index = uint(int(raw_index) + meshlet.base_vertex);
+            const MeshVertex v = mesh_vertex_at(geometry, vertex_index);
+            verts[t * mesh_indices_per_triangle + corner] = pbr_shade_vertex(v, vertex_index, group_id.y);
+        }
+        tris[t] = uint3(t * mesh_indices_per_triangle + 0u, t * mesh_indices_per_triangle + 1u, t * mesh_indices_per_triangle + 2u);
+    }
+}

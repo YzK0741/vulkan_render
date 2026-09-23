@@ -907,6 +907,11 @@ namespace vulkan {
             this->gbuffer_pipeline_mesh->viewport = full_viewport;
             this->gbuffer_pipeline_mesh->scissor = full_scissor;
         }
+        // ... and the MESHLET form, for the same reason: a pipeline object stores what begin_pipeline() applies.
+        if (this->gbuffer_pipeline_meshlet) {
+            this->gbuffer_pipeline_meshlet->viewport = full_viewport;
+            this->gbuffer_pipeline_meshlet->scissor = full_scissor;
+        }
         // ... and the debug view's pipeline is not resynced here either: it is its PASS's now (vulkan.pass.
         // gbuffer_debug), which declares resync_viewport like every other fullscreen pass in this chain.
         // ... and the deferred lighting stage's is not here either, for a stronger reason than the TAA
@@ -1030,7 +1035,7 @@ namespace vulkan {
     // where the fragments go (three 1x targets + a 1x depth image instead of the scene color)
     // and that nothing is lit - see shaders/gbuffer.frag.
     std::expected<void, std::string> runtime::make_gbuffer_pipeline(std::span<unsigned char const> const vertex_shader_code, std::span<unsigned char const> const fragment_shader_code,
-                                                                    std::span<unsigned char const> const mesh_vertex_shader_code) {
+                                                                    std::span<unsigned char const> const mesh_vertex_shader_code, std::span<unsigned char const> const meshlet_vertex_shader_code) {
         auto result = this->vulkan_core.make_gbuffer_pipeline(vertex_shader_code, fragment_shader_code);
         if (!result) {
             return std::unexpected(std::string(result.error()));
@@ -1047,6 +1052,18 @@ namespace vulkan {
                 utility::log("SUCCESS: G-buffer MESH pipeline created (the same surface write, fed by mesh dispatches)");
             } else {
                 utility::log("G-buffer MESH pipeline refused ({}), so the pass keeps its vertex stage", mesh_result.error());
+            }
+        }
+        // ---- ... and the MESHLET form (docs/mesh_shaders.md step 3): one workgroup per meshlet, its window read
+        //      out of the table and each meshlet culled against the camera before it emits anything. Preferred over
+        //      both others when it exists, and a refusal is again a log line rather than a failure.
+        if (!meshlet_vertex_shader_code.empty() && this->evaluate_mesh_shaders(nullptr)) {
+            auto meshlet_result = this->vulkan_core.make_gbuffer_pipeline(meshlet_vertex_shader_code, fragment_shader_code, VK_SHADER_STAGE_MESH_BIT_EXT);
+            if (meshlet_result) {
+                this->gbuffer_pipeline_meshlet = std::move(meshlet_result).value();
+                utility::log("SUCCESS: G-buffer MESHLET pipeline created (one workgroup per meshlet, camera-culled)");
+            } else {
+                utility::log("G-buffer MESHLET pipeline refused ({}), so the pass keeps the mesh form", meshlet_result.error());
             }
         }
         return {};
@@ -1777,20 +1794,31 @@ namespace vulkan {
         // one pipeline - and a mesh session feeds its leaves differently (see the endpoints below), which is why
         // the two facts travel together here.
         bool gbuffer_mesh = false;
+        bool gbuffer_meshlet = false;
         {
             std::shared_lock const lock(self.access_mutex);
             env.default_name = gbuffer ? gbuffer_pipeline_name : self.default_pipeline_name;
             gbuffer_mesh = gbuffer && self.gbuffer_pipeline_mesh.has_value();
+            gbuffer_meshlet = gbuffer && self.gbuffer_pipeline_meshlet.has_value();
         }
-        env.bind = [&self, &env, gbuffer, gbuffer_mesh](VkCommandBuffer const cb, std::string_view const name) {
+        env.bind = [&self, &env, gbuffer, gbuffer_mesh, gbuffer_meshlet](VkCommandBuffer const cb, std::string_view const name) {
             if (gbuffer) {
                 if (name == gbuffer_pipeline_name) {
-                    if (gbuffer_mesh) {
+                    if (gbuffer_meshlet) {
+                        // ONE WORKGROUP PER MESHLET, each culled against the camera before it emits anything
+                        // (docs/mesh_shaders.md step 3): the lanes carry the primitive's meshlet run, which is
+                        // why the session flag travels with the bind rather than being decided up front.
+                        self.gbuffer_pipeline_meshlet->begin_pipeline(cb);
+                        env.mesh_stage = true;
+                        env.meshlets = true;
+                    } else if (gbuffer_mesh) {
                         self.gbuffer_pipeline_mesh->begin_pipeline(cb);
                         env.mesh_stage = true;
+                        env.meshlets = false;
                     } else {
                         self.gbuffer_pipeline->begin_pipeline(cb);
                         env.mesh_stage = false;
+                        env.meshlets = false;
                     }
                     return;
                 }

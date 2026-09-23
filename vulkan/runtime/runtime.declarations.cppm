@@ -367,6 +367,9 @@ namespace vulkan {
         /// app handed the mesh stage's SPIR-V over: the scene session prefers it the way the shadow pass prefers
         /// its own, and a device without it keeps `gbuffer_pipeline` above.
         std::optional<vk_pipeline> gbuffer_pipeline_mesh = std::nullopt;
+        /// ... and its MESHLET form (docs/mesh_shaders.md step 3): one workgroup per meshlet, its window read out of the
+        /// table, each meshlet culled against the camera before it emits anything. Preferred over both others when built.
+        std::optional<vk_pipeline> gbuffer_pipeline_meshlet = std::nullopt;
         /**
          * @brief THE MESH FORM OF EACH NAMED PIPELINE, under the same name (docs/mesh_shaders.md step 2)
          *
@@ -2056,6 +2059,8 @@ namespace vulkan {
             /// THE MESH FORM OF THE SAME PIPELINE (docs/mesh_shaders.md step 2): the same fragment stage and a MESH
             /// entry that fetches its own vertices, stored under the same NAME in `mesh_pipelines` so the sessions
             /// that bind by name can prefer it. Empty, or a refusal, leaves the vertex form as the only one.
+            /// (A MESHLET form is only wired for the G-buffer pass so far - see make_gbuffer_pipeline - because
+            /// that is the pass a meshlet session draws; the named pipelines still take the two-entry shape.)
             std::span<unsigned char const> mesh_vertex_shader_code = {});
 
         /**
@@ -2401,7 +2406,7 @@ namespace vulkan {
          *       default: the G-buffer pass binds it explicitly).
          */
         std::expected<void, std::string> make_gbuffer_pipeline(std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code,
-                                                               std::span<unsigned char const> mesh_vertex_shader_code = {});
+                                                               std::span<unsigned char const> mesh_vertex_shader_code = {}, std::span<unsigned char const> meshlet_vertex_shader_code = {});
 
         /**
          * @ingroup vulkan_runtime
