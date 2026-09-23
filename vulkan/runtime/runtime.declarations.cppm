@@ -367,6 +367,16 @@ namespace vulkan {
         /// app handed the mesh stage's SPIR-V over: the scene session prefers it the way the shadow pass prefers
         /// its own, and a device without it keeps `gbuffer_pipeline` above.
         std::optional<vk_pipeline> gbuffer_pipeline_mesh = std::nullopt;
+        /**
+         * @brief THE MESH FORM OF EACH NAMED PIPELINE, under the same name (docs/mesh_shaders.md step 2)
+         *
+         * A second map rather than a second field on `vk_pipeline`, because the two are alternatives rather than a
+         * pair: a leaf asks for a NAME, and the session binds the mesh form when the device built one - so anything
+         * that reads the registry has to be able to ask "is there a mesh form of this name" as one question.
+         * Filled by `make_pipeline` when the app hands the mesh stage's SPIR-V over, so a device without mesh
+         * shaders simply has an empty map and every lookup falls through to the vertex pipeline.
+         */
+        std::unordered_map<std::string_view, vk_pipeline> mesh_pipelines = {};
         // whether the opaque pass writes the G-buffer this frame (see set_gbuffer_debug). Only
         // takes effect once the needed pipelines exist, so the flags can be set before setup ends.
         bool gbuffer_debug = false;
@@ -2024,7 +2034,11 @@ namespace vulkan {
         std::expected<void, std::string> make_pipeline(
             std::string_view pipeline_name,
             std::span<unsigned char const> vertex_shader_code,
-            std::span<unsigned char const> fragment_shader_code);
+            std::span<unsigned char const> fragment_shader_code,
+            /// THE MESH FORM OF THE SAME PIPELINE (docs/mesh_shaders.md step 2): the same fragment stage and a MESH
+            /// entry that fetches its own vertices, stored under the same NAME in `mesh_pipelines` so the sessions
+            /// that bind by name can prefer it. Empty, or a refusal, leaves the vertex form as the only one.
+            std::span<unsigned char const> mesh_vertex_shader_code = {});
 
         /**
          * @ingroup vulkan_runtime

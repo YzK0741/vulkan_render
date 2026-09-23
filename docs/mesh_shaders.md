@@ -1,11 +1,11 @@
 # Mesh shaders: what the stage buys here, and how the migration runs
 
-**STATUS: steps 0, 1 and the G-buffer half of step 2 are DONE and measured - the binding model is proven (the
-heap-native probe runs through a mesh pipeline and reports the same pixel as the vertex one), and TWO passes draw
-their geometry with mesh dispatches: the shadow pass's casters and the G-buffer pass's opaque leaves. The capture
-gate is byte-identical to the committed vertex-path references with either path active, and forced probes prove the
-mesh stages are the ones that produced those frames. The forward/unlit/transparent pipelines are still vertex
-stages (the rest of step 2), and steps 3-4 are planned.**
+**STATUS: steps 0, 1 and 2 are DONE and measured - the binding model is proven (the heap-native probe runs through
+a mesh pipeline and reports the same pixel as the vertex one), and EVERY geometry stage this renderer draws leaves
+with is a mesh stage: the shadow pass's casters, the G-buffer pass's opaque leaves, and the forward `pbr`/`unlit`
+pipelines the transparent pass and the flat render mode draw through. The capture gate is byte-identical to the
+committed vertex-path references with either path active, and forced probes prove the mesh stages are the ones that
+produced those frames. Steps 3-4 are planned (meshlets, a task stage, and removing the vertex path).**
 
 This document exists for the same reason `docs/slang_migration.md` does: the work spans sessions, so the
 recipe, the acceptance route and the traps belong somewhere durable. Every number below was measured on
@@ -296,9 +296,21 @@ The middle row is again what makes the first mean something, and this time the t
 hashes: `61770EA9EBFE0714` was the frame with the G-buffer RIGHT and no shadows (a lane-offset bug that fed the
 shadow stage a window belonging to no draw), `8687703DA3BCA7EF` is the frame with no geometry at all.
 
-The forward, unlit and transparent pipelines are what remains of this step: each needs the same mesh form of its
-named pipeline, and the forward/unlit leaves reach the registry by NAME (the G-buffer pass has one fixed pipeline
-per session, which is why this half was the cheap one).
+The forward, unlit and transparent pipelines were the second half of this step, and they are DONE: each NAMED
+pipeline in the registry can carry a mesh form under the same name (`runtime::make_pipeline(name, vertex, fragment,
+mesh_vertex)` fills a second map), and a session that binds by name picks the mesh form when there is one - which is
+what makes the transparent pass's leaves and the flat (unlit) render mode dispatches too. The choice is made PER BIND
+rather than per session there, because a forward session's leaves name their own pipelines; the G-buffer pass has one
+fixed pipeline per session, which is why that half came first. Evidence, one line per name at startup:
+
+```
+SUCCESS: pipeline 'pbr' created with a MESH form (its leaves are dispatched)
+SUCCESS: pipeline 'unlit' created with a MESH form (its leaves are dispatched)
+scene: the leaves of 'pbr' are DISPATCHED (mesh stage)
+```
+
+The third line is the transparent scenario (`transparent_blend`), whose blend leaf is the one that draws through the
+forward `pbr` pipeline. The flat render mode reaches the same code path through its own default name.
 
 ### Step 3 - a TASK stage, meshlets, and indirect dispatch
 

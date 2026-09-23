@@ -874,6 +874,12 @@ namespace vulkan {
                 pipeline.viewport = full_viewport;
                 pipeline.scissor = full_scissor;
             }
+            // ... and every MESH form of them, for the same reason one at a time: a pipeline object stores what
+            // begin_pipeline() applies.
+            for (auto& pipeline : this->mesh_pipelines | std::views::values) {
+                pipeline.viewport = full_viewport;
+                pipeline.scissor = full_scissor;
+            }
         }
         // the post-process pipelines are NOT in the named cache above, and begin_pipeline() always
         // re-emits the stored viewport/scissor: leaving them at the creation-time default made every
@@ -1774,13 +1780,15 @@ namespace vulkan {
             env.default_name = gbuffer ? gbuffer_pipeline_name : self.default_pipeline_name;
             gbuffer_mesh = gbuffer && self.gbuffer_pipeline_mesh.has_value();
         }
-        env.bind = [&self, gbuffer, gbuffer_mesh](VkCommandBuffer const cb, std::string_view const name) {
+        env.bind = [&self, &env, gbuffer, gbuffer_mesh](VkCommandBuffer const cb, std::string_view const name) {
             if (gbuffer) {
                 if (name == gbuffer_pipeline_name) {
                     if (gbuffer_mesh) {
                         self.gbuffer_pipeline_mesh->begin_pipeline(cb);
+                        env.mesh_stage = true;
                     } else {
                         self.gbuffer_pipeline->begin_pipeline(cb);
+                        env.mesh_stage = false;
                     }
                     return;
                 }
@@ -1790,12 +1798,36 @@ namespace vulkan {
                 utility::log("runtime: leaf requests pipeline '{}' during the G-buffer pass - draw skipped (only default-semantics leaves write the G-buffer)", name);
                 return;
             }
+            // THE FORWARD/TRANSPARENT SESSIONS BIND BY NAME, so WHICH FORM was bound is decided HERE rather than per
+            // session: a leaf that names a pipeline with a mesh form gets dispatched, and one that names a pipeline
+            // without one (or requests an unknown name) keeps the vertex path - and the session's flag follows the
+            // bind, which is what makes a session that mixes the two correct rather than merely likely.
+            if (auto const mesh = self.mesh_pipelines.find(name); mesh != self.mesh_pipelines.end()) {
+                mesh->second.begin_pipeline(cb);
+                env.mesh_stage = true;
+                // ONE LINE PER NAME, SAYING THE LEAVES ARE DISPATCHED - the same evidence rule the shadow pass's
+                // session follows: a mesh stage produces the same picture as the vertex one by construction, so
+                // which path drew a frame is deliberately invisible in it (see docs/mesh_shaders.md).
+                static std::array<std::string_view, 8> logged = {};
+                static std::size_t logged_count = 0;
+                bool seen = false;
+                for (std::size_t i = 0; i < logged_count; ++i) {
+                    seen = seen || logged[i] == name;
+                }
+                if (!seen && logged_count < logged.size()) {
+                    logged[logged_count++] = name;
+                    utility::log("scene: the leaves of '{}' are DISPATCHED (mesh stage)", name);
+                }
+                return;
+            }
+            env.mesh_stage = false;
             if (auto const it = self.pipelines.find(name); it != self.pipelines.end()) {
                 it->second.begin_pipeline(cb);
             } else {
                 utility::log("runtime: main pass references unknown pipeline '{}' - draw skipped", name);
             }
         };
+
         // transparent leaves toggle depth writes off via this (core dynamic state, 1.3)
         env.set_depth_write_fn = [](VkCommandBuffer const cb, VkBool32 const enabled) { vkCmdSetDepthWriteEnable(cb, enabled); };
         // single-sided materials keep back-face culling here (the shadow pass overrides it with env.two_sided;
@@ -1806,18 +1838,15 @@ namespace vulkan {
         // why a primitive's own push struct never had to grow a field.
         env.push_owner = &self;
         env.push_block = &runtime::push_stage_block;
-        // ... and how a MESH session feeds its leaves: a mesh pipeline has no input assembler, so every leaf is
-        // dispatched with its geometry window pushed instead of bound (see primitive::mesh_dispatch). The WINDOW
-        // itself is pushed by every session - a vertex pipeline's stages declare the same lanes and a heap pipeline
-        // requires them written - so the endpoints below are set for the vertex form too, and only `mesh_stage` and
-        // the dispatch are the mesh form's alone.
+        // ... and how a session feeds its leaves: a mesh pipeline has no input assembler, so every leaf is dispatched
+        // with its geometry window pushed instead of bound (see primitive::mesh_dispatch). The WINDOW itself is
+        // pushed by every session - a vertex pipeline's stages declare the same lanes and a heap pipeline requires
+        // them written - so `mesh_stage` is the only per-session flag, and the bind callback above sets it per draw.
         env.mesh_geometry_push_offset = vulkan::mesh_geometry_push_offset_scene;
         env.buffer_address = &runtime::mesh_buffer_address;
         env.push_at = &runtime::push_geometry_block;
-        if (gbuffer_mesh) {
-            env.mesh_stage = true;
-            env.draw_mesh_tasks = &runtime::draw_mesh_tasks;
-        }
+        env.draw_mesh_tasks = &runtime::draw_mesh_tasks; // only ever called when mesh_stage is true
+        env.mesh_stage = gbuffer_mesh;
         return env;
     }
 

@@ -339,8 +339,10 @@ namespace vulkan {
         return this->debug_overlay;
     }
 
-    std::expected<void, std::string> runtime::make_pipeline(std::string_view pipeline_name, std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code) {
+    std::expected<void, std::string> runtime::make_pipeline(std::string_view pipeline_name, std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code,
+                                                            std::span<unsigned char const> const mesh_vertex_shader_code) {
         using fail = std::unexpected<std::string>;
+        bool const want_mesh = !mesh_vertex_shader_code.empty() && this->evaluate_mesh_shaders(nullptr);
         {
             // unique lock around the duplicate check + registry append: a concurrent reader
             // (recording worker) must never observe a half-inserted map / name table
@@ -385,9 +387,41 @@ namespace vulkan {
         // omission here, as one changed scenario.
         make_result->viewport = {0.0f, 0.0f, static_cast<float>(this->vulkan_core.swap_chain_extent.width), static_cast<float>(this->vulkan_core.swap_chain_extent.height), 0.0f, 1.0f};
         make_result->scissor = {{0, 0}, this->vulkan_core.swap_chain_extent};
+        // ---- ... AND THE MESH FORM UNDER THE SAME NAME, when the app handed one over and the device can run it
+        //      (docs/mesh_shaders.md step 2). Built BEFORE the registry insert, because the two are stored together
+        //      and a session that binds by name has to find either both or neither. A refusal is a log line: the
+        //      vertex pipeline above is a complete answer.
+        std::optional<vk_pipeline> mesh_result = std::nullopt;
+        if (want_mesh) {
+            auto built = vulkan::make_pipeline(this->vulkan_core.device,
+                                               std::span<VkFormat const>(color_formats),
+                                               this->vulkan_core.depth_format,
+                                               mesh_vertex_shader_code,
+                                               fragment_shader_code,
+                                               VK_SAMPLE_COUNT_1_BIT,
+                                               /*depth_test_enabled=*/true,
+                                               0.0f,
+                                               0.0f,
+                                               0.0f,
+                                               std::span<VkPipelineColorBlendAttachmentState const>(blend_attachments),
+                                               VK_SHADER_STAGE_MESH_BIT_EXT);
+            if (built) {
+                // the same two cached values the vertex form needs, and for the same reason (begin_pipeline
+                // re-emits them, and update_pass_geometry resyncs every registered pipeline once per frame)
+                built->viewport = {0.0f, 0.0f, static_cast<float>(this->vulkan_core.swap_chain_extent.width), static_cast<float>(this->vulkan_core.swap_chain_extent.height), 0.0f, 1.0f};
+                built->scissor = {{0, 0}, this->vulkan_core.swap_chain_extent};
+                mesh_result = std::move(*built);
+            } else {
+                utility::log("pipeline '{}': no mesh form ({}), so its leaves stay on the vertex pipeline", pipeline_name, built.error());
+            }
+        }
         {
             std::unique_lock const lock(this->access_mutex);
             this->pipelines.emplace(pipeline_name, std::move(make_result).value());
+            if (mesh_result.has_value()) {
+                this->mesh_pipelines.emplace(pipeline_name, std::move(*mesh_result));
+                utility::log("SUCCESS: pipeline '{}' created with a MESH form (its leaves are dispatched)", pipeline_name);
+            }
             if (this->default_pipeline_name.empty()) {
                 this->default_pipeline_name = pipeline_name; // first pipeline is the implicit default
             }
