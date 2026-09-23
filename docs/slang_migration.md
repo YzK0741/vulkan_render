@@ -270,6 +270,55 @@ THE REMAINING STEPS, unchanged in shape: the same guards + accessors + fetch hel
 (camera/light/env/irradiance/lut/shadow/cluster) and `ibl_specular.glsl`; then each leaf stage is a
 `.slang` file with its entry point, its varyings, and the two includes.
 
+ALL THREE SHARED BODIES ARE NOW PORTED AND VERIFIED ON BOTH SIDES, which is what makes the leaf stages
+mechanical. `surface.glsl`, `shading.glsl` and `ibl_specular.glsl` are unchanged in their functions; what
+they gained is named accessors/fetches and `#ifndef VR_SLANG` guards around the GLSL-only declarations
+(including the UBO/blocks, WRAPPED rather than moved so the member lists stay in one place), and a
+`VR_MAT4` macro - `mat4` in GLSL, `row_major float4x4` in Slang - because a matrix MEMBER cannot be
+shared verbatim. Verified: the GLSL side stayed byte-identical at every step (ctest 8/8, gate 10/10 with 0
+changed), and a Slang stage that includes `heap_access.slang` + `surface.glsl` + `shading.glsl` compiles
+with ZERO descriptor sets and both BuiltIn heaps.
+
+THREE ORDERING/CONSTRAINT FACTS a leaf must respect, all learned the hard way:
+
+1. **The include order is: `heap_access.slang`, then `surface.glsl`, then the other bodies.** The push
+   constant block and the `heap_frame_slot` / `heap_image_index` aliases are declared by `surface.glsl`,
+   and the slot macros in `heap_slot_constants.glsl` expand against them - so a body compiled BEFORE that
+   include reports `heap_frame_slot` as an undefined identifier.
+2. **A fetch helper may not expand a frame-slot-dependent macro**, for the same reason: `shadow_sample`
+   takes the slot as a PARAMETER and the caller passes `heap_shadow_slot`, because the shim is compiled
+   before the push block exists. Helpers over the frame-INVARIANT slots (`env_cube_sample_lod`,
+   `irradiance_sample`, `brdf_lut_sample`, `heap_sample`) take no slot at all.
+3. **The two cluster accessors name `StructuredBuffer<uint>`**, not the GLSL blocks: `ClusterCounts`'
+   `uint counts[];` member is just a uint array, and Slang has no block-member indirection over a
+   structured buffer, so `cluster_count_at(slot, i)` is `heap_at<StructuredBuffer<uint>>(slot)[i]`.
+
+### THE FIRST LEAF PORT FAILED, AND IS NOT WIRED
+
+`shaders/gbuffer.slang` is written (a faithful port: the same body, `[[vk::location(n)]]` parameters and an
+output struct, the shared include order) and it is **deliberately NOT in `VR_SLANG_SOURCES`**, because with
+it built the capture gate reported `deferred_taa_fxaa` and `deformation` CHANGED - exactly the two
+scenarios that consume motion vectors - and a manual capture of the fixture came back **fully black**
+(`mean.py`: R/G/B all 0.0000; the 4.1 MB PNG size is NOT evidence of content, this encoder does not
+compress). What is already ruled out, so a next attempt does not re-check it:
+
+- the SPIR-V is shaped right: `CameraUBO`'s three matrix members are `ColMajor` with `MatrixStride 16`
+  (what glslc emits), the four varyings are at Locations 0-3 and the five outputs at 0-4;
+- `mul(M, v)` and `M * v` produced the SAME frame hash, so Slang's operator already matches GLSL's
+  column-vector convention - that fix changed nothing;
+- the eight scenarios that read no motion vector are byte-identical, so the surface gather, the material
+  lookup, the G-buffer targets and the emissive term are all correct.
+
+THE PRIME SUSPECT, checkable in one command: the PUSH BLOCK. The Slang module names it
+`SLANG_ParameterGroup_PushConstants_std140` - **std140** - while the GLSL side's block is std430 (the
+project passes `-fvk-use-gl-layout`). For this member list the member OFFSETS agree either way, but the
+block's declared SIZE - and therefore where the driver finds the two heap-index lanes that the slot macros
+expand against - is what matters: a wrong `frame_slot` / `image_index` sends every heap read to another
+frame's or another image's descriptor, which is exactly a black frame. Compare
+`OpMemberDecorate %...PushConstants...` and the block's size between `gbuffer.frag.spv` built by glslc and
+by slangc before anything else. Every pipeline except the scene one logged its creation in that run, so
+look at the scene pipeline and what it reads, not at the pass framework.
+
 PROGRESS ON `shading.glsl` (the bulk of the mechanical work is done and gate-green): the 25
 `light[heap_light_slot]` and 4 `camera[heap_camera_slot]` sites now call `light_at(...)` / `camera_at(...)`,
 with the GLSL definitions in `heap_slots.glsl` expanding to exactly the expressions they replaced - ctest

@@ -721,6 +721,16 @@ set(VR_SHADER_OUTPUTS "")
 # backwards here: `column_major float4x4` emits RowMajor, `row_major float4x4` emits ColMajor.
 set(VR_SLANG_SOURCES
     unlit.slang:main:fragment:unlit.frag.spv
+    fxaa.slang:main:fragment:fxaa.frag.spv
+    post.slang:main:vertex:post.vert.spv
+    gbuffer_debug.slang:main:fragment:gbuffer_debug.frag.spv
+    taa.slang:main:fragment:taa.frag.spv
+    # gbuffer.slang IS WRITTEN BUT NOT WIRED YET: with it built, `deferred_taa_fxaa` and `deformation`
+    # (the two scenarios that consume motion vectors) changed frame, and a manual capture of the fixture
+    # came back fully black while every pipeline except the scene one logged its creation - so the port is
+    # wrong somewhere the gate can see and I have not found yet. It stays out of the build until it is
+    # byte-identical; see docs/slang_migration.md's note on it.
+    # gbuffer.slang:main:fragment:gbuffer.frag.spv
 )
 find_program(VR_SLANGC_EXECUTABLE NAMES slangc slangc.exe)
 set(VR_SLANG_OUTPUTS "")
@@ -734,7 +744,7 @@ if(VR_SLANGC_EXECUTABLE)
         add_custom_command(
             OUTPUT "${VR_SHADER_OUT_DIR}/${slang_output}"
             COMMAND ${CMAKE_COMMAND} -E make_directory "${VR_SHADER_OUT_DIR}"
-            COMMAND "${VR_SLANGC_EXECUTABLE}" "${VR_SHADER_SRC_DIR}/${slang_source}" -I "${VR_SHADER_SRC_DIR}" -allow-glsl
+            COMMAND "${VR_SLANGC_EXECUTABLE}" "${VR_SHADER_SRC_DIR}/${slang_source}" -I "${VR_SHADER_SRC_DIR}" -allow-glsl -DVR_SLANG
                     -target spirv -profile spirv_1_6 -capability spvDescriptorHeapEXT
                     -spirv-resource-heap-stride 64 -spirv-sampler-heap-stride 32
                     -fvk-use-gl-layout -matrix-layout-column-major

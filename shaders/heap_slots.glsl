@@ -59,6 +59,11 @@ layout(descriptor_heap) uniform sampler heap_samplers[];
 #define light_at(slot) light[slot]
 #define cluster_count_at(slot, cluster) cluster_counts[slot].counts[cluster]
 #define cluster_indices_at(slot, i) cluster_indices[slot].indices[i]
+// A MATRIX MEMBER'S TYPE, per language: GLSL's `mat4` is column-major, and on the Slang side it is the
+// HLSL keyword `row_major` that emits SPIR-V ColMajor (the keyword reads BACKWARDS - `column_major` emits
+// RowMajor). ColMajor is what matches glslc's `mat4` and the host's column-major glm::mat4. See
+// docs/slang_migration.md, and heap_access.slang for the Slang definition.
+#define VR_MAT4 mat4
 
 /**
  * @brief one texel from a heap image, through the sampler at @p sampler_slot

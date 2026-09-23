@@ -21,6 +21,25 @@
 #ifndef VULKAN_RENDER_IBL_SPECULAR_GLSL
 #define VULKAN_RENDER_IBL_SPECULAR_GLSL
 
+// ---- THE THREE FETCHES THIS FILE MAKES, each behind a NAME ----
+//
+// WHY NAMED. A GLSL fetch builds a combined sampler at the point of use
+// (`sampler2D(brdf_lut_texture[slot], heap_samplers[s])`) and Slang cannot express that at all: there the
+// two halves travel in ONE `DescriptorHandle<Sampler2D>` whose .x indexes the resource heap and .y the
+// sampler heap. Naming the three fetches is what lets the functions below be shared by both languages -
+// see docs/slang_migration.md, and shaders/heap_access.slang for the other half.
+#ifndef VR_SLANG
+int env_cube_levels() {
+    return textureQueryLevels(samplerCube(env_texture[heap_env_slot], heap_samplers[heap_sampler_texture]));
+}
+vec3 env_cube_sample_lod(vec3 dir, float lod) {
+    return textureLod(samplerCube(env_texture[heap_env_slot], heap_samplers[heap_sampler_texture]), dir, lod).rgb;
+}
+vec2 brdf_lut_sample(vec2 uv) {
+    return texture(sampler2D(brdf_lut_texture[heap_lut_slot], heap_samplers[heap_sampler_texture]), uv).rg;
+}
+#endif // the Slang definitions are in heap_access.slang
+
 /// @brief the prefiltered chain's mip level for a roughness: the level count is QUERIED from the
 ///        sampler rather than hardcoded, so it always matches whatever `env_mip_count` the CPU baked
 /// @note the sampler is `heap_sampler_texture` - the one with LINEAR filtering and the full mip chain, which
@@ -29,12 +48,12 @@
 ///       contract test now fails on (see tests/test_render_resources.cpp). A cube map's addressing mode is
 ///       ignored at face edges, so the texture sampler's repeat costs nothing here.
 float ibl_specular_lod(float roughness) {
-    return roughness * float(max(textureQueryLevels(samplerCube(env_texture[heap_env_slot], heap_samplers[heap_sampler_texture])) - 1, 0));
+    return roughness * float(max(env_cube_levels() - 1, 0));
 }
 
 /// @brief one sample of the prefiltered environment: the radiance arriving from @p reflection
 vec3 ibl_specular_sample(vec3 reflection, float lod) {
-    return textureLod(samplerCube(env_texture[heap_env_slot], heap_samplers[heap_sampler_texture]), reflection, lod).rgb;
+    return env_cube_sample_lod(reflection, lod);
 }
 
 /// @brief Prefiltered GGX environment radiance for a reflection ray, at the mip that matches
@@ -51,7 +70,7 @@ vec3 ibl_specular_radiance(vec3 n, vec3 v, float roughness) {
 vec3 ibl_specular_fresnel(vec3 n, vec3 v, float roughness, vec3 f0, float specular_weight) {
     const float ndotv = clamp(dot(n, v), 0.0, 1.0);
     const vec2 brdf_sample_point = clamp(vec2(ndotv, roughness), vec2(0.0), vec2(1.0));
-    const vec2 f_ab = texture(sampler2D(brdf_lut_texture[heap_lut_slot], heap_samplers[heap_sampler_texture]), brdf_sample_point).rg;
+    const vec2 f_ab = brdf_lut_sample(brdf_sample_point);
     const vec3 fr = max(vec3(1.0 - roughness), f0) - f0;
     const vec3 k_s = f0 + fr * pow(1.0 - ndotv, 5.0);
     const vec3 fssess = specular_weight * (k_s * f_ab.x + f_ab.y);

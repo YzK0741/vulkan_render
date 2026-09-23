@@ -39,21 +39,36 @@
 // HEAP-NATIVE (see docs/descriptor_heap_migration.md): the array IS the heap and the slot carries the FRAME, so
 // every read is `camera_at(heap_camera_slot).field` (the slot constants are declared with the rest of the grid
 // below). The block itself is unchanged - it is a CPU/GPU contract.
+// THE UBO/RESOURCE BLOCKS ARE WRAPPED, NOT MOVED: the member lists stay here - ONE copy - and only the
+// GLSL-only `layout(descriptor_heap, ...) uniform X { ... } name[];` wrapper differs, because the Slang side
+// needs the same member list as a plain struct to build its `ConstantBuffer<X>` handles from. VR_MAT4 is
+// `mat4` in GLSL and `row_major float4x4` in Slang (see heap_slots.glsl).
+#ifndef VR_SLANG
 layout(descriptor_heap, descriptor_stride = heap_slot_stride) uniform CameraUBO {
-    mat4 view;
-    mat4 proj;
+#else
+struct CameraUBO {
+#endif
+    VR_MAT4 view;
+    VR_MAT4 proj;
     vec3 camera_pos;
-    mat4 view_proj_unjittered;
-    mat4 prev_view_proj;
+    VR_MAT4 view_proj_unjittered;
+    VR_MAT4 prev_view_proj;
+#ifndef VR_SLANG
 } camera[];
+#else
+};
+#endif
 
 // Split-sum IBL: the prefiltered GGX environment (roughness mip chain), the
 // irradiance map for the diffuse ambient, and the BRDF integration LUT.
 // IMAGES AND SAMPLERS ARE SEPARATE IN A HEAP, so these are textures now and the sampler is the shared one (the
 // host picks which at the fetch sites below).
+#ifndef VR_SLANG
 layout(descriptor_heap, descriptor_stride = heap_slot_stride) uniform textureCube env_texture[];
 layout(descriptor_heap, descriptor_stride = heap_slot_stride) uniform textureCube irradiance_texture[];
 layout(descriptor_heap, descriptor_stride = heap_slot_stride) uniform texture2D brdf_lut_texture[];
+#endif // the Slang side reaches these through env_cube_sample_lod / irradiance_sample / brdf_lut_sample,
+       // which shaders/heap_access.slang defines over DescriptorHandle values (see docs/slang_migration.md)
 
 // The SLOTS these declarations resolve to live in heap_slots.glsl with every other stage's, because a stage that
 // does not include this file needs them too (see that file's note on which index each kind of array takes).
@@ -80,11 +95,15 @@ struct PunctualLight {
     vec4 params;   // x = range (0 = infinite), y = 0 point / 1 spot, z = cos(outer cone), w = cos(inner cone, spot only)
 };
 
+#ifndef VR_SLANG
 layout(descriptor_heap, descriptor_stride = heap_slot_stride) uniform LightUBO {
+#else
+struct LightUBO {
+#endif
     // One orthographic world -> light-clip matrix per cascade: entry 0 covers the near range, the
     // rest the ranges given by cascade_splits. With cascade_count == 1 only entry 0 is fitted and
     // used, which is exactly the single-shadow-map behavior.
-    mat4 light_view_proj[MAX_SHADOW_CASCADES];
+    VR_MAT4 light_view_proj[MAX_SHADOW_CASCADES];
     vec4 light_dir;           // xyz: normalized light direction, w: 1 / shadow map size (uv texel)
     vec4 cascade_splits;      // view-space FAR distance of each cascade
     vec4 cascade_texel_world; // world size of one shadow-map texel, per cascade (normal-offset bias)
@@ -115,19 +134,32 @@ layout(descriptor_heap, descriptor_stride = heap_slot_stride) uniform LightUBO {
     //                 used by the cluster pass only)
     vec4 cluster_grid;
     vec4 cluster_depth;
+#ifndef VR_SLANG
 } light[];
+#else
+};
+#endif
 
 // Per-cluster light lists (scene set bindings 11/12), written by shaders/light_cluster.comp: one
 // entry per cluster in cluster_counts (how many lights landed in it) and a fixed-capacity row per
 // cluster in cluster_indices holding the indices into light_at(heap_light_slot).punctual_lights. Storage buffers rather
 // than more UBO lanes because the grid is thousands of entries - and small enough (16 lights per
 // cluster) that no per-cluster linked list / prefix sum is needed.
+#ifndef VR_SLANG
 layout(descriptor_heap, descriptor_stride = heap_slot_stride) readonly buffer ClusterCounts {
     uint counts[];
 } cluster_counts[];
 layout(descriptor_heap, descriptor_stride = heap_slot_stride) readonly buffer ClusterIndices {
     uint indices[];
 } cluster_indices[];
+#else
+struct ClusterCounts {
+    uint counts[];
+};
+struct ClusterIndices {
+    uint indices[];
+};
+#endif // the Slang side reaches these through cluster_count_at / cluster_indices_at
 
 // Shadow map (scene set binding 8): a 2D ARRAY of cascades, sampled with a depth-compare sampler
 // (sampler2DArrayShadow) whose LINEAR filtering performs HARDWARE percentage-closer filtering - the
@@ -137,7 +169,29 @@ layout(descriptor_heap, descriptor_stride = heap_slot_stride) readonly buffer Cl
 // dynamically uniform indices, while a texture-array layer is just a coordinate.
 // ... and it is a heap TEXTURE (the depth-compare sampler comes from the sampler heap at heap_sampler_shadow),
 // per swapchain image, which is what heap_image_index selects.
+#ifndef VR_SLANG
 layout(descriptor_heap, descriptor_stride = heap_slot_stride) uniform texture2DArray shadow_texture[];
+#endif // the Slang side reaches it through shadow_sample(), which the caller passes the slot to
+
+// ---- THE TWO REMAINING FETCHES, each behind a NAME ----
+//
+// Same reason as the IBL helpers: a GLSL fetch builds its combined sampler at the point of use, and Slang
+// cannot express that - there the two halves are one DescriptorHandle (a comparison sampler for the shadow
+// map). Naming them is what lets the functions below be shared. The Slang definitions are in
+// shaders/heap_access.slang; see docs/slang_migration.md.
+#ifndef VR_SLANG
+/// one comparison fetch from the cascade array: @p slot is the shadow map's heap slot (the CALLER passes
+/// `heap_shadow_slot`, because that macro is frame-slot dependent and a shim may be compiled before the
+/// push block that defines the frame slot exists), @p tap is in light space, @p cascade picks the layer and
+/// @p depth is the fragment's light-space depth the sampler compares against
+float shadow_sample(uint slot, vec2 tap, int cascade, float depth) {
+    return texture(sampler2DArrayShadow(shadow_texture[slot], heap_samplers[heap_sampler_shadow]), vec4(tap, float(cascade), depth));
+}
+/// the diffuse ambient: the irradiance map at the world normal
+vec3 irradiance_sample(vec3 n) {
+    return texture(samplerCube(irradiance_texture[heap_irradiance_slot], heap_samplers[heap_sampler_texture]), n).rgb;
+}
+#endif // the Slang definitions are in heap_access.slang
 
 const float PI = 3.14159265359;
 
@@ -202,7 +256,7 @@ float calc_shadow_cascade(vec3 world_pos, vec3 normal, int cascade) {
     for (int y = -1; y <= 1; ++y) {
         for (int x = -1; x <= 1; ++x) {
             vec2 tap = uv + vec2(float(x), float(y)) * texel_uv;
-            lit += texture(sampler2DArrayShadow(shadow_texture[heap_shadow_slot], heap_samplers[heap_sampler_shadow]), vec4(tap, float(cascade), current_depth - bias));
+            lit += shadow_sample(heap_shadow_slot, tap, cascade, current_depth - bias);
         }
     }
     float shadow = lit / 9.0;
@@ -438,7 +492,7 @@ vec3 evaluate_direct_light(vec3 n, vec3 v, vec3 base_color, float metallic, floa
 ///        always uses this fixed GGX model, independent of the BRDF presets above
 /// Diffuse ambient: irradiance map lookup by the world normal
 vec3 get_diffuse_light(vec3 n) {
-    return texture(samplerCube(irradiance_texture[heap_irradiance_slot], heap_samplers[heap_sampler_texture]), n).rgb;
+    return irradiance_sample(n);
 }
 
 // The specular half - get_specular_sample / get_ibl_ggx_fresnel / get_ibl_radiance_ggx - is

@@ -20,6 +20,15 @@
 // same shared bodies. A drift is not silent: the capture gate compares every stage's frame against the
 // same references, and the two sides render the same scenes.
 
+// THE GRID'S NUMBERS come from the same file the GLSL side includes, so the two cannot drift (and a stage
+// that also includes heap_slots.glsl does not define them twice - that file has its own guard).
+#include "heap_slot_constants.glsl"
+
+// A MATRIX MEMBER'S TYPE on this side: `row_major` is what emits SPIR-V ColMajor, which is what the GLSL
+// `mat4` members and the host's column-major glm::mat4 are (the keyword reads backwards - `column_major`
+// emits RowMajor). heap_slots.glsl defines the GLSL half.
+#define VR_MAT4 row_major float4x4
+
 // A handle for an absolute slot: `.x` is the resource heap index, or - for a SamplerState - the sampler
 // heap index (Slang uses the same component for both; only a combined sampler uses `.y`).
 DescriptorHandle<T> heap_at<T>(uint slot) where T : IOpaqueDescriptor
@@ -34,7 +43,17 @@ DescriptorHandle<Sampler2D> combined_at(uint texture_slot, uint sampler_slot)
 }
 
 // ---- THE ACCESSORS (the GLSL definitions live in heap_slots.glsl) ----
+//
+// The struct types in these macros (`Material`, `CameraUBO`, `LightUBO`) are declared by the shared bodies
+// themselves, which is fine because a macro is text: it is expanded at the USE site, by which time the
+// bodies have declared them. That is also why the two cluster accessors name `StructuredBuffer<uint>`
+// rather than the GLSL blocks - those blocks' `uint counts[];` / `uint indices[];` members are just uint
+// arrays, and Slang has no block-member indirection over a structured buffer.
 #define material_at(slot, index) heap_at<StructuredBuffer<Material>>(slot)[index]
+#define camera_at(slot) heap_at<ConstantBuffer<CameraUBO>>(slot)
+#define light_at(slot) heap_at<ConstantBuffer<LightUBO>>(slot)
+#define cluster_count_at(slot, cluster) heap_at<StructuredBuffer<uint>>(slot)[cluster]
+#define cluster_indices_at(slot, i) heap_at<StructuredBuffer<uint>>(slot)[i]
 
 // ---- THE FETCH HELPERS the GLSL side defines as macros or functions ----
 
@@ -52,4 +71,43 @@ float4 heap_texel(DescriptorHandle<Texture2D<float4>> texture, uint sampler_slot
 float4 heap_sample(uint texture_index, float2 uv)
 {
     return combined_at(heap_slots_textures + texture_index, heap_sampler_texture).Sample(uv);
+}
+
+// ---- THE IBL FETCHES (the GLSL definitions live in ibl_specular.glsl) ----
+
+/// the prefiltered chain's mip count, QUERIED from the texture rather than hardcoded
+int env_cube_levels()
+{
+    uint width, height, levels;
+    heap_at<TextureCube<float4>>(heap_slots_env_cube).GetDimensions(0u, width, height, levels);
+    return int(levels);
+}
+
+/// one sample of the prefiltered environment at an explicit mip (GLSL's `textureLod`)
+float3 env_cube_sample_lod(float3 dir, float lod)
+{
+    return heap_at<TextureCube<float4>>(heap_slots_env_cube).SampleLevel(heap_at<SamplerState>(heap_sampler_texture), dir, lod).rgb;
+}
+
+/// the BRDF integration LUT's `.rg` at a (ndotv, roughness) point
+float2 brdf_lut_sample(float2 uv)
+{
+    return heap_at<Texture2D<float4>>(heap_slots_brdf_lut).Sample(heap_at<SamplerState>(heap_sampler_texture), uv).rg;
+}
+
+// ---- THE SHADOW AND IRRADIANCE FETCHES (the GLSL definitions live in shading.glsl) ----
+
+/// one comparison fetch from the cascade array (GLSL's `sampler2DArrayShadow` + `texture(...)`): Slang
+/// names the comparison sampler as a type instead, and `SampleCmpLevelZero` is the comparison fetch.
+/// @param slot the shadow map's heap slot, passed in by the caller: a shim is compiled before the push
+///        block that `heap_shadow_slot` needs, so the macro cannot be expanded here
+float shadow_sample(uint slot, float2 tap, int cascade, float depth)
+{
+    return heap_at<Texture2DArray<float>>(slot).SampleCmpLevelZero(heap_at<SamplerComparisonState>(heap_sampler_shadow), float3(tap, float(cascade)), depth);
+}
+
+/// the diffuse ambient: the irradiance map at the world normal
+float3 irradiance_sample(float3 n)
+{
+    return heap_at<TextureCube<float4>>(heap_slots_irradiance_cube).Sample(heap_at<SamplerState>(heap_sampler_texture), n).rgb;
 }
