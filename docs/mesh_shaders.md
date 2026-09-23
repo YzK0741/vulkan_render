@@ -22,6 +22,18 @@
 The measurements behind each of those sentences - the device's limits, the two compiler crashes, the GPU hang and
 the exact next experiments - are in section 5, step by step.
 
+> **BLOCKER (one of step 3's two named mechanisms, and it is not ours).** A TASK stage cannot be given host data on
+> this toolchain: `slangc` v2026.18.2 dies with `0xC0000005` on a six-line entry point that declares
+> `[[vk::push_constant]]` and reads one member from it, and dies again on one that only `#include`s
+> `heap_access.slang`. Both crashes reproduce with `-target spirv -profile spirv_1_6` alone, so they are not caused
+> by this renderer's flags, and the same file's `mesh_main` / `meshlet_main` entries compile and validate. A task
+> stage that cannot receive a push block cannot be told the frame slot, the cascade index or the model matrix -
+> which is how every stage in this renderer reaches the heap, because a heap pipeline has no layout. **The
+> reproducer is `build-release-clang64/dvm/t_push.slang` (six lines, no engine code) and is the thing to report
+> upstream.** The objective names a second mechanism for the same culling - a compute pass writing
+> `VkDrawMeshTasksIndirectCommandEXT` - and that one does not crash, so this is a blocked MECHANISM rather than a
+> blocked feature.
+
 This document exists for the same reason `docs/slang_migration.md` does: the work spans sessions, so the
 recipe, the acceptance route and the traps belong somewhere durable. Every number below was measured on
 this machine, not read out of a spec - where a spec is quoted it is because validation quoted it first.
