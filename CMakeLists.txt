@@ -675,9 +675,13 @@ set(VR_SHADER_INCLUDES
     # ibl_specular.glsl is included by shading.glsl, so it belongs here for the same reason the three above
     # do: editing it alone must not leave stale SPIR-V behind.
     "${VR_SHADER_SRC_DIR}/ibl_specular.glsl"
-    # heap_slots.glsl is the SLOT GRID's shader-side source of truth (core.declarations.cppm is the host's): a shader that
-    # includes it and is not rebuilt after it changes would index the heap by stale numbers, which validation
-    # cannot see. The C++ side is compared against it by a test (see test_render_resources).
+    # heap_slot_constants.glsl is the SLOT GRID's shader-side source of truth (core.declarations.cppm is the
+    # host's): a shader that includes it and is not rebuilt after it changes would index the heap by stale
+    # numbers, which validation cannot see. The C++ side is compared against it by a test (see
+    # test_render_resources). It is its own file rather than part of heap_slots.glsl because the Slang
+    # migration needs the same numbers - see docs/slang_migration.md - and heap_slots.glsl (the GLSL heap
+    # arrays and the fetch helper) includes it.
+    "${VR_SHADER_SRC_DIR}/heap_slot_constants.glsl"
     "${VR_SHADER_SRC_DIR}/heap_slots.glsl"
 )
 set(VR_SHADER_SOURCES
@@ -696,6 +700,72 @@ set(VR_SHADER_SOURCES
     shadow.vert shadow.frag post.vert post.frag fxaa.frag
 )
 set(VR_SHADER_OUTPUTS "")
+# ---- SLANG SOURCES: the GLSL -> Slang migration, one shader at a time (docs/slang_migration.md) --------
+#
+# Each entry is "<source>:<entry>:<stage>:<output .spv name>", and the OUTPUT NAME IS THE SAME .spv THE GLSL
+# VERSION PRODUCED: the runtime loads shaders by file name, so a port needs no host change at all, and the
+# acceptance for every port is the capture gate staying byte-identical.
+#
+# THE FLAGS ARE THE BINDING CONTRACT, and every one of them was measured rather than guessed:
+#   -allow-glsl                 ... the shared slot constants are a plain `const uint` file (valid GLSL);
+#                                   Slang rejects a non-static global const without this (E31224).
+#   -capability spvDescriptorHeapEXT ... without it Slang emits the descriptor-set model instead of the heap.
+#   -spirv-resource-heap-stride 64 / -spirv-sampler-heap-stride 32 ... this renderer's grid is a flat 64-byte
+#                                   slot grid plus a 32-byte sampler heap, not Slang's per-type default.
+#   -fvk-use-gl-layout          ... std430, which is what the CPU structs and the GLSL blocks already use.
+#   -matrix-layout-column-major ... see the note on `row_major` below; kept even though this build appears to
+#                                   ignore it (measured: all four flag combinations emit the same decoration).
+#
+# A MATRIX MEMBER MUST BE DECLARED `row_major` TO GET SPIR-V `ColMajor`, which is what glslang emits for a GLSL
+# `mat4` and therefore what matches the host's column-major glm::mat4. MEASURED, and the HLSL keyword reads
+# backwards here: `column_major float4x4` emits RowMajor, `row_major float4x4` emits ColMajor.
+set(VR_SLANG_SOURCES
+    unlit.slang:main:fragment:unlit.frag.spv
+)
+find_program(VR_SLANGC_EXECUTABLE NAMES slangc slangc.exe)
+set(VR_SLANG_OUTPUTS "")
+if(VR_SLANGC_EXECUTABLE)
+    foreach(entry IN LISTS VR_SLANG_SOURCES)
+        string(REPLACE ":" ";" parts "${entry}")
+        list(GET parts 0 slang_source)
+        list(GET parts 1 slang_entry)
+        list(GET parts 2 slang_stage)
+        list(GET parts 3 slang_output)
+        add_custom_command(
+            OUTPUT "${VR_SHADER_OUT_DIR}/${slang_output}"
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${VR_SHADER_OUT_DIR}"
+            COMMAND "${VR_SLANGC_EXECUTABLE}" "${VR_SHADER_SRC_DIR}/${slang_source}" -I "${VR_SHADER_SRC_DIR}" -allow-glsl
+                    -target spirv -profile spirv_1_6 -capability spvDescriptorHeapEXT
+                    -spirv-resource-heap-stride 64 -spirv-sampler-heap-stride 32
+                    -fvk-use-gl-layout -matrix-layout-column-major
+                    -entry ${slang_entry} -stage ${slang_stage} -o "${VR_SHADER_OUT_DIR}/${slang_output}"
+            DEPENDS "${VR_SHADER_SRC_DIR}/${slang_source}" ${VR_SHADER_INCLUDES}
+            COMMENT "slangc ${slang_source} -> ${slang_output}"
+            VERBATIM
+        )
+        list(APPEND VR_SLANG_OUTPUTS "${VR_SHADER_OUT_DIR}/${slang_output}")
+    endforeach()
+    message(STATUS "slangc: ${VR_SLANGC_EXECUTABLE} - ${VR_SLANG_SOURCES}")
+else()
+    # PHASE ONE OF THE MIGRATION ONLY. While the ports are still landing, a machine without slangc builds the
+    # GLSL source of each migrated shader instead, so the build (and CI, which has no SDK and whose MSYS2 has no
+    # slang package - measured) stays green. The LAST step of the migration removes the GLSL sources and makes
+    # slangc required, which is when CI needs a source for it.
+    message(STATUS "slangc not found - the migrated shaders fall back to their GLSL sources (migration phase one)")
+endif()
+# a GLSL source whose .spv a Slang source now produces must NOT also be compiled by glslc: both would write the
+# same output file, and which one won would depend on the build order.
+set(VR_GLSL_SOURCES "")
+foreach(shader IN LISTS VR_SHADER_SOURCES)
+    if("${VR_SHADER_OUT_DIR}/${shader}.spv" IN_LIST VR_SLANG_OUTPUTS)
+        list(APPEND VR_SLANG_REPLACED "${shader}")
+    else()
+        list(APPEND VR_GLSL_SOURCES "${shader}")
+    endif()
+endforeach()
+if(VR_SLANG_REPLACED)
+    message(STATUS "compiled from Slang instead of GLSL: ${VR_SLANG_REPLACED}")
+endif()
 # --target-env=vulkan1.3 on EVERY shader, not just the ray-traced one. glslc defaults to vulkan1.0, and
 # under that target GL_EXT_ray_query is not a known extension at all ("undeclared identifier rayQueryEXT",
 # which is what this shader reported before the flag). The engine is Vulkan 1.3-only anyway - dynamic
@@ -704,7 +774,7 @@ set(VR_SHADER_OUTPUTS "")
 # version and nothing else these shaders do: the seven capture scenarios hash identically after the
 # change (checked, because a codegen difference hidden under a flag change is exactly what a byte-exact
 # reference is for).
-foreach(shader IN LISTS VR_SHADER_SOURCES)
+foreach(shader IN LISTS VR_GLSL_SOURCES)
     add_custom_command(
         OUTPUT "${VR_SHADER_OUT_DIR}/${shader}.spv"
         COMMAND ${CMAKE_COMMAND} -E make_directory "${VR_SHADER_OUT_DIR}"
@@ -716,6 +786,7 @@ foreach(shader IN LISTS VR_SHADER_SOURCES)
     )
     list(APPEND VR_SHADER_OUTPUTS "${VR_SHADER_OUT_DIR}/${shader}.spv")
 endforeach()
+list(APPEND VR_SHADER_OUTPUTS ${VR_SLANG_OUTPUTS})
 # the runtime's log names the GLSL file it is loading the SPIR-V for, and it looks for that name in
 # the same directory: copy the sources there so the log points at a file a reader of the build tree
 # can actually open. Not a correctness requirement - the .spv beside it is what gets loaded.

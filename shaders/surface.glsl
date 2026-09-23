@@ -49,7 +49,9 @@ struct Material {
 };
 // The ARRAY name carries the HEAP slot and the block member carries the record index: two index spaces, which is
 // why a lookup is `heap_material_tables[heap_slots_materials].materials[push.material_index]`.
+#ifndef VR_SLANG
 layout(descriptor_heap, descriptor_stride = heap_slot_stride) readonly buffer Materials { Material materials[]; } heap_material_tables[];
+#endif // the Slang side reaches the table through material_at(): a GLSL block member does not exist there
 
 /**
  * @brief one fetch from the bindless array, with the sampler the descriptor-set path used to bind for it
@@ -59,9 +61,12 @@ layout(descriptor_heap, descriptor_stride = heap_slot_stride) readonly buffer Ma
  *       sampler from the SAMPLER heap at heap_sampler_texture (linear, repeat, mips - exactly what the set path
  *       bound), and a combined image sampler cannot be declared at all, so every fetch says both.
  */
+#ifndef VR_SLANG
 vec4 heap_sample(uint texture_index, vec2 uv) {
     return texture(sampler2D(heap_textures[heap_slots_textures + texture_index], heap_samplers[heap_sampler_texture]), uv);
 }
+#endif // the Slang side defines heap_sample in shaders/heap_access.slang, where a combined sampler is a
+       // DescriptorHandle<Sampler2D> whose .x names the texture slot and .y the sampler slot
 
 // Push constant block: must mirror the vertex stages and material_push_constants in the runtime
 // (seven uint fields first, then the aligned mat4) so member offsets agree across stages and with
@@ -118,7 +123,7 @@ struct surface_sample {
  *       attribute is never consumed; a degenerate UV derivative falls back to the fine normal.
  */
 surface_sample gather_surface(vec3 world_pos, vec3 geo_normal, vec2 uv) {
-    Material mat = heap_material_tables[heap_slots_materials].materials[push.material_index];
+    Material mat = material_at(heap_slots_materials, push.material_index);
 
     surface_sample s;
     const vec4 base_color = mat.base_color_factor * heap_sample(mat.tex_indices.x, uv);

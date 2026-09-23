@@ -25,128 +25,40 @@
 // says so in those words, and the heap-native probe proves it). A push_constant BLOCK may not carry an `offset`
 // qualifier - measured, glslang says "only applies to block members" - so there is no shared block to put them in:
 // each stage appends `uint frame_slot; uint image_index;` to ITS OWN block (at the end, so every existing field
-// keeps its offset) and then aliases them to the two names the slot macros below use:
+// keeps its offset) and then aliases them to the two names the slot macros in heap_slot_constants.glsl use:
 //
 //     #define heap_frame_slot (push.frame_slot)
 //     #define heap_image_index (push.image_index)
 //
 // (with `push` the stage's own block instance name). A stage that uses neither pays 8 bytes of push block.
 
-// the grid's base, in slots: 1 MiB / 64 B
-const uint heap_slot_base = 16384u;
-// what a declaration must pass as its layout qualifier (see the note above)
-const uint heap_slot_stride = 64u;
-// per-swapchain-image arrays are given 8 slots: more than any swapchain this renderer creates (3-4 in practice)
-const uint heap_image_capacity = 8u;
-
-// the bindless texture array: binding 1, one slot per scene texture
-const uint heap_slots_textures = heap_slot_base + 0u;
-// the material table (binding 5), and the top level structure (binding 16) as a TWO-SLOT array: the TLAS is
-// rebuilt every frame, so one slot would hold one frame's structure while the other is still in flight (slot 513,
-// where it first was, is left unused rather than half-filled; see core.cppm's heap_slots).
-const uint heap_slots_materials = heap_slot_base + 512u;
-const uint heap_slots_tlas = heap_slot_base + 703u;
-// per frame slot (2 of them), the scene set's frame-varying half
-const uint heap_slots_scene_camera = heap_slot_base + 514u;
-const uint heap_slots_scene_light = heap_slot_base + 516u;
-const uint heap_slots_cluster_counts = heap_slot_base + 518u;
-const uint heap_slots_cluster_indices = heap_slot_base + 520u;
-const uint heap_slots_instance_transforms = heap_slot_base + 522u;
-const uint heap_slots_previous_transforms = heap_slot_base + 524u;
-const uint heap_slots_skin_matrices = heap_slot_base + 526u;
-const uint heap_slots_morph_data = heap_slot_base + 528u;
-// the SAME joint blocks one frame ago, per frame slot: what makes a DEFORMING vertex's motion vector carry
-// its deformation instead of only its node's rigid motion (see runtime::advance_motion_deformations). Its
-// number is at the END of the used region rather than beside the current family above, because growing an
-// array in place would renumber every array after it (the rule the TLAS and the storage twins follow too).
-const uint heap_slots_skin_matrices_previous = heap_slot_base + 743u;
-const uint heap_slots_mask_instances = heap_slot_base + 530u;
-// frame-invariant images the shading stage samples
-const uint heap_slots_env_cube = heap_slot_base + 532u;
-const uint heap_slots_irradiance_cube = heap_slot_base + 533u;
-const uint heap_slots_brdf_lut = heap_slot_base + 534u;
-// per swapchain image: the shadow map, the ray-traced visibility, and every G-buffer/post image
-const uint heap_slots_shadow_map = heap_slot_base + 535u;
-const uint heap_slots_rt_visibility = heap_slot_base + 543u;
-// the SAME image as a STORAGE descriptor (the visibility pass writes it, the lighting stage samples it, and no
-// single heap descriptor is both): see core.cppm's heap_slots
-const uint heap_slots_rt_visibility_storage = heap_slot_base + 711u;
-const uint heap_slots_gbuffer_albedo = heap_slot_base + 551u;
-const uint heap_slots_gbuffer_normal = heap_slot_base + 559u;
-const uint heap_slots_gbuffer_material = heap_slot_base + 567u;
-const uint heap_slots_gbuffer_depth = heap_slot_base + 575u;
-const uint heap_slots_gbuffer_velocity = heap_slot_base + 583u;
-const uint heap_slots_ml_trace = heap_slot_base + 591u;
-// the trace and the resolve as STORAGE descriptors (their compute passes write them; no single heap descriptor is
-// both a sampled and a storage image): see core.cppm's heap_slots
-const uint heap_slots_ml_trace_storage = heap_slot_base + 719u;
-const uint heap_slots_ml_resolved_storage = heap_slot_base + 735u;
-const uint heap_slots_ml_history = heap_slot_base + 599u;
-const uint heap_slots_ml_resolved = heap_slot_base + 607u;
-const uint heap_slots_taa_current = heap_slot_base + 623u;
-const uint heap_slots_taa_history = heap_slot_base + 631u;
-const uint heap_slots_post_color = heap_slot_base + 639u;
-const uint heap_slots_bloom_l0 = heap_slot_base + 647u;
-const uint heap_slots_bloom_l1 = heap_slot_base + 655u;
-const uint heap_slots_bloom_l2 = heap_slot_base + 663u;
-const uint heap_slots_bloom_l3 = heap_slot_base + 671u;
-const uint heap_slots_display_color = heap_slot_base + 695u;
-// one past the last array: 703 slots are in use, the grid reserves 1024
-const uint heap_slot_count = 1024u;
-
-// THE SAMPLER HEAP IS A SECOND GRID, and its own base: the sampler heap is a separate heap in this API, and the
-// API caps it at 128 KiB, so it CANNOT use the resource grid's 1 MiB - 64 KiB, the reserved window the
-// embedded-sampler path requires, is the largest base it can have, and the host refuses the heap path if a
-// device's reserved window were larger or its sampler stride were not 32 B (core.cpp checks both).
-// Index 0..4 are the five shared samplers the scene set's declarations choose between, in the order
-// core::create_samplers makes them.
-const uint heap_sampler_base = 2048u; // 64 KiB / 32 B
-const uint heap_sampler_stride = 32u;
-// In the order core::create_samplers makes them (see core.cppm's shared_sampler_infos), which is also the order
-// they are written onto this grid.
-const uint heap_sampler_texture = heap_sampler_base + 0u;        // linear, repeat, mips to 12
-const uint heap_sampler_post = heap_sampler_base + 1u;           // linear, clamp, one mip
-const uint heap_sampler_gbuffer = heap_sampler_base + 2u;        // nearest, clamp
-const uint heap_sampler_post_nearest = heap_sampler_base + 3u;   // nearest, clamp (the same sampler twice)
-const uint heap_sampler_taa = heap_sampler_base + 4u;            // linear mag / nearest min, clamp
-const uint heap_sampler_shadow = heap_sampler_base + 5u;         // depth compare, clamp
-// NO SEVENTH SAMPLER. The IBL images (env, irradiance, LUT) are sampled through `heap_sampler_texture`, the one
-// with LINEAR filtering and the full mip chain; a `heap_sampler_env` name lived here and pointed at a slot the
-// host never writes (core writes exactly the six above), which is what the grid contract test caught.
-
-// THE SLOTS A CONVERTED STAGE ACTUALLY INDEXES. They are MACROS rather than constants because the index they add
-// is a push-constant lane, i.e. not a compile-time value - this keeps the ~forty use sites unchanged (they read
-// `heap_camera_slot` as an expression) instead of turning each one into a function call. THE INDEX RULE, stated
-// once: per-frame arrays add heap_indices.frame_slot, per-swapchain-image arrays add heap_indices.image_index.
-// Getting that backwards is silent - the read lands on another frame's or another image's descriptor.
-#define heap_camera_slot (heap_slots_scene_camera + heap_frame_slot)
-#define heap_light_slot (heap_slots_scene_light + heap_frame_slot)
-#define heap_cluster_count_slot (heap_slots_cluster_counts + heap_frame_slot)
-#define heap_cluster_index_slot (heap_slots_cluster_indices + heap_frame_slot)
-#define heap_instance_slot (heap_slots_instance_transforms) // ONE descriptor, not a per-frame array
-#define heap_previous_slot (heap_slots_previous_transforms + heap_frame_slot)
-#define heap_skin_slot (heap_slots_skin_matrices + heap_frame_slot)
-#define heap_skin_previous_slot (heap_slots_skin_matrices_previous + heap_frame_slot)
-#define heap_morph_slot (heap_slots_morph_data + heap_frame_slot)
-#define heap_shadow_slot (heap_slots_shadow_map + heap_frame_slot)
-#define heap_rt_visibility_slot (heap_slots_rt_visibility + heap_frame_slot)
-#define heap_rt_visibility_storage_slot (heap_slots_rt_visibility_storage + heap_frame_slot)
-#define heap_tlas_slot (heap_slots_tlas + heap_frame_slot)
-#define heap_mask_instance_slot (heap_slots_mask_instances + heap_frame_slot)
-#define heap_env_slot (heap_slots_env_cube)
-#define heap_irradiance_slot (heap_slots_irradiance_cube)
-#define heap_lut_slot (heap_slots_brdf_lut)
-#define heap_material_slot (heap_slots_materials)
-#define heap_texture_base (heap_slots_textures) // the bindless array's first slot: + the texture's own index
-#define heap_image_slot(base) ((base) + heap_image_index) // for the per-swapchain-image arrays
+// THE CONSTANTS AND THE SLOT MACROS LIVE IN heap_slot_constants.glsl, which BOTH shading languages can
+// read: the migration to Slang needs the same numbers without a second copy, and that file is what
+// tests/test_render_resources.cpp parses against core::heap_slots. Only the shared heap arrays and the
+// fetch helper below are GLSL-specific, so only they stay here.
+#include "heap_slot_constants.glsl"
 
 // THE SHARED HEAP ARRAYS, declared once here rather than per header: more than one converted file needs them
 // (surface.glsl the textures, shading.glsl the samplers) and GLSL has no way to declare the same array twice in
 // one stage. A stage that uses neither pays nothing for them - an unused declaration compiles away - and a stage
 // that uses both gets ONE declaration, which is the whole reason they live in the shared file. They come LAST
 // because `descriptor_stride` has to be a constant expression, and heap_slot_stride is declared above.
+#ifndef VR_SLANG
 layout(descriptor_heap, descriptor_stride = heap_slot_stride) uniform texture2D heap_textures[];
 layout(descriptor_heap) uniform sampler heap_samplers[];
+
+// ---- THE ACCESSORS: the names a SHARED body uses to reach the heap ----
+//
+// One per resource family, and this is what makes the migration safe: the GLSL definition of each accessor
+// expands to EXACTLY the expression it replaced, so rewriting a shared body to call it is verifiable -
+// the capture gate must not move by a pixel, and a moved frame means an accessor is wrong. The Slang side
+// defines the same names over `DescriptorHandle<>` accessors in shaders/heap_access.slang, which is the
+// only place the two languages differ. See docs/slang_migration.md.
+#define material_at(slot, index) heap_material_tables[slot].materials[index]
+#define camera_at(slot) camera[slot]
+#define light_at(slot) light[slot]
+#define cluster_count_at(slot, cluster) cluster_counts[slot].counts[cluster]
+#define cluster_indices_at(slot, i) cluster_indices[slot].indices[i]
 
 /**
  * @brief one texel from a heap image, through the sampler at @p sampler_slot
@@ -170,5 +82,13 @@ layout(descriptor_heap) uniform sampler heap_samplers[];
  * build to learn.
  */
 #define heap_texel(tex, sampler_slot, uv) texture(sampler2D((tex), heap_samplers[sampler_slot]), (uv))
+#else
+// SLANG SEES NONE OF THE ABOVE, and the reason is measured: `layout(descriptor_heap, ...)` is the ONE
+// construct Slang's GLSL mode rejects (E31217 unrecognized GLSL layout qualifier - eleven of them, one per
+// declaration, and nothing else in the shared code). A combined image sampler cannot be built from its two
+// halves there either, so the whole heap surface - the arrays, `heap_texel`, `heap_sample` and the
+// accessors - is provided by shaders/heap_access.slang instead, over DescriptorHandle<> values fetched
+// from literal slots. A SHARED BODY MUST THEREFORE TOUCH THE HEAP ONLY THROUGH THOSE NAMES.
+#endif
 
 #endif // HEAP_SLOTS_GLSL
