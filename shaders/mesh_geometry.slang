@@ -132,6 +132,41 @@ MeshletRecord meshlet_at(const uint index)
 {
     return heap_at<StructuredBuffer<MeshletRecord>>(heap_slots_meshlets)[index];
 }
+// =============================================================================================================
+// CULLING HELPERS (docs/mesh_shaders.md step 3): what a stage needs to reject a whole meshlet before emitting any
+// of it - and the reason they are THIS conservative rather than tight.
+//
+// The sphere a meshlet record carries is in OBJECT space, so a cull has to bring it to clip space through two
+// matrices (the draw's world transform and the camera's or the light's projection) and scale its radius by how
+// much those matrices can stretch a direction. THE RADIUS SCALE IS AN UPPER BOUND, deliberately: any accepted
+// bound on a matrix's operator norm works (|M v| <= ||M|| |v|), and a row-sum bound is cheap and never
+// underestimates. A tight bound would be faster to cull with and is the kind of "optimisation" that produces a
+// hole in the shadow map on a few frames of one scene - a meshlet that IS visible must never be rejected, so the
+// test errs on the side of drawing.
+// =============================================================================================================
+
+/// @brief the largest row sum of a matrix's linear part: an upper bound on how much it scales a direction
+/// @note row sums rather than singular values: `|M v|_inf <= max_i sum_j |M_ij| |v|_inf`, and the sphere is a
+///       Euclidean ball, so the bound is conservative for the 2-norm too.
+float matrix_max_axis_scale(const VR_MAT4 m)
+{
+    float largest = 0.0;
+    for (uint row = 0u; row < 3u; ++row)
+    {
+        const float sum = abs(m[row][0]) + abs(m[row][1]) + abs(m[row][2]);
+        largest = max(largest, sum);
+    }
+    return largest;
+}
+
+/// @brief whether a clip-space sphere can intersect the clip volume (x, y in [-w, w], z in [0, w], w > 0)
+/// @note the test uses `w + radius` on every plane, which is what makes it correct for a PERSPECTIVE projection
+///       (where w varies per vertex) and trivially true for the shadow pass's orthographic one (w = 1).
+bool clip_sphere_visible(const float4 clip, const float radius)
+{
+    return clip.w + radius >= 0.0 && abs(clip.x) <= clip.w + radius && abs(clip.y) <= clip.w + radius &&
+           clip.z >= -clip.w - radius && clip.z <= clip.w + radius;
+}
 /// @brief how many triangles one mesh workgroup emits, and the vertices that costs
 ///
 /// @note BOTH NUMBERS ARE LIMITS OF THE DEVICE, measured on this one and reported at startup (see

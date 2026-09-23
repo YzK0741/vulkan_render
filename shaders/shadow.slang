@@ -259,6 +259,27 @@ void meshlet_main(out vertices shadow_vertex_output verts[mesh_vertices_per_work
 {
     const MeshGeometryLanes geometry = push.geometry;
     const MeshletRecord meshlet = meshlet_at(geometry.first_index + group_id.x);
+
+    // ---- PER-MESHLET CULLING, and it happens HERE rather than in a task stage (docs/mesh_shaders.md step 3) ----
+    // A task stage cannot be given push data on this Slang, so the culling lives in the stage that can read the
+    // block: the mesh entry rejects a whole meshlet by emitting NOTHING (`SetMeshOutputCounts(0, 0)`), which
+    // removes every vertex and triangle it would have contributed. What a task stage would add is skipping the
+    // workgroup LAUNCH, not the effect - so the feature is available, one dispatch argument at a time.
+    //
+    // The sphere is object space: the draw's world transform (the push's model matrix, or the instance table for an
+    // instanced caster) brings it to world, the cascade's light matrix to clip space, and the radius is scaled by
+    // an upper bound on both matrices' axis scales - so a rejected meshlet cannot contain a vertex inside the
+    // frustum, and the depth map it is left out of is the one the kept meshlets would have written anyway.
+    const VR_MAT4 world = (push.flags & 1u) != 0u ? instance_transform_at(heap_instance_slot, push.instance_base + group_id.y) : push.model;
+    const VR_MAT4 light = light_matrix_at(heap_light_slot, push.cascade);
+    const float4 clip = light * (world * float4(meshlet.center, 1.0));
+    const float radius = meshlet.radius * matrix_max_axis_scale(world) * matrix_max_axis_scale(light);
+    if (!clip_sphere_visible(clip, radius))
+    {
+        SetMeshOutputCounts(0u, 0u); // culled: no vertices, no triangles, nothing rasterized
+        return;
+    }
+
     const uint triangle_count = min(meshlet.index_count, mesh_triangles_per_workgroup * mesh_indices_per_triangle) / mesh_indices_per_triangle;
 
     SetMeshOutputCounts(triangle_count * mesh_indices_per_triangle, triangle_count);
