@@ -1,16 +1,31 @@
 # Mesh shaders: what the stage buys here, and how the migration runs
 
-**STATUS: steps 0, 1, 2 and step 3's DATA half are DONE and measured; step 3's culling half and step 4 are not.**
+**STATUS: steps 0, 1, 2 and step 3 are DONE, with three measured exceptions.**
 
 - The binding model is proven (the heap-native probe runs through a mesh pipeline and reports the same pixel as the
-  vertex one), and EVERY geometry stage this renderer draws leaves with is a mesh stage: the shadow pass's casters,
-  the G-buffer pass's opaque leaves, and the forward `pbr`/`unlit` pipelines the transparent pass and the flat
-  render mode draw through. The capture gate is byte-identical to the committed vertex-path references with either
-  path active, and forced probes prove the mesh stages are the ones that produced those frames.
-- Step 3's data half is in place: `vulkan.meshlet` cuts every draw into 85-triangle meshlets with object-space
-  bounding spheres (3145 over 103 primitives on the Sponza scene), the records live in a heap table written once at
-  import (`heap_slots_meshlets`, 65536 x 28 B), the splitter and the record rule are asserted by
-  `tests/test_meshlet.cpp`, and every record is checked as it leaves the host.
+  vertex one), and EVERY geometry stage this renderer draws leaves with has a mesh form: shadow, G-buffer, forward
+  `pbr`/`unlit`. The capture gate is byte-identical to the committed vertex-path references with either path
+  active, and forced probes prove which one produced the frames.
+- THE MESHLET PATH IS THE ONE IN USE: every primitive's geometry is cut into 85-triangle meshlets with object-space
+  bounding spheres and normal cones (`vulkan.meshlet`, 3145 records over 103 primitives on Sponza), the records live
+  in a heap table written once at import, and both geometry passes draw them ONE WORKGROUP PER MESHLET - the shadow
+  pass and the G-buffer - each meshlet culled against its pass's clip volume before it emits anything. Every mesh
+  dispatch goes through `vkCmdDrawMeshTasksIndirectEXT`, which is the seam a compute culling pass writes into.
+- What is NOT done, each measured and recorded above: per-meshlet BACKFACE culling (the cone is computed and
+  tested, but enabling the test changes six scenarios, so it is reverted - see the negative result in step 3);
+  a COMPUTE pass that writes the indirect commands (the seam exists, the pass does not); meshlet forms for the
+  forward/unlit/transparent pipelines (the G-buffer and the shadow pass are the two that draw meshlets); and a
+  measurement of what the culling buys, which the log does not carry.
+- Step 4 (removing the vertex path) has not started. It should now be possible - every geometry stage is
+  gate-green in its mesh form - but the vertex forms are the only fallback a device without `VK_EXT_mesh_shader`
+  has, so removing them is a portability decision rather than a cleanup, and the gate cannot see the difference
+  (it runs on a device with the extension).
+
+The measurements behind each of those sentences - the device's limits, the two compiler crashes, the layout bug
+that wedged the GPU, the culling's two-way acceptance and the backface negative - are in section 5, step by step.
+
+
+
 - Step 3's culling half is BLOCKED BY A COMPILER BUG, not by design: `slangc` v2026.18.2 crashes (0xC0000005) on a
   task stage that takes push data or touches the heap, with a six-line reproducer (section 5, step 3). A mesh entry
   that reads its window out of the table does build, create a pipeline and dispatch - and wedges the GPU, with two
@@ -28,11 +43,27 @@ the exact next experiments - are in section 5, step by step.
 > `heap_access.slang`. Both crashes reproduce with `-target spirv -profile spirv_1_6` alone, so they are not caused
 > by this renderer's flags, and the same file's `mesh_main` / `meshlet_main` entries compile and validate. A task
 > stage that cannot receive a push block cannot be told the frame slot, the cascade index or the model matrix -
-> which is how every stage in this renderer reaches the heap, because a heap pipeline has no layout. **The
-> reproducer is `build-release-clang64/dvm/t_push.slang` (six lines, no engine code) and is the thing to report
-> upstream.** The objective names a second mechanism for the same culling - a compute pass writing
-> `VkDrawMeshTasksIndirectCommandEXT` - and that one does not crash, so this is a blocked MECHANISM rather than a
-> blocked feature.
+> which is how every stage in this renderer reaches the heap, because a heap pipeline has no layout. **The whole
+> reproducer is these six lines** (no engine code, `slangc t.slang -target spirv -profile spirv_1_6 -entry task_main
+> -stage task -o t.spv` dies with 0xC0000005; delete the push block and it compiles):
+>
+> ```slang
+> struct P { uint slot; };
+> [[vk::push_constant]] ConstantBuffer<P> pc;
+> struct Payload { uint slot; };
+> [shader("amplification")]
+> [numthreads(1, 1, 1)]
+> void task_main(out Payload payload)
+> {
+>     payload.slot = pc.slot;
+>     DispatchMesh(1, 1, 1, payload);
+> }
+> ```
+>
+> (It is inlined here rather than left in `build-release-clang64/dvm/t_push.slang`, where the first version of this
+> note pointed: that directory is a build artifact and a clean build deletes it.) The objective names a second
+> mechanism for the same culling - a compute pass writing `VkDrawMeshTasksIndirectCommandEXT` - and that one does not
+> crash, so this is a blocked MECHANISM rather than a blocked feature.
 
 This document exists for the same reason `docs/slang_migration.md` does: the work spans sessions, so the
 recipe, the acceptance route and the traps belong somewhere durable. Every number below was measured on
@@ -341,7 +372,12 @@ forward `pbr` pipeline. The flat render mode reaches the same code path through 
 
 ### Step 3 - a TASK stage, meshlets, and indirect dispatch
 
-**STATUS: the SPLIT and the TABLE are done and tested; the task stage and the culling are not.**
+**STATUS: this step is DONE except for backface culling and the compute-driven form.** The splitter, the heap
+table, the meshlet entries and the per-meshlet frustum culling are in the tree and gate-green; every mesh dispatch
+goes through `vkCmdDrawMeshTasksIndirectEXT`; per-meshlet backface culling was implemented, measured to change six
+scenarios, and reverted (see the negative result below); the task stage the objective names as the pre-culling
+mechanism is blocked by a compiler bug (see the blocker note at the top) and turned out not to be needed for the
+culling itself.
 
 `vulkan/meshlet/meshlet.cppm` is a pure-CPU module that cuts one draw window into meshlets: runs of at most
 `meshlet_max_triangles` (85, the mesh stage's output budget from section 2) triangles in index order, each with an
