@@ -501,6 +501,19 @@ by its SHAPE (descriptor sets, heaps, the instructions the fetches land as) plus
 from section 3, and that limit should be stated in the commit rather than implied away. This is the same
 limit that hid TRAP 3 in `pbr.frag` for four commits.
 
+TWO ROUTES EXIST FOR THOSE STAGES, and neither needs the gate's references to be touched:
+
+- **The probe stages verify themselves.** `heap_probe.comp/.vert/.frag` exist to READ the heap and compare it
+  against what the host wrote, and their answer is a LOG LINE: the demo registers all three at startup and the
+  runtime's `run_heap_probe` / `run_heap_graphics_probe` dispatch them, so porting them is verified by running
+  the app and reading that line - and the gate's own log check covers a probe that starts failing.
+- **An A/B capture covers the RT path.** For `rt_shadow.*`, `compute_skin.comp` and `mask_bake.comp`, the
+  verification is the same standard applied by hand: capture a frame with `rt_shadows = true` from the GLSL
+  build, capture the same frame from the Slang build, and compare the two PNGs pixel for pixel. That is what
+  the gate does for its ten scenarios; doing it manually for one RT config extends the same standard to stages
+  the scenario list does not reach, without re-baselining anything.
+
+
 3. **Compute stages**: `compute_skin.comp`, `mask_bake.comp`, `megalights_trace.comp`,
    `megalights_temporal.comp`. (`light_cluster.comp` is DONE - the first compute stage, and the one that
    proves the compute spellings and `atomicAdd`/`inverse`.) These are the ones that WRITE heap buffers, so
