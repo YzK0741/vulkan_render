@@ -138,22 +138,30 @@ namespace chores {
     // Load a vertex/fragment SPIR-V pair and create the pipeline via runtime; panic on failure. The MESH stage is
     // optional and passed with it (docs/mesh_shaders.md step 2): the runtime builds the mesh form beside the vertex
     // one under the same name, so a device without mesh shaders (or a missing file) leaves the vertex path alone.
+    // ... AND THE MESHLET ENTRY TOO (step 3), which is a third form under the same name: one workgroup per meshlet,
+    // its window read out of the heap table and culled against the camera. Both are optional and independent - what
+    // is missing is simply not offered, and the forms are tried in the order of how much they save.
     void load_and_create_pipeline(vulkan::runtime& runtime,
                                   std::filesystem::path const& shaders_dir,
                                   std::string_view const pipeline_name,
                                   std::string_view const vertex_file,
                                   std::string_view const fragment_file,
-                                  std::string_view const mesh_file = {}) {
+                                  std::string_view const mesh_file = {},
+                                  std::string_view const meshlet_file = {}) {
         std::vector<unsigned char> vertex_code;
         std::vector<unsigned char> fragment_code;
         std::vector<unsigned char> mesh_code;
+        std::vector<unsigned char> meshlet_code;
         load_shader(shaders_dir, vertex_file, vertex_code);
         load_shader(shaders_dir, fragment_file, fragment_code);
         if (!mesh_file.empty()) {
             load_shader(shaders_dir, mesh_file, mesh_code);
         }
+        if (!meshlet_file.empty()) {
+            load_shader(shaders_dir, meshlet_file, meshlet_code);
+        }
 
-        std::expected<void, std::string> const result = runtime.make_pipeline(pipeline_name, vertex_code, fragment_code, mesh_code);
+        std::expected<void, std::string> const result = runtime.make_pipeline(pipeline_name, vertex_code, fragment_code, mesh_code, meshlet_code);
         if (!result) {
             utility::panic(std::source_location::current(), "failed to create pipeline '{}': {}", pipeline_name, result.error());
         }
@@ -166,14 +174,14 @@ namespace chores {
     void setup_pipeline(vulkan::runtime& runtime, std::filesystem::path const& shaders_dir) {
         // Standard PBR pipeline: the imported scene's primitives bind to it (the FIRST pipeline
         // created becomes the runtime's implicit default)
-        load_and_create_pipeline(runtime, shaders_dir, "pbr", "pbr.vert.spv", "pbr.frag.spv", "pbr.mesh.spv");
+        load_and_create_pipeline(runtime, shaders_dir, "pbr", "pbr.vert.spv", "pbr.frag.spv", "pbr.mesh.spv", "pbr.meshlet.spv");
         // Non-PBR "unlit" pipeline: flat base color, no lighting/shadows/IBL (see unlit.frag).
         // Registered as a SECOND named pipeline - the scene tree's default-semantics leaves draw
         // with whatever the runtime default is, so switching set_default_pipeline() between
         // "pbr" and "unlit" (gui "render mode") re-shades the whole scene without re-baking.
         // It shares pbr's GEOMETRY (pbr.vert.spv or its pbr.mesh.spv form) and differs only in its fragment
         // stage, so it gets a mesh form of its own from the same file.
-        load_and_create_pipeline(runtime, shaders_dir, "unlit", "pbr.vert.spv", "unlit.frag.spv", "pbr.mesh.spv");
+        load_and_create_pipeline(runtime, shaders_dir, "unlit", "pbr.vert.spv", "unlit.frag.spv", "pbr.mesh.spv", "pbr.meshlet.spv");
 
         {
             // The post chain is a PASS PAIR now (vulkan.pass.post): the composite owns the chain's two pipelines,

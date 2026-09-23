@@ -894,6 +894,12 @@ namespace vulkan {
                 pipeline.viewport = full_viewport;
                 pipeline.scissor = full_scissor;
             }
+            // ... and every MESHLET form of them, which needs it for the same reason and is the form the named
+            // sessions actually bind (docs/mesh_shaders.md step 3)
+            for (auto& pipeline : this->meshlet_pipelines | std::views::values) {
+                pipeline.viewport = full_viewport;
+                pipeline.scissor = full_scissor;
+            }
         }
         // the post-process pipelines are NOT in the named cache above, and begin_pipeline() always
         // re-emits the stored viewport/scissor: leaving them at the creation-time default made every
@@ -1847,12 +1853,33 @@ namespace vulkan {
                 return;
             }
             // THE FORWARD/TRANSPARENT SESSIONS BIND BY NAME, so WHICH FORM was bound is decided HERE rather than per
-            // session: a leaf that names a pipeline with a mesh form gets dispatched, and one that names a pipeline
-            // without one (or requests an unknown name) keeps the vertex path - and the session's flag follows the
-            // bind, which is what makes a session that mixes the two correct rather than merely likely.
+            // session: a leaf that names a pipeline with a MESHLET form gets one workgroup per meshlet (culled
+            // against the camera), failing that a MESH form, and failing that the vertex path - and the session's
+            // flags follow the bind, which is what makes a session that mixes the forms correct rather than merely
+            // likely.
+            if (auto const meshlet = self.meshlet_pipelines.find(name); meshlet != self.meshlet_pipelines.end()) {
+                meshlet->second.begin_pipeline(cb);
+                env.mesh_stage = true;
+                env.meshlets = true;
+                static std::array<std::string_view, 8> logged_meshlet = {};
+                static std::size_t logged_meshlet_count = 0;
+                bool seen_meshlet = false;
+                for (std::size_t i = 0; i < logged_meshlet_count; ++i) {
+                    seen_meshlet = seen_meshlet || logged_meshlet[i] == name;
+                }
+                if (!seen_meshlet && logged_meshlet_count < logged_meshlet.size()) {
+                    logged_meshlet[logged_meshlet_count++] = name;
+                    utility::log("scene: the leaves of '{}' are DISPATCHED per meshlet (meshlet stage)", name);
+                }
+                return;
+            }
             if (auto const mesh = self.mesh_pipelines.find(name); mesh != self.mesh_pipelines.end()) {
                 mesh->second.begin_pipeline(cb);
                 env.mesh_stage = true;
+                // the meshlet form is the answer above; a session that lands here draws one workgroup per 85
+                // triangles, so the flag that says "the lanes carry a meshlet run" has to be cleared, not left over
+                // from a previous bind in the same session
+                env.meshlets = false;
                 // ONE LINE PER NAME, SAYING THE LEAVES ARE DISPATCHED - the same evidence rule the shadow pass's
                 // session follows: a mesh stage produces the same picture as the vertex one by construction, so
                 // which path drew a frame is deliberately invisible in it (see docs/mesh_shaders.md).
@@ -1869,6 +1896,7 @@ namespace vulkan {
                 return;
             }
             env.mesh_stage = false;
+            env.meshlets = false; // a vertex-path leaf: its window is the DRAW's, not a meshlet run (see the mesh form above)
             if (auto const it = self.pipelines.find(name); it != self.pipelines.end()) {
                 it->second.begin_pipeline(cb);
             } else {

@@ -341,7 +341,7 @@ namespace vulkan {
     }
 
     std::expected<void, std::string> runtime::make_pipeline(std::string_view pipeline_name, std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code,
-                                                            std::span<unsigned char const> const mesh_vertex_shader_code) {
+                                                            std::span<unsigned char const> const mesh_vertex_shader_code, std::span<unsigned char const> const meshlet_shader_code) {
         using fail = std::unexpected<std::string>;
         bool const want_mesh = !mesh_vertex_shader_code.empty() && this->evaluate_mesh_shaders(nullptr);
         {
@@ -416,12 +416,42 @@ namespace vulkan {
                 utility::log("pipeline '{}': no mesh form ({}), so its leaves stay on the vertex pipeline", pipeline_name, built.error());
             }
         }
+        std::optional<vk_pipeline> meshlet_result = std::nullopt;
+        if (want_mesh && !meshlet_shader_code.empty()) {
+            // THE MESHLET FORM (docs/mesh_shaders.md step 3): the same fragment stage again, with the entry that
+            // reads one meshlet per workgroup out of the heap table and culls it against the camera. Built exactly
+            // like the mesh form - it IS a mesh stage - and a refusal leaves the mesh form as the answer, which is
+            // why this is a third entry rather than a replacement.
+            auto built = vulkan::make_pipeline(this->vulkan_core.device,
+                                               std::span<VkFormat const>(color_formats),
+                                               this->vulkan_core.depth_format,
+                                               meshlet_shader_code,
+                                               fragment_shader_code,
+                                               VK_SAMPLE_COUNT_1_BIT,
+                                               /*depth_test_enabled=*/true,
+                                               0.0f,
+                                               0.0f,
+                                               0.0f,
+                                               std::span<VkPipelineColorBlendAttachmentState const>(blend_attachments),
+                                               VK_SHADER_STAGE_MESH_BIT_EXT);
+            if (built) {
+                built->viewport = {0.0f, 0.0f, static_cast<float>(this->vulkan_core.swap_chain_extent.width), static_cast<float>(this->vulkan_core.swap_chain_extent.height), 0.0f, 1.0f};
+                built->scissor = {{0, 0}, this->vulkan_core.swap_chain_extent};
+                meshlet_result = std::move(*built);
+            } else {
+                utility::log("pipeline '{}': no meshlet form ({}), so its leaves stay on the mesh (or vertex) pipeline", pipeline_name, built.error());
+            }
+        }
         {
             std::unique_lock const lock(this->access_mutex);
             this->pipelines.emplace(pipeline_name, std::move(make_result).value());
             if (mesh_result.has_value()) {
                 this->mesh_pipelines.emplace(pipeline_name, std::move(*mesh_result));
                 utility::log("SUCCESS: pipeline '{}' created with a MESH form (its leaves are dispatched)", pipeline_name);
+            }
+            if (meshlet_result.has_value()) {
+                this->meshlet_pipelines.emplace(pipeline_name, std::move(*meshlet_result));
+                utility::log("SUCCESS: pipeline '{}' created with a MESHLET form (one workgroup per meshlet, camera-culled)", pipeline_name);
             }
             if (this->default_pipeline_name.empty()) {
                 this->default_pipeline_name = pipeline_name; // first pipeline is the implicit default

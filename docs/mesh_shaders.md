@@ -13,9 +13,8 @@
   dispatch goes through `vkCmdDrawMeshTasksIndirectEXT`, which is the seam a compute culling pass writes into.
 - What is NOT done, each measured and recorded above: per-meshlet BACKFACE culling (the cone is computed and
   tested, but enabling the test changes six scenarios, so it is reverted - see the negative result in step 3);
-  a COMPUTE pass that writes the indirect commands (the seam exists, the pass does not); meshlet forms for the
-  forward/unlit/transparent pipelines (the G-buffer and the shadow pass are the two that draw meshlets); and a
-  measurement of what the culling buys, which the log does not carry.
+  a COMPUTE pass that writes the indirect commands (the seam exists, the pass does not); and a measurement of what
+  the culling buys, which the log does not carry.
 - Step 4 (removing the vertex path) has not started. It should now be possible - every geometry stage is
   gate-green in its mesh form - but the vertex forms are the only fallback a device without `VK_EXT_mesh_shader`
   has, so removing them is a portability decision rather than a cleanup, and the gate cannot see the difference
@@ -309,7 +308,7 @@ casters`), and the forced probe proves the log is telling the truth.
 The vertex entry, the fragment entry and the pass's fallback are all still there, and `ctest` (8/8), `spirv-val`
 (26 modules) and the validation layer stay clean with the mesh path active.
 
-### Step 2 - `pbr.vert` becomes a mesh stage (G-BUFFER path DONE, forward/unlit/transparent still vertex)
+### Step 2 - `pbr.vert` becomes a mesh stage (DONE: the G-buffer, the forward/unlit/transparent leaves and the shadow pass all have mesh forms)
 
 `shaders/pbr.slang` carries a third entry, `mesh_main`, built into a second G-buffer pipeline
 (`pbr.mesh.spv` + the SAME `gbuffer.frag`), and the scene session prefers it the way the shadow pass prefers its
@@ -530,8 +529,12 @@ shadow pass prefers `shadow.meshlet.spv`, the lanes carry the primitive's run, a
 changed and 0 flaky (commit `00b614f`, step by step below). (The first attempt was reverted in full first - shader,
 lanes, session flag, pipeline, registration, both script lists and the CMake rule, with `cmake` re-run because
 `CMAKE_SUPPRESS_REGENERATION=ON` otherwise keeps compiling a reverted `VR_SLANG_SOURCES` - and re-landed once the
-layout was fixed.) The G-buffer got the same treatment next (`f67c92a`),
-with the camera frustum as its plane, and the two named pipelines still have no meshlet form.
+layout was fixed.) The G-buffer got the same treatment next (`f67c92a`), with the camera frustum as its plane, and
+the NAMED pipelines followed (`pbr` and `unlit`, i.e. the forward and transparent leaves too): `make_pipeline` now
+takes a third SPIR-V file and keeps a third map, so a leaf that binds by name gets one workgroup per meshlet when the
+device has it, then a mesh stage, then the vertex path. `transparent_blend` is the scenario that proves it - its
+BLEND leaves log `scene: the leaves of 'pbr' are DISPATCHED per meshlet (meshlet stage)` and the frame is
+byte-identical to the reference captured before that form existed, on 30 indirect dispatches with 0 direct.
 
 **THE INDIRECT SEAM IS IN, AND ITS FIRST DESIGN IS THE REASON IT IS WORTH DESCRIBING.** `vkCmdDrawMeshTasksIndirectEXT`
 reads `{groupCountX, groupCountY, groupCountZ}` from a buffer, so the counts can be decided on the GPU - which is

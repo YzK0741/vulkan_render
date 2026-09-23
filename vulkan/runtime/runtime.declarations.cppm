@@ -380,6 +380,18 @@ namespace vulkan {
          * shaders simply has an empty map and every lookup falls through to the vertex pipeline.
          */
         std::unordered_map<std::string_view, vk_pipeline> mesh_pipelines = {};
+        /**
+         * @brief THE MESHLET FORM OF EACH NAMED PIPELINE, under the same name (docs/mesh_shaders.md step 3)
+         *
+         * A THIRD map rather than a flag, for the reason the mesh one is a second map: the three forms differ in how
+         * their geometry ARRIVES, and a session's flag has to follow the bind that chose one. The meshlet form draws
+         * one workgroup per meshlet - its window read out of the heap table, culled against the camera - which is
+         * what a forward/unlit/transparent leaf wants exactly as much as a G-buffer one does. Filled by
+         * `make_pipeline` when the app hands that entry's SPIR-V over; empty on a device without mesh shaders, or
+         * when the app passed no meshlet file, and every lookup then falls through to the mesh form, then the vertex
+         * one - so the three are tried in the order of how much they save, and the last is always a complete answer.
+         */
+        std::unordered_map<std::string_view, vk_pipeline> meshlet_pipelines = {};
         // whether the opaque pass writes the G-buffer this frame (see set_gbuffer_debug). Only
         // takes effect once the needed pipelines exist, so the flags can be set before setup ends.
         bool gbuffer_debug = false;
@@ -2101,9 +2113,11 @@ namespace vulkan {
             /// THE MESH FORM OF THE SAME PIPELINE (docs/mesh_shaders.md step 2): the same fragment stage and a MESH
             /// entry that fetches its own vertices, stored under the same NAME in `mesh_pipelines` so the sessions
             /// that bind by name can prefer it. Empty, or a refusal, leaves the vertex form as the only one.
-            /// (A MESHLET form is only wired for the G-buffer pass so far - see make_gbuffer_pipeline - because
-            /// that is the pass a meshlet session draws; the named pipelines still take the two-entry shape.)
-            std::span<unsigned char const> mesh_vertex_shader_code = {});
+            std::span<unsigned char const> mesh_vertex_shader_code = {},
+            /// ... AND THE MESHLET FORM OF IT (docs/mesh_shaders.md step 3), the same shape again one level in: one
+            /// workgroup per meshlet, culled against the camera, stored in `meshlet_pipelines` under the same name.
+            /// The named sessions prefer it over the mesh form, and the bind callback is what says so.
+            std::span<unsigned char const> meshlet_shader_code = {});
 
         /**
          * @ingroup vulkan_runtime
