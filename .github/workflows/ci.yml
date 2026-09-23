@@ -20,6 +20,14 @@ name: ci
 # SPIR-V is no longer committed, so a configuration without the compiler is
 # exactly the one that could silently run stale shaders). FindVulkan picks it up
 # off PATH, which is why the package is enough.
+#
+# SLANGC IS NOW REQUIRED TOO, AND FOR A SHARPER REASON: twenty-three of the twenty-four shader stages are
+# built from .slang sources, and CMakeLists' shader rule FALLS BACK to glslc when slangc is absent. A CI
+# without it would therefore compile the GLSL sources of the ported stages instead and report a green compile
+# gate over modules the project no longer uses - the exact silent failure the glslc note above is about. MSYS2
+# has no slang package (`pacman -Ss slang` matches nothing, measured), so both jobs install the pinned
+# upstream release, verify its checksum, and then ASSERT that CMake found it (the configure step greps for the
+# `slangc:` line CMakeLists prints), which is what stops the fallback from coming back unnoticed.
 
 on:
   push:
@@ -55,13 +63,44 @@ jobs:
             mingw-w64-clang-x86_64-vulkan-headers
             mingw-w64-clang-x86_64-shaderc
 
+      - name: Install slangc (pinned Slang release)
+        shell: pwsh
+        # MSYS2 ships no slang package, so the upstream release is fetched; the CHECKSUM IS VERIFIED before it
+        # is unpacked, and VR_SLANGC is exported for the configure step so the path is passed explicitly
+        # rather than rediscovered. Version and hash are pinned: bumping either is a deliberate change.
+        run: |
+          $ErrorActionPreference = "Stop"
+          $url = "https://github.com/shader-slang/slang/releases/download/v2026.18.2/slang-2026.18.2-windows-x86_64.zip"
+          $sha = "747602aec6b3623658d55fea87492d71828e15d16802d7941204fde418ceee8e"
+          $zip = Join-Path $env:RUNNER_TEMP "slang.zip"
+          Invoke-WebRequest -Uri $url -OutFile $zip
+          $actual = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+          if ($actual -ne $sha) { throw "slang zip checksum mismatch: expected $sha, got $actual" }
+          $dest = Join-Path $env:RUNNER_TEMP "slang"
+          Expand-Archive -Path $zip -DestinationPath $dest -Force
+          $slangc = Join-Path $dest "bin/slangc.exe"
+          if (-not (Test-Path $slangc)) { throw "slangc.exe is not where the release puts it: $slangc" }
+          & $slangc -version
+          Add-Content -Path $env:GITHUB_PATH -Value (Join-Path $dest "bin")
+          Add-Content -Path $env:GITHUB_ENV -Value "VR_SLANGC=$slangc"
+
       - name: Configure (Release, Ninja)
         # VR_NATIVE_ARCH=OFF: this job UPLOADS the executable as an artifact, and -march=native would
         # tune it for the runner's CPU - a binary that can SIGILL on an older machine, which is the
         # opposite of what a single-file Release build is for. Local builds keep the native default.
-        run: >-
-          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-          -DVR_NATIVE_ARCH=OFF -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+        #
+        # THE ASSERTION IS THE POINT OF THIS STEP'S SHAPE: CMakeLists prints a `slangc: <path> - <sources>`
+        # status line when it finds the compiler and silently builds the GLSL sources when it does not, so a
+        # configure whose output lacks that line would pass while testing the wrong shaders. Failing here is
+        # cheaper than discovering it from a shader bug that only reproduces on a developer's machine.
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DVR_NATIVE_ARCH=OFF -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+            -DVR_SLANGC_EXECUTABLE="$VR_SLANGC" 2>&1 | tee configure.log
+          if ! grep -q "slangc:" configure.log; then
+            echo "CMake did NOT find slangc, so it would compile the GLSL sources of the ported stages."
+            exit 1
+          fi
 
       - name: Build all targets (incl. tests + vulkan_render.exe)
         run: cmake --build build
@@ -164,13 +203,38 @@ jobs:
       # glTF reader's non-float-attribute bug is the worked example - four assertions deep in the
       # vertex builder passed in Release while ASan reported
       # "READ of size 8 ... 0 bytes after 6-byte region" on the same code.
+      - name: Install slangc (pinned Slang release)
+        shell: pwsh
+        # The same pinned release the build job uses, and for the same reason: this job also CONFIGURES the
+        # project, and CMakeLists compiles the shaders during the build - without slangc it would silently
+        # build the GLSL sources of the twenty-three ported stages instead.
+        run: |
+          $ErrorActionPreference = "Stop"
+          $url = "https://github.com/shader-slang/slang/releases/download/v2026.18.2/slang-2026.18.2-windows-x86_64.zip"
+          $sha = "747602aec6b3623658d55fea87492d71828e15d16802d7941204fde418ceee8e"
+          $zip = Join-Path $env:RUNNER_TEMP "slang.zip"
+          Invoke-WebRequest -Uri $url -OutFile $zip
+          $actual = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+          if ($actual -ne $sha) { throw "slang zip checksum mismatch: expected $sha, got $actual" }
+          $dest = Join-Path $env:RUNNER_TEMP "slang"
+          Expand-Archive -Path $zip -DestinationPath $dest -Force
+          $slangc = Join-Path $dest "bin/slangc.exe"
+          if (-not (Test-Path $slangc)) { throw "slangc.exe is not where the release puts it: $slangc" }
+          Add-Content -Path $env:GITHUB_PATH -Value (Join-Path $dest "bin")
+          Add-Content -Path $env:GITHUB_ENV -Value "VR_SLANGC=$slangc"
+
       - name: Configure (Debug + ASan + UBSan)
-        run: >-
-          cmake -S . -B build-asan -G Ninja
-          -DCMAKE_BUILD_TYPE=Debug
-          -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"
-          -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
-          -DVR_BUILD_TESTS=ON
+        run: |
+          cmake -S . -B build-asan -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined" \
+            -DVR_BUILD_TESTS=ON \
+            -DVR_SLANGC_EXECUTABLE="$VR_SLANGC" 2>&1 | tee configure.log
+          if ! grep -q "slangc:" configure.log; then
+            echo "CMake did NOT find slangc, so it would compile the GLSL sources of the ported stages."
+            exit 1
+          fi
 
       - name: Build the headless tests
         # This list must stay equal to CMakeLists.txt's VR_TEST_TARGETS: ctest below runs every test
