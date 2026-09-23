@@ -951,36 +951,6 @@ namespace vulkan {
             utility::log("mesh dispatch: the device has no vkCmdDrawMeshTasksEXT, so the dispatch was skipped");
             return false;
         }
-        // A COMMAND IS WRITTEN AND THE INDIRECT ENTRY POINT IS THE ONE CALLED, always: the counts are the ones the
-        // direct call would have carried, so the frame does not change - but the seam a compute culling pass needs
-        // is now the one in use, and its absence would otherwise only be discovered when that pass tried to write
-        // into it. The dispatch's own fields settle the objective's measured constraint: `groupCountY` carries the
-        // instance count, because VkDrawMeshTasksIndirectCommandEXT has no `instanceCount` field either.
-        // ONE-SHOT DIAGNOSTIC: whether the indirect route is the one taken, and why not when it is not - a seam that
-        // silently falls back is a seam nobody tests, which is exactly how the first version of this went unnoticed.
-        static bool logged_route = false;
-        if (!logged_route) {
-            logged_route = true;
-            utility::log("mesh indirect: entry point {}, buffer {}, mapped {} - the dispatches go through {}",
-                         vk.mesh_dispatch_indirect != nullptr ? "resolved" : "MISSING",
-                         self->mesh_indirect != VK_NULL_HANDLE ? "bound" : "missing",
-                         self->mesh_indirect_mapped != nullptr ? "yes" : "no",
-                         (vk.mesh_dispatch_indirect != nullptr && self->mesh_indirect_mapped != nullptr && self->mesh_indirect != VK_NULL_HANDLE) ? "INDIRECT" : "the DIRECT call");
-        }
-        if (vk.mesh_dispatch_indirect != nullptr && self->mesh_indirect_mapped != nullptr && self->mesh_indirect != VK_NULL_HANDLE) {
-            uint32_t const slot = self->mesh_indirect_cursor[vk.current_frame].fetch_add(1u);
-            if (slot < mesh_indirect_capacity) {
-                auto* const commands = static_cast<VkDrawMeshTasksIndirectCommandEXT*>(self->mesh_indirect_mapped);
-                commands[static_cast<std::size_t>(vk.current_frame) * mesh_indirect_capacity + slot] = {.groupCountX = groups_x, .groupCountY = groups_y, .groupCountZ = groups_z};
-                VkDeviceSize const offset = static_cast<VkDeviceSize>(vk.current_frame * mesh_indirect_capacity + slot) * sizeof(VkDrawMeshTasksIndirectCommandEXT);
-                vk.mesh_dispatch_indirect(command_buffer, self->mesh_indirect, offset, 1u, sizeof(VkDrawMeshTasksIndirectCommandEXT));
-                return true;
-            }
-            if (!self->mesh_indirect_overflow_logged) {
-                self->mesh_indirect_overflow_logged = true;
-                utility::log("mesh indirect: this frame recorded more than {} dispatches - the extra ones go through the direct entry point", mesh_indirect_capacity);
-            }
-        }
         vk.mesh_dispatch(command_buffer, groups_x, groups_y, groups_z);
         return true;
     }
