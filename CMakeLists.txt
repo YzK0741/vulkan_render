@@ -735,6 +735,9 @@ set(VR_SLANG_SOURCES
     # pbr.slang is the FORWARD path's fragment stage: the same shared shading code as the deferred path,
     # so it is where the sun/shadow/punctual/cluster/IBL fetches are proven under Slang.
     pbr.slang:main:fragment:pbr.frag.spv
+    # shadow.slang shares no body: the material table and the albedo fetch through the shim's accessors
+    # (`material_at`, `heap_sample`), and the entry returns void because a depth-only stage has no output.
+    shadow.slang:main:fragment:shadow.frag.spv
 )
 find_program(VR_SLANGC_EXECUTABLE NAMES slangc slangc.exe)
 set(VR_SLANG_OUTPUTS "")
