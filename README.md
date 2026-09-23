@@ -284,10 +284,20 @@ machine**. It answers "did the frame change", not "is it better" - a difference 
 accepting one is the explicit `-Update` step that keeps it visible in review.
 
 ```powershell
-pwsh -File scripts/windows/check_render.ps1 -List      # the scenarios
-pwsh -File scripts/windows/check_render.ps1            # compare
+pwsh -File scripts/windows/check_render.ps1 -List      # the scenarios, and which tier each is
+pwsh -File scripts/windows/check_render.ps1            # the CORE set: 5 scenarios, 10 renders
+pwsh -File scripts/windows/check_render.ps1 -Full      # all 10 scenarios, 20 renders
 pwsh -File scripts/windows/check_render.ps1 -Update    # accept the current output as the reference
 ```
+
+Ten scenarios are defined and each is tagged `core` or `extra`. The default run is the **core five** -
+one per pipeline family whose wiring has broken before: the deferred G-buffer and its lighting, the
+forward unlit pipeline, the forward default pipeline with a BLEND leaf and a MASK discard, the heavy
+Sponza interior (cascaded shadows, clustered lights, IBL, and most of the mesh workload) and the one
+deforming mesh, whose frame is the motion channel itself. The `extra` five vary one optional stage or
+use another model, so a default round costs 10 renders instead of 20; `-Full` runs all ten, and
+`-Only <name>` runs one whatever its tier. `-Update` only re-baselines what actually ran, so use
+`-Update -Full` when a change is meant to move everything.
 
 It is deliberately **not** a CI test: CI has no GPU, and the references are tied to this machine's GPU
 and driver, so a shared baseline would be red for everyone else. The references therefore live outside

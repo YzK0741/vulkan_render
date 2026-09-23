@@ -23,12 +23,23 @@
 # Check mode runs every scenario TWICE and requires the two runs to agree before comparing against the
 # reference, so "flaky" is reported as flaky instead of as a regression.
 #
-#  3. WHICH BUILD IT RUNS: the Release build, and only the Release build. Pointed at a Debug or an
+#  3. WHICH SCENARIOS RUN: the DEFAULT run is the CORE set - five of the ten scenarios defined below,
+#     one per pipeline family a wiring change can break - because every scenario is TWO runs (the
+#     determinism check below), so the full list costs 20 renders a round and the extra five mostly
+#     answer questions the core five also answer. A core round is 5 x 2 = 10 renders. The five that
+#     are `tier = "extra"` are still checked on demand: `-Full` runs all ten, `-Only <name>` runs one.
+#     They are worth naming here so the choice to skip them is deliberate: `deferred_taa_fxaa` is the
+#     AA stage, `deferred_ssao_off` and `shadow_single` vary one optional stage each, and
+#     `metal_rough_glossy` / `glossy_motion` are the material sweep (the second one with a MOVING
+#     camera). Run `-Full` after a driver update or before re-baselining, so no reference goes stale
+#     unwatched: -Update only re-baselines the scenarios it actually ran.
+#
+#  4. WHICH BUILD IT RUNS: the Release build, and only the Release build. Pointed at a Debug or an
 #     ASan+UBSan build, two runs of one binary DIFFER - measured on TWO scenarios, `sponza` and
 #     `deferred_ssao_off` - so the flakiness is a property of those builds and not of any pass. The
 #     references are Release captures, and "0 changed" is only meaningful against them.
 #
-#  4. WHICH DRIVER: the references are per-DRIVER values, not merely per-renderer ones. Updating the GPU driver
+#  5. WHICH DRIVER: the references are per-DRIVER values, not merely per-renderer ones. Updating the GPU driver
 #     changes what this renderer outputs without a line of code changing: measured on 2026-09-18, moving the
 #     NVIDIA driver from 591.59 to 616.92 made 8 of the 9 scenarios differ (`transparent_blend` was the only one
 #     that survived), and the PARENT COMMIT - built without the change that was under test - reproduced exactly
@@ -38,7 +49,8 @@
 #     old set first, because it is the only record of what the previous driver looked like.
 #
 # Usage:
-#   pwsh -File scripts/windows/check_render.ps1                 # compare against the references
+#   pwsh -File scripts/windows/check_render.ps1                 # the CORE set (5 scenarios x 2 runs)
+#   pwsh -File scripts/windows/check_render.ps1 -Full           # all TEN scenarios
 #   pwsh -File scripts/windows/check_render.ps1 -Update         # accept the current output as reference
 #   pwsh -File scripts/windows/check_render.ps1 -Only deferred_taa_fxaa
 #   pwsh -File scripts/windows/check_render.ps1 -List
@@ -50,6 +62,7 @@
 param(
     [switch]$Update,
     [switch]$List,
+    [switch]$Full,
     [string]$Only = "",
     [string]$BuildDir = "",
     [string]$Model = "C:\Users\23530\Desktop\yzk\glTF-Sample-Assets\Models\DamagedHelmet\glTF\DamagedHelmet.gltf",
@@ -81,23 +94,30 @@ $workDir = Join-Path $BuildDir "render-check"
 # The scenarios. Each is a full config (only the keys that differ from the defaults are listed) plus
 # the frame count; the camera, model and extent are shared above so a scenario only varies what it
 # means to - a scenario may override `model` / `camera` when it has to (see transparent_blend).
-# Coverage is deliberately small to start - the G-buffer path with its optional stages, the
-# shadow-cascade count and the transparent pass, because those are the paths whose wiring has broken.
+#
+# `tier` is what the default run selects: `core` (five) or `extra` (five, i.e. -Full or -Only). The
+# core five are one scenario per pipeline family whose WIRING has broken before: the deferred
+# G-buffer and its lighting (deferred), the forward unlit pipeline (unlit), the forward default
+# pipeline with a BLEND leaf and a MASK discard (transparent_blend), the heavy scene that adds
+# cascaded shadows, clustered lights, IBL and the bulk of the mesh workload (sponza), and the one
+# DEFORMING mesh, whose frame is the motion channel itself (deformation). A tier is required of every
+# scenario - the check below fails on a missing or unknown one, so adding a scenario means deciding
+# whether it earns a place in the default round rather than silently never running.
 # ---------------------------------------------------------------------------------------------
 $scenarios = @(
     # `deferred` overrides NOTHING, so its reference IS the compiled defaults - the frame a stock
     # `config.toml` renders. Every other scenario is that frame plus the one difference its name claims,
     # which is why a key equal to its compiled default must never be spelled out here.
-    @{ name = "deferred";          desc = "deferred G-buffer + lighting, no AA stage";  extra = @{} }
-    @{ name = "deferred_taa_fxaa"; desc = "deferred + TAA + FXAA (the AA path)";        extra = @{ taa = "true"; fxaa = "true" } }
-    @{ name = "deferred_ssao_off"; desc = "deferred with SSAO disabled";               extra = @{ ssao = "false" } }
-    @{ name = "shadow_single";     desc = "one cascade, i.e. the historic shadow path"; extra = @{ shadow_cascades = "1" } }
-    @{ name = "unlit";             desc = "flat base colour, no shading";              extra = @{ unlit = "true" } }
+    @{ name = "deferred";          desc = "deferred G-buffer + lighting, no AA stage";   tier = "core";  extra = @{} }
+    @{ name = "deferred_taa_fxaa"; desc = "deferred + TAA + FXAA (the AA path)";         tier = "extra"; extra = @{ taa = "true"; fxaa = "true" } }
+    @{ name = "deferred_ssao_off"; desc = "deferred with SSAO disabled";                tier = "extra"; extra = @{ ssao = "false" } }
+    @{ name = "shadow_single";     desc = "one cascade, i.e. the historic shadow path"; tier = "extra"; extra = @{ shadow_cascades = "1" } }
+    @{ name = "unlit";             desc = "flat base colour, no shading";               tier = "core";  extra = @{ unlit = "true" } }
     # The one scenario that uses a different model, and it has to: alphaMode BLEND geometry is drawn
     # by a pass of its own, so no model without a BLEND material can exercise it - DamagedHelmet has
     # only OPAQUE/MASK. AlphaBlendModeTest carries one of each alphaMode (OPAQUE / MASK at two cutoffs
     # / BLEND) plus a decal, so this also covers the G-buffer's MASK discard path.
-    @{ name = "transparent_blend"; desc = "deferred + an alphaMode BLEND material";    extra = @{}
+    @{ name = "transparent_blend"; desc = "deferred + an alphaMode BLEND material"; tier = "core"; extra = @{}
        model = "C:\Users\23530\Desktop\yzk\glTF-Sample-Assets\Models\AlphaBlendModeTest\glTF\AlphaBlendModeTest.gltf"
        camera = "0,5,12.4,0,-4.511,0" }
     # The heavy scene, and the only asset here whose interior exercises the cascaded shadows, the
@@ -108,14 +128,14 @@ $scenarios = @(
     # a different trail, which is the one kind of noise a visual comparison cannot have (measured the
     # hard way while adding object motion vectors). Sponza is a heavy load - 69 textures, ~150k
     # triangles - so this is the slow scenario.
-    @{ name = "sponza";            desc = "Sponza interior, the heavy scene";          extra = @{ taa = "false" }
+    @{ name = "sponza";            desc = "Sponza interior, the heavy scene";           tier = "core";  extra = @{ taa = "false" }
        model = "C:\Users\23530\Desktop\yzk\glTF-Sample-Assets\Models\Sponza\glTF\Sponza.gltf"
        camera = "90,0,6.41,0,-18.548,0" }
     # THE MATERIAL SWEEP, the one asset that makes a material response visible: a grid from smooth metal
     # (a mirror) to rough dielectric, so a specular or BRDF change is a shape of the response rather than a
     # scene average. `camera = ""` is deliberate: this scenario lets the scene frame itself (see
     # Invoke-Scenario).
-    @{ name = "metal_rough_glossy"; desc = "the material/roughness sweep";
+    @{ name = "metal_rough_glossy"; desc = "the material/roughness sweep";              tier = "extra";
        extra = @{ taa = "false"; camera_fit = "'exterior'" }
        model = "C:\Users\23530\Desktop\yzk\glTF-Sample-Assets\Models\MetalRoughSpheres\glTF\MetalRoughSpheres.gltf"
        camera = "" }
@@ -126,7 +146,7 @@ $scenarios = @(
     # frames is a 20-degree orbit - enough that a history fetched from the wrong place shows up, and slow
     # enough that the motion-vector path is in its normal range rather than its clamp. Same scene as
     # `metal_rough_glossy` on purpose, so the moving and still frames of one scene can be compared.
-    @{ name = "glossy_motion"; desc = "the material sweep, CAMERA MOVING";
+    @{ name = "glossy_motion"; desc = "the material sweep, CAMERA MOVING";              tier = "extra";
        extra = @{ taa = "false"; camera_fit = "'exterior'" }
        model = "C:\Users\23530\Desktop\yzk\glTF-Sample-Assets\Models\MetalRoughSpheres\glTF\MetalRoughSpheres.gltf"
        camera = ""
@@ -139,16 +159,29 @@ $scenarios = @(
     # NODE STATIC and one joint pinned, so the rigid half of every motion vector is exactly zero and the
     # deformation is the ONLY motion in the frame. Before deformation-aware motion vectors the whole
     # swinging half reported "did not move": 229,267 px, ONE distinct value.
-    @{ name = "deformation"; desc = "a skinned mesh DEFORMING (the motion channel)";
+    @{ name = "deformation"; desc = "a skinned mesh DEFORMING (the motion channel)";    tier = "core";
        extra = @{ taa = "false"; gbuffer_debug = "true"; gbuffer_channel = "8" }
        model = "$repo\tests\fixtures\animated_skin_plane.gltf"
        camera = "0,0,4,0,0,0"
        animation_sweep = "0.02" }
 )
 
+# A tier is REQUIRED, and the failure it prevents is a scenario that silently never runs: the default
+# selection is `tier -eq "core"`, so a typo or a missing key would drop the scenario out of every
+# default round while -List still showed it.
+$tiers = @("core", "extra")
+foreach ($s in $scenarios) {
+    if ($tiers -notcontains $s.tier) {
+        Write-Error "scenario '$($s.name)' has tier '$($s.tier)' - must be one of $($tiers -join ', ')"
+        exit 1
+    }
+}
+
 if ($List) {
-    Write-Host "scenarios ($($scenarios.Count)):"
-    foreach ($s in $scenarios) { "  {0,-20} {1}" -f $s.name, $s.desc }
+    $coreCount = @($scenarios | Where-Object { $_.tier -eq "core" }).Count
+    Write-Host "scenarios ($($scenarios.Count), of which $coreCount core - the default run):"
+    foreach ($s in $scenarios) { "  {0,-20} {1,-6} {2}" -f $s.name, $s.tier, $s.desc }
+    Write-Host "`n  -Full runs all $($scenarios.Count); -Only <name> runs one whatever its tier"
     Write-Host "`nreferences: $baseDir"
     exit 0
 }
@@ -279,11 +312,15 @@ function Invoke-Scenario {
 # compare one name for equality, so `-Only a,b` matched NOTHING, ran nothing, and printed
 # "changed : 0" - a green-looking summary from an empty run, which is how a broken build passed this
 # script for several layers. An empty selection is now an error (see the summary below).
+#
+# An explicit -Only name beats the tier: naming a scenario is the whole point of asking for it.
 $onlyNames = @()
 if ($Only) { $onlyNames = @($Only -split '[,;\s]+' | Where-Object { $_ }) }
 $pass = 0; $fail = 0; $missing = 0; $flaky = 0; $skipped = 0
 foreach ($s in $scenarios) {
-    if ($onlyNames.Count -gt 0 -and $onlyNames -notcontains $s.name) { $skipped++; continue }
+    if ($onlyNames.Count -gt 0) {
+        if ($onlyNames -notcontains $s.name) { $skipped++; continue }
+    } elseif (-not $Full -and $s.tier -ne "core") { $skipped++; continue }
     $ref = Join-Path $baseDir "$($s.name).png"
     Write-Host ("`n=== {0} ({1})" -f $s.name, $s.desc) -ForegroundColor Cyan
 
@@ -327,8 +364,10 @@ foreach ($s in $scenarios) {
 }
 
 $ran = $pass + $fail + $flaky + $missing
+$set = if ($onlyNames.Count -gt 0) { "-Only $($onlyNames -join ',')" } elseif ($Full) { "full" } else { "core" }
 Write-Host "`n---------------- summary ----------------"
-Write-Host "  scenarios: $($scenarios.Count)   ran: $ran   skipped: $skipped"
+Write-Host "  set      : $set   (of $($scenarios.Count) defined)"
+Write-Host "  defined  : $($scenarios.Count)   ran: $ran   skipped: $skipped"
 Write-Host "  passed   : $pass"
 Write-Host "  changed  : $fail"
 Write-Host "  flaky    : $flaky"
@@ -338,5 +377,10 @@ Write-Host "  references: $baseDir"
 # `-Only a,b` matched no scenario, so the run compared nothing and still printed "changed : 0".
 if ($ran -eq 0) { Write-Host "  ERROR: no scenario ran, so NOTHING was verified (check -Only / the scenario names)" -ForegroundColor Red; exit 1 }
 if ($missing -gt 0) { Write-Host "  ERROR: $missing scenario(s) have no reference - run with -Update once to seed them" -ForegroundColor Red; exit 1 }
+# A default (core) round says so, because "changed : 0" over five scenarios is NOT the same statement as
+# "changed : 0" over all ten - the other five only ran if -Full asked for them.
+if (-not $Full -and $onlyNames.Count -eq 0 -and $skipped -gt 0) {
+    Write-Host "  note     : $($skipped) extra scenario(s) NOT run - `-Full runs all $($scenarios.Count)" -ForegroundColor DarkGray
+}
 if ($fail -gt 0 -or $flaky -gt 0) { exit 1 }
 exit 0

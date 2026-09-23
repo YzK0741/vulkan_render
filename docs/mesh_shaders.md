@@ -218,8 +218,15 @@ self-comparison. Steps 1-2 are the other way round - real geometry, verified by 
 Acceptance routes are the ones `docs/slang_migration.md` section 10 settled on: **gate** (byte-identical
 frame), **log comparison** (a probe that knows its own answer), **manual A/B** (an opt-in config key, for
 a pass the gate's scenarios do not reach) and **shape-only** (SPIR-V/limit reasoning when neither is
-possible). A step is not done until its route says so, plus `ctest` 8/8, `spirv-val --target-env
+possible). A step is not done until its route says so, plus `ctest` 10/10, `spirv-val --target-env
 vulkan1.3` on every emitted `.spv`, and zero validation findings.
+
+**"The gate" means the CORE set, and the exact scope matters because the numbers above were not all
+taken over the same one.** `check_render.ps1` defines ten scenarios and tags five of them `core`; the
+default run is those five x 2 runs = 10 renders. The earlier rounds in this document ran all ten (20
+renders) because the harness had no tiers yet. The rule for a step here: iterate on the core round,
+and run `-Full` (all ten, 20 renders) once when the change is meant to be the step's final state, so
+that the five extra references cannot go stale unwatched - `-Update` only re-baselines what ran.
 
 ### Step 0 - the stage is reachable (DONE)
 
