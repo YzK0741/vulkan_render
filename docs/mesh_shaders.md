@@ -382,14 +382,56 @@ and the gate are exactly as this document's step 3 status describes. (One of the
 how the crash was found: `heap_probe.slang`'s `task_main` failed the build, and reverting it plus re-running `cmake`
 - `CMAKE_SUPPRESS_REGENERATION=ON` means the build dir keeps the old rules - put the list back.)
 
-The remaining work of this step is the consumer, on the compute path: a compute pass that culls each meshlet against
-the cascade's frustum (the meshlet table and the light matrices are both heap reads it can make) and writes one
-`VkDrawMeshTasksIndirectCommandEXT` per (draw, instance) - and a MESH entry that reads its meshlet's window from the
-table and the instance index from its own dispatch, since `vkCmdDrawMeshTasksIndirectEXT` carries no `instanceCount`
-either. The lanes need no new field: a meshlet session pushes the primitive's `meshlet_base` as `first_index` and
-`meshlet_count` as `index_count`, since a meshlet variant reads each record's own window instead. Acceptance: the
-gate staying byte-identical (conservative culling removes nothing visible) plus a forced probe that culls
-everything, which must change the picture - the same two-way evidence steps 1 and 2 were accepted by.
+**THE MESHLET CONSUMER WAS BUILT, AND IT WEDGES THE GPU.** One attempt is worth recording even though it was
+reverted, because it narrows the next one. The whole chain was wired: a `meshlet_main` entry in `shadow.slang` that
+reads its window out of the table (`meshlet_at(push.geometry.first_index + group_id.x)` - the lanes carrying the
+primitive's run instead of the draw's window), one workgroup per meshlet (`groups = geometry.meshlet_count`), the
+lanes switched by a new `render_environment::meshlets` flag, and a third pipeline (`shadow.meshlet.spv`) the shadow
+pass preferred over the other two. It BUILT and CREATED:
+
+```
+SUCCESS: shadow MESHLET pipeline created (one workgroup per meshlet, window read from the table)
+```
+
+... and then the frame never completed. The validation layer reported exactly the signature of a GPU-side hang, one
+line each:
+
+```
+[ERROR] vkAcquireNextImageKHR(): Semaphore must not have any pending operations.
+[ERROR] vkBeginCommandBuffer(): on active VkCommandBuffer 0x... before it has completed. You must check command buffer fence before this call.
+[ERROR] vkQueueSubmit(): pSubcommandBuffers[0] VkCommandBuffer 0x... is already in use and is not marked for simultaneous use.
+```
+
+i.e. the PREVIOUS frame's commands were still running when the next frame began - not an interface error, and not a
+wrong picture. Clamping the shader's `SetMeshOutputCounts` to the 85/255 budget (`min(meshlet.index_count,
+mesh_triangles_per_workgroup * mesh_indices_per_triangle)`, which is defensive against a record read at the wrong
+index and is worth keeping in any case) did NOT change the outcome, so the hang is not an over-large output count.
+
+The suspects, in the order the next attempt should test them:
+1. **the lanes' meshlet base is not what the shader thinks** - the meshlet entry reads `push.geometry.first_index`
+   as the record index, so a session that pushes the DRAW's window instead of the run's base reads an arbitrary
+   record (a wrong window and a wrong triangle count, i.e. vertices fetched far outside the buffer). A host-side
+   dump of the first records plus the lanes' values for one caster settles it in one run;
+2. **a static draw dispatches its whole run once per CHUNK** - `static_draw_primitive::draw` loops over chunks, and
+   the meshlet path ignores chunks (the run covers the merged buffer), so Sponza's shadow would emit every meshlet
+   once per chunk. Wasteful rather than fatal, but it is a real defect of that wiring;
+3. **the table's visibility** - it is written once at import through a mapped buffer and read by a stage that never
+   ran before, which should be a non-issue (the write happens before any command buffer is recorded) but has not
+   been proven with a barrier.
+
+The experiment was reverted in full (shader, lanes, session flag, pipeline, registration, both script lists and the
+CMake rule), and `cmake` was re-run so the build directory's rules match - `CMAKE_SUPPRESS_REGENERATION=ON` means a
+reverted `VR_SLANG_SOURCES` is otherwise still compiled. The tree after the revert: gate 10/10 passed, 0 changed, 0
+flaky; ctest 10/10; zero validation findings; the mesh shadow pipeline and the meshlet table log lines unchanged.
+
+The remaining work of this step is that consumer, on the compute path the task-stage crash left as the fork: a
+compute pass that culls each meshlet against the cascade's frustum (the meshlet table and the light matrices are
+both heap reads a compute stage can make) and writes one `VkDrawMeshTasksIndirectCommandEXT` per (draw, instance) -
+and a MESH entry of the shape above, which is now known to build, create and dispatch, with the GPU-side hang as
+the first thing it has to explain. The lanes need no new field: a meshlet session pushes the primitive's
+`meshlet_base` as `first_index` and `meshlet_count` as `index_count`. Acceptance: the gate staying byte-identical
+(conservative culling removes nothing visible) plus a forced probe that culls everything, which must change the
+picture - the same two-way evidence steps 1 and 2 were accepted by.
 
 The constraints the objective measured still stand and are designed around: `vkCmdDrawMeshTasksEXT` has no
 `instanceCount` (the dispatch's Y carries it today, and the task payload will carry it once a task stage launches
