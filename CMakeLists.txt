@@ -162,6 +162,7 @@ target_sources(vulkancorekit
         vulkan/ray_tracing/ray_tracing.cppm
         vulkan/core/pipeline/spirv_parser.cppm
         vulkan/scene_tree/scene_tree.cppm
+        vulkan/meshlet/meshlet.cppm
         vulkan/primitive/primitive.cppm
         vulkan/render_environment/render_environment.cppm
         vulkan/graphical_user_interface/graphical_user_interface.cppm
@@ -448,7 +449,7 @@ option(VR_BUILD_TESTS "Build the headless unit tests" ON)
 if(VR_BUILD_TESTS)
     enable_testing()
 
-    set(VR_TEST_TARGETS test_app_config test_utility test_math test_animation test_gltf_loader test_shadow_fit test_render_resources test_pass test_shader_sources)
+    set(VR_TEST_TARGETS test_app_config test_utility test_math test_animation test_gltf_loader test_shadow_fit test_render_resources test_pass test_shader_sources test_meshlet)
     file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/test-run")
 
     foreach(test_target IN ITEMS ${VR_TEST_TARGETS})
@@ -469,6 +470,12 @@ if(VR_BUILD_TESTS)
     # chores.cpp's load_shader calls) and compares them: one shader built by the build and not by the scripts is
     # the drift that test exists for, and it is the mesh path's CI gate (see the test's header).
     target_compile_definitions(test_shader_sources PRIVATE VR_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+    # vulkan.meshlet is pure CPU alongside vulkan.math: the split's coverage/bounds/determinism checks need no
+    # device, which is the only way they can run in CI (the capture gate's references are machine-specific).
+    target_link_libraries(test_meshlet
+            vulkancorekit
+            vstd_lib
+    )
 
     target_link_libraries(test_app_config
             app_config

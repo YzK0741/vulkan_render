@@ -41,6 +41,7 @@ export import vstd;
 export import vulkan.core;
 export import vulkan.render_environment;
 export import vulkan.scene_tree; // the abstract leaf interface these implement
+export import vulkan.meshlet;    // the meshlet split this primitive's geometry carries (docs/mesh_shaders.md step 3)
 namespace vulkan {
     /**
      * @ingroup vulkan_primitive
@@ -582,7 +583,17 @@ namespace vulkan {
         // build reads it: the raster pipelines get the stride from their vertex input state, so this is
         // the one consumer that has to be told (see vulkan.acceleration_structure).
         uint32_t vertex_stride = 0;
-
+        /**
+         * THE PRIMITIVE'S MESHLETS, in the order `build_meshlets` produced them (docs/mesh_shaders.md step 3):
+         * runs of at most `meshlet_max_triangles` triangles of this primitive's index window, each with an
+         * object-space bounding sphere. Filled at upload, where the geometry bytes and the layout are in hand.
+         *
+         * THEY ARE HOST-SIDE FOR NOW, and deliberately: the meshlet table the shaders will read is a heap
+         * resource of its own (a per-frame slot, written once at import and registered like the material table),
+         * and the split is the part of that step worth having early - it is arithmetic whose bugs are invisible
+         * on screen, so it is built and tested (tests/test_meshlet.cpp) before anything consumes it.
+         */
+        std::vector<vulkan::meshlet> meshlets = {};
         // Pipeline the primitive draws with. Empty = DEFAULT semantics: the primitive does not
         // care which pipeline records it, it asks the draw-time render_environment to bind that
         // session's default (normal / instanced / static draws all work this way - they draw

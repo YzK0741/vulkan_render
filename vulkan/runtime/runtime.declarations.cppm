@@ -1108,6 +1108,15 @@ namespace vulkan {
         /// export an extension command (null on a device without the mesh shader extension)
         PFN_vkCmdDrawMeshTasksEXT mesh_dispatch = nullptr;
         /**
+         * @brief the meshlet split's totals, for the one startup log line (docs/mesh_shaders.md step 3)
+         *
+         * The split itself is `vulkan.meshlet`'s and is asserted by tests/test_meshlet.cpp; what these two count is
+         * how much of THIS SCENE it produced, which is the number that says whether a task stage reading a meshlet
+         * table is worth the table (a scene of one meshlet per primitive would not be).
+         */
+        std::size_t meshlet_total = 0;
+        std::size_t meshlet_primitives = 0;
+        /**
          * THE STRUCTURE PHASE ITSELF, which is one value now (see `vulkan.ray_tracing`): the bottom and top level
          * structures, the map from their indices back to the casters they were built from, and the MASK/skin
          * copies a hit's shading reads that geometry through. Built once (lazily, on the first frame the flag is
@@ -3028,6 +3037,14 @@ namespace vulkan {
             }
             this->bvh_dirty = true; // new leaves attached -> culling BVH must be rebuilt
             result.material_count = this->material_count - materials_before;
+            // WHAT THE SCENE CUT INTO (docs/mesh_shaders.md step 3): the meshlets a task stage would cull, and how
+            // many primitives contributed them. Logged once per import, where the whole scene's numbers exist.
+            if (this->meshlet_total != 0u) {
+                utility::log("meshlets: {} over {} primitives ({} triangles each at most, object-space spheres)",
+                             this->meshlet_total,
+                             this->meshlet_primitives,
+                             vulkan::meshlet_max_triangles);
+            }
             return result;
         }
     };

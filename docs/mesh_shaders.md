@@ -314,6 +314,47 @@ forward `pbr` pipeline. The flat render mode reaches the same code path through 
 
 ### Step 3 - a TASK stage, meshlets, and indirect dispatch
 
+**STATUS: the SPLIT is done and tested; the task stage and the culling are not.**
+
+`vulkan/meshlet/meshlet.cppm` is a pure-CPU module that cuts one draw window into meshlets: runs of at most
+`meshlet_max_triangles` (85, the mesh stage's output budget from section 2) triangles in index order, each with an
+object-space bounding sphere over the axis-aligned box of the vertices it touches. `runtime::create_primitive`
+builds them at upload - where the geometry bytes and the layout are still in hand - keeps them on the primitive, and
+the scene import logs what it produced:
+
+```
+meshlets: 3145 over 103 primitives (85 triangles each at most, object-space spheres)
+```
+
+IT IS A MODULE OF ITS OWN AND A PURE ONE on purpose: the split is arithmetic over vertex and index bytes, and its
+bugs are the invisible kind - a sphere that is too small culls a visible meshlet (a hole in the shadow map, on the
+frames where it happens to face the light) and an overlapping window draws triangles twice (invisible in a depth
+pass, wrong for anything blended). Nothing in a captured frame says which of those happened, so the properties are
+asserted on the CPU instead, by `tests/test_meshlet.cpp`, which CI runs:
+
+| property | check |
+| --- | --- |
+| coverage | the meshlets are contiguous, in order, and cover every index of the window exactly once |
+| conservative bounds | every vertex every meshlet indexes is inside its sphere (a box's corner sphere contains the box) |
+| limits and determinism | at most 85 triangles each, and the same input twice is byte-identical output |
+| both index widths | 16-bit and 32-bit index buffers are read with the same result |
+| malformed input | an empty span, no vertices, a stride shorter than one position, a window past the buffer end: an EMPTY result, never a read past it (an out-of-range index inside a valid window keeps the meshlet - the draw is not silently dropped - and simply does not extend the bounds) |
+
+The remaining work of this step is the consumer: a meshlet TABLE in the heap (one 28-byte record per meshlet, the
+primitive's window offset carried in the geometry lanes), a TASK stage that culls each meshlet against the cascade's
+frustum (`light_matrix_at(slot, cascade)` and `push.model` are already in the block, so the culling needs no new
+lane) and launches the survivors with `EmitMeshTasksEXT`, and a MESH entry that reads its meshlet's window from the
+table via the task PAYLOAD - the payload is where the instance index has to travel too, because a mesh workgroup
+launched by a task stage does not inherit the dispatch's Y. Acceptance for that: the gate staying byte-identical
+(conservative culling removes nothing visible) plus a forced probe that culls everything, which must change the
+picture - the same two-way evidence steps 1 and 2 were accepted by.
+
+The constraints the objective measured still stand and are designed around: `vkCmdDrawMeshTasksEXT` has no
+`instanceCount` (the dispatch's Y carries it today, and the task payload will carry it once a task stage launches
+the workgroups), `VkDrawMeshTasksIndirectCommandEXT` carries only group counts (so an indirect path needs one
+command per instance or a task stage that partitions), and the TLAS is built from the SAME vertex and index buffers
+by device address - which is why every meshlet path so far keeps FETCHING those buffers rather than replacing them.
+
 The step where mesh shaders would actually pay, and the one with the most unknowns:
 
 - **`vkCmdDrawMeshTasksEXT` has no `instanceCount`.** One `VkDrawMeshTasksIndirectCommandEXT` is three

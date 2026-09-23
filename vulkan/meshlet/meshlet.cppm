@@ -1,0 +1,168 @@
+/**
+ * @file meshlet.cppm
+ * @defgroup vulkan_meshlet Meshlet split
+ * @brief cut a draw's index window into MESHLETS - triangle runs small enough for one mesh workgroup to emit,
+ *        each with an object-space bounding sphere - so a task stage can decide per meshlet whether to run it
+ *        at all (docs/mesh_shaders.md step 3).
+ *
+ * WHY THIS IS A MODULE OF ITS OWN, and a PURE one: the split is arithmetic over the vertex and index bytes, it
+ * needs no device, no allocator and no Vulkan type, and getting it wrong is invisible on screen in exactly the
+ * way a bad bounding volume always is (a meshlet culled while it is visible is a hole; a meshlet that is NOT
+ * culled is just work). Keeping it free of dependencies is what lets the headless tests check the three
+ * properties that make it usable - full coverage, conservative bounds, deterministic order - on the CPU, where
+ * CI can run them, instead of through a capture that only shows the holes that happen to face the camera.
+ *
+ * IT DELIBERATELY DOES NOT DECIDE WHAT A MESHLET IS FOR. It emits the same triangles the input window describes,
+ * in the input's order, split into runs of at most `meshlet_max_triangles`: what a consumer does with them
+ * (cull, reorder, deduplicate vertices, build a meshlet-local index buffer) is the consumer's business, and this
+ * file's contract is only that the union of its output is the input.
+ */
+module;
+
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
+#include <cstring>
+#include <limits>
+#include <span>
+#include <vector>
+
+export module vulkan.meshlet;
+
+export import vstd;
+
+namespace vulkan {
+    /**
+     * @ingroup vulkan_meshlet
+     * @brief the triangles one mesh workgroup emits, i.e. the largest run a meshlet may contain
+     *
+     * 85 is a DEVICE LIMIT and not a tuning choice: `maxMeshOutputVertices` and `maxMeshOutputPrimitives` are
+     * both 256 on the device this renderer targets, a mesh stage that writes each triangle's three vertices
+     * separately (which is what a stage without meshlet-local index sharing does) spends three output vertices
+     * per triangle, and 85 * 3 = 255 is the largest count that fits both. See docs/mesh_shaders.md section 2.
+     */
+    export constexpr uint32_t meshlet_max_triangles = 85;
+    /// the index count that bound implies (three per triangle)
+    export constexpr uint32_t meshlet_max_indices = meshlet_max_triangles * 3u;
+
+    /**
+     * @ingroup vulkan_meshlet
+     * @brief one meshlet: a window of the draw's index buffer plus the sphere its vertices occupy
+     * @note the sphere is in OBJECT space (the space the vertex bytes are in), so a consumer transforms its
+     *       centre by the same model/instance matrix it projects the vertices with, and scales the radius by
+     *       that matrix's largest axis scale. `radius` covers the window's axis-aligned box, which is what makes
+     *       it CONSERVATIVE: a box's corner sphere contains the box, so a meshlet that is culled cannot contain
+     *       a vertex outside the plane that culled it.
+     */
+    export struct meshlet {
+        uint32_t first_index = 0; ///< first index of this meshlet inside the draw's index window
+        uint32_t index_count = 0; ///< indices it covers (always a multiple of three, never zero)
+        int32_t base_vertex = 0;  ///< the draw's base vertex, repeated per meshlet: it is added to every index
+        float center_x = 0.0f;    ///< object-space centre of the bounding sphere
+        float center_y = 0.0f;
+        float center_z = 0.0f;
+        float radius = 0.0f; ///< object-space radius (0 for a single vertex or a fully degenerate window)
+    };
+    static_assert(sizeof(meshlet) == 28, "a meshlet is 28 bytes: three 4-byte window fields (first index, count, base vertex) and the sphere");
+
+    /**
+     * @ingroup vulkan_meshlet
+     * @brief the geometry one draw window is split over, exactly as the primitive upload hands it over
+     * @note the index bytes are read with `index_width` (2 or 4) and the vertex bytes with `vertex_stride`, so
+     *       the split sees the same bytes the mesh stage will fetch - no second interpretation of the layout.
+     */
+    export struct meshlet_build_input {
+        std::span<unsigned char const> vertex_data = {}; ///< the interleaved vertices, position first
+        uint32_t vertex_stride = 0;                      ///< bytes per vertex (64 for this renderer's layout)
+        uint32_t vertex_count = 0;                       ///< vertices the data holds
+        std::span<unsigned char const> index_data = {};  ///< the index buffer the window indexes into
+        uint32_t index_width = 4;                        ///< bytes per index: 2 (uint16) or 4 (uint32)
+        uint32_t first_index = 0;                        ///< the draw's first index inside `index_data`
+        uint32_t index_count = 0;                        ///< how many indices the draw covers
+        int32_t base_vertex = 0;                         ///< the draw's base vertex (static-draw chunks; else 0)
+    };
+
+    /**
+     * @ingroup vulkan_meshlet
+     * @brief split one draw window into meshlets of at most `meshlet_max_triangles` triangles
+     * @param input the window and the memory it reads
+     * @return the meshlets, in index order, covering whole triangles only - i.e. `index_count / 3 * 3` indices.
+     *         Empty when the input is degenerate (no vertices, no indices, a stride shorter than one position, or
+     *         fewer than three indices).
+     * @note AN INDEX OUTSIDE THE VERTEX RANGE IS SKIPPED rather than read: a malformed window would otherwise read
+     *       past the vertex buffer on the CPU here (and inside a bounding box that then culls the meshlet, which
+     *       is a hole nobody can trace back to its cause). The primitive upload validates its windows, so this is
+     *       the second line of defence, and it is silent on purpose - it is not a condition a caller can act on.
+     * @note the split is DETERMINISTIC and ORDER-PRESERVING: meshlet N's indices follow meshlet N-1's, and the
+     *       triangles inside one meshlet keep the window's order. A consumer that draws them all therefore emits
+     *       exactly the input triangles, in an order whose only change is that meshlets are whole runs.
+     */
+    export std::vector<meshlet> build_meshlets(meshlet_build_input const& input) {
+        std::vector<meshlet> meshlets;
+        uint32_t const triangles = input.index_count / 3u;
+        if (triangles == 0u || input.vertex_count == 0u || input.index_width < 2u || input.vertex_stride < 3u * sizeof(float) ||
+            input.vertex_data.size() < static_cast<std::size_t>(input.vertex_count) * input.vertex_stride) {
+            return meshlets;
+        }
+        // the window must lie inside the index buffer (the caller's contract, re-checked because a read past it
+        // would be indistinguishable from a wrong meshlet)
+        std::size_t const needed_indices = static_cast<std::size_t>(input.first_index) + triangles * 3u;
+        if (input.index_data.size() < needed_indices * input.index_width) {
+            return meshlets;
+        }
+
+        /// one index of the window, as an unsigned value (the same two cases the mesh stage's fetch has)
+        auto const index_at = [&input](uint32_t const i) -> uint32_t {
+            unsigned char const* const at = input.index_data.data() + static_cast<std::size_t>(input.first_index + i) * input.index_width;
+            if (input.index_width == 2u) {
+                uint16_t value = 0;
+                std::memcpy(&value, at, sizeof(value));
+                return value;
+            }
+            uint32_t value = 0;
+            std::memcpy(&value, at, sizeof(value));
+            return value;
+        };
+        /// the position of vertex @p v, or false when it is outside the buffer (see the note above)
+        auto const position_at = [&input](uint32_t const v, float (&out)[3]) -> bool {
+            if (v >= input.vertex_count) {
+                return false;
+            }
+            std::memcpy(out, input.vertex_data.data() + static_cast<std::size_t>(v) * input.vertex_stride, sizeof(out));
+            return true;
+        };
+
+        for (uint32_t first_triangle = 0; first_triangle < triangles; first_triangle += meshlet_max_triangles) {
+            uint32_t const meshlet_triangles = std::min(meshlet_max_triangles, triangles - first_triangle);
+            float low[3] = {std::numeric_limits<float>::infinity(), std::numeric_limits<float>::infinity(), std::numeric_limits<float>::infinity()};
+            float high[3] = {-std::numeric_limits<float>::infinity(), -std::numeric_limits<float>::infinity(), -std::numeric_limits<float>::infinity()};
+            uint32_t positions = 0;
+            for (uint32_t corner = 0; corner < meshlet_triangles * 3u; ++corner) {
+                float position[3] = {};
+                if (!position_at(index_at(first_triangle * 3u + corner), position)) {
+                    continue;
+                }
+                for (int axis = 0; axis < 3; ++axis) {
+                    low[axis] = std::min(low[axis], position[axis]);
+                    high[axis] = std::max(high[axis], position[axis]);
+                }
+                ++positions;
+            }
+            meshlet out;
+            out.first_index = first_triangle * 3u;
+            out.index_count = meshlet_triangles * 3u;
+            out.base_vertex = input.base_vertex;
+            if (positions != 0u) {
+                out.center_x = 0.5f * (low[0] + high[0]);
+                out.center_y = 0.5f * (low[1] + high[1]);
+                out.center_z = 0.5f * (low[2] + high[2]);
+                float const dx = high[0] - out.center_x;
+                float const dy = high[1] - out.center_y;
+                float const dz = high[2] - out.center_z;
+                out.radius = std::sqrt(dx * dx + dy * dy + dz * dz);
+            }
+            meshlets.push_back(out);
+        }
+        return meshlets;
+    }
+} // namespace vulkan

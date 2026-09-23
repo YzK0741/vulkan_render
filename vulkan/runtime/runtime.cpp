@@ -24,6 +24,7 @@ import vulkan.constant_init;
 import vulkan.init_utils;      // the resource-creation patterns the init/ensure functions below repeat
 import vulkan.frame_constants; // one frame's shared constants (see update_frame_constants)
 import vulkan.core.pipeline;   // vulkan::make_pipeline for the post-process pipeline
+import vulkan.meshlet;         // the meshlet split (docs/mesh_shaders.md step 3): pure CPU, built at upload
 
 // Route std::pmr allocations through mimalloc for this TU (utility:better_pmr). Idempotent:
 // init_pmr() returns the same process-wide singleton no matter which TU calls it first, so
@@ -1151,6 +1152,26 @@ namespace vulkan {
         // ---- local-space AABB for frustum culling: the interleaved vertex layout starts every
         //      vertex with a vec3 position (see the loader's vertex struct / pbr.vert), so scan
         //      the CPU copy before it is released by the upload
+        // ---- MESHLETS (docs/mesh_shaders.md step 3): the same CPU copy the AABB scan below reads, cut into runs
+        //      of at most `meshlet_max_triangles` triangles with an object-space bounding sphere each - the data a
+        //      task stage culls with. Built HERE because this is where the geometry bytes are still in hand and
+        //      the layout (stride, index width) is known; the GPU table they will live in is the next step, so for
+        //      now the split is a property of the primitive and the log line below is its only consumer.
+        result->meshlets = vulkan::build_meshlets(vulkan::meshlet_build_input{
+            .vertex_data = info.vertex_data,
+            .vertex_stride = info.vertex_stride,
+            .vertex_count = info.vertex_count,
+            .index_data = info.index_data,
+            .index_width = info.index_type == VK_INDEX_TYPE_UINT16 ? 2u : 4u,
+            .first_index = 0u,
+            .index_count = info.index_count,
+            .base_vertex = 0,
+        });
+        this->meshlet_total += result->meshlets.size();
+        if (!result->meshlets.empty()) {
+            ++this->meshlet_primitives;
+        }
+
         if (info.vertex_count > 0 && info.vertex_stride >= sizeof(glm::vec3) && !info.vertex_data.empty()) {
             glm::vec3 aabb_min = glm::vec3(std::numeric_limits<float>::infinity());
             glm::vec3 aabb_max = glm::vec3(-std::numeric_limits<float>::infinity());
