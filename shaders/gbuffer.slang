@@ -33,12 +33,16 @@ struct gbuffer_output
 ///       composited outside the G-buffer and writes no velocity at all.
 float2 motion_vector(float3 world_pos, float3 prev_world_pos)
 {
-    // MUL, NOT `*`: Slang's `matrix * vector` does not follow GLSL's column-vector convention (the gate
-    // caught it - the two scenarios that consume motion vectors changed while `unlit` did not), so the
-    // product is spelled out with `mul(M, v)`, which is HLSL/Slang's column-vector product and therefore
-    // the same arithmetic the GLSL `M * v` performs.
-    const float4 current_clip = mul(camera_at(heap_camera_slot).view_proj_unjittered, float4(world_pos, 1.0));
-    const float4 previous_clip = mul(camera_at(heap_camera_slot).prev_view_proj, float4(prev_world_pos, 1.0));
+    // `M * v`, NOT `mul(M, v)`: MEASURED, and the opposite of what the HLSL habit suggests. For a
+    // `row_major float4x4` (the spelling that emits the ColMajor layout the host's glm::mat4 has),
+    // Slang's `mul(M, v)` compiles to OpVectorTimesMatrix - the TRANSPOSED product - while the GLSL
+    // operator keeps GLSL's column-vector meaning under `-allow-glsl` and compiles to exactly the
+    // OpMatrixTimesVector glslc emits for gbuffer.frag. Getting this backwards is not loud: the
+    // matrix still loads from the right bytes (the member offsets and MatrixStride were verified equal)
+    // and only the velocity comes out wrong, which showed up as a black motion channel. See
+    // docs/slang_migration.md section 9, "the first leaf port: two traps, both measured, both fixed".
+    const float4 current_clip = camera_at(heap_camera_slot).view_proj_unjittered * float4(world_pos, 1.0);
+    const float4 previous_clip = camera_at(heap_camera_slot).prev_view_proj * float4(prev_world_pos, 1.0);
     const float2 current_uv = (current_clip.xy / current_clip.w) * 0.5 + 0.5;
     const float2 previous_uv = (previous_clip.xy / previous_clip.w) * 0.5 + 0.5;
     return current_uv - previous_uv;

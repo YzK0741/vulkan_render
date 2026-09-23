@@ -73,6 +73,32 @@ and stride are literally the same memory. The workable convention is therefore:
 
 Push *data* (`vkCmdPushDataEXT`) cannot carry these: it only feeds mapping sources, which this model removes.
 
+### The storage class has to match the descriptor's type, and a mismatch is SILENT
+
+A heap descriptor carries its TYPE, and the storage class of the pointer a shader fetches it through has to
+agree with it. When it does not, the read does not fail loudly - **there is no validation finding at all**,
+the read simply comes back zeroed, and only the picture shows it. All four combinations were reproduced on
+this machine (2026-09-23, RTX 4060 Laptop, driver 616.92):
+
+| heap descriptor written as | storage class the shader reads it through | result |
+| --- | --- | --- |
+| `VK_DESCRIPTOR_TYPE_STORAGE_BUFFER` | `StorageBuffer` | works |
+| `VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER` | `Uniform` | works |
+| `VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER` | `StorageBuffer` | reads as ZEROS |
+| `VK_DESCRIPTOR_TYPE_STORAGE_BUFFER` | `Uniform` | reads as ZEROS |
+
+THREE THINGS HAVE TO AGREE, and this is why it is written down here rather than discovered per stage: the
+descriptor's type, the USAGE BIT on the buffer (`VK_BUFFER_USAGE_STORAGE_BUFFER_BIT` for a storage
+descriptor - without it the validation layer rejects the heap write itself, with the render still looking
+right), and the shader's declaration.
+
+THE CAMERA IS A STORAGE DESCRIPTOR FOR THIS REASON (see `runtime.constructor.cppm`'s
+`write_heap_scene_buffer` call and `shading.glsl`'s camera block): Slang's `DescriptorHandle<ConstantBuffer<T>>`
+always fetches through a `StorageBuffer`-class pointer - a Slang `ConstantBuffer` handle never emits
+`Uniform` - so the GLSL side had to declare the block `buffer` as well. The layout did not move: std430 and
+std140 place `CameraUBO`'s members at the same offsets. The full finding, including what it cost to find and
+the two ruled-out suspects, is docs/slang_migration.md section 9.
+
 ## Shader inventory (what each file declares today, from `grep layout(set =`)
 
 | file | set 0 | set 1 |

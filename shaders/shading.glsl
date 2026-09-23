@@ -40,11 +40,24 @@
 // every read is `camera_at(heap_camera_slot).field` (the slot constants are declared with the rest of the grid
 // below). The block itself is unchanged - it is a CPU/GPU contract.
 // THE UBO/RESOURCE BLOCKS ARE WRAPPED, NOT MOVED: the member lists stay here - ONE copy - and only the
-// GLSL-only `layout(descriptor_heap, ...) uniform X { ... } name[];` wrapper differs, because the Slang side
+// GLSL-only `layout(descriptor_heap, ...) buffer X { ... } name[];` wrapper differs, because the Slang side
 // needs the same member list as a plain struct to build its `ConstantBuffer<X>` handles from. VR_MAT4 is
 // `mat4` in GLSL and `row_major float4x4` in Slang (see heap_slots.glsl).
+//
+// WHY THIS BLOCK IS A `buffer` AND NOT A `uniform`, measured: THE STORAGE CLASS A SHADER READS A HEAP
+// DESCRIPTOR THROUGH MUST MATCH THE DESCRIPTOR'S TYPE, and a mismatch is SILENT - no validation finding,
+// just zeros. The host writes the camera as VK_DESCRIPTOR_TYPE_STORAGE_BUFFER and Slang's
+// `DescriptorHandle<ConstantBuffer<T>>` always fetches through a StorageBuffer-class pointer (a Slang
+// ConstantBuffer handle does NOT emit Uniform here), so the GLSL side has to read it as a storage buffer
+// too. Both wrong pairings were reproduced: a UNIFORM descriptor read through a StorageBuffer pointer
+// (Slang's camera read: zeros, the velocity came out NaN and the motion channel went black) and a STORAGE
+// descriptor read through a Uniform pointer (the GLSL block as `uniform`: albedo went black, geometry
+// gone). The layout does not move: std430 and std140 give this struct the same offsets (0, 64, 128, 144,
+// 208) and the same 272-byte size, because the vec3 sits where a mat4 has to be 16-aligned anyway.
+// See docs/slang_migration.md section 9, "the first leaf port: two traps, both measured, both fixed", and
+// docs/descriptor_heap_migration.md.
 #ifndef VR_SLANG
-layout(descriptor_heap, descriptor_stride = heap_slot_stride) uniform CameraUBO {
+layout(descriptor_heap, descriptor_stride = heap_slot_stride) buffer CameraUBO {
 #else
 struct CameraUBO {
 #endif

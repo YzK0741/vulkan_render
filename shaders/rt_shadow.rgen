@@ -43,7 +43,10 @@
 #extension GL_EXT_descriptor_heap : require
 #extension GL_EXT_nonuniform_qualifier : enable
 #include "heap_slots.glsl"
-layout(descriptor_heap, descriptor_stride = heap_slot_stride) uniform CameraUBO {
+// A `buffer`, not a `uniform`: the heap descriptor is a STORAGE descriptor and the storage class a shader
+// reads it through has to match it (see shading.glsl's note). The three members it does declare sit at the
+// same offsets under std430 as under std140 (0, 64, 128).
+layout(descriptor_heap, descriptor_stride = heap_slot_stride) buffer CameraUBO {
     mat4 view;
     mat4 proj;
     vec4 camera_pos;

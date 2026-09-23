@@ -730,7 +730,7 @@ set(VR_SLANG_SOURCES
     # came back fully black while every pipeline except the scene one logged its creation - so the port is
     # wrong somewhere the gate can see and I have not found yet. It stays out of the build until it is
     # byte-identical; see docs/slang_migration.md's note on it.
-    # gbuffer.slang:main:fragment:gbuffer.frag.spv
+    gbuffer.slang:main:fragment:gbuffer.frag.spv
 )
 find_program(VR_SLANGC_EXECUTABLE NAMES slangc slangc.exe)
 set(VR_SLANG_OUTPUTS "")

@@ -209,6 +209,14 @@ namespace vulkan {
         // Camera UBO: one buffer per frame slot, mapped for direct writes; all models reference
         // these buffers through the shared scene block, so one memcpy per frame replaces the old
         // per-primitive per-frame UBO updates
+        //
+        // THE BUFFER IS USABLE AS A STORAGE BUFFER TOO, because the heap descriptor written for it is a
+        // VK_DESCRIPTOR_TYPE_STORAGE_BUFFER (see write_heap_scene_buffer's note below): a descriptor's type has
+        // to be backed by the matching USAGE bit on the buffer, and the validation layer says so out loud -
+        // "vkWriteResourceDescriptorsEXT(): ... has no buffer(s) associated that are valid" - while the render
+        // itself still produced the right picture, which is exactly the kind of finding this project treats as
+        // a failure. UNIFORM_BUFFER stays set: the buffer's allocation policy (host-visible, coherent) is what
+        // the buffer_type names, and both bits are legal together.
         camera_ubo initial = {};
         init_utils::create_host_buffers(this->vulkan_core,
                                         vulkan::core::MAX_FRAMES_IN_FLIGHT,
@@ -217,7 +225,7 @@ namespace vulkan {
                                         "camera ubo buffer",
                                         this->camera_buffers,
                                         &this->camera_mapped,
-                                        VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT); // heap-bound: see the scene-set block
+                                        VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT); // heap-bound: see the scene-set block
 
         // 1x1 white fallback texture, always the first entry of the scene texture array; missing
         // material textures point at it
@@ -630,7 +638,13 @@ namespace vulkan {
         // size must stay inside the buffer, which VK_WHOLE_SIZE cannot satisfy.
         write_heap_scene_buffer(this->vulkan_core, this->cluster_count_buffers, core::heap_slots::cluster_counts, static_cast<VkDeviceSize>(vulkan::max_cluster_count) * sizeof(uint32_t), VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
         write_heap_scene_buffer(this->vulkan_core, this->cluster_index_buffers, core::heap_slots::cluster_indices, static_cast<VkDeviceSize>(vulkan::max_cluster_count) * vulkan::cluster_light_capacity * sizeof(uint32_t), VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
-        write_heap_scene_buffer(this->vulkan_core, this->camera_buffers, core::heap_slots::scene_camera, sizeof(camera_ubo), VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
+        // A STORAGE DESCRIPTOR, NOT A UNIFORM ONE, and the shaders declare it as a `buffer` block: the storage
+        // class a shader reads a heap descriptor through must match the descriptor's type, and a mismatch reads
+        // as zeros with NO validation finding. Slang's `DescriptorHandle<ConstantBuffer<T>>` always fetches
+        // through a StorageBuffer-class pointer, so a VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER here made the Slang
+        // G-buffer read a zero camera matrix (velocity NaN, motion channel black) while glslc's Uniform read of
+        // the same slot worked. See docs/slang_migration.md, "the storage class that has to match".
+        write_heap_scene_buffer(this->vulkan_core, this->camera_buffers, core::heap_slots::scene_camera, sizeof(camera_ubo), VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
         // ... and the rest of the per-frame arrays, from the same place and with the SAME sizes the scene block
         // writes them with (see ensure_scene_heap_slots's write_buffer_binding calls): motion (binding 13), skin (9) and
         // morph (10), each a two-slot array whose slot is the frame's. Bound here rather than in the per-slot loop

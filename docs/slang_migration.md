@@ -173,6 +173,14 @@ WHAT HAS LANDED (each entry: verified by the gate, not by inspection):
 | stage | source | result |
 | --- | --- | --- |
 | `unlit.frag` | `shaders/unlit.slang` | **byte-identical frame**, 10/10 gate, ctest 8/8, zero validation findings. 4036 B of SPIR-V against glslc's 4848 B; zero descriptor sets; heaps and strides identical to the GLSL build's; the material slot folded to `16896`, the texture slot to `16384 + index`, the sampler to `2048` |
+| `fxaa.frag` | `shaders/fxaa.slang` | gate 10/10; a post stage: push block only, no heap reads |
+| `post.vert` | `shaders/post.slang` | gate 10/10; the fullscreen triangle, no heap reads |
+| `gbuffer_debug.frag` | `shaders/gbuffer_debug.slang` | gate 10/10; the channel view, push layout verified member by member (0,4,8,12,16,20) |
+| `taa.frag` | `shaders/taa.slang` | gate 10/10; push block only |
+| `gbuffer.frag` | `shaders/gbuffer.slang` | **the first stage with shared-body + heap-UBO reads**, and the one that found the two traps in section 9: the transposed `mul` and the storage class. Wired, gate-green, and the motion channel is a real field again (598 distinct values over the swept fixture against 1 when it was broken) |
+
+The five non-`gbuffer` stages above were already byte-identical to their GLSL builds; `gbuffer` is the one that
+needed a fix outside the shader (the camera's descriptor type), so it moved the GLSL side too - see section 9.
 
 ## 7. The architecture the migration settled on: ONE copy of the shading code, two thin shims
 
@@ -226,8 +234,10 @@ hand it back), and the inline `property ... { get { ... } }` form used to give t
 workaround would be one bespoke view type per resource family. The named-accessor route is smaller, is
 explicit, and is already proven.
 
-WHAT REMAINS, as four steps with a gate on each: **the mechanism is settled and VERIFIED on both sides -
-see section 8 - so the rest is mechanical.**
+WHAT REMAINS is now a per-stage list with the order to do it in - see section 10. **The mechanism is settled
+and VERIFIED on both sides** (section 8), the first real leaf is wired and green (section 9), so the rest is
+mechanical, with one warning learned the hard way: the two traps in section 9 were both invisible in the
+SPIR-V's SHAPE and only showed up in the picture.
 
 ## 8. The mechanism, verified on a real shared body (surface.glsl)
 
@@ -293,31 +303,96 @@ THREE ORDERING/CONSTRAINT FACTS a leaf must respect, all learned the hard way:
    `uint counts[];` member is just a uint array, and Slang has no block-member indirection over a
    structured buffer, so `cluster_count_at(slot, i)` is `heap_at<StructuredBuffer<uint>>(slot)[i]`.
 
-### THE FIRST LEAF PORT FAILED, AND IS NOT WIRED
+## 9. The first leaf port: two traps, both measured, both fixed
 
-`shaders/gbuffer.slang` is written (a faithful port: the same body, `[[vk::location(n)]]` parameters and an
-output struct, the shared include order) and it is **deliberately NOT in `VR_SLANG_SOURCES`**, because with
-it built the capture gate reported `deferred_taa_fxaa` and `deformation` CHANGED - exactly the two
-scenarios that consume motion vectors - and a manual capture of the fixture came back **fully black**
-(`mean.py`: R/G/B all 0.0000; the 4.1 MB PNG size is NOT evidence of content, this encoder does not
-compress). What is already ruled out, so a next attempt does not re-check it:
+`shaders/gbuffer.slang` was written, wired, and came back **fully black** (`mean.py`: R/G/B all 0.0000 over
+the fixture's motion channel; the 4.1 MB PNG size is NOT evidence of content, this encoder does not
+compress), with the gate reporting `deferred_taa_fxaa` and `deformation` CHANGED - exactly the two
+scenarios that consume motion vectors. Two independent causes, both in the port, neither in the shared
+bodies.
 
-- the SPIR-V is shaped right: `CameraUBO`'s three matrix members are `ColMajor` with `MatrixStride 16`
-  (what glslc emits), the four varyings are at Locations 0-3 and the five outputs at 0-4;
-- `mul(M, v)` and `M * v` produced the SAME frame hash, so Slang's operator already matches GLSL's
-  column-vector convention - that fix changed nothing;
-- the eight scenarios that read no motion vector are byte-identical, so the surface gather, the material
-  lookup, the G-buffer targets and the emissive term are all correct.
+**TRAP 1: `mul(M, v)` ON A `row_major float4x4` IS THE TRANSPOSED PRODUCT.** Measured with a three-entry
+probe (`build-release-clang64/dvm/probe/mulorder.slang`), all three entries loading the same matrix member
+through a heap `ConstantBuffer` handle with the production flags:
 
-THE PRIME SUSPECT, checkable in one command: the PUSH BLOCK. The Slang module names it
-`SLANG_ParameterGroup_PushConstants_std140` - **std140** - while the GLSL side's block is std430 (the
-project passes `-fvk-use-gl-layout`). For this member list the member OFFSETS agree either way, but the
-block's declared SIZE - and therefore where the driver finds the two heap-index lanes that the slot macros
-expand against - is what matters: a wrong `frame_slot` / `image_index` sends every heap read to another
-frame's or another image's descriptor, which is exactly a black frame. Compare
-`OpMemberDecorate %...PushConstants...` and the block's size between `gbuffer.frag.spv` built by glslc and
-by slangc before anything else. Every pipeline except the scene one logged its creation in that run, so
-look at the scene pipeline and what it reads, not at the pass framework.
+| source spelling | emitted instruction | |
+| --- | --- | --- |
+| `mul(M, v)` | `OpVectorTimesMatrix(v, M)` | = Mᵀ·v, WRONG |
+| `mul(v, M)` | `OpMatrixTimesVector(M, v)` | correct |
+| `M * v` (the GLSL spelling, legal under `-allow-glsl`) | `OpMatrixTimesVector(M, v)` | correct, and the exact instruction glslc emits |
+
+The rest of the black frame follows arithmetically: a perspective matrix's 4th column is `(0,0,0,0)`, so
+Mᵀ·v has `w = 0` for every vertex, `(x / 0) * 0.5 + 0.5` is inf/NaN, and `clamp` turns that into 0 - a black
+motion channel with everything else in the shader correct. The fix is to keep the GLSL spelling: the shared
+bodies always used `M * v`, and the port is what "improved" it.
+
+THE TRAP INSIDE THE OLDER EVIDENCE, recorded so it is not trusted again: the note that "`mul(M, v)` and
+`M * v` produced the same frame hash" was measured on a STATIC camera, where the correct velocity is zero
+and so is the transposed one. A hash comparison is evidence only when the quantity it covers is non-zero in
+the scenario used.
+
+**TRAP 2: THE STORAGE CLASS A HEAP READ GOES THROUGH MUST MATCH THE DESCRIPTOR'S TYPE, AND A MISMATCH IS
+SILENT.** Reproduced all four combinations on this machine (host descriptor type x the storage class of the
+pointer the shader fetches it through):
+
+| heap descriptor written as | shader's pointer | result |
+| --- | --- | --- |
+| `STORAGE_BUFFER` | `StorageBuffer` (Slang's `DescriptorHandle<ConstantBuffer<T>>`) | works - the material table, i.e. the albedo channel |
+| `UNIFORM_BUFFER` | `Uniform` (what glslc emits for a GLSL `uniform` block) | works - the GLSL camera, the reference |
+| `UNIFORM_BUFFER` | `StorageBuffer` (Slang) | **zeros**: no validation finding, a zero camera matrix, NaN velocity, black motion |
+| `STORAGE_BUFFER` | `Uniform` (the GLSL block left as `uniform`) | **zeros**: no validation finding, and the geometry disappears entirely (albedo black) |
+
+Zero validation findings in both failing cases - only the picture. Since **Slang's
+`DescriptorHandle<ConstantBuffer<T>>` never emits a `Uniform` pointer** (verified both in the probe and in
+the built `gbuffer.frag.spv`), the only workable direction is to make the heap descriptor a STORAGE one,
+and THREE things then have to agree:
+
+1. `runtime.constructor.cppm` writes the camera slot as `VK_DESCRIPTOR_TYPE_STORAGE_BUFFER`;
+2. the camera buffer carries `VK_BUFFER_USAGE_STORAGE_BUFFER_BIT` - without it the validation layer rejects
+   the write (`vkWriteResourceDescriptorsEXT(): ... has no buffer(s) associated that are valid`) while the
+   render still comes out right, which is exactly the kind of finding this project treats as a failure;
+3. the GLSL side declares the block `buffer` instead of `uniform` (`shading.glsl`, `pbr.vert`,
+   `light_cluster.comp`, `rt_shadow.rgen`).
+
+IT IS LAYOUT-NEUTRAL, which is why it can be done at all: std430 and std140 give `CameraUBO` the same
+offsets (0, 64, 128, 144, 208) and the same 272 bytes, because the `vec3 camera_pos` sits where the next
+`mat4` has to be 16-aligned anyway; the three partial declarations read a prefix at the same offsets.
+Verified by capture: the albedo channel comes back to the identical two-value plateau it had before.
+
+WHAT THIS MEANS FOR EVERY STAGE STILL TO PORT: every heap buffer a Slang stage reads has to be a storage
+descriptor. `LightUBO` is still `VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER` with a GLSL `uniform` block because only
+GLSL reads it today - the stage that ports a light reader (`deferred.frag`, `shadow.frag`, `pbr.frag`) has
+to make the same three-part change for it.
+
+**RULED OUT, so a next attempt does not re-check it:**
+
+- the push block, the earlier prime suspect: member NAMES and OFFSETS are identical in both builds
+  (`0,4,8,12,16,20`, with `frame_slot`/`image_index` at 96/100), so the block's `std140` name is cosmetic
+  and the heap indices the slot macros expand against are read correctly;
+- the slot arithmetic: both builds compute `16898 + frame_slot` and index the same 64-byte grid;
+- the camera UBO's layout: `OpMemberDecorate` for `CameraUBO` is `ColMajor` + `MatrixStride 16` at
+  0/64/128/144/208 in BOTH modules. Layout was never the problem - the storage class was.
+
+**THE TWO INSTRUMENTS THAT MADE IT VISIBLE**, worth reusing because the screen is not a value readout:
+
+- the debug view runs through exposure -> ACES -> display encode, so an 8-bit plateau is NOT
+  `255 * clamp(...)`. What identifies a state is STRUCTURE: the geometry is exactly 22.11% of the frame and
+  the background is forced black, so each channel reads as `(0,0,0)` plus one plateau colour;
+- a KNOWN-VALUE probe. Writing `float2(0.001, 0.0)` into the velocity output put the plateau at
+  `(224, 206, 0)` - the y lane sitting exactly at the "did not move" bias - which proved the write path and
+  `motion_gain` (width/4) were both fine. Writing `camera_at(heap_camera_slot).camera_pos.xz * 0.001`,
+  whose value is the KNOWN `(0,0,4)` at offset 128, came back as the ZERO-velocity plateau `(206,206,0)`
+  instead: what a zeroed camera UBO looks like.
+
+**A NEARBY HAZARD from the same driver area**, worth knowing before the matrix-heavy stages are ported:
+NVIDIA has an open report of a different descriptor-heap defect on this driver family - a whole-matrix
+`OpLoad` through an untyped pointer ignoring `MatrixStride` (it gathers 4-bytes-apart columns), with
+per-element loads correct and a per-element + `dot` workaround:
+[forums.developer.nvidia.com/t/.../383932](https://forums.developer.nvidia.com/t/vulkan-615-71-09-rtx-4050-descriptor-heap-incorrect-rowmajor-matrixstride-handling-for-whole-matrix-opload-through-an-untyped-uniform-pointer/383932)
+(RTX 4050 Laptop, driver 615.71.09, Vulkan 1.4.351, SDK 1.4.357 - the same SDK this project builds with).
+It is NOT what this port hit: glslc's and slangc's camera reads have the same shape (`OpBufferPointerEXT`
+then a typed `OpAccessChain`) and both are correct once the storage class matches. But if a future stage's
+matrix read comes out GARBLED rather than zeroed, that report is the first thing to test against.
 
 PROGRESS ON `shading.glsl` (the bulk of the mechanical work is done and gate-green): the 25
 `light[heap_light_slot]` and 4 `camera[heap_camera_slot]` sites now call `light_at(...)` / `camera_at(...)`,
@@ -329,27 +404,40 @@ build and is worth knowing before inventing the next one: `cluster_index_at` was
 cluster-index accessor and `shading.glsl` ALREADY HAS a function called `cluster_index_at(ivec2, vec3)`,
 so the macro rewrote that function's own declaration and glslc reported
 `shading.glsl:476: syntax error, unexpected IDENTIFIER, expecting LEFT_PAREN`. The accessor is
-`cluster_indices_at` instead. Before adding an accessor, grep the shared files for the name. What is left in that file is FOUR code sites
-(`sampler2DArrayShadow(shadow_texture[...])` at 205, `samplerCube(irradiance_texture[...])` at 441, and the
-two block-member reads `cluster_counts[...].counts[...]` / `cluster_indices[...].indices[...]` at 499 and
-510) plus the declarations to guard. Note that the UBO struct member lists cannot be shared verbatim: a
-GLSL `mat4` member must be `row_major float4x4` on the Slang side (see section 6 - the keyword reads
-backwards), so those members need a per-language macro for the type, and the guards wrap the
-`layout(...) uniform X {` opening and the `} name[];` closing while the member list stays shared.
+`cluster_indices_at` instead. Before adding an accessor, grep the shared files for the name. The last four
+code sites in that file (`sampler2DArrayShadow(shadow_texture[...])`, `samplerCube(irradiance_texture[...])`,
+and the two block-member reads `cluster_counts[...].counts[...]` / `cluster_indices[...].indices[...]`) are
+done too, and the UBO member lists are shared through the `VR_MAT4` type macro: the guards wrap the
+`layout(...) buffer X {` opening and the `} name[];` closing while the member list stays in one place.
 
-1. **`scene_structs.glsl`** - extract the language-neutral struct definitions (`Material` from
-   `surface.glsl`; `CameraUBO`, `LightUBO` and the cluster structs from `shading.glsl`) into one file that
-   both languages parse. Nothing about behaviour changes: the two bodies include it, so the GLSL side
-   compiles to the same SPIR-V and the gate stays byte-identical.
-2. **`heap_declarations.glsl`** (GLSL shim) - every `layout(descriptor_heap, ...)` declaration that is in
-   `heap_slots.glsl`, `surface.glsl` and `shading.glsl` today, PLUS the accessor macros
-   (`#define camera_at(slot) camera[slot]`, `#define texture_at(slot) heap_textures[slot]`,
-   `#define material_at(slot, index) heap_material_tables[slot].materials[index]`, one per family, and the
-   existing `heap_texel`). `heap_slots.glsl` includes it, so every GLSL stage keeps working.
-3. **The body rewrite** - the shared bodies stop indexing the heap directly and call the accessors. This is
-   PROVABLY NEUTRAL on the GLSL side: each accessor macro expands to exactly the expression it replaces,
-   so the gate must not move by one pixel, and a moved frame means a macro is wrong.
-4. **`heap_access.slang`** (Slang shim) - the same accessor names, defined with `DescriptorHandle`s and a
-   `heap_texel` function. After this the shared bodies are includable by both languages and every
-   remaining stage is a mechanical `.slang` file: the Slang shim, the shared bodies, and its own entry
-   point, varying and push block.
+## 10. What remains
+
+The mechanism is settled, the shim is proven, and six stages are wired: what is left is the same recipe
+applied per stage, easy ones first so that each new hazard is met in isolation. Ordered by what they read:
+
+1. **Push-block-only stages** (no heap reads at all, so the smallest possible ports): `post.frag`,
+   `shadow.vert`.
+2. **Heap readers that touch no buffer**: `shadow.frag`, `pbr.vert`, `pbr.frag`, `deferred.frag`,
+   `heap_probe.vert/.frag/.comp`. `pbr.vert` already declares the camera as its own partial `buffer` block
+   (three members, offsets 0/64/128 - same under std430), so it needs nothing new; the ones that read the
+   LIGHT buffer do, see 4 below.
+3. **Compute stages**: `compute_skin.comp`, `mask_bake.comp`, `light_cluster.comp`,
+   `megalights_trace.comp`, `megalights_temporal.comp`. These are the ones that WRITE heap buffers, so
+   their storage-image/buffer declarations are the mirror of the read-side contract - the same
+   class/type agreement applies, and a mismatch is equally silent.
+4. **The LIGHT buffer has to make the same three-part change the camera did** (section 9) before any Slang
+   stage reads it: `VK_DESCRIPTOR_TYPE_STORAGE_BUFFER` in `runtime.constructor.cppm`, a
+   `VK_BUFFER_USAGE_STORAGE_BUFFER_BIT` on the buffer, and `buffer` instead of `uniform` in whichever GLSL
+   files declare the block (`shading.glsl`, `light_cluster.comp`, `rt_shadow.rgen`, ...). Check the offsets
+   first: unlike `CameraUBO`, a `LightUBO` with ARRAYS is exactly where std140 and std430 can disagree, so
+   the offsets have to be compared before the layout is changed rather than after.
+5. **Ray tracing**: `rt_shadow.rgen/.rchit/.rmiss/.rahit`. The rgen already has the camera as a `buffer`
+   block; it also declares the TLAS and the visibility storage image, so this is where the acceleration
+   structure and the storage-image declarations get their Slang spelling (the shim's `Texture2D`/heap
+   handling covers the images already).
+6. **Then the migration's own endgame**, none of it started: move the GLSL sources to `glsl.old/`, make
+   `slangc` a required tool instead of a two-phase fallback, drop the `glslc` rules from `CMakeLists.txt`,
+   and sync `Doxyfile` (`EXTENSION_MAPPING` for `.slang`), `docs/shaders.md`, the README's shader section
+   and `scripts/windows/compile_shaders.ps1` / `compile_shaders.sh`. CI cannot get `slangc` from MSYS2
+   (`pacman -Ss slang` has no package), so the release job needs the LunarG SDK's `Bin` on PATH or a Slang
+   build step.

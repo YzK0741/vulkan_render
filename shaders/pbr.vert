@@ -30,8 +30,9 @@ layout(location = 5) in vec4 in_weights;  // skin weights (WEIGHTS_0); (1,0,0,0)
 #include "heap_slots.glsl"
 
 // HEAP-NATIVE: the array IS the heap, and the slot carries the frame (see heap_slots.glsl's index rule). The block
-// itself is unchanged - it is a CPU/GPU contract with the runtime's camera_ubo.
-layout(descriptor_heap, descriptor_stride = heap_slot_stride) uniform CameraUBO {
+// itself is unchanged - it is a CPU/GPU contract with the runtime's camera_ubo. A `buffer`, not a `uniform`:
+// the heap descriptor is a STORAGE descriptor and the storage class has to match (see shading.glsl's note).
+layout(descriptor_heap, descriptor_stride = heap_slot_stride) buffer CameraUBO {
     mat4 view;
     mat4 proj;
     vec3 camera_pos;
