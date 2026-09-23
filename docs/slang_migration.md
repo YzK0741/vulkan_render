@@ -536,7 +536,30 @@ and the two block-member reads `cluster_counts[...].counts[...]` / `cluster_indi
 done too, and the UBO member lists are shared through the `VR_MAT4` type macro: the guards wrap the
 `layout(...) buffer X {` opening and the `} name[];` closing while the member list stays in one place.
 
-## 10. What remains
+## 10. What remained, and how it finished
+
+THE MIGRATION IS COMPLETE. All twenty-four stage outputs are built by slangc; the retired GLSL stage sources
+are in `shaders/glsl.old/`; `slangc` is required by `CMakeLists.txt` with no glslc fallback; the compile
+scripts and the docs were synced; CI installs a pinned slangc and asserts that CMake found it. The numbered
+list below is kept as the record of HOW each step closed, because the reasons are what a reader needs - not
+just the fact.
+
+WHAT DELIBERATELY DID NOT MOVE, because it is not a leftover but the architecture: `surface.glsl`,
+`shading.glsl`, `sky.glsl`, `ibl_specular.glsl`, `heap_slots.glsl` and `heap_slot_constants.glsl` stay in
+`shaders/`, written in GLSL syntax, `#include`d by every Slang leaf, and parsed by Slang's GLSL mode. The
+last of them is also the grid mirror `tests/test_render_resources.cpp` parses against `core::heap_slots`, so
+its path is load-bearing for a test rather than a convenience.
+
+WHAT A READER SHOULD STILL BE SCEPTICAL ABOUT, stated here rather than buried: THREE stages could not be
+shown to run in any automated capture (`rt_shadow.rahit` - forcing `IgnoreHit()` on every hit changed 0
+pixels; `compute_skin` - shifting every skinned vertex by +1.0 changed 0 pixels; `mask_bake` - turning its
+own key on changed 0 pixels). Those three are built, `spirv-val` clean and shape-verified, and the
+reachability table below says which route each stage was accepted by. The two `megalights` stages, by
+contrast, ARE covered by an A/B that a forced-output probe proved live (forcing the resolve to red moved
+98.945% of the frame). A green gate is evidence about the paths a capture REACHES, and this document has said
+so since the any-hit proved it.
+
+WHAT REMAINED, step by step (each line was true when it was written, and is kept for the reason):
 
 The mechanism is settled, the shim is proven, and six stages are wired: what is left is the same recipe
 applied per stage, easy ones first so that each new hazard is met in isolation. Ordered by what they read:
