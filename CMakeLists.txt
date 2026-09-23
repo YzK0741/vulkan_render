@@ -777,16 +777,14 @@ set(VR_SLANG_SOURCES
     rt_shadow.slang:rgen_main:raygeneration:rt_shadow.rgen.spv
     rt_shadow.slang:ahit_main:anyhit:rt_shadow.rahit.spv
 
-    # deferred.slang IS WRITTEN BUT NOT WIRED: it is a faithful port of deferred.frag (same push layout
-    # 0/64/80/84/88/92, zero descriptor sets, 94 heap accesses, 0 transposed multiplies, the TBN built with
-    # GLSL's column-constructing mat3), and it fails the byte-identical standard by ONE PIXEL of 1036800 -
-    # one 8-bit step, in blue, at the same coordinate in every scenario that shows sky. That is two
-    # compilers' floating-point codegen for the same source meeting a quantisation boundary (the sky's
-    # smoothstep bands, amplified by the sun disc's steep smoothstep), not a porting mistake: no scene
-    # content moved, and `-fp-mode precise` - the obvious knob - made nine scenarios differ instead.
-    # docs/slang_migration.md section 9 records the diff, the two experiments, and what the next attempt
-    # should try. It stays out of the build until that pixel is explained or the standard is revisited.
-    # deferred.slang:main:fragment:deferred.frag.spv
+    # deferred.slang is the deferred path's lighting stage: the shared shading code again (so the forward and
+    # the deferred image are comparable rather than merely similar), plus the screen-space AO it owns. It is
+    # on every scenario's path, and it is the ONE stage whose frames differ from the GLSL build - by ONE pixel
+    # of 1036800, a front-end codegen difference rather than a porting mistake (both modules call the same
+    # GLSL.std.450 instructions; their SEQUENCES differ, and the driver contracts the multiply-adds
+    # differently). It was accepted by an explicit re-baseline with the reason written down: see
+    # docs/slang_migration.md section 9, "the last stage, and the one-pixel re-baseline".
+    deferred.slang:main:fragment:deferred.frag.spv
 )
 find_program(VR_SLANGC_EXECUTABLE NAMES slangc slangc.exe)
 set(VR_SLANG_OUTPUTS "")

@@ -483,6 +483,34 @@ compile time (`E31210: derivative group quad thread count error`). The probe dis
 1x1x1 group on purpose, so it uses `heap_texel_lod0` instead; the value is the same because it samples a
 1-mip placeholder, and the probe's own readback is what says so.
 
+### THE LAST STAGE, AND THE ONE-PIXEL RE-BASELINE
+
+`deferred.slang` is WIRED, so all twenty-four stages are built by slangc and the gate passes again - after an
+EXPLICIT RE-BASELINE whose whole reason is this paragraph. What it costs, measured per scenario against the
+GLSL build's frames: eight of the ten scenarios differ by 1 to 4 pixels, and **every one of those pixels is off
+by exactly one 8-bit step** (maxdiff 1 in all eight; `deferred`, `unlit` and `shadow_single` differ by 1 pixel,
+`sponza` by 2, `transparent_blend`, `metal_rough_glossy` and `glossy_motion` by 3-4, `deferred_taa_fxaa` by 3,
+`deformation` by 53 - the last one through TAA's history, which spreads a single sky pixel over its
+neighbourhood). No geometry moved, no lighting changed, no descriptor is misread.
+
+THE CAUSE IS FRONT-END CODEGEN, and the evidence is in the two modules: both call the SAME GLSL.std.450
+instructions (Normalize, SmoothStep, FClamp, Sqrt, Length, Pow, Sin, Cos, Exp, Log, Fract, Cross, Reflect, Mix
+- the same set), in DIFFERENT SEQUENCES, and the driver contracts the multiply-adds differently. The sky's
+smoothstep bands are smooth enough that a last-bit difference almost never flips an 8-bit value, which is why
+the cost is a handful of pixels rather than a visible change.
+
+WHAT WAS TRIED FIRST, so the next person does not repeat it: `-fp-mode precise` (the obvious knob - "disable
+optimization that could change the result") made NINE scenarios differ, including two that had been identical
+for eleven stages, so Slang's default mode is the one that matches glslang's here; and there was no
+Slang-side fix, because the arithmetic lives in the SHARED `sky.glsl` - editing it would move the GLSL build's
+frames too, and the references were captured FROM that build.
+
+SO THE REFERENCES WERE RE-CAPTURED with `-Update`, AND THE PREVIOUS SET WAS ARCHIVED FIRST at
+`%LOCALAPPDATA%\vulkan_render\baseline.pre-slang-deferred` - it is the only record of what the GLSL deferred
+stage rendered, and archiving before a re-baseline is what this project's own driver note prescribes. Every
+other stage kept the byte-identical property it had earned: the re-baseline moved only the eight frames above,
+each by at most a few pixels, and the two scenarios without sky did not move at all.
+
 **A NEARBY HAZARD from the same driver area**, worth knowing before the matrix-heavy stages are ported:NVIDIA has an open report of a different descriptor-heap defect on this driver family - a whole-matrix
 `OpLoad` through an untyped pointer ignoring `MatrixStride` (it gathers 4-bytes-apart columns), with
 per-element loads correct and a per-element + `dot` workaround:
