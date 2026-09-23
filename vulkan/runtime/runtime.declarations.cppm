@@ -1179,6 +1179,24 @@ namespace vulkan {
         std::atomic<uint64_t> mesh_indirect_dispatches = 0;
         std::atomic<uint64_t> mesh_indirect_direct_fallbacks = 0;
         /**
+         * @brief THE MESH CULLING COUNTERS (docs/mesh_shaders.md step 3, "what the culling buys"): a mesh entry adds
+         *        to one per workgroup, the host reads the buffer back once at shutdown and logs the totals
+         *
+         * `MAX_FRAMES_IN_FLIGHT` lanes of `mesh_stat_stride` (8) uints, on the heap at
+         * `core::heap_slots::meshlet_stats` - the only way a mesh stage can reach memory. Host-visible and coherent
+         * because the read-back is a plain mapped read after `wait_idle`, and the counters are cumulative for the
+         * whole session: the numbers the doc quotes are totals over a fixed scenario, which is what makes them
+         * comparable between runs (the gate's scenarios are 40 frames each).
+         *
+         * WHAT IT ANSWERS: how many meshlets the frustum test rejected. That number is BOTH the culling's effect on
+         * the mesh entry AND - because a rejected meshlet still costs a workgroup launch - the number of dispatches a
+         * compute pass that culled before the dispatch would not have recorded at all.
+         */
+        vk_buffer meshlet_stats_buffer = {};
+        void* meshlet_stats_mapped = nullptr;
+        /// the one line per session, printed from the destructor (after `wait_idle`, so the counters are final)
+        void log_meshlet_stats() const;
+        /**
          * THE STRUCTURE PHASE ITSELF, which is one value now (see `vulkan.ray_tracing`): the bottom and top level
          * structures, the map from their indices back to the casters they were built from, and the MASK/skin
          * copies a hit's shading reads that geometry through. Built once (lazily, on the first frame the flag is

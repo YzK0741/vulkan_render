@@ -553,7 +553,7 @@ namespace vulkan {
              */
             static constexpr uint32_t tlas = heap_slot_base + 703u;
             /**
-             * @brief the MESHLET TABLE (docs/mesh_shaders.md step 3): one 28-byte record per meshlet
+             * @brief the MESHLET TABLE (docs/mesh_shaders.md step 3): one 48-byte record per meshlet
              *
              * @note ONE SLOT, not a per-frame pair, and that is a property of the data rather than a shortcut: the
              *       table is written ONCE, while the scene is imported and before any frame is recorded, and never
@@ -563,6 +563,15 @@ namespace vulkan {
              *       numbered by their position, so growing one in place would renumber everything after it.
              */
             static constexpr uint32_t meshlets = heap_slot_base + 745u;
+            /**
+             * @brief the MESH CULLING COUNTERS (docs/mesh_shaders.md step 3, "what the culling buys"): one per-frame
+             *        lane of 8 uints, added to by the mesh entries and read back by the host at shutdown
+             *
+             * @note ON THE HEAP rather than in a host-only buffer, because a mesh stage's only way to reach memory
+             *       is a heap descriptor - there is no binding model left to hang a counter off. The read-back is a
+             *       plain mapped read after `wait_idle`, which is why the buffer is host-visible and coherent.
+             */
+            static constexpr uint32_t meshlet_stats = heap_slot_base + 746u;
             static constexpr uint32_t scene_camera = heap_slot_base + 514u;        // binding 0, per frame slot
             static constexpr uint32_t scene_light = heap_slot_base + 516u;         // binding 7, per frame slot
             static constexpr uint32_t cluster_counts = heap_slot_base + 518u;      // binding 11, per frame slot

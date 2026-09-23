@@ -54,9 +54,13 @@ const uint heap_slots_morph_data = heap_slot_base + 528u;
 // number is at the END of the used region rather than beside the current family above, because growing an
 // array in place would renumber every array after it (the rule the TLAS and the storage twins follow too).
 const uint heap_slots_skin_matrices_previous = heap_slot_base + 743u;
-// the MESHLET TABLE (docs/mesh_shaders.md step 3): one 28-byte record per meshlet, written once at scene
+// the MESHLET TABLE (docs/mesh_shaders.md step 3): one 48-byte record per meshlet, written once at scene
 // import. ONE descriptor, not a per-frame pair - see core::heap_slots::meshlets for why that is safe.
 const uint heap_slots_meshlets = heap_slot_base + 745u;
+// the MESH CULLING COUNTERS (docs/mesh_shaders.md step 3, "what the culling buys"): a small RW buffer the mesh
+// entries add to and the host reads back once, at shutdown - one descriptor with a per-frame lane inside it, like
+// every other per-frame buffer (see core::heap_slots::meshlet_stats).
+const uint heap_slots_meshlet_stats = heap_slot_base + 746u;
 const uint heap_slots_mask_instances = heap_slot_base + 530u;
 // frame-invariant images the shading stage samples
 const uint heap_slots_env_cube = heap_slot_base + 532u;

@@ -259,6 +259,9 @@ void meshlet_main(out vertices shadow_vertex_output verts[mesh_vertices_per_work
 {
     const MeshGeometryLanes geometry = push.geometry;
     const MeshletRecord meshlet = meshlet_at(geometry.first_index + group_id.x);
+    // ONE ATOMIC PER WORKGROUP: the shadow pass and the G-buffer share the counters, so the totals below are the
+    // session's and the doc quotes them per pass where it can (docs/mesh_shaders.md step 3's measurement)
+    mesh_stat_add(push.frame_slot, mesh_stat_workgroups, 1u);
 
     // ---- PER-MESHLET CULLING, and it happens HERE rather than in a task stage (docs/mesh_shaders.md step 3) ----
     // A task stage cannot be given push data on this Slang, so the culling lives in the stage that can read the
@@ -283,6 +286,7 @@ void meshlet_main(out vertices shadow_vertex_output verts[mesh_vertices_per_work
     const float radius = meshlet.radius * matrix_max_axis_scale(world) * matrix_max_axis_scale(light);
     if (!deforming && !clip_sphere_visible(clip, radius))
     {
+        mesh_stat_add(push.frame_slot, mesh_stat_culled, 1u);
         SetMeshOutputCounts(0u, 0u); // culled: no vertices, no triangles, nothing rasterized
         return;
     }
@@ -290,6 +294,8 @@ void meshlet_main(out vertices shadow_vertex_output verts[mesh_vertices_per_work
     const uint triangle_count = min(meshlet.index_count, mesh_triangles_per_workgroup * mesh_indices_per_triangle) / mesh_indices_per_triangle;
 
     SetMeshOutputCounts(triangle_count * mesh_indices_per_triangle, triangle_count);
+    mesh_stat_add(push.frame_slot, mesh_stat_emitted, 1u);
+    mesh_stat_add(push.frame_slot, mesh_stat_triangles, triangle_count);
 
     for (uint t = 0u; t < triangle_count; ++t)
     {

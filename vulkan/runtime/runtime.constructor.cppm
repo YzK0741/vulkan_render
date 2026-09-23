@@ -184,6 +184,10 @@ namespace vulkan {
         this->vulkan_core.wait_idle();
 
         this->pipelines.clear();
+        // THE SESSION'S CULLING TOTALS, printed HERE rather than per frame: the counters are cumulative, and this is
+        // the one point where the GPU has finished (wait_idle above) and the numbers are final - so a run of any
+        // length reports exactly what the meshlet path did, without a read-back inside the frame loop.
+        this->log_meshlet_stats();
 
         // post-process objects: the FXAA pipeline and the two samplers are RAII members, and the post chain's
         // two pipelines belong to the post composite PASS (vulkan.pass.post::release_owned), the same rule
@@ -204,6 +208,42 @@ namespace vulkan {
         // Vulkan backend owns device resources); member destruction would also run it before
         // vulkan_core, but doing it here keeps the order obvious.
         this->debug_overlay.shutdown();
+    }
+
+    // THE SESSION'S MESH CULLING TOTALS (docs/mesh_shaders.md step 3, "what the culling buys"). Read from the
+    // mapped counter buffer after `wait_idle`: the sums are per session, and the two DERIVED numbers are the point
+    // of the line - the share of workgroups the frustum test rejected, and what that share means for a compute pass
+    // (a rejected meshlet costs a workgroup launch today, and would cost nothing at all if the culling happened
+    // before the dispatch).
+    void runtime::log_meshlet_stats() const {
+        if (this->meshlet_stats_mapped == nullptr) {
+            return;
+        }
+        auto const* const counters = static_cast<uint32_t const*>(this->meshlet_stats_mapped);
+        uint64_t total[8] = {};
+        for (int slot = 0; slot < vulkan::core::MAX_FRAMES_IN_FLIGHT; ++slot) {
+            for (uint32_t counter = 0; counter < 8u; ++counter) {
+                total[counter] += counters[static_cast<std::size_t>(slot) * 8u + counter];
+            }
+        }
+        uint64_t const workgroups = total[0];
+        uint64_t const culled = total[1];
+        uint64_t const emitted = total[2];
+        uint64_t const triangles = total[3];
+        uint64_t const mesh_workgroups = total[4];
+        if (workgroups == 0u && mesh_workgroups == 0u) {
+            return; // no mesh stage ran: a vertex-path session says nothing rather than reporting zeroes
+        }
+        utility::log("mesh culling: {} meshlet workgroups, {} emitted their triangles, {} were culled ({}% of the workgroups emitted nothing), {} triangles from meshlets",
+                     workgroups,
+                     emitted,
+                     culled,
+                     workgroups == 0u ? 0u : (culled * 100u) / workgroups,
+                     triangles);
+        utility::log("mesh culling: {} workgroups of the NON-meshlet mesh path ran too, so this session's geometry cost {} workgroup launches either way - a compute pass that culled first would record {} fewer",
+                     mesh_workgroups,
+                     workgroups + mesh_workgroups,
+                     culled);
     }
 
     void runtime::init_scene_resources() {
@@ -370,6 +410,33 @@ namespace vulkan {
             // silently sent every dispatch down the DIRECT path in the first version of this seam
             if (auto const* const detail = this->vulkan_core.vma.get_buffer_detail(this->mesh_indirect_buffer.handle()); detail != nullptr) {
                 this->mesh_indirect_table = detail->buffer;
+            }
+        }
+
+        // ---- THE MESH CULLING COUNTERS (docs/mesh_shaders.md step 3, "what the culling buys"): one lane of eight
+        //      uints per frame in flight, on the heap because a mesh stage has no other way to reach memory, and
+        //      host-visible because the host reads it back once, at shutdown. Zeroed here; the entries only add.
+        {
+            std::vector<unsigned char> const zeroed_stats(static_cast<size_t>(vulkan::core::MAX_FRAMES_IN_FLIGHT) * 8u * sizeof(uint32_t), 0);
+            init_utils::create_host_buffer(this->vulkan_core,
+                                           std::as_bytes(std::span(zeroed_stats)),
+                                           vulkan::buffer_type::storage_coherent,
+                                           "mesh culling counter buffer",
+                                           this->meshlet_stats_buffer,
+                                           this->meshlet_stats_mapped,
+                                           VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT);
+            if (this->vulkan_core.descriptor_heaps.ready() && this->vulkan_core.heap_grid_offset != VK_WHOLE_SIZE) {
+                if (auto const* const detail = this->vulkan_core.vma.get_buffer_detail(this->meshlet_stats_buffer.handle()); detail != nullptr) {
+                    VkBufferDeviceAddressInfo const info = {.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .pNext = nullptr, .buffer = detail->buffer};
+                    VkDeviceAddress const address = vkGetBufferDeviceAddress(this->vulkan_core.device, &info);
+                    bool const written = this->vulkan_core.descriptor_heaps.write_buffer(static_cast<VkDeviceSize>(core::heap_slots::meshlet_stats) * core::heap_slot_stride,
+                                                                                         address,
+                                                                                         static_cast<VkDeviceSize>(vulkan::core::MAX_FRAMES_IN_FLIGHT) * 8u * sizeof(uint32_t),
+                                                                                         VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+                    if (!written) {
+                        utility::log("descriptor heap: the mesh culling counters were NOT written - the counters stay zero");
+                    }
+                }
             }
         }
 

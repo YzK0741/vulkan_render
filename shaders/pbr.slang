@@ -245,6 +245,9 @@ void mesh_main(out vertices pbr_vertex_output verts[mesh_vertices_per_workgroup]
 
     // ONE SetMeshOutputCounts for the whole workgroup, before any output is written.
     SetMeshOutputCounts(emit * mesh_indices_per_triangle, emit);
+    // ... and the same counter the meshLET entry adds to, so the two forms' workgroup counts can be compared on one
+    // run (docs/mesh_shaders.md step 3's measurement)
+    mesh_stat_add(push.frame_slot, mesh_stat_mesh_workgroups, 1u);
 
     for (uint t = 0u; t < emit; ++t)
     {
@@ -274,6 +277,9 @@ void meshlet_main(out vertices pbr_vertex_output verts[mesh_vertices_per_workgro
 {
     const MeshGeometryLanes geometry = push.geometry;
     const MeshletRecord meshlet = meshlet_at(geometry.first_index + group_id.x);
+    // ONE ATOMIC PER WORKGROUP, counting what the culling below decided (docs/mesh_shaders.md step 3's measurement:
+    // a rejected meshlet and a meshlet nobody dispatched are the same pixels, so the numbers are the only witness)
+    mesh_stat_add(push.frame_slot, mesh_stat_workgroups, 1u);
 
     // PER-MESHLET CULLING against the camera's clip volume: object -> world (the push's model matrix, or the
     // instance table for an instanced draw) -> clip, with the radius scaled by an upper bound on both matrices'
@@ -292,12 +298,15 @@ void meshlet_main(out vertices pbr_vertex_output verts[mesh_vertices_per_workgro
     const float radius = meshlet.radius * matrix_max_axis_scale(world) * matrix_max_axis_scale(view_proj);
     if (!deforming && !clip_sphere_visible(clip, radius))
     {
+        mesh_stat_add(push.frame_slot, mesh_stat_culled, 1u);
         SetMeshOutputCounts(0u, 0u);
         return;
     }
 
     const uint triangle_count = min(meshlet.index_count, mesh_triangles_per_workgroup * mesh_indices_per_triangle) / mesh_indices_per_triangle;
     SetMeshOutputCounts(triangle_count * mesh_indices_per_triangle, triangle_count);
+    mesh_stat_add(push.frame_slot, mesh_stat_emitted, 1u);
+    mesh_stat_add(push.frame_slot, mesh_stat_triangles, triangle_count);
 
     for (uint t = 0u; t < triangle_count; ++t)
     {

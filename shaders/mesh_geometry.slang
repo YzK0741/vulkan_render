@@ -134,6 +134,33 @@ MeshletRecord meshlet_at(const uint index)
 {
     return heap_at<StructuredBuffer<MeshletRecord>>(heap_slots_meshlets)[index];
 }
+
+// =============================================================================================================
+// WHAT THE CULLING BUYS, COUNTED (docs/mesh_shaders.md step 3). The meshlet entry culls a whole meshlet against
+// the camera before it emits anything, and until this existed the LOOK of the frame was the only evidence that it
+// happened - a rejected meshlet and a meshlet nobody dispatched are the same pixels. So each entry adds to a
+// counter, the host reads the buffer back at shutdown and logs the totals, and the number that matters is
+// `mesh_stat_culled`: it is both how many meshlets the frustum test rejected AND how many workgroup launches a
+// compute pass that culled BEFORE the dispatch would never have paid for.
+//
+// IT COSTS ONE ATOMIC PER WORKGROUP PER COUNTER, which is why nothing here counts per triangle. The buffer is one
+// descriptor with a per-frame lane per counter (`mesh_stat_stride` uints per frame in flight), for the reason every
+// per-frame buffer in this renderer has one: the recording of frame N+1 must not add to totals the GPU is still
+// reading for frame N.
+// =============================================================================================================
+static const uint mesh_stat_stride = 8u;
+static const uint mesh_stat_workgroups = 0u;      // meshlet workgroups dispatched = meshlets the stage looked at
+static const uint mesh_stat_culled = 1u;         // ... rejected by the frustum test, emitting nothing
+static const uint mesh_stat_emitted = 2u;        // ... that emitted their triangles
+static const uint mesh_stat_triangles = 3u;      // triangles those meshlets emitted
+static const uint mesh_stat_mesh_workgroups = 4u; // workgroups of the NON-meshlet mesh path, for comparison
+
+/// @brief add @p value to one of this frame's mesh counters (see the block comment above)
+export void mesh_stat_add(const uint frame_slot, const uint counter, const uint value)
+{
+    RWStructuredBuffer<uint> stats = heap_at<RWStructuredBuffer<uint>>(heap_slots_meshlet_stats);
+    atomicAdd(stats[frame_slot * mesh_stat_stride + counter], value);
+}
 // =============================================================================================================
 // CULLING HELPERS (docs/mesh_shaders.md step 3): what a stage needs to reject a whole meshlet before emitting any
 // of it - and the reason they are THIS conservative rather than tight.

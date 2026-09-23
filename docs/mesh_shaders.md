@@ -570,6 +570,29 @@ point, 0 through the direct call`; and a FORCED PROBE - the command table writte
 `deferred` into `8687703DA3BCA7EF` (the no-geometry hash this document already recorded for the earlier probe), so
 the counts the GPU used are demonstrably the ones in the table.
 
+**WHAT THE CULLING BUYS, COUNTED (and this is the measurement the log could not carry before).** A rejected meshlet
+and a meshlet nobody dispatched are the same pixels, so the culling needed a witness of its own: the mesh entries now
+add to counters on the heap (slot `meshlet_stats`, `core::heap_slots::meshlet_stats` - the heap is a mesh stage's
+ONLY route to memory) and the host reads the buffer back once, at shutdown, where `wait_idle` has already made the
+numbers final. One atomic per workgroup per counter, eight uints per frame in flight, cumulative for the session -
+so the figures below are totals over a scenario's 40 frames and are comparable between runs:
+
+| scenario (40 frames) | meshlet workgroups | emitted | culled | share culled | triangles emitted |
+| --- | --- | --- | --- | --- | --- |
+| `sponza` (3145 meshlets over 103 primitives) | 118541 | 75741 | **42800** | **36 %** | 6325695 |
+| `deferred` (DamagedHelmet) | 8554 | 7844 | 710 | 8 % | 665930 |
+
+WHAT THAT SAYS, and what it does not. It says the frustum test rejects a third of the meshlet workgroups on the
+heavy scene - that geometry is never fetched and never rasterized, which is the culling's actual effect. It does NOT
+say what that is worth in time: **nothing here was timed**, and the counters are counts of work, not of milliseconds.
+It also does not separate the shadow pass from the G-buffer (both add to the same counters), and a DEFORMING draw is
+never culled at all by design, so its meshlets are in `emitted` whatever the frustum says.
+
+The same counter answers the question item ② is about: a rejected meshlet still costs a WORKGROUP LAUNCH today, so
+`culled` is exactly how many dispatches a compute pass that culled before the dispatch would not have recorded -
+42,800 over 40 frames on Sponza, i.e. about 1070 a frame. Whether that is worth a pass of its own is a decision the
+counts inform and the timings (which do not exist yet) would settle.
+
 **WHAT REMAINS IN THIS STEP** is the pass that writes those counts: a compute pass that culls each meshlet against
 the cascade's (or the camera's) frustum - the meshlet table and the light matrices are both heap reads a compute
 stage can make - and writes the surviving counts into the command table slot the primitive already owns. One known
