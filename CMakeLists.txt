@@ -756,6 +756,10 @@ set(VR_SLANG_SOURCES
     # against the value it knows, so this port is accepted by comparing those log lines (see the file).
     heap_probe.slang:main:vertex:heap_probe.vert.spv
     heap_probe.slang:frag_main:fragment:heap_probe.frag.spv
+    # rt_shadow.slang is the ray-traced shadow's shader file, growing one stage at a time; it starts with the
+    # closest-hit stage, whose whole job is the payload contract (see the file). No gate scenario enables
+    # rt_shadows, so this port is shape-verified and belongs to the A/B capture route in docs/slang_migration.md.
+    rt_shadow.slang:chit_main:closesthit:rt_shadow.rchit.spv
 
     # deferred.slang IS WRITTEN BUT NOT WIRED: it is a faithful port of deferred.frag (same push layout
     # 0/64/80/84/88/92, zero descriptor sets, 94 heap accesses, 0 transposed multiplies, the TBN built with
