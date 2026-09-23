@@ -16,16 +16,26 @@
  * `shaders/glsl.old/` and are not built; the four shared bodies still carry GLSL syntax and are `#include`d
  * by the Slang leaves (see docs/slang_migration.md for how that works).
  *
+ * EVERY GEOMETRY STAGE BELOW IS ALSO A MESH STAGE, and on a device with VK_EXT_mesh_shader the mesh form is what
+ * runs: `shadow.mesh.spv` replaces `shadow.vert`'s pipeline (step 1 of docs/mesh_shaders.md) and `pbr.mesh.spv`
+ * replaces `pbr.vert`'s in the G-buffer, forward and transparent passes (step 2) - one workgroup emits up to 85
+ * triangles, the stage fetches its own vertices by device address (no input assembler), and it shares the SAME
+ * fragment stage and the same projection body as the vertex entry, which is why the capture gate is byte-identical
+ * with either form. The `.vert` entries stay because a device without the extension runs them. The fullscreen
+ * `post.vert` passes are not geometry stages and have no mesh form.
+ *
  * @code
  *  light_cluster.comp            compute: sorts the punctual lights into the frame cluster grid (M5)
  *  shadow.vert + shadow.frag     depth-only, from the sun, into the per-slot shadow map array
  *                                (one layer per cascade, `[render] shadow_cascades` = 1..4)
+ *                                [or shadow.mesh.spv, same fragment stage]
  *        |
  *  surface.glsl                  (include) the shared material-surface gather, and
  *  shading.glsl                  (include) the shared lighting - used by the G-buffer path below and
  *                                by the transparent pass
  *        |
  *  pbr.vert + gbuffer.frag       opaque geometry -> three 1x G-buffer targets + a 1x depth image
+ *                                [or pbr.mesh.spv]
  *                                (albedo+metallic, world normal+roughness, material id+AO+flags),
  *                                the motion-vector target, and the emissive term ADDED into the
  *                                scene color (5th attachment)
@@ -35,6 +45,7 @@
  *                                into the scene color - sky where no geometry wrote depth
  *        |
  *  pbr.vert + pbr.frag/unlit.frag  the TRANSPARENT pass: alphaMode BLEND geometry, shaded while it
+ *                                [or pbr.mesh.spv]
  *                                draws and blended over the shaded frame (a G-buffer cannot carry a
  *                                blended surface)
  *        |
