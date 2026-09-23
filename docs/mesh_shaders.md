@@ -349,46 +349,47 @@ asserted on the CPU instead, by `tests/test_meshlet.cpp`, which CI runs:
 | both index widths | 16-bit and 32-bit index buffers are read with the same result |
 | malformed input | an empty span, no vertices, a stride shorter than one position, a window past the buffer end: an EMPTY result, never a read past it (an out-of-range index inside a valid window keeps the meshlet - the draw is not silently dropped - and simply does not extend the bounds) |
 
-**THE TASK STAGE'S SYNTAX IS SETTLED, AND ITS HEAP ACCESS CRASHES THE COMPILER.** Throwaway probes in
-`build-release-clang64/dvm/` answered the syntax questions and then hit a wall that is the real blocker for this
-step:
+**THE TASK STAGE IS UNUSABLE ON THIS SLANG, FOR TWO INDEPENDENT REASONS - BOTH COMPILER CRASHES.** Throwaway probes
+in `build-release-clang64/dvm/` settled the syntax and then closed the fork. `slangc` v2026.18.2 dies with
+0xC0000005 (`FAILED: [code=3221225477]`) on a task stage that either takes host data or touches the heap, and it
+does so with SIX LINES of shader:
 
-| question | answer |
-| --- | --- |
-| how is the task stage spelled? | `[shader("amplification")]` + `[numthreads(N,1,1)]` + `DispatchMesh(gx,gy,gz,payload)`, compiled with `-stage task` (or `-stage amplification` - the two produce byte-identical SPIR-V, 572 B) |
-| what does it emit? | `OpEntryPoint TaskEXT`, `%p = OpVariable ... TaskPayloadWorkgroupEXT`, `OpEmitMeshTasksEXT gx gy gz %p` - `spirv-val` clean |
-| how does the MESH entry receive the payload? | `in Payload p` compiles and validates, but Slang lowers it to INPUT variables at `Location 0,1` - not the `TaskPayloadWorkgroupEXT` variable the SPIR-V model describes (VUID-RuntimeSpirv-MeshEXT-10883). Whether that is legal can only be settled at PIPELINE creation, where validation sees both stages |
-| **can a task stage use this renderer's heap shim?** | **NO - `slangc` v2026.18.2 CRASHES (0xC0000005) on `heap_probe.slang`'s `task_main`**, the first real task entry that includes `heap_access.slang`: `FAILED: [code=3221225477] shaders/heap_probe.task.spv` |
+| probe | task entry contains | result |
+| --- | --- | --- |
+| `task_probe.slang` | payload + `DispatchMesh`, nothing else | **compiles** - 572 B, `OpEntryPoint TaskEXT`, `OpVariable ... TaskPayloadWorkgroupEXT`, `OpEmitMeshTasksEXT gx gy gz %p`, `spirv-val` clean |
+| `t_push.slang` | the same plus `[[vk::push_constant]] ConstantBuffer<P> pc;` and `payload.slot = pc.slot;` | **CRASH** - and it crashes with the production flags AND with `-target spirv -profile spirv_1_6` alone, so it is neither the heap capability nor `-allow-glsl` |
+| `tp0.slang` | `#include "heap_access.slang"` and NOTHING else (no heap read, no push use) | **CRASH** |
+| `t_heaphard.slang` | no push block at all, but a heap read by LITERAL slot (`heap_at<StructuredBuffer<uint>>(...)[0]`) | **CRASH** |
+| `t_cull.slang`, `t_addr.slang`, `t_b1.slang`, `t_b2.slang` | culling maths and device-address reads in various shapes | **CRASH** (all of them) |
 
-What the crash is NOT (each measured separately, all of them compile cleanly): a task stage on its own; a task stage
-with `-capability spvDescriptorHeapEXT` and both heap strides; the same with `-allow-glsl -DVR_SLANG
--fvk-use-gl-layout -matrix-layout-column-major`; and the same file's `mesh_main` / `mesh_task_main` entries, which
-compile and validate. So the crash is the COMBINATION of a task execution model with the descriptor-heap shim's
-lowering - a compiler bug rather than a shader mistake, and one that has to be worked around or reported before the
-task stage can cull anything, because BOTH things a culling task stage reads (the cascade matrix and the meshlet
-table) live in the heap.
+So the rule is not "the shim" (which is what the previous round's note guessed) and not "device addresses": a task
+stage may have a payload and launch mesh workgroups, and NOTHING ELSE. Two consequences, and together they close the
+fork:
 
-That makes the next attempt a fork rather than a step, and the choice is worth stating before it is made:
-- **report or work around the compiler crash** (a minimal reproducer is in hand: the probe is four lines of payload
-  plus one `DispatchMesh`), and keep the culling where the heap is reachable;
-- **cull WITHOUT the heap** - the task stage would need the cascade matrix and the meshlet bounds as PUSH data
-  instead of heap reads (`light_matrix_at` and the table are the two things it wants), which is possible for ONE
-  draw's data but is exactly the "push everything" shape this renderer's binding model exists to avoid;
-- **cull in a COMPUTE pass instead** and use `vkCmdDrawMeshTasksIndirectEXT` with the group counts that pass
-  writes - the objective's other measured constraint (the indirect command carries only `groupCountX/Y/Z`, and
-  there is no `instanceCount`) applies to that shape, but a compute stage does not crash and reaches the heap
-  normally.
+- **no push data**: the task stage cannot be told the frame slot, the cascade index or the model matrix - and every
+  stage in this renderer gets its heap indices exactly that way, because a heap pipeline has no layout;
+- **no heap**: it cannot read the light matrices, the meshlet table, or anything else through the shim.
 
-The probe that found this is NOT in the tree: it was reverted the moment the compiler refused it, so the shader
-list, the build and the gate are exactly as this document's step 3 status describes.
+That leaves the task stage with builtins only, which is not enough to cull anything with. The remaining fork for
+per-meshlet culling is therefore the one the objective already names as the alternative: **cull in a COMPUTE pass and
+dispatch with `vkCmdDrawMeshTasksIndirectEXT`** - a compute stage reaches the heap normally (this renderer's
+skinning and mask-bake passes are the proof), and the indirect command's shape (only `groupCountX/Y/Z`, no
+`instanceCount`) is the constraint the objective measured for that path. The minimal reproducer above is also the
+thing to report upstream: six lines, no engine code, crashing a released compiler.
 
-The remaining work of this step is the consumer: a stage that culls each meshlet against the cascade's frustum
-(`light_matrix_at(slot, cascade)` and `push.model` are already in the block, so the culling needs no new lane) and
-launches the survivors. The lanes need no new field either: a meshlet session pushes the primitive's `meshlet_base`
-as `first_index` and `meshlet_count` as `index_count`, since a meshlet variant reads each record's own window
-instead. Acceptance: the gate staying byte-identical (conservative culling removes nothing visible) plus a forced
-probe that culls everything, which must change the picture - the same two-way evidence steps 1 and 2 were accepted
-by.
+The probes are NOT in the tree: each was reverted the moment the compiler refused it, so the shader list, the build
+and the gate are exactly as this document's step 3 status describes. (One of them briefly WAS in the tree, which is
+how the crash was found: `heap_probe.slang`'s `task_main` failed the build, and reverting it plus re-running `cmake`
+- `CMAKE_SUPPRESS_REGENERATION=ON` means the build dir keeps the old rules - put the list back.)
+
+The remaining work of this step is the consumer, on the compute path: a compute pass that culls each meshlet against
+the cascade's frustum (the meshlet table and the light matrices are both heap reads it can make) and writes one
+`VkDrawMeshTasksIndirectCommandEXT` per (draw, instance) - and a MESH entry that reads its meshlet's window from the
+table and the instance index from its own dispatch, since `vkCmdDrawMeshTasksIndirectEXT` carries no `instanceCount`
+either. The lanes need no new field: a meshlet session pushes the primitive's `meshlet_base` as `first_index` and
+`meshlet_count` as `index_count`, since a meshlet variant reads each record's own window instead. Acceptance: the
+gate staying byte-identical (conservative culling removes nothing visible) plus a forced probe that culls
+everything, which must change the picture - the same two-way evidence steps 1 and 2 were accepted by.
 
 The constraints the objective measured still stand and are designed around: `vkCmdDrawMeshTasksEXT` has no
 `instanceCount` (the dispatch's Y carries it today, and the task payload will carry it once a task stage launches
