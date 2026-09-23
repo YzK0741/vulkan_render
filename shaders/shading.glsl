@@ -257,7 +257,7 @@ float calc_shadow_cascade(vec3 world_pos, vec3 normal, int cascade) {
 
     // normal offset: shift the world position before projecting it into light space
     vec3 offset_pos = world_pos + normal * (texel_world * 2.0);
-    vec4 light_clip = light_at(heap_light_slot).light_view_proj[cascade] * vec4(offset_pos, 1.0);
+    vec4 light_clip = light_matrix_at(heap_light_slot, cascade) * vec4(offset_pos, 1.0);
     vec3 ndc = light_clip.xyz / light_clip.w; // ortho projection: w == 1
     vec2 uv = ndc.xy * 0.5 + 0.5;
     float current_depth = ndc.z; // [0,1] (RH_ZO ortho)

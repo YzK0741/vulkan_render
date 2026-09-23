@@ -59,6 +59,15 @@ layout(descriptor_heap) uniform sampler heap_samplers[];
 #define light_at(slot) light[slot]
 #define cluster_count_at(slot, cluster) cluster_counts[slot].counts[cluster]
 #define cluster_indices_at(slot, i) cluster_indices[slot].indices[i]
+// THE LIGHT'S CASCADE MATRICES GO THROUGH AN ACCESSOR, not through `light_at(...).light_view_proj[...]`, and
+// that is a Slang requirement rather than tidiness: Slang lowers a matrix ARRAY member of a block into an
+// inner struct decorated with `ArrayStride` but WITHOUT `ColMajor`/`MatrixStride`, and a stage that read the
+// cascade that way projected every draw out of the light's frustum - an empty shadow map, which read as
+// `deferred` and `shadow_single` producing IDENTICAL frames. The GLSL definition below expands to exactly the
+// expression it replaces, so the GLSL side does not move by a pixel, and the Slang definition in
+// heap_access.slang reads the same slot as a structured buffer of matrices, whose decorations ARE correct.
+// See docs/slang_migration.md section 9.
+#define light_matrix_at(slot, index) light[slot].light_view_proj[index]
 // A MATRIX MEMBER'S TYPE, per language: GLSL's `mat4` is column-major, and on the Slang side it is the
 // HLSL keyword `row_major` that emits SPIR-V ColMajor (the keyword reads BACKWARDS - `column_major` emits
 // RowMajor). ColMajor is what matches glslc's `mat4` and the host's column-major glm::mat4. See

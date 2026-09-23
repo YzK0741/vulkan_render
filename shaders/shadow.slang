@@ -33,18 +33,34 @@ struct Material
     uint flags; // bit0: normal map, bit1: occlusion map, bit2: emissive map, bit3: double-sided, bit4: alphaMode MASK, bit5: alphaMode BLEND
 };
 
+// ONE block for both entries, and it is the VERTEX stage's shape that is the complete one: the host pushes
+// the material fields (96 bytes) and then appends its lanes, so the fragment entry reads material_index at
+// offset 0 and ignores the rest. The trailing words are where the two heap indices and the cascade land, and
+// the cascade MUST sit after all three lanes: the per-caster material push covers 96 + 3 lanes = 108 bytes,
+// so a cascade word at 96 was overwritten by frame_slot and the pass rendered every draw into the wrong
+// layer (the GLSL file records the same finding).
 struct ShadowPush
 {
     uint material_index; // index into the material table (the mask test's only input)
-    uint flags;          // unused here: declared to keep the block layout identical to shadow.vert
+    uint flags;          // bit0: instanced draw -> model comes from the instance table
     uint skin_base;
     uint morph_base;
     uint morph_targets;
     uint morph_vertices;
     uint instance_base;
     VR_MAT4 model;
+    uint frame_slot;   // PER FRAME SLOT arrays: the skin and morph blocks the vertex stage reads
+    uint image_index;
+    uint spare_lane;   // every stage gets three lanes; the third is the post chain's own source slot
+    uint cascade;      // which shadow-map layer this pass renders into (offset 108)
 };
 [[vk::push_constant]] ConstantBuffer<ShadowPush> push;
+#define heap_frame_slot (push.frame_slot)
+#define heap_image_index (push.image_index)
+
+// The light block is NOT declared here: the vertex stage reads its cascade matrices through
+// `light_matrix_at` (see heap_access.slang and docs/slang_migration.md section 9 for why the block member
+// cannot be used), so this leaf needs no `LightUBO` struct at all.
 
 /// @brief the alphaMode MASK test: discard below the material's alpha cutoff
 /// @note cost is one uniform branch per draw plus one texture fetch for the masked materials only: the
@@ -63,4 +79,81 @@ void main([[vk::location(0)]] float2 v_uv : TEXCOORD0)
     {
         discard;
     }
+}
+
+// =============================================================================================================
+// THE VERTEX STAGE (entry `vertex_main`), in the same file because it shares the push block above and the
+// pass's whole point is that both stages agree on where the geometry is. It transforms the model into the
+// LIGHT's orthographic clip space, so rasterization writes the depth seen from the light; skinning and
+// morphing are applied exactly as pbr.vert does them, which is what keeps the shadow silhouette on the
+// geometry that is actually drawn.
+// =============================================================================================================
+
+struct shadow_vertex_output
+{
+    [[vk::location(0)]] float2 uv : UV_OUT; // consumed by the MASK test above; the depth pass has no other use
+    float4 position : SV_Position;
+};
+
+/// @brief morph, skin, transform into light clip space, and pass the albedo UV through
+/// @note the morph/skin order and math are identical to pbr.vert; the only differences are the final
+///       projection (the cascade's light view-projection instead of camera.proj * camera.view) and the
+///       UV passthrough. The vertex input layout must stay identical to pbr.vert's.
+[shader("vertex")]
+shadow_vertex_output vertex_main(
+    [[vk::location(0)]] float3 in_position : POSITION0,
+    [[vk::location(1)]] float3 in_normal : NORMAL0,
+    [[vk::location(2)]] float2 in_uv : UV_IN,
+    [[vk::location(4)]] uint4 in_joints : JOINTS0,
+    [[vk::location(5)]] float4 in_weights : WEIGHTS0,
+    uint vertex_index : SV_VertexID,
+    uint instance_index : SV_InstanceID)
+{
+    // morph blend first (same layout as pbr.vert): only the POSITION deltas matter in a depth pass
+    float4 local_pos = float4(in_position, 1.0);
+    if (push.morph_targets > 0u)
+    {
+        const uint vert = vertex_index;
+        const uint weight_base = push.morph_base + push.morph_targets * push.morph_vertices * 6u;
+        float3 pos_delta = float3(0.0, 0.0, 0.0);
+        for (uint t = 0u; t < push.morph_targets; ++t)
+        {
+            const float w = morph_value_at(heap_morph_slot, weight_base + t);
+            const uint base = push.morph_base + (vert * push.morph_targets + t) * 6u;
+            pos_delta += w * float3(morph_value_at(heap_morph_slot, base), morph_value_at(heap_morph_slot, base + 1u), morph_value_at(heap_morph_slot, base + 2u));
+        }
+        local_pos = float4(in_position + pos_delta, 1.0);
+    }
+
+    // skinning (identical to pbr.vert: weighted joint transforms, identity block at skin_base 0)
+    const float wsum = in_weights.x + in_weights.y + in_weights.z + in_weights.w;
+    if (wsum > 0.0)
+    {
+        float4 pos = float4(0.0, 0.0, 0.0, 0.0);
+        pos += in_weights.x * (skin_matrix_at(heap_skin_slot, push.skin_base + in_joints.x) * local_pos);
+        pos += in_weights.y * (skin_matrix_at(heap_skin_slot, push.skin_base + in_joints.y) * local_pos);
+        pos += in_weights.z * (skin_matrix_at(heap_skin_slot, push.skin_base + in_joints.z) * local_pos);
+        pos += in_weights.w * (skin_matrix_at(heap_skin_slot, push.skin_base + in_joints.w) * local_pos);
+        local_pos = pos / wsum;
+    }
+
+    // VR_MAT4 for the local as well, so the ternary is between two values of the same type (a mismatch is a
+    // conversion, and that conversion is a transpose - see docs/slang_migration.md section 6).
+    const VR_MAT4 world = (push.flags & 1u) != 0u ? instance_transform_at(heap_instance_slot, push.instance_base + instance_index) : push.model;
+    const float4 world_pos = world * local_pos;
+
+    shadow_vertex_output o;
+    // light_matrix_at, not `light_at(...).light_view_proj[...]`: see heap_access.slang (a matrix ARRAY inside
+    // a Slang block loses its majorness decoration, and the block read came back unusable).
+    o.position = light_matrix_at(heap_light_slot, push.cascade) * world_pos;
+    o.uv = in_uv;
+
+    // Keep the input without a role in the depth pass (location 1, the normal) alive so the vertex input
+    // layout - and thus the bound buffer stride - stays identical to pbr.vert's (64 bytes, locations
+    // 0,1,2,4,5). This branch can never run.
+    if (isnan(in_position.x) && isinf(in_normal.x))
+    {
+        o.position = float4(0.0, 0.0, 0.0, 0.0);
+    }
+    return o;
 }

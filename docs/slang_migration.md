@@ -180,7 +180,8 @@ WHAT HAS LANDED (each entry: verified by the gate, not by inspection):
 | `gbuffer.frag` | `shaders/gbuffer.slang` | **the first stage with shared-body + heap-UBO reads**, and the one that found the two traps in section 9: the transposed `mul` and the storage class. Wired, gate-green, and the motion channel is a real field again (598 distinct values over the swept fixture against 1 when it was broken) |
 | `pbr.frag` | `shaders/pbr.slang` | **the whole shading path under Slang**: `shade_surface` - sun + cascaded shadows, punctual and clustered loops, split-sum IBL, the selectable BRDF/diffuse models and the cel bands - plus every fetch helper in the shim. 55520 B of SPIR-V, 0 descriptor sets, both BuiltIn heaps, 76 heap accesses, and the calls land as the right instructions (3 `OpImageSampleDref` for the PCF shadow fetch, 7 cube samples for env/irradiance). Verified on a real frame rather than only compiled: this is the demo's FORWARD DEFAULT pipeline, which the transparent pass records ("the forward default" in `pass/transparent.cppm`), so the `transparent_blend` scenario draws with it - and that scenario is byte-identical |
 | `shadow.frag` | `shaders/shadow.slang` | the depth-only stage with the alphaMode MASK test: shares NO body, so it is the shape a leaf takes when the shim alone is enough (`material_at` + `heap_sample`), and its entry returns void because it has no output. 3496 B, 0 descriptor sets, 3 heap accesses. It also carries a measured codegen difference: **Slang lowers `discard` to `OpDemoteToHelperInvocation`** where glslang emits `OpKill`/`OpTerminateInvocation`, and the two behave identically here - the `sponza` scenario's masked casters (curtains, foliage) are byte-identical, and no validation finding asks for the demote capability, i.e. the device's 1.3 features are enabled |
-| `pbr.vert` | `shaders/pbr.slang` (entry `vertex_main`) | **the G-buffer pass's VERTEX stage**, so it is the best-verified port so far: every opaque scenario records it, and the one that matters most is `deformation` - this is where the morph weights and the skin matrices are read TWICE, as they are now and as they were one frame ago, which is the deformation half of a motion vector. 15972 B, 0 descriptor sets, ONE BuiltIn heap (a vertex stage samples nothing), 24 heap accesses, and `OpVectorTimesMatrix` count **0**: every one of the 16 multiplies is the column-vector product glslc emits, with `proj * view` as a real `OpMatrixTimesMatrix`. It needed two shared-file fixes, both of the same kind: the push block's `model` had to be declared `VR_MAT4` (Slang's default majorness is ROW-major, so a plain `mat4` member is read transposed - harmless while only fragment stages included that block, because none of them read `model`), and `motion_base` had to be declared in it rather than riding the 4 bytes of padding before `model`, since the vertex stage is what reads it |
+| `pbr.vert` | `shaders/pbr.slang` (entry `vertex_main`) | **the G-buffer pass's VERTEX stage**, so it is the best-verified port: every opaque scenario records it, and the one that matters most is `deformation` - this is where the morph weights and the skin matrices are read TWICE, as they are now and as they were one frame ago. 15972 B, 0 descriptor sets, ONE BuiltIn heap (a vertex stage samples nothing), 24 heap accesses, and `OpVectorTimesMatrix` count **0**: every one of the 16 multiplies is the column-vector product glslc emits, with `proj * view` as a real `OpMatrixTimesMatrix`. It needed two shared-file fixes of the same kind: the push block's `model` had to be `VR_MAT4` (Slang's default majorness is ROW-major, so a plain `mat4` member is read transposed - harmless while only fragment stages included that block, since none of them read `model`), and `motion_base` had to be declared in it rather than riding the padding before `model` |
+| `shadow.vert` | `shaders/shadow.slang` (entry `vertex_main`) | the shadow pass's VERTEX stage, on the path of every shadow-casting scenario, reusing the vertex-side accessors `pbr.vert` introduced. 8836 B, 0 descriptor sets, 10 heap accesses, `OpVectorTimesMatrix` 0. It is where TRAP 3 was found (the first attempt failed 8 scenarios with an empty shadow map), and it is also the stage that needed the whole push block: `frame_slot`/`image_index`/`spare_lane` at 96/100/104 and `cascade` at **108** - reading the cascade from 96 is a bug the GLSL file already records, because `frame_slot` overwrites it |
 
 The five non-`gbuffer` stages above were already byte-identical to their GLSL builds; `gbuffer` is the one that
 needed a fix outside the shader (the camera's descriptor type), so it moved the GLSL side too - see section 9.
@@ -390,8 +391,30 @@ compiled modules. No scene buffer remains that a Slang stage would have to read 
   whose value is the KNOWN `(0,0,4)` at offset 128, came back as the ZERO-velocity plateau `(206,206,0)`
   instead: what a zeroed camera UBO looks like.
 
-**A NEARBY HAZARD from the same driver area**, worth knowing before the matrix-heavy stages are ported:
-NVIDIA has an open report of a different descriptor-heap defect on this driver family - a whole-matrix
+**TRAP 3: A MATRIX *ARRAY* INSIDE A SLANG BLOCK LOSES ITS MAJORNESS.** Found by the `shadow.vert` port, and
+it is why the light's cascade matrices now go through an accessor on BOTH sides. MEASURED, in the built
+modules, for the `mat4 light_view_proj[4]` member:
+
+| module | decoration on that member |
+| --- | --- |
+| glslc's `deferred.frag.spv` and `light_cluster.comp.spv` | `OpDecorate %_arr_mat4v4float_uint_4 ArrayStride 64` + `OpMemberDecorate %LightUBO 0 ColMajor` + `MatrixStride 16` |
+| slangc's `pbr.frag.spv` and the block-form `shadow.vert.spv` | `ArrayStride 64` on the array, wrapped in an extra inner struct, and **NO `ColMajor`/`MatrixStride` on the member** |
+
+A SINGLE matrix member - the camera's - IS decorated correctly; it is specifically the ARRAY that loses it.
+What it costs: the shadow pass projected every draw out of the light's frustum, the shadow map came out empty,
+and `deferred` and `shadow_single` rendered IDENTICAL frames because both were uniformly lit. That signature
+- two scenarios with different cascade settings agreeing exactly - is what identified it, and it is worth
+recognising again. Reproduced twice: the block form failed the same three scenarios with the same hashes on
+both runs, while reading the SAME heap slot as `StructuredBuffer<VR_MAT4>` (element `i` is
+`light_view_proj[i]`, because a heap descriptor IS an address range) is byte-identical to the GLSL build -
+its decorations are `ArrayStride 64` + `ColMajor` + `MatrixStride 16`, verified in the module. The shared
+body now calls `light_matrix_at(heap_light_slot, cascade)` on either side of the shim, which ALSO removes a
+LATENT instance of the same defect from `pbr.frag`: its module has carried the undecorated array since the
+day it was ported, and `transparent_blend` simply never executed that read. The lesson is the acceptance
+rule's own limit: "the gate is green" means the paths the gate RECORDS are right - it is not a statement
+that every line was exercised.
+
+**A NEARBY HAZARD from the same driver area**, worth knowing before the matrix-heavy stages are ported:NVIDIA has an open report of a different descriptor-heap defect on this driver family - a whole-matrix
 `OpLoad` through an untyped pointer ignoring `MatrixStride` (it gathers 4-bytes-apart columns), with
 per-element loads correct and a per-element + `dot` workaround:
 [forums.developer.nvidia.com/t/.../383932](https://forums.developer.nvidia.com/t/vulkan-615-71-09-rtx-4050-descriptor-heap-incorrect-rowmajor-matrixstride-handling-for-whole-matrix-opload-through-an-untyped-uniform-pointer/383932)
@@ -424,10 +447,9 @@ applied per stage, easy ones first so that each new hazard is met in isolation. 
 1. **Push-block-only stages** (no heap reads at all, so the smallest possible ports): `post.frag`,
    `shadow.vert`.
 2. **Heap readers that touch no buffer**: `deferred.frag`, `heap_probe.vert/.frag/.comp`.
-   (`pbr.frag`, `shadow.frag` and `pbr.vert` are DONE - see the table in section 6. `pbr.vert` is the shape
-   the vertex leaves take: the shim's five matrix-array accessors (`instance_transform_at`,
-   `previous_transform_at`, `skin_matrix_at`, `skin_matrix_previous_at`, `morph_value_at`) are what
-   `shadow.vert` will reuse, since it reads the same families.)
+   (Both PBR stages and both shadow stages are DONE - see the table in section 6. The vertex leaves share the
+   shim's five matrix-array accessors plus `light_matrix_at`, which every remaining stage that samples the
+   sun's shadow also needs.)
 3. **Compute stages**: `compute_skin.comp`, `mask_bake.comp`, `light_cluster.comp`,
    `megalights_trace.comp`, `megalights_temporal.comp`. These are the ones that WRITE heap buffers, so
    their storage-image/buffer declarations are the mirror of the read-side contract - the same

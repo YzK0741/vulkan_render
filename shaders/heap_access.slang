@@ -74,6 +74,17 @@ DescriptorHandle<Sampler2D> combined_at(uint texture_slot, uint sampler_slot)
 #define skin_matrix_previous_at(slot, index) heap_at<StructuredBuffer<VR_MAT4>>(slot)[index]
 #define morph_value_at(slot, index) heap_at<StructuredBuffer<float>>(slot)[index]
 
+/// one cascade's world -> light-clip matrix, read as the FIRST matrix array of the light buffer.
+/// @note WHY NOT `light_at(slot).light_view_proj[index]`, measured: Slang lowers a matrix ARRAY member of a
+///       block into an extra inner struct and decorates it with `ArrayStride 64` but NO `ColMajor` /
+///       `MatrixStride` (a single matrix member, like the camera's, is decorated correctly). A vertex stage
+///       that read the cascade through the block produced an empty shadow map - every draw projected out of
+///       the light's frustum, so `deferred` and `shadow_single` came out identical, i.e. uniformly lit. A
+///       heap descriptor IS an address range, so reading the same slot as a structured buffer of `VR_MAT4`
+///       gives element i = the i-th matrix of that array, with the `ArrayStride 64` + `ColMajor` +
+///       `MatrixStride 16` decorations verified in the built module. See docs/slang_migration.md.
+#define light_matrix_at(slot, index) heap_at<StructuredBuffer<VR_MAT4>>(slot)[index]
+
 // ---- THE FETCH HELPERS the GLSL side defines as macros or functions ----
 
 /// one texel from a heap image, through the sampler at @p sampler_slot (the GLSL side is the

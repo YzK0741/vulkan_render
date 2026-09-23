@@ -740,7 +740,10 @@ set(VR_SLANG_SOURCES
     pbr.slang:vertex_main:vertex:pbr.vert.spv
     # shadow.slang shares no body: the material table and the albedo fetch through the shim's accessors
     # (`material_at`, `heap_sample`), and the entry returns void because a depth-only stage has no output.
+    # Its vertex entry reuses the same matrix-array accessors pbr.vert does, which is the point of the pair:
+    # both stages must place the geometry identically or the shadow silhouette detaches from the surface.
     shadow.slang:main:fragment:shadow.frag.spv
+    shadow.slang:vertex_main:vertex:shadow.vert.spv
 )
 find_program(VR_SLANGC_EXECUTABLE NAMES slangc slangc.exe)
 set(VR_SLANG_OUTPUTS "")
