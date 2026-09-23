@@ -314,17 +314,26 @@ forward `pbr` pipeline. The flat render mode reaches the same code path through 
 
 ### Step 3 - a TASK stage, meshlets, and indirect dispatch
 
-**STATUS: the SPLIT is done and tested; the task stage and the culling are not.**
+**STATUS: the SPLIT and the TABLE are done and tested; the task stage and the culling are not.**
 
 `vulkan/meshlet/meshlet.cppm` is a pure-CPU module that cuts one draw window into meshlets: runs of at most
 `meshlet_max_triangles` (85, the mesh stage's output budget from section 2) triangles in index order, each with an
 object-space bounding sphere over the axis-aligned box of the vertices it touches. `runtime::create_primitive`
-builds them at upload - where the geometry bytes and the layout are still in hand - keeps them on the primitive, and
-the scene import logs what it produced:
+builds them at upload - where the geometry bytes and the layout are still in hand - appends them to the GPU table,
+keeps the primitive's own run (`meshlet_base`/`meshlet_count`, which the geometry lanes carry), and the scene import
+logs what it produced:
 
 ```
+descriptor heap: meshlet table written (address 0x1cc30290, 65536 records of 28 B, offset 1096256)
 meshlets: 3145 over 103 primitives (85 triangles each at most, object-space spheres)
 ```
+
+THE TABLE is `heap_slots_meshlets` (slot 745, at the end of the used region so nothing after it renumbers), one
+28-byte record per meshlet, host-visible and written ONCE while the scene imports - which is why it owns ONE slot
+rather than the per-frame pair every frame-varying buffer has: there is no frame in flight whose contents could
+disagree with it (the TLAS is the counter-example, and the reason that rule exists). The host record's fields land
+at the same byte offsets the shader will read them at - first index (0), count (4), base vertex (8), centre
+(12/16/20), radius (24) - so the shader's `StructuredBuffer` copy is the same 28 bytes with no padding either side.
 
 IT IS A MODULE OF ITS OWN AND A PURE ONE on purpose: the split is arithmetic over vertex and index bytes, and its
 bugs are the invisible kind - a sphere that is too small culls a visible meshlet (a hole in the shadow map, on the
@@ -340,14 +349,34 @@ asserted on the CPU instead, by `tests/test_meshlet.cpp`, which CI runs:
 | both index widths | 16-bit and 32-bit index buffers are read with the same result |
 | malformed input | an empty span, no vertices, a stride shorter than one position, a window past the buffer end: an EMPTY result, never a read past it (an out-of-range index inside a valid window keeps the meshlet - the draw is not silently dropped - and simply does not extend the bounds) |
 
-The remaining work of this step is the consumer: a meshlet TABLE in the heap (one 28-byte record per meshlet, the
-primitive's window offset carried in the geometry lanes), a TASK stage that culls each meshlet against the cascade's
-frustum (`light_matrix_at(slot, cascade)` and `push.model` are already in the block, so the culling needs no new
-lane) and launches the survivors with `EmitMeshTasksEXT`, and a MESH entry that reads its meshlet's window from the
-table via the task PAYLOAD - the payload is where the instance index has to travel too, because a mesh workgroup
-launched by a task stage does not inherit the dispatch's Y. Acceptance for that: the gate staying byte-identical
-(conservative culling removes nothing visible) plus a forced probe that culls everything, which must change the
-picture - the same two-way evidence steps 1 and 2 were accepted by.
+**THE TASK STAGE'S SYNTAX IS SETTLED, THE MESH SIDE'S PAYLOAD LOWERING IS NOT.** Two throwaway probes
+(`build-release-clang64/dvm/task_probe.slang`, `mesh_payload_probe.slang`) answered the first half and opened the
+second:
+
+| question | answer |
+| --- | --- |
+| how is the task stage spelled? | `[shader("amplification")]` + `[numthreads(N,1,1)]` + `DispatchMesh(gx,gy,gz,payload)`, compiled with `-stage task` (or `-stage amplification` - the two produce byte-identical SPIR-V, 572 B) |
+| what does it emit? | `OpEntryPoint TaskEXT`, `%p = OpVariable ... TaskPayloadWorkgroupEXT`, `OpEmitMeshTasksEXT gx gy gz %p` - `spirv-val` clean, so the task half needs no investigation |
+| how does the MESH entry receive the payload? | **`in Payload p` compiles, and `spirv-val` accepts it, but Slang lowers it to `Input` variables at `Location 0,1`** - not the `TaskPayloadWorkgroupEXT` variable the spec describes, and `spirv-val` cannot see the difference because it validates one module at a time |
+
+That last row is the next thing to settle, and it has a known spec address to check against:
+VUID-RuntimeSpirv-MeshEXT-10883 ("if the `MeshEXT` Execution Model declares a variable with the
+`TaskPayloadWorkgroupEXT` Storage Class ...") - i.e. the mesh stage's payload is a variable of THAT storage class,
+so a pipeline whose mesh module declares Input locations instead has to be verified at PIPELINE creation (which is
+where validation can see both stages) rather than assumed. The first probe also caught a trap worth keeping: the
+payload read must be REAL - the first version multiplied it by zero, the compiler removed both the read and the
+parameter, and the module came out with no payload at all (the same dead-code rule that makes an unused vertex
+input shrink the bound stride in a vertex pipeline).
+
+The remaining work of this step is the consumer: a TASK stage that culls each meshlet against the cascade's frustum
+(`light_matrix_at(slot, cascade)` and `push.model` are already in the block, so the culling needs no new lane) and
+launches the survivors with `EmitMeshTasksEXT`, and a MESH entry that reads its meshlet's window from the table
+through the task PAYLOAD - the payload is where the instance index has to travel too, because a mesh workgroup
+launched by a task stage does not inherit the dispatch's Y. The lanes need no new field either: a meshlet session
+pushes the primitive's `meshlet_base` as `first_index` and `meshlet_count` as `index_count`, since a meshlet
+variant reads each record's own window instead. Acceptance for that: the gate staying byte-identical (conservative
+culling removes nothing visible) plus a forced probe that culls everything, which must change the picture - the same
+two-way evidence steps 1 and 2 were accepted by.
 
 The constraints the objective measured still stand and are designed around: `vkCmdDrawMeshTasksEXT` has no
 `instanceCount` (the dispatch's Y carries it today, and the task payload will carry it once a task stage launches

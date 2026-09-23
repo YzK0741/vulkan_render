@@ -1116,6 +1116,13 @@ namespace vulkan {
          */
         std::size_t meshlet_total = 0;
         std::size_t meshlet_primitives = 0;
+        /// THE TABLE ITSELF: `meshlet_capacity` records of `sizeof(vulkan::meshlet)`, host-visible, appended to
+        /// while the scene imports and read by a task stage through the heap (one slot, written once - see
+        /// core::heap_slots::meshlets). `meshlet_total` IS the append cursor.
+        vk_buffer meshlet_buffer = {};
+        void* meshlet_mapped = nullptr;
+        /// one log line for the overflow path, so a scene past the capacity says so once rather than per primitive
+        bool meshlet_overflow_logged = false;
         /**
          * THE STRUCTURE PHASE ITSELF, which is one value now (see `vulkan.ray_tracing`): the bottom and top level
          * structures, the map from their indices back to the casters they were built from, and the MASK/skin

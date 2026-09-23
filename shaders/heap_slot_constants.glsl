@@ -54,6 +54,9 @@ const uint heap_slots_morph_data = heap_slot_base + 528u;
 // number is at the END of the used region rather than beside the current family above, because growing an
 // array in place would renumber every array after it (the rule the TLAS and the storage twins follow too).
 const uint heap_slots_skin_matrices_previous = heap_slot_base + 743u;
+// the MESHLET TABLE (docs/mesh_shaders.md step 3): one 28-byte record per meshlet, written once at scene
+// import. ONE descriptor, not a per-frame pair - see core::heap_slots::meshlets for why that is safe.
+const uint heap_slots_meshlets = heap_slot_base + 745u;
 const uint heap_slots_mask_instances = heap_slot_base + 530u;
 // frame-invariant images the shading stage samples
 const uint heap_slots_env_cube = heap_slot_base + 532u;
@@ -135,6 +138,7 @@ const uint heap_sampler_shadow = heap_sampler_base + 5u;         // depth compar
 #define heap_skin_slot (heap_slots_skin_matrices + heap_frame_slot)
 #define heap_skin_previous_slot (heap_slots_skin_matrices_previous + heap_frame_slot)
 #define heap_morph_slot (heap_slots_morph_data + heap_frame_slot)
+#define heap_meshlet_slot (heap_slots_meshlets) // ONE descriptor, not a per-frame array
 #define heap_shadow_slot (heap_slots_shadow_map + heap_frame_slot)
 #define heap_rt_visibility_slot (heap_slots_rt_visibility + heap_frame_slot)
 #define heap_rt_visibility_storage_slot (heap_slots_rt_visibility_storage + heap_frame_slot)

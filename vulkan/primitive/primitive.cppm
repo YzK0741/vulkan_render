@@ -594,6 +594,11 @@ namespace vulkan {
          * on screen, so it is built and tested (tests/test_meshlet.cpp) before anything consumes it.
          */
         std::vector<vulkan::meshlet> meshlets = {};
+        /// where this primitive's run of meshlets starts in the GPU TABLE (docs/mesh_shaders.md step 3): the value
+        /// the geometry lanes carry, so a task stage can turn "my meshlet workgroup" into a record index
+        uint32_t meshlet_base = 0;
+        /// how many records that run holds (the same number as `meshlets.size()` after the upload's capacity clamp)
+        uint32_t meshlet_count = 0;
         // Pipeline the primitive draws with. Empty = DEFAULT semantics: the primitive does not
         // care which pipeline records it, it asks the draw-time render_environment to bind that
         // session's default (normal / instanced / static draws all work this way - they draw

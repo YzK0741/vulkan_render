@@ -1155,8 +1155,8 @@ namespace vulkan {
         // ---- MESHLETS (docs/mesh_shaders.md step 3): the same CPU copy the AABB scan below reads, cut into runs
         //      of at most `meshlet_max_triangles` triangles with an object-space bounding sphere each - the data a
         //      task stage culls with. Built HERE because this is where the geometry bytes are still in hand and
-        //      the layout (stride, index width) is known; the GPU table they will live in is the next step, so for
-        //      now the split is a property of the primitive and the log line below is its only consumer.
+        //      the layout (stride, index width) is known. The GPU TABLE is filled right below, so a task stage can
+        //      read the same records the CPU just computed.
         result->meshlets = vulkan::build_meshlets(vulkan::meshlet_build_input{
             .vertex_data = info.vertex_data,
             .vertex_stride = info.vertex_stride,
@@ -1167,7 +1167,22 @@ namespace vulkan {
             .index_count = info.index_count,
             .base_vertex = 0,
         });
+        // ... AND INTO THE TABLE a task stage reads, where this primitive owns a CONTIGUOUS run: it remembers the
+        // run's first record (`meshlet_base`) and the geometry lanes carry it, so one draw's meshlets are one
+        // window. A scene past `meshlet_capacity` keeps the geometry it uploaded and loses only the CULLING for the
+        // overflow - logged once, because a budget that silently drops geometry is a hole rather than a limit.
+        std::size_t const room = this->meshlet_total < vulkan::meshlet_capacity ? static_cast<std::size_t>(vulkan::meshlet_capacity) - this->meshlet_total : 0u;
+        if (result->meshlets.size() > room) {
+            if (!this->meshlet_overflow_logged) {
+                this->meshlet_overflow_logged = true;
+                utility::log("meshlet table capacity ({}) exceeded - the extra meshlets are not culled (the geometry is unaffected)", vulkan::meshlet_capacity);
+            }
+            result->meshlets.resize(room);
+        }
+        std::memcpy(static_cast<unsigned char*>(this->meshlet_mapped) + this->meshlet_total * sizeof(vulkan::meshlet), result->meshlets.data(), result->meshlets.size() * sizeof(vulkan::meshlet));
+        result->meshlet_base = static_cast<uint32_t>(this->meshlet_total);
         this->meshlet_total += result->meshlets.size();
+        result->meshlet_count = static_cast<uint32_t>(result->meshlets.size());
         if (!result->meshlets.empty()) {
             ++this->meshlet_primitives;
         }

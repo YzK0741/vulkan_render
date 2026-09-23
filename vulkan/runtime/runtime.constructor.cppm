@@ -43,6 +43,7 @@ import vulkan.constant_init;
 import vulkan.init_utils;      // the resource-creation patterns the init/ensure functions below repeat
 import vulkan.frame_constants; // one frame's shared constants (see update_frame_constants)
 import vulkan.core.pipeline;   // vulkan::make_pipeline for the post-process pipeline
+import vulkan.meshlet;         // the meshlet table's record layout and capacity (docs/mesh_shaders.md step 3)
 
 // Route std::pmr allocations through mimalloc for this TU (utility:better_pmr). Idempotent:
 // init_pmr() returns the same process-wide singleton no matter which TU calls it first, so
@@ -312,6 +313,38 @@ namespace vulkan {
                              address,
                              vulkan::material_capacity,
                              static_cast<VkDeviceSize>(core::heap_slots::materials) * core::heap_slot_stride);
+            }
+        }
+
+        // ---- THE MESHLET TABLE (docs/mesh_shaders.md step 3): one 28-byte record per meshlet, appended by the
+        //      primitive upload while the scene imports and read by a task stage through the heap. Created here,
+        //      with the material table's shape and for its reasons: fixed capacity, host-visible (direct mapping),
+        //      and a device address because a heap descriptor for a buffer IS an address range.
+        {
+            std::vector<unsigned char> const zeroed_meshlets(static_cast<size_t>(vulkan::meshlet_capacity) * sizeof(vulkan::meshlet), 0);
+            init_utils::create_host_buffer(this->vulkan_core,
+                                           std::as_bytes(std::span(zeroed_meshlets)),
+                                           vulkan::buffer_type::storage_coherent,
+                                           "meshlet table buffer",
+                                           this->meshlet_buffer,
+                                           this->meshlet_mapped,
+                                           VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT);
+            if (this->vulkan_core.descriptor_heaps.ready() && this->vulkan_core.heap_grid_offset != VK_WHOLE_SIZE) {
+                auto const* const detail = this->vulkan_core.vma.get_buffer_detail(this->meshlet_buffer.handle());
+                if (detail != nullptr) {
+                    VkBufferDeviceAddressInfo const info = {.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .pNext = nullptr, .buffer = detail->buffer};
+                    VkDeviceAddress const address = vkGetBufferDeviceAddress(this->vulkan_core.device, &info);
+                    bool const written = this->vulkan_core.descriptor_heaps.write_buffer(static_cast<VkDeviceSize>(core::heap_slots::meshlets) * core::heap_slot_stride,
+                                                                                         address,
+                                                                                         static_cast<VkDeviceSize>(vulkan::meshlet_capacity) * sizeof(vulkan::meshlet),
+                                                                                         VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+                    utility::log("descriptor heap: meshlet table {} (address 0x{:x}, {} records of {} B, offset {})",
+                                 written ? "written" : "NOT written",
+                                 address,
+                                 vulkan::meshlet_capacity,
+                                 sizeof(vulkan::meshlet),
+                                 static_cast<VkDeviceSize>(core::heap_slots::meshlets) * core::heap_slot_stride);
+                }
             }
         }
 

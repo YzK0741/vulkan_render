@@ -547,6 +547,17 @@ namespace vulkan {
              *       would renumber every array after it.
              */
             static constexpr uint32_t tlas = heap_slot_base + 703u;
+            /**
+             * @brief the MESHLET TABLE (docs/mesh_shaders.md step 3): one 28-byte record per meshlet
+             *
+             * @note ONE SLOT, not a per-frame pair, and that is a property of the data rather than a shortcut: the
+             *       table is written ONCE, while the scene is imported and before any frame is recorded, and never
+             *       touched again - so there is no frame in flight whose contents could disagree with it. (The TLAS
+             *       above is the counter-example: it is rebuilt every frame, which is why it owns two slots.)
+             * @note it lives at the END of the used region for the reason stated there: the arrays above are
+             *       numbered by their position, so growing one in place would renumber everything after it.
+             */
+            static constexpr uint32_t meshlets = heap_slot_base + 745u;
             static constexpr uint32_t scene_camera = heap_slot_base + 514u;        // binding 0, per frame slot
             static constexpr uint32_t scene_light = heap_slot_base + 516u;         // binding 7, per frame slot
             static constexpr uint32_t cluster_counts = heap_slot_base + 518u;      // binding 11, per frame slot
