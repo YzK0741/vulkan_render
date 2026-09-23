@@ -519,10 +519,15 @@ TWO ROUTES EXIST FOR THOSE STAGES, and neither needs the gate's references to be
   it needs either a host-side log line added first (a runtime change, not a shader port) or shape-only
   verification, and it should not be described as self-verifying until one of those exists.
 - **An A/B capture covers the RT path.** For `rt_shadow.*`, `compute_skin.comp` and `mask_bake.comp`, the
-  verification is the same standard applied by hand: capture a frame with `rt_shadows = true` from the GLSL
+  verification is the same standard applied by hand: capture a frame with `rt_shadow = true` from the GLSL
   build, capture the same frame from the Slang build, and compare the two PNGs pixel for pixel. That is what
   the gate does for its ten scenarios; doing it manually for one RT config extends the same standard to stages
-  the scenario list does not reach, without re-baselining anything.
+  the scenario list does not reach, without re-baselining anything. THE CONFIG KEY IS SINGULAR - `rt_shadow`,
+  from `runtime.cpp`'s `ask("rt_shadow")` - and that matters because the plural spelling is accepted by the
+  parser and simply IGNORED: a run with `rt_shadows = true` renders the raster shadows and looks perfectly
+  healthy. Measured the difference the key makes on one config: **21.90% of the frame's pixels** change when
+  the singular key is used, and the log then names the `rt_shadow.*` shaders it loads - which is also how to
+  confirm the RT path is the one being tested before comparing anything.
 
 
 3. **Compute stages**: `compute_skin.comp`, `mask_bake.comp`, `megalights_trace.comp`,
