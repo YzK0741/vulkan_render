@@ -747,6 +747,16 @@ set(VR_SLANG_SOURCES
     # both stages must place the geometry identically or the shadow silhouette detaches from the surface.
     shadow.slang:main:fragment:shadow.frag.spv
     shadow.slang:vertex_main:vertex:shadow.vert.spv
+    # deferred.slang IS WRITTEN BUT NOT WIRED: it is a faithful port of deferred.frag (same push layout
+    # 0/64/80/84/88/92, zero descriptor sets, 94 heap accesses, 0 transposed multiplies, the TBN built with
+    # GLSL's column-constructing mat3), and it fails the byte-identical standard by ONE PIXEL of 1036800 -
+    # one 8-bit step, in blue, at the same coordinate in every scenario that shows sky. That is two
+    # compilers' floating-point codegen for the same source meeting a quantisation boundary (the sky's
+    # smoothstep bands, amplified by the sun disc's steep smoothstep), not a porting mistake: no scene
+    # content moved, and `-fp-mode precise` - the obvious knob - made nine scenarios differ instead.
+    # docs/slang_migration.md section 9 records the diff, the two experiments, and what the next attempt
+    # should try. It stays out of the build until that pixel is explained or the standard is revisited.
+    # deferred.slang:main:fragment:deferred.frag.spv
 )
 find_program(VR_SLANGC_EXECUTABLE NAMES slangc slangc.exe)
 set(VR_SLANG_OUTPUTS "")
@@ -764,6 +774,12 @@ if(VR_SLANGC_EXECUTABLE)
                     -target spirv -profile spirv_1_6 -capability spvDescriptorHeapEXT
                     -spirv-resource-heap-stride 64 -spirv-sampler-heap-stride 32
                     -fvk-use-gl-layout -matrix-layout-column-major
+                    # NO -fp-mode HERE, and that is a measurement rather than an omission: `-fp-mode precise`
+                    # was tried against the byte-identical standard and made NINE scenarios differ, including
+                    # two that had been identical for eleven stages - so Slang's DEFAULT mode is the one whose
+                    # codegen matches glslang's, and the alternative is strictly worse. The one difference the
+                    # default mode leaves is documented in docs/slang_migration.md section 9 (deferred.slang:
+                    # one pixel of 1036800, one 8-bit step in blue).
                     -entry ${slang_entry} -stage ${slang_stage} -o "${VR_SHADER_OUT_DIR}/${slang_output}"
             DEPENDS "${VR_SHADER_SRC_DIR}/${slang_source}" ${VR_SHADER_INCLUDES}
             COMMENT "slangc ${slang_source} -> ${slang_output}"

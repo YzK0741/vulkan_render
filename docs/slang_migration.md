@@ -415,6 +415,41 @@ day it was ported, and `transparent_blend` simply never executed that read. The 
 rule's own limit: "the gate is green" means the paths the gate RECORDS are right - it is not a statement
 that every line was exercised.
 
+### THE FIRST STAGE THE BYTE-IDENTICAL STANDARD REFUSED: deferred.frag, by ONE PIXEL
+
+`shaders/deferred.slang` is a faithful port of the deferred lighting stage - the shared shading code again
+plus the screen-space AO it owns - and it is **NOT wired**, because the gate reports 8 of 10 scenarios
+changed. The diff is the whole story:
+
+    1 pixel of 1036800 differs, at the SAME coordinate (636,153) in every scenario that shows sky, by ONE
+    8-bit step, in blue only: reference (112,124,145) against the port's (112,124,146). No geometry moved, no
+    lighting changed, no descriptor is misread - the mean absolute difference over the whole frame is 0.000.
+
+That is two compilers' floating-point codegen for the same source meeting a quantisation boundary: the sky's
+`smoothstep` bands are smooth enough that a last-bit difference almost never flips an 8-bit value, and the
+sun disc's `smoothstep(0.98, 1.0, ...)` is steep enough to amplify one where it does. Everything that CAN be
+checked about the module is right: push block at 0/64/80/84/88/92, zero descriptor sets, 94 heap accesses, 0
+transposed multiplies, and the SSAO's TBN built with GLSL's COLUMN-constructing `mat3` (verified against the
+gate-green shared surface.glsl, which builds its normal-map TBN the same way).
+
+THE OBVIOUS KNOB WAS TRIED AND IS WORSE: `-fp-mode precise` - "disable optimization that could change the
+output of floating-point computations" - made NINE scenarios differ, including `sponza` and `deformation`,
+which had been identical for the eleven stages before it. Slang's DEFAULT mode is therefore the one whose
+codegen matches glslang's for this codebase, and the flag is deliberately absent from the recipe
+(`CMakeLists.txt` records the measurement where the flag would have gone).
+
+WHAT TO TRY NEXT, in this order, if that pixel is worth chasing:
+
+  - compare the `NoContraction` decorations between the glslc-built and the slangc-built module for the same
+    source. SPIR-V has no FMA instruction, so a last-bit difference in `inv_view_proj * vec4(...)` or
+    `normalize(...)` comes from the DRIVER contracting a multiply-add on one side only, and those
+    decorations are what tells it to;
+  - if that is the cause, either express the sky's direction so its contraction cannot differ, or precompute
+    the inverse view-projection's rows as four push lanes and drop the matrix multiply from the shader;
+  - and if neither works, revisit the standard for THIS stage explicitly - a re-baseline with the reason
+    written down, which is what the gate's `-Update` exists for - rather than quietly accepting a one-pixel
+    difference.
+
 **A NEARBY HAZARD from the same driver area**, worth knowing before the matrix-heavy stages are ported:NVIDIA has an open report of a different descriptor-heap defect on this driver family - a whole-matrix
 `OpLoad` through an untyped pointer ignoring `MatrixStride` (it gathers 4-bytes-apart columns), with
 per-element loads correct and a per-element + `dot` workaround:
