@@ -94,6 +94,20 @@ namespace vulkan {
          *   answers null when the device has none - which is the answer "draw nothing" rather than a crash.
          */
         bool mesh_stage = false;
+        /**
+         * WHERE THIS SESSION'S STAGE BLOCK STARTS RECEIVING THE GEOMETRY LANES, in bytes - i.e. the end of the last
+         * member the block's earlier pushes covered (see vulkan::primitive's `mesh_geometry_push_offset_*` and
+         * `mesh_geometry_lanes_offset`). It is per SESSION rather than a constant because the two blocks in this
+         * renderer end differently: the scene's after its heap index lanes (108), the shadow pass's after its
+         * cascade lane (112). The lanes themselves are read by the shader at `mesh_geometry_lanes_offset`, which is
+         * 112 in both blocks.
+         *
+         * EVERY draw of a session that sets this pushes its lanes, including the sessions whose pipeline is a
+         * VERTEX one: one shader file is one block for every entry, so the vertex entries declare the lanes too and
+         * a descriptor-heap pipeline requires every declared byte to be written before the draw. Zero means "this
+         * session's stages declare no lanes" (a fullscreen pass's own block, a compute push).
+         */
+        uint32_t mesh_geometry_push_offset = 0;
         VkDeviceAddress (*buffer_address)(void* owner, VkBuffer buffer) = nullptr;
         bool (*push_at)(void* owner, VkCommandBuffer command_buffer, uint32_t offset, std::span<std::byte const> bytes) = nullptr;
         bool (*draw_mesh_tasks)(void* owner, VkCommandBuffer command_buffer, uint32_t groups_x, uint32_t groups_y, uint32_t groups_z) = nullptr;

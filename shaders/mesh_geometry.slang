@@ -41,15 +41,25 @@ uint64_t mesh_lane_address(uint2 halves)
 ///       instance count. Everything the input assembler used to consume therefore has to arrive as
 ///       DATA, and this struct is that data - pushed by the primitive's own draw() right before its
 ///       mesh dispatch, at the offset its stage block reserves for it (see the host's
-///       `mesh_geometry_offset`).
+///       `mesh_geometry_offset_*`).
+///
+/// @note THE ADDRESSES ARE FOUR 32-BIT HALVES RATHER THAN TWO `uint2`s, and that is not style: a `uint2`
+///       aligns to 8 bytes, which leaves a 4-byte hole between the heap index lanes and this struct - and
+///       with a descriptor-heap pipeline EVERY byte of the declared block must have been written by
+///       `vkCmdPushDataEXT` before the draw, so a hole is a validation error
+///       (VUID-vkCmdDrawMeshTasksEXT-None-11376, measured: "uses push-constant statically at range
+///       [0, 144), but vkCmdPushDataEXT was never called for range [108, 112)"). Four-byte fields leave
+///       no hole at all.
 struct MeshGeometryLanes
 {
-    uint2 vertex_address; // device address of the vertex buffer's base (byte 0 of vertex 0)
-    uint2 index_address;  // device address of the index buffer's base (index 0)
-    uint first_index;     // the draw's first index inside the index buffer
-    uint index_count;     // indices this draw covers (a multiple of 3: triangles)
-    int base_vertex;      // added to every fetched index (static-draw chunks; 0 otherwise)
-    uint index_width;     // bytes per index: 2 or 4
+    uint vertex_address_low; // device address of the vertex buffer's base (byte 0 of vertex 0)
+    uint vertex_address_high;
+    uint index_address_low;  // device address of the index buffer's base (index 0)
+    uint index_address_high;
+    uint first_index;        // the draw's first index inside the index buffer
+    uint index_count;        // indices this draw covers (a multiple of 3: triangles)
+    int base_vertex;         // added to every fetched index (static-draw chunks; 0 otherwise)
+    uint index_width;        // bytes per index: 2 or 4
 };
 
 /// @brief one record of the engine's interleaved vertex, as a mesh stage needs it
@@ -78,7 +88,7 @@ static const uint mesh_vertex_stride = 64u;
 MeshVertex mesh_vertex_at(const MeshGeometryLanes geometry, const uint index)
 {
     MeshVertex v;
-    const uint64_t base = mesh_lane_address(geometry.vertex_address);
+    const uint64_t base = mesh_lane_address(uint2(geometry.vertex_address_low, geometry.vertex_address_high));
     uint* words = (uint*)(base + uint64_t(index) * uint64_t(mesh_vertex_stride));
     v.position = float3(asfloat(words[0]), asfloat(words[1]), asfloat(words[2]));
     v.normal = float3(asfloat(words[3]), asfloat(words[4]), asfloat(words[5]));
@@ -95,7 +105,7 @@ MeshVertex mesh_vertex_at(const MeshGeometryLanes geometry, const uint index)
 ///       little-endian, so the odd index is the word's high half.
 uint mesh_index_at(const MeshGeometryLanes geometry, const uint i)
 {
-    const uint64_t base = mesh_lane_address(geometry.index_address);
+    const uint64_t base = mesh_lane_address(uint2(geometry.index_address_low, geometry.index_address_high));
     if (geometry.index_width == 2u)
     {
         uint* words = (uint*)(base + uint64_t(i >> 1u) * 4ull);

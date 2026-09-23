@@ -858,6 +858,9 @@ namespace vulkan {
          *        morphing are identical to what the forward path did)
          * @param fragment_shader_code raw SPIR-V of the fragment stage (gbuffer.frag: writes the
          *        three targets and shades nothing)
+         * @param first_stage the stage that emits the geometry: VERTEX for the input-assembler path (the default),
+         *        MESH for a MESH entry that fetches its own vertices (docs/mesh_shaders.md step 2) - the fragment
+         *        stage is the same shader either way, which is what makes the two pipelines comparable
          * @return vk_pipeline on success, error message on failure
          * @note single-sampled on purpose (a G-buffer cannot be multisampled without per-sample
          *       shading), so this pipeline may NOT be recorded into an instance whose attachments are
@@ -865,7 +868,8 @@ namespace vulkan {
          */
         std::expected<vk_pipeline, std::string_view> make_gbuffer_pipeline(
             std::span<unsigned char const> vertex_shader_code,
-            std::span<unsigned char const> fragment_shader_code) const;
+            std::span<unsigned char const> fragment_shader_code,
+            VkShaderStageFlagBits first_stage = VK_SHADER_STAGE_VERTEX_BIT) const;
 
     private:
         // ---- THE INITIALIZATION STEPS, and they are private because the constructor is their only caller:

@@ -894,6 +894,13 @@ namespace vulkan {
             this->gbuffer_pipeline->viewport = full_viewport;
             this->gbuffer_pipeline->scissor = full_scissor;
         }
+        // ... and the MESH form of the same pipeline carries its OWN cached viewport, because a pipeline object
+        // stores what begin_pipeline() applies: leaving this one at its creation-time zero is the zero-width
+        // viewport this project has already paid for once (the same reason the line above exists).
+        if (this->gbuffer_pipeline_mesh) {
+            this->gbuffer_pipeline_mesh->viewport = full_viewport;
+            this->gbuffer_pipeline_mesh->scissor = full_scissor;
+        }
         // ... and the debug view's pipeline is not resynced here either: it is its PASS's now (vulkan.pass.
         // gbuffer_debug), which declares resync_viewport like every other fullscreen pass in this chain.
         // ... and the deferred lighting stage's is not here either, for a stronger reason than the TAA
@@ -961,9 +968,14 @@ namespace vulkan {
         //      primitive::mesh_dispatch). `mesh_stage` is the pass's answer - it is the side that chose which
         //      pipeline to bind - and the three endpoints are this class's because the device is. ----
         env.mesh_stage = mesh_stage;
+        // THE SHADOW BLOCK'S OWN END: its cascade lane is declared after the three heap index lanes, so the geometry
+        // lanes start one word later than the scene block's (see mesh_geometry_offset_shadow). Set for BOTH forms
+        // of the pass, because both stage blocks declare the lanes - the vertex entry simply never reads them, and
+        // a descriptor-heap pipeline requires every declared byte to have been pushed before the draw.
+        env.mesh_geometry_push_offset = vulkan::mesh_geometry_push_offset_shadow;
+        env.buffer_address = &runtime::mesh_buffer_address;
+        env.push_at = &runtime::push_geometry_block;
         if (mesh_stage) {
-            env.buffer_address = &runtime::mesh_buffer_address;
-            env.push_at = &runtime::push_geometry_block;
             env.draw_mesh_tasks = &runtime::draw_mesh_tasks;
             // ONE LINE, ONCE, SAYING HOW THE CASTERS ARE FED - because a mesh stage produces the SAME picture as
             // the vertex stage by construction, so "which one drew this frame" is deliberately invisible in the
@@ -1009,12 +1021,26 @@ namespace vulkan {
     // stage, same primitives, same scene set, same instancing/skinning/morphing. What changes is
     // where the fragments go (three 1x targets + a 1x depth image instead of the scene color)
     // and that nothing is lit - see shaders/gbuffer.frag.
-    std::expected<void, std::string> runtime::make_gbuffer_pipeline(std::span<unsigned char const> const vertex_shader_code, std::span<unsigned char const> const fragment_shader_code) {
+    std::expected<void, std::string> runtime::make_gbuffer_pipeline(std::span<unsigned char const> const vertex_shader_code, std::span<unsigned char const> const fragment_shader_code,
+                                                                    std::span<unsigned char const> const mesh_vertex_shader_code) {
         auto result = this->vulkan_core.make_gbuffer_pipeline(vertex_shader_code, fragment_shader_code);
         if (!result) {
             return std::unexpected(std::string(result.error()));
         }
         this->gbuffer_pipeline = std::move(result).value();
+        // ---- ... and the MESH form of the same pass (docs/mesh_shaders.md step 2): the same fragment stage and a
+        // MESH entry that fetches the vertices the input assembler would have bound. Built only when the device can
+        // run one AND the caller handed the mesh stage's SPIR-V over - and a refusal is a log line, not a failure,
+        // because the vertex pipeline above is a complete answer on its own.
+        if (!mesh_vertex_shader_code.empty() && this->evaluate_mesh_shaders(nullptr)) {
+            auto mesh_result = this->vulkan_core.make_gbuffer_pipeline(mesh_vertex_shader_code, fragment_shader_code, VK_SHADER_STAGE_MESH_BIT_EXT);
+            if (mesh_result) {
+                this->gbuffer_pipeline_mesh = std::move(mesh_result).value();
+                utility::log("SUCCESS: G-buffer MESH pipeline created (the same surface write, fed by mesh dispatches)");
+            } else {
+                utility::log("G-buffer MESH pipeline refused ({}), so the pass keeps its vertex stage", mesh_result.error());
+            }
+        }
         return {};
     }
 
@@ -1308,15 +1334,7 @@ namespace vulkan {
         {
             uint32_t const push_constants = this->vulkan_core.device_properties.limits.maxPushConstantsSize;
             uint32_t const push_data = this->vulkan_core.descriptor_heap_limits.max_push_data;
-            if (!this->vulkan_core.mesh_shader_available) {
-                this->mesh_shaders_unavailable_reason = "the device has no VK_EXT_mesh_shader meshShader feature";
-            } else if (push_constants < vulkan::mesh_stage_block_size) {
-                this->mesh_shaders_unavailable_reason = std::format("maxPushConstantsSize is {} B, under the {} B block a mesh stage needs", push_constants, vulkan::mesh_stage_block_size);
-            } else if (push_data < vulkan::mesh_stage_block_size) {
-                this->mesh_shaders_unavailable_reason = std::format("the heap's maxPushDataSize is {} B, under the {} B block a mesh stage needs", push_data, vulkan::mesh_stage_block_size);
-            } else {
-                this->mesh_shaders = true;
-            }
+            this->mesh_shaders = this->evaluate_mesh_shaders(&this->mesh_shaders_unavailable_reason);
             if (this->mesh_shaders) {
                 utility::log("mesh shaders: available - a pass may build a MESH pipeline (push block {} B, within {} B push constants / {} B push data)",
                              vulkan::mesh_stage_block_size,
@@ -1376,8 +1394,34 @@ namespace vulkan {
         return {}; // a pass whose shader was never registered builds nothing and says so
     }
 
-    pass::pass_context runtime::make_pass_context() noexcept {
-        // THE ONE CONSTRUCTION SITE for a pass's create-time context, and it is a method rather than a block
+    bool runtime::evaluate_mesh_shaders(std::string* const reason) const noexcept {
+        // THE GATE, as one question asked in two places (create_passes, for the log and the pass context; and the
+        // G-buffer pipeline's builder, which runs earlier). In both cases the answer is the same three facts, and
+        // the reason string is only filled in for the one caller that logs it.
+        uint32_t const push_constants = this->vulkan_core.device_properties.limits.maxPushConstantsSize;
+        uint32_t const push_data = this->vulkan_core.descriptor_heap_limits.max_push_data;
+        auto const unavailable = [reason](std::string text) {
+            if (reason != nullptr) {
+                *reason = std::move(text);
+            }
+            return false;
+        };
+        if (!this->vulkan_core.mesh_shader_available) {
+            return unavailable("the device has no VK_EXT_mesh_shader meshShader feature");
+        }
+        if (push_constants < vulkan::mesh_stage_block_size) {
+            return unavailable(std::format("maxPushConstantsSize is {} B, under the {} B block a mesh stage needs", push_constants, vulkan::mesh_stage_block_size));
+        }
+        if (push_data < vulkan::mesh_stage_block_size) {
+            return unavailable(std::format("the heap's maxPushDataSize is {} B, under the {} B block a mesh stage needs", push_data, vulkan::mesh_stage_block_size));
+        }
+        if (reason != nullptr) {
+            reason->clear();
+        }
+        return true;
+    }
+
+    pass::pass_context runtime::make_pass_context() noexcept { // THE ONE CONSTRUCTION SITE for a pass's create-time context, and it is a method rather than a block
         // because there were two of them: `create_passes()` built one for the stages, and the two jobs that are
         // not frame passes (the MASK bake, the compute-skinning job) each built their own copy. A second copy of
         // this struct is how a per-pass entry point per job appears, which is what the pass filter exists to
@@ -1720,14 +1764,24 @@ namespace vulkan {
         env.command_buffer = command_buffer;
         // The G-buffer pass binds its own pipeline as the pass default (see gbuffer_pipeline_name): same
         // leaves, same draw path, but the fragment stage writes the surface instead of shading.
+        // ... AND WHICH FORM OF IT: the MESH pipeline when the device built one (docs/mesh_shaders.md step 2). The
+        // decision is the SESSION's rather than the draw's, because the G-buffer pass draws every leaf with this
+        // one pipeline - and a mesh session feeds its leaves differently (see the endpoints below), which is why
+        // the two facts travel together here.
+        bool gbuffer_mesh = false;
         {
             std::shared_lock const lock(self.access_mutex);
             env.default_name = gbuffer ? gbuffer_pipeline_name : self.default_pipeline_name;
+            gbuffer_mesh = gbuffer && self.gbuffer_pipeline_mesh.has_value();
         }
-        env.bind = [&self, gbuffer](VkCommandBuffer const cb, std::string_view const name) {
+        env.bind = [&self, gbuffer, gbuffer_mesh](VkCommandBuffer const cb, std::string_view const name) {
             if (gbuffer) {
                 if (name == gbuffer_pipeline_name) {
-                    self.gbuffer_pipeline->begin_pipeline(cb);
+                    if (gbuffer_mesh) {
+                        self.gbuffer_pipeline_mesh->begin_pipeline(cb);
+                    } else {
+                        self.gbuffer_pipeline->begin_pipeline(cb);
+                    }
                     return;
                 }
                 // a leaf with explicit pipeline semantics cannot draw in the G-buffer instance (the named
@@ -1752,6 +1806,18 @@ namespace vulkan {
         // why a primitive's own push struct never had to grow a field.
         env.push_owner = &self;
         env.push_block = &runtime::push_stage_block;
+        // ... and how a MESH session feeds its leaves: a mesh pipeline has no input assembler, so every leaf is
+        // dispatched with its geometry window pushed instead of bound (see primitive::mesh_dispatch). The WINDOW
+        // itself is pushed by every session - a vertex pipeline's stages declare the same lanes and a heap pipeline
+        // requires them written - so the endpoints below are set for the vertex form too, and only `mesh_stage` and
+        // the dispatch are the mesh form's alone.
+        env.mesh_geometry_push_offset = vulkan::mesh_geometry_push_offset_scene;
+        env.buffer_address = &runtime::mesh_buffer_address;
+        env.push_at = &runtime::push_geometry_block;
+        if (gbuffer_mesh) {
+            env.mesh_stage = true;
+            env.draw_mesh_tasks = &runtime::draw_mesh_tasks;
+        }
         return env;
     }
 

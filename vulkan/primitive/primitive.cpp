@@ -1,7 +1,9 @@
 module;
 
+#include <array>
 #include <cstddef>
 #include <cstdio>
+#include <cstring>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <span>
@@ -45,10 +47,15 @@ namespace vulkan {
         vkCmdBindIndexBuffer(command_buffer, this->index_detail->buffer, 0, this->index_type);
 
         push_stage_block(env, this->push);
+        // ... and the geometry window, which this pipeline's stages declare and never read: see push_geometry_lanes
+        // (a heap pipeline requires every byte of a declared block to be written before the draw).
+        this->push_geometry_lanes(env, *this, 0u, this->index_count, 0);
     }
 
-    void primitive::mesh_dispatch(render_environment const& env, primitive const& geometry, uint32_t const first_index, uint32_t const index_count, int32_t const base_vertex, uint32_t const instance_count) const {
-        VkCommandBuffer const command_buffer = env.command_buffer;
+    void primitive::push_geometry_lanes(render_environment const& env, primitive const& geometry, uint32_t const first_index, uint32_t const index_count, int32_t const base_vertex) const {
+        if (env.push_at == nullptr || env.buffer_address == nullptr || env.mesh_geometry_push_offset == 0u) {
+            return; // a session that does not use the shared scene block (or a test one) has nothing to fill
+        }
         // ---- the geometry lanes: what the input assembler used to consume, as data ----
         mesh_geometry_lanes lanes;
         lanes.vertex_address = env.buffer_address(env.push_owner, geometry.vertex_detail->buffer);
@@ -60,14 +67,39 @@ namespace vulkan {
         // 2 for UINT16 (the shader reads the 16-bit case as the half of a 32-bit word its index falls in)
         lanes.index_width = geometry.index_type == VK_INDEX_TYPE_UINT16 ? 2u : 4u;
         if (lanes.vertex_address == 0 || lanes.index_address == 0) {
-            // A buffer without a device address cannot be fetched by a mesh stage at all, and drawing it anyway
+            // A buffer without a device address cannot be fetched by a mesh stage at all, and dispatching anyway
             // would read address 0. The primitive upload asks for SHADER_DEVICE_ADDRESS_BIT whenever the device
-            // has buffer device addresses, so this is the "device does not" case - and the vertex path is the
-            // answer, which the caller has to make (it can see this only here).
-            utility::log("[mesh] a caster at slot {} has no device address (vertex {}, index {}) - the mesh path cannot draw it", this->push.material_index.value, lanes.vertex_address, lanes.index_address);
-            return;
+            // has buffer device addresses, so this is the "device does not" case: the lanes go out as zeroes
+            // (they must be written either way) and a MESH session must skip the draw, which it can see from the
+            // zeroes it just pushed - so the log line is the only thing left to add.
+            static bool logged = false;
+            if (!logged) {
+                logged = true;
+                utility::log("[mesh] a caster at material slot {} has no buffer device address - a mesh pipeline cannot draw it", this->push.material_index.value);
+            }
         }
-        [[maybe_unused]] bool const pushed = env.push_at(env.push_owner, command_buffer, mesh_geometry_offset, std::as_bytes(std::span(&lanes, 1)));
+        // THE PUSH COVERS THE WHOLE DECLARED BLOCK, and it starts at the previous member's END rather than at the
+        // lanes - both because of one measured rule: with a descriptor-heap pipeline every byte of the declared
+        // block must have been written before the draw, and validation names the range it is missing
+        // (VUID-vkCmdDrawMeshTasksEXT-None-11376: "[0, 144), but vkCmdPushDataEXT was never called for range
+        // [108, 112)" first, then "[140, 144)" - the scene block's alignment word and the std140 block-size
+        // rounding respectively). So: zero-filled payload from `mesh_geometry_push_offset` to the block's end, with
+        // the lanes copied in where the SHADER reads them.
+        constexpr std::size_t payload_size = mesh_stage_block_size - mesh_geometry_push_offset_scene;
+        static_assert(mesh_geometry_lanes_offset >= mesh_geometry_push_offset_scene, "the lanes cannot sit before the scene block's fill starts");
+        static_assert(mesh_geometry_lanes_offset + sizeof(mesh_geometry_lanes) <= mesh_stage_block_size, "the lanes must fit inside the block");
+        // WHERE THE LANES GO INSIDE THIS PAYLOAD: the shader reads them at the same offset in both blocks, but the
+        // two sessions start filling at different ones - so this is a difference of the two, not a constant. (The
+        // first version copied at the SCENE's offset for both and put the shadow pass's lanes 4 bytes late, which
+        // read as a window belonging to no draw: the shadow map came out empty and the frame lost every shadow.)
+        std::size_t const lanes_at = mesh_geometry_lanes_offset - env.mesh_geometry_push_offset;
+        std::array<std::byte, payload_size> payload = {};
+        std::memcpy(payload.data() + lanes_at, &lanes, sizeof(lanes));
+        std::size_t const bytes = static_cast<std::size_t>(mesh_stage_block_size) - env.mesh_geometry_push_offset;
+        [[maybe_unused]] bool const pushed = env.push_at(env.push_owner, env.command_buffer, env.mesh_geometry_push_offset, std::span<std::byte const>(payload.data(), bytes));
+    }
+
+    void primitive::mesh_dispatch(render_environment const& env, uint32_t const index_count, uint32_t const instance_count) const {
         // ---- the dispatch: one workgroup per `mesh_triangles_per_workgroup` triangles of THIS draw ----
         // The workgroup budget is the shader's (see shaders/mesh_geometry.slang: 85 triangles, 255 vertices,
         // because a triangle costs three of the device's 256 output vertices), and the group count has to cover
@@ -77,7 +109,7 @@ namespace vulkan {
         uint32_t const triangles = index_count / 3u;
         uint32_t const groups = (triangles + triangles_per_workgroup - 1u) / triangles_per_workgroup;
         if (groups != 0u) {
-            [[maybe_unused]] bool const dispatched = env.draw_mesh_tasks(env.push_owner, command_buffer, groups, instance_count, 1u);
+            [[maybe_unused]] bool const dispatched = env.draw_mesh_tasks(env.push_owner, env.command_buffer, groups, instance_count, 1u);
         }
     }
 
@@ -102,10 +134,11 @@ namespace vulkan {
         VkCommandBuffer const command_buffer = env.command_buffer;
         env.set_cull_mode(this->double_sided);
         if (env.mesh_stage) {
-            // A MESH SESSION DOES NOT BIND GEOMETRY: the stage fetches it from the addresses this pushes
-            // (see mesh_dispatch), so binding would be a command with no effect.
+            // A MESH SESSION DOES NOT BIND GEOMETRY: the stage fetches it from the lanes pushed below, so binding
+            // would be a command with no effect.
             push_stage_block(env, this->push);
-            this->mesh_dispatch(env, *this, 0u, this->index_count, 0, 1u);
+            this->push_geometry_lanes(env, *this, 0u, this->index_count, 0);
+            this->mesh_dispatch(env, this->index_count, 1u);
             return;
         }
         this->bind_geometry_and_push(env);
@@ -142,7 +175,8 @@ namespace vulkan {
             // stage has no SV_InstanceID, so the stage reads its instance index from the workgroup grid's Y -
             // which is exactly what the vertex path's SV_InstanceID meant here (see shadow.slang's mesh entry).
             push_stage_block(env, this->push);
-            this->mesh_dispatch(env, geometry_source, 0u, geometry_source.index_count, 0, this->instance_count);
+            this->push_geometry_lanes(env, geometry_source, 0u, geometry_source.index_count, 0);
+            this->mesh_dispatch(env, geometry_source.index_count, this->instance_count);
             return;
         }
         constexpr VkDeviceSize vertex_offset = 0;
@@ -150,6 +184,8 @@ namespace vulkan {
         vkCmdBindIndexBuffer(command_buffer, geometry_source.index_detail->buffer, 0, geometry_source.index_type);
 
         push_stage_block(env, this->push);
+        // the lanes go out for the VERTEX pipeline too (its stages declare them): see push_geometry_lanes
+        this->push_geometry_lanes(env, geometry_source, 0u, geometry_source.index_count, 0);
         vkCmdDrawIndexed(command_buffer, geometry_source.index_count, this->instance_count, 0, 0, 0);
     }
 
@@ -185,10 +221,12 @@ namespace vulkan {
                 return p;
             }();
             push_stage_block(env, chunk_push);
+            // THE CHUNK'S WINDOW IS THE LANES' WHOLE POINT: first index, count and base vertex are exactly the
+            // three arguments the vkCmdDrawIndexed below takes and a mesh dispatch has no place for, so both
+            // paths push them per chunk (the vertex path's stages declare them too - see push_geometry_lanes).
+            this->push_geometry_lanes(env, *this, chunk.first_index, chunk.index_count, static_cast<int32_t>(chunk.vertex_offset));
             if (env.mesh_stage) {
-                // A CHUNK IS EXACTLY THE WINDOW mesh_geometry_lanes CARRIES: first index, count, base vertex -
-                // the three arguments of the vkCmdDrawIndexed below, which a mesh dispatch has no place for.
-                this->mesh_dispatch(env, *this, chunk.first_index, chunk.index_count, static_cast<int32_t>(chunk.vertex_offset), 1u);
+                this->mesh_dispatch(env, chunk.index_count, 1u);
                 continue;
             }
             vkCmdDrawIndexed(command_buffer,

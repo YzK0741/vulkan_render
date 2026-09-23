@@ -363,6 +363,10 @@ namespace vulkan {
         // id/AO/flags go into core::gbuffer_* (1x targets + the pass's own 1x depth), so the opaque
         // pass runs at 1x.
         std::optional<vk_pipeline> gbuffer_pipeline = std::nullopt;
+        /// ... and the MESH form of the same pass (docs/mesh_shaders.md step 2), when the device can run one and the
+        /// app handed the mesh stage's SPIR-V over: the scene session prefers it the way the shadow pass prefers
+        /// its own, and a device without it keeps `gbuffer_pipeline` above.
+        std::optional<vk_pipeline> gbuffer_pipeline_mesh = std::nullopt;
         // whether the opaque pass writes the G-buffer this frame (see set_gbuffer_debug). Only
         // takes effect once the needed pipelines exist, so the flags can be set before setup ends.
         bool gbuffer_debug = false;
@@ -1082,6 +1086,14 @@ namespace vulkan {
         bool mesh_shaders = false;
         /// the reason `mesh_shaders` is false, for the one startup log line (empty when it is true)
         std::string mesh_shaders_unavailable_reason = {};
+        /**
+         * @brief THE GATE ITSELF: whether a mesh pipeline may be built on this device, and why not when it may not
+         * @param reason filled with the failing condition when the answer is false and a string was passed (null to
+         *        skip it - the question is asked twice, and only one caller logs)
+         * @note a pure question about the device, so it can be asked before `create_passes` has run: the G-buffer
+         *       pipeline is built by the APP's setup path, which is earlier than the pass context.
+         */
+        [[nodiscard]] bool evaluate_mesh_shaders(std::string* reason) const noexcept;
         /// `vkCmdDrawMeshTasksEXT`, resolved once from the device because the loader's import library does not
         /// export an extension command (null on a device without the mesh shader extension)
         PFN_vkCmdDrawMeshTasksEXT mesh_dispatch = nullptr;
@@ -2356,7 +2368,8 @@ namespace vulkan {
          *       one set_gbuffer_debug() builds. Register it like any other pipeline (it is NOT the
          *       default: the G-buffer pass binds it explicitly).
          */
-        std::expected<void, std::string> make_gbuffer_pipeline(std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code);
+        std::expected<void, std::string> make_gbuffer_pipeline(std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code,
+                                                               std::span<unsigned char const> mesh_vertex_shader_code = {});
 
         /**
          * @ingroup vulkan_runtime

@@ -479,7 +479,8 @@ namespace vulkan {
     }
     std::expected<vk_pipeline, std::string_view> core::make_gbuffer_pipeline(
         std::span<unsigned char const> const vertex_shader_code,
-        std::span<unsigned char const> const fragment_shader_code) const {
+        std::span<unsigned char const> const fragment_shader_code,
+        VkShaderStageFlagBits const first_stage) const {
         // Five color targets: the three surface targets, the motion vectors, and the scene color the
         // pass ADDS the emissive term into (lighting-independent, and it needs the emissive texture and
         // the UVs the G-buffer does not store - see core::gbuffer_pass_attachment_count). The first
@@ -509,7 +510,10 @@ namespace vulkan {
             0.0f,
             0.0f,
             0.0f,
-            std::span<VkPipelineColorBlendAttachmentState const>(blends));
+            std::span<VkPipelineColorBlendAttachmentState const>(blends),
+            // ... and the stage that emits the geometry: MESH when the caller passes a mesh entry (then the vertex
+            // input state is not derived from it at all - a mesh stage declares no Input variables).
+            first_stage);
         if (result) {
             // same fullscreen viewport/scissor default as the forward pipelines (the frame path
             // re-syncs it on every swapchain recreation)

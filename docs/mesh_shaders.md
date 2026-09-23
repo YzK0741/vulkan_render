@@ -1,9 +1,11 @@
 # Mesh shaders: what the stage buys here, and how the migration runs
 
-**STATUS: steps 0 and 1 are DONE and measured - the binding model is proven (the heap-native probe runs through a
-mesh pipeline and reports the same pixel as the vertex one), and the SHADOW PASS draws its casters with mesh
-dispatches: the capture gate is byte-identical to the vertex path's references, and a forced probe proves the mesh
-stage is the one that produced those frames. Steps 2-4 are planned, not started.**
+**STATUS: steps 0, 1 and the G-buffer half of step 2 are DONE and measured - the binding model is proven (the
+heap-native probe runs through a mesh pipeline and reports the same pixel as the vertex one), and TWO passes draw
+their geometry with mesh dispatches: the shadow pass's casters and the G-buffer pass's opaque leaves. The capture
+gate is byte-identical to the committed vertex-path references with either path active, and forced probes prove the
+mesh stages are the ones that produced those frames. The forward/unlit/transparent pipelines are still vertex
+stages (the rest of step 2), and steps 3-4 are planned.**
 
 This document exists for the same reason `docs/slang_migration.md` does: the work spans sessions, so the
 recipe, the acceptance route and the traps belong somewhere durable. Every number below was measured on
@@ -236,19 +238,67 @@ casters`), and the forced probe proves the log is telling the truth.
 The vertex entry, the fragment entry and the pass's fallback are all still there, and `ctest` (8/8), `spirv-val`
 (26 modules) and the validation layer stay clean with the mesh path active.
 
-### Step 2 - `pbr.vert` becomes a mesh stage
+### Step 2 - `pbr.vert` becomes a mesh stage (G-BUFFER path DONE, forward/unlit/transparent still vertex)
 
-`pbr.vert` is loaded by three consumers (G-buffer opaque, forward default, transparent), so the gate
-covers it broadly - and the transparent pass is the one whose ORDER is decided on the CPU (back to front
-by transformed origin), which a mesh stage must preserve: a mesh stage changes who emits the triangles,
-not which draw is issued when. The geometry fetch, the lanes and the dispatch are `mesh_geometry.slang`'s
-and the draw path's already (step 1 built them), so this step is: a `mesh_main` in `pbr.slang` that shares
-its vertex body the way `shadow.slang` does, the MESH form of the G-buffer/forward pipeline
-(`make_pipeline`'s `first_stage` is what it needs), and the scene pass's session setting `mesh_stage` the
-way the shadow pass's now does.
+`shaders/pbr.slang` carries a third entry, `mesh_main`, built into a second G-buffer pipeline
+(`pbr.mesh.spv` + the SAME `gbuffer.frag`), and the scene session prefers it the way the shadow pass prefers its
+own: `runtime::make_gbuffer_pipeline` builds both pipelines from the code the app hands over, and
+`make_scene_environment` picks the mesh one and marks the session `mesh_stage`. The vertex body is now
+`pbr_shade_vertex(const MeshVertex, vertex_index, instance_index)` - the second half of the objective's "one shared
+fetch instead of two mirrored vertex-input declarations": `shadow.slang` and `pbr.slang` each declare their five
+attributes once, hand them to a body they share with their own `mesh_main`, and read the same 64-byte record through
+the same `shaders/mesh_geometry.slang` fetch.
 
-Acceptance: **gate** (all ten scenarios; `transparent_blend` and `sponza` are the sensitive ones), plus a
-per-draw comparison against the archived vertex-stage captures if any scenario moves.
+This is the widest coverage a geometry port can have: the G-buffer pass draws every opaque leaf of every scenario,
+so nine of the ten gate scenarios exercise it (`unlit` shades through the forward pipeline, `transparent_blend`
+composites through the transparent one - both still vertex stages, and both stay byte-identical, which also proves
+the widened stage block did not disturb the vertex path).
+
+**THE VUID THIS STEP FOUND, which changes what "one block" means.** A heap-native pipeline requires EVERY byte of
+each declared push block to have been written by `vkCmdPushDataEXT` before the draw
+(VUID-vkCmdDrawMeshTasksEXT-None-11376 - and its `vkCmdDrawIndexed` twin):
+
+```
+uses push-constant statically at range [0, 144), but vkCmdPushDataEXT was never called for range [108, 112)
+```
+
+Three consequences, each measured:
+
+1. **The lanes must sit at the block's previous member's end.** `MeshGeometryLanes` was declared with two `uint2`
+   addresses, which align to 8 bytes and left a 4-byte hole - the exact range validation named. It is now eight
+   `uint` fields (four address halves, then the four window words), so nothing pads.
+2. **A std140 struct member is 16-byte aligned**, which put the struct at 112 even with the hole gone, so the scene
+   block declares the word that ends at 112 explicitly (`geometry_pad`) - the offset is now a member's end rather
+   than a consequence of the layout rules.
+3. **The push must run to the BLOCK's end, not to the lanes' end**: std140 rounds a block's size up to a multiple
+   of 16, and the declared block is 144 while the scene's members end at 140 - validation named that range too
+   ("[140, 144)"). `primitive::push_geometry_lanes` therefore pushes a zero-filled payload from
+   `mesh_geometry_push_offset` (108 scene / 112 shadow) to `mesh_stage_block_size` (144), with the lanes copied to
+   where the shader reads them (112 in both).
+
+**AND EVERY DRAW PUSHES THE LANES, INCLUDING THE VERTEX PATH'S.** One source file is one block layout for every
+entry it contains, so `pbr.vert` and `gbuffer.frag` declare the lanes that only `mesh_main` reads - and a
+descriptor-heap pipeline requires the declared bytes to be written whatever stage reads them. The vertex path
+therefore pays 32 bytes and one extra push per draw that it never looks at; the alternative was two block layouts
+for one shader file, which the language does not express. Verified both ways: forcing the gate off (both passes on
+their vertex pipelines) produces a log with zero validation findings, and `unlit`/`transparent_blend` run through
+the vertex path with the widened block in the gate itself.
+
+**Acceptance: the gate, both ways, again.**
+
+| run | result |
+| --- | --- |
+| step 2 (mesh shadow AND mesh G-buffer) | 10/10 passed, 0 changed, 0 flaky - the same ten hashes as the committed references |
+| forced probe: `SetMeshOutputCounts(0, 0)` in `pbr.slang`'s mesh entry, then reverted | `deferred` CHANGED (8687703DA3BCA7EF vs FA1C1BED4DD611C5) - the model leaves the frame entirely |
+| gate forced off (`evaluate_mesh_shaders` returning false), then reverted | "mesh shaders: not used", zero validation findings, i.e. a device without the extension runs the vertex path cleanly |
+
+The middle row is again what makes the first mean something, and this time the two failure modes have their own
+hashes: `61770EA9EBFE0714` was the frame with the G-buffer RIGHT and no shadows (a lane-offset bug that fed the
+shadow stage a window belonging to no draw), `8687703DA3BCA7EF` is the frame with no geometry at all.
+
+The forward, unlit and transparent pipelines are what remains of this step: each needs the same mesh form of its
+named pipeline, and the forward/unlit leaves reach the registry by NAME (the G-buffer pass has one fixed pipeline
+per session, which is why this half was the cheap one).
 
 ### Step 3 - a TASK stage, meshlets, and indirect dispatch
 

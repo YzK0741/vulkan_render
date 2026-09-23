@@ -227,9 +227,15 @@ namespace chores {
             // runtime::set_gbuffer_debug() has no effect and the opaque pass shades into the HDR target directly.
             std::vector<unsigned char> vertex_code;
             std::vector<unsigned char> fragment_code;
+            std::vector<unsigned char> mesh_code;
             load_shader(shaders_dir, "pbr.vert.spv", vertex_code); // the G-buffer vertex stage (instancing/skinning/morphing)
             load_shader(shaders_dir, "gbuffer.frag.spv", fragment_code);
-            auto const gbuffer_result = runtime.make_gbuffer_pipeline(vertex_code, fragment_code);
+            // ... and the SAME pair's MESH stage (docs/mesh_shaders.md step 2), which replaces the vertex entry when
+            // the device can run one: the runtime builds the mesh form beside the vertex one and the scene session
+            // prefers it, so a missing or refused mesh shader is a log line rather than a failure.
+            load_shader(shaders_dir, "pbr.mesh.spv", mesh_code);
+            auto const gbuffer_result = runtime.make_gbuffer_pipeline(vertex_code, fragment_code, mesh_code);
+
             if (!gbuffer_result) {
                 utility::log("gbuffer pipeline disabled: {}", gbuffer_result.error());
             } else {

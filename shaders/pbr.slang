@@ -80,26 +80,23 @@ struct pbr_vertex_output
     float4 position : SV_Position;
 };
 
-/// @brief morph blend -> skin -> world transform; outputs the world position, normal and UV
+/// @brief morph blend -> skin -> world transform; the body BOTH geometry entries share
+/// @param v the vertex record, from the input assembler (the vertex entry) or fetched by address (the mesh entry,
+///        docs/mesh_shaders.md step 2) - the two paths differ ONLY in how the bytes arrive
+/// @param vertex_index SV_VertexID in the vertex entry, the fetched index in the mesh entry (the morph block is
+///        indexed by it)
+/// @param instance_index SV_InstanceID in the vertex entry, the mesh workgroup's Y in the mesh entry
 /// @note each stage is skipped by a uniform branch when the primitive does not need it
 ///       (push.morph_targets == 0, weight sum == 0, flag bit0 clear), so one pipeline serves static,
 ///       skinned, morphed and instanced geometry without variants.
-[shader("vertex")]
-pbr_vertex_output vertex_main(
-    [[vk::location(0)]] float3 in_position : POSITION0,
-    [[vk::location(1)]] float3 in_normal : NORMAL0,
-    [[vk::location(2)]] float2 in_uv : UV_IN,
-    [[vk::location(4)]] uint4 in_joints : JOINTS0,
-    [[vk::location(5)]] float4 in_weights : WEIGHTS0,
-    uint vertex_index : SV_VertexID,
-    uint instance_index : SV_InstanceID)
+pbr_vertex_output pbr_shade_vertex(const MeshVertex v, const uint vertex_index, const uint instance_index)
 {
     // morph blend first (local deltas + active target weights; skipped when not morphable)
-    float4 local_pos = float4(in_position, 1.0);
+    float4 local_pos = float4(v.position, 1.0);
     // ... and where this vertex was in object space BEFORE the morph blend, which is the same position
     // whenever the primitive is not morphable (the copy is why the branch below can be a uniform one).
     float4 prev_local_pos = local_pos;
-    float3 morph_normal = in_normal;
+    float3 morph_normal = v.normal;
     if (push.morph_targets > 0u)
     {
         const uint vert = vertex_index;
@@ -120,37 +117,37 @@ pbr_vertex_output vertex_main(
             prev_pos_delta += w_prev * dpos;
             nrm_delta += w * dnrm;
         }
-        local_pos = float4(in_position + pos_delta, 1.0);
+        local_pos = float4(v.position + pos_delta, 1.0);
         // the SAME blend with the previous weights: the morph half of the deformation term, and the deltas
         // are read once because they are static - only the weights moved between the two frames
-        prev_local_pos = float4(in_position + prev_pos_delta, 1.0);
-        morph_normal = in_normal + nrm_delta;
+        prev_local_pos = float4(v.position + prev_pos_delta, 1.0);
+        morph_normal = v.normal + nrm_delta;
     }
 
     // skinning after morph: blend the four joint transforms with the vertex weights (the identity block at
     // skin_base 0 leaves unskinned vertices unchanged). Normals use the weighted rotation part.
     float3 skinned_normal = morph_normal;
-    const float wsum = in_weights.x + in_weights.y + in_weights.z + in_weights.w;
+    const float wsum = v.weights.x + v.weights.y + v.weights.z + v.weights.w;
     if (wsum > 0.0)
     {
         float4 pos = float4(0.0, 0.0, 0.0, 0.0);
         float4 prev_pos = float4(0.0, 0.0, 0.0, 0.0);
         float3 nrm = float3(0.0, 0.0, 0.0);
-        pos += in_weights.x * (skin_matrix_at(heap_skin_slot, push.skin_base + in_joints.x) * local_pos);
-        pos += in_weights.y * (skin_matrix_at(heap_skin_slot, push.skin_base + in_joints.y) * local_pos);
-        pos += in_weights.z * (skin_matrix_at(heap_skin_slot, push.skin_base + in_joints.z) * local_pos);
-        pos += in_weights.w * (skin_matrix_at(heap_skin_slot, push.skin_base + in_joints.w) * local_pos);
+        pos += v.weights.x * (skin_matrix_at(heap_skin_slot, push.skin_base + v.joints.x) * local_pos);
+        pos += v.weights.y * (skin_matrix_at(heap_skin_slot, push.skin_base + v.joints.y) * local_pos);
+        pos += v.weights.z * (skin_matrix_at(heap_skin_slot, push.skin_base + v.joints.z) * local_pos);
+        pos += v.weights.w * (skin_matrix_at(heap_skin_slot, push.skin_base + v.joints.w) * local_pos);
         // ... and the SAME blend through the matrices the previous frame drew with, applied to the position
         // the previous frame morphed to: the two halves compose as skin_previous(morph_previous(v)), which is
         // the deformation term for a mesh that both morphs and skins.
-        prev_pos += in_weights.x * (skin_matrix_previous_at(heap_skin_previous_slot, push.skin_base + in_joints.x) * prev_local_pos);
-        prev_pos += in_weights.y * (skin_matrix_previous_at(heap_skin_previous_slot, push.skin_base + in_joints.y) * prev_local_pos);
-        prev_pos += in_weights.z * (skin_matrix_previous_at(heap_skin_previous_slot, push.skin_base + in_joints.z) * prev_local_pos);
-        prev_pos += in_weights.w * (skin_matrix_previous_at(heap_skin_previous_slot, push.skin_base + in_joints.w) * prev_local_pos);
-        nrm += in_weights.x * mat3(skin_matrix_at(heap_skin_slot, push.skin_base + in_joints.x)) * morph_normal;
-        nrm += in_weights.y * mat3(skin_matrix_at(heap_skin_slot, push.skin_base + in_joints.y)) * morph_normal;
-        nrm += in_weights.z * mat3(skin_matrix_at(heap_skin_slot, push.skin_base + in_joints.z)) * morph_normal;
-        nrm += in_weights.w * mat3(skin_matrix_at(heap_skin_slot, push.skin_base + in_joints.w)) * morph_normal;
+        prev_pos += v.weights.x * (skin_matrix_previous_at(heap_skin_previous_slot, push.skin_base + v.joints.x) * prev_local_pos);
+        prev_pos += v.weights.y * (skin_matrix_previous_at(heap_skin_previous_slot, push.skin_base + v.joints.y) * prev_local_pos);
+        prev_pos += v.weights.z * (skin_matrix_previous_at(heap_skin_previous_slot, push.skin_base + v.joints.z) * prev_local_pos);
+        prev_pos += v.weights.w * (skin_matrix_previous_at(heap_skin_previous_slot, push.skin_base + v.joints.w) * prev_local_pos);
+        nrm += v.weights.x * mat3(skin_matrix_at(heap_skin_slot, push.skin_base + v.joints.x)) * morph_normal;
+        nrm += v.weights.y * mat3(skin_matrix_at(heap_skin_slot, push.skin_base + v.joints.y)) * morph_normal;
+        nrm += v.weights.z * mat3(skin_matrix_at(heap_skin_slot, push.skin_base + v.joints.z)) * morph_normal;
+        nrm += v.weights.w * mat3(skin_matrix_at(heap_skin_slot, push.skin_base + v.joints.w)) * morph_normal;
         local_pos = pos / wsum;
         prev_local_pos = prev_pos / wsum;
         skinned_normal = nrm / wsum;
@@ -165,7 +162,7 @@ pbr_vertex_output vertex_main(
     pbr_vertex_output o;
     o.world_pos = world_pos.xyz;
     o.normal = normalize(mat3(world) * skinned_normal);
-    o.uv = in_uv;
+    o.uv = v.uv;
 
     // The previous LOCAL position through the previous frame's world matrix. The node's rigid motion comes
     // from that matrix, and a vertex's own movement inside its object space comes from prev_local_pos above -
@@ -179,4 +176,68 @@ pbr_vertex_output vertex_main(
 
     o.position = camera_at(heap_camera_slot).proj * camera_at(heap_camera_slot).view * world_pos;
     return o;
+}
+
+/// @brief the model-to-clip transform the input assembler feeds: five vertex attributes, SV_VertexID and
+///        SV_InstanceID, handed to the body above as one record
+/// @note THE FIVE ATTRIBUTES ARE THE PIPELINE'S VERTEX INPUT LAYOUT, which the host derives from this entry's own
+///       declarations: dropping one would silently shrink the bound buffer's stride, so they must stay written to
+///       the record the body reads (locations 0,1,2,4,5 - 64 bytes, the engine's interleaved vertex).
+[shader("vertex")]
+pbr_vertex_output vertex_main(
+    [[vk::location(0)]] float3 in_position : POSITION0,
+    [[vk::location(1)]] float3 in_normal : NORMAL0,
+    [[vk::location(2)]] float2 in_uv : UV_IN,
+    [[vk::location(4)]] uint4 in_joints : JOINTS0,
+    [[vk::location(5)]] float4 in_weights : WEIGHTS0,
+    uint vertex_index : SV_VertexID,
+    uint instance_index : SV_InstanceID)
+{
+    MeshVertex v;
+    v.position = in_position;
+    v.normal = in_normal;
+    v.uv = in_uv;
+    v.joints = in_joints;
+    v.weights = in_weights;
+    return pbr_shade_vertex(v, vertex_index, instance_index);
+}
+
+// =============================================================================================================
+// THE MESH STAGE (entry `mesh_main`), which replaces the input assembler AND the vertex entry above:
+// docs/mesh_shaders.md step 2. It fetches the very vertices the input assembler would have bound - through the
+// geometry lanes the host pushes into this stage's block - projects them with THE SAME body, and emits exactly the
+// triangles the draw's index window describes, so the G-buffer (and, through the same file, the forward and unlit
+// pipelines) must come out identical, and the capture gate is what decides that they do.
+//
+// IT IS THE SHADOW PASS'S STAGE ONE FAMILY LARGER: the same loop, the same 85-triangle workgroup budget (see
+// shaders/mesh_geometry.slang), the same `SV_GroupID.y` as the instance index - and the difference is what the
+// shared body does with the vertex, which here is the whole shading-relevant transform: morph, skin, the
+// previous-frame position that becomes TAA's motion vector, and the camera projection.
+// =============================================================================================================
+[shader("mesh")]
+[outputtopology("triangle")]
+[numthreads(1, 1, 1)]
+void mesh_main(out vertices pbr_vertex_output verts[mesh_vertices_per_workgroup], out indices uint3 tris[mesh_triangles_per_workgroup], uint3 group_id : SV_GroupID)
+{
+    const MeshGeometryLanes geometry = push.geometry;
+    const uint triangle_count = geometry.index_count / mesh_indices_per_triangle;
+    // this workgroup's first triangle, and how many of the draw's triangles are left for it
+    const uint first_triangle = group_id.x * mesh_triangles_per_workgroup;
+    const uint remaining = first_triangle < triangle_count ? triangle_count - first_triangle : 0u;
+    const uint emit = min(remaining, mesh_triangles_per_workgroup);
+
+    // ONE SetMeshOutputCounts for the whole workgroup, before any output is written.
+    SetMeshOutputCounts(emit * mesh_indices_per_triangle, emit);
+
+    for (uint t = 0u; t < emit; ++t)
+    {
+        for (uint corner = 0u; corner < mesh_indices_per_triangle; ++corner)
+        {
+            const uint raw_index = mesh_index_at(geometry, geometry.first_index + (first_triangle + t) * mesh_indices_per_triangle + corner);
+            const uint vertex_index = uint(int(raw_index) + geometry.base_vertex);
+            const MeshVertex v = mesh_vertex_at(geometry, vertex_index);
+            verts[t * mesh_indices_per_triangle + corner] = pbr_shade_vertex(v, vertex_index, group_id.y);
+        }
+        tris[t] = uint3(t * mesh_indices_per_triangle + 0u, t * mesh_indices_per_triangle + 1u, t * mesh_indices_per_triangle + 2u);
+    }
 }

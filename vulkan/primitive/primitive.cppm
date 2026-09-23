@@ -492,23 +492,37 @@ namespace vulkan {
 
     /**
      * @ingroup vulkan_primitive
-     * @brief WHERE A MESH STAGE'S GEOMETRY LANES SIT IN ITS STAGE BLOCK, in bytes (docs/mesh_shaders.md step 1)
+     * @brief WHERE A MESH STAGE'S GEOMETRY LANES SIT IN ITS STAGE BLOCK, in bytes (docs/mesh_shaders.md step 2)
      *
      * A mesh stage replaces the input assembler, so `vkCmdDrawMeshTasksEXT` carries no vertex binding, no index
-     * buffer and no first index - the DRAW has to hand all of that over as data, and this is the offset it
-     * lands at. The arithmetic is the block contract, stated once: the scene's material block (96 B), then the
-     * three heap index lanes the frame's push endpoint appends (frame slot, swapchain image, spare = 12 B),
-     * then the shadow pass's own cascade lane (4 B) - which is `shadow_io.push->offset` - so a geometry lane
-     * starts at 112.
+     * buffer and no first index - the DRAW has to hand all of that over as data, and there are TWO host-side
+     * numbers for where it lands because they answer different questions:
+     *
+     *  - `mesh_geometry_lanes_offset` is where the SHADER reads them, and it is the same 112 in both blocks: the
+     *    scene's block declares the alignment word that ends there, and the shadow pass's block has its cascade
+     *    lane there. A struct member is 16-byte aligned under std140, which is why the scene block declares that
+     *    word explicitly rather than letting the layout be a consequence of the layout rules.
+     *  - `mesh_geometry_push_offset_*` is where the HOST starts filling, i.e. the end of the block's previous
+     *    member: 108 for the scene block (the material block plus the endpoint's three heap index lanes), 112 for
+     *    the shadow pass's (plus its cascade lane).
+     *
+     * They are separate because of the VUID below: with a descriptor-heap pipeline EVERY byte of a stage's declared
+     * block must have been written by `vkCmdPushDataEXT` before the draw
+     * (VUID-vkCmdDrawMeshTasksEXT-None-11376, measured - the first attempt was rejected by name for a 4-byte hole
+     * and then for the block's trailing std140 padding), so the fill has to start at the earlier member's end and
+     * run to the BLOCK's end rather than to the lanes' end.
      */
-    export constexpr uint32_t mesh_geometry_offset = 112;
+    export constexpr uint32_t mesh_geometry_lanes_offset = 112;
+    export constexpr uint32_t mesh_geometry_push_offset_scene = scene_push_constant_size + 3u * sizeof(uint32_t);
+    /// ... and the shadow pass's own end: the same offset plus the cascade lane its block declares
+    export constexpr uint32_t mesh_geometry_push_offset_shadow = mesh_geometry_push_offset_scene + sizeof(uint32_t);
     /**
      * @ingroup vulkan_primitive
-     * @brief what a mesh stage needs to know about the geometry a draw covers, pushed at
+     * @brief what a mesh stage needs to know about the geometry a draw covers, pushed at the session's
      *        `mesh_geometry_offset` (the shader's copy is `MeshGeometryLanes` in shaders/mesh_geometry.slang)
-     * @note the layout is std430 as the shader declares it: two addresses as 32-bit halves first (8-byte
-     *       aligned, so 112 and 120), then four uints. The static_asserts below are what keep a field added
-     *       here from silently shifting a lane the shader reads at a literal offset.
+     * @note the layout is the shader's: two device addresses as four 32-bit halves (the SHADER declares eight
+     *       uints rather than two `uint2`s so that nothing pads - see that struct's note), then four uints. The
+     *       static_asserts below are what keep a field added here from silently shifting a lane.
      * @note THE WHOLE WINDOW IS HERE, not only the addresses: a mesh dispatch has no `firstIndex` and no
      *       `baseVertex` arguments either, and a static draw's chunk is exactly a window into a merged buffer -
      *       so a lane left out is a draw that cannot be ported rather than a draw that is slightly wrong.
@@ -528,9 +542,11 @@ namespace vulkan {
     static_assert(offsetof(mesh_geometry_lanes, base_vertex) == 24);
     static_assert(offsetof(mesh_geometry_lanes, index_width) == 28);
     static_assert(sizeof(mesh_geometry_lanes) == 32);
-    /// the stage block a mesh pass needs, from its start through those lanes: what the device's push limits
-    /// have to cover for the path to be available at all (see the runtime's capability gate)
-    export constexpr uint32_t mesh_stage_block_size = mesh_geometry_offset + sizeof(mesh_geometry_lanes);
+    /// the stage block a mesh pass needs, from its start through those lanes - and ONE number covers both blocks
+    /// for a reason worth stating: the shadow block's lanes end exactly there (112 + 32), and the scene block's
+    /// members end at 140 with std140 rounding the block's SIZE up to the same 144. It is what the device's push
+    /// limits have to cover for the path to be available at all (see the runtime's capability gate).
+    export constexpr uint32_t mesh_stage_block_size = mesh_geometry_lanes_offset + sizeof(mesh_geometry_lanes);
 
     /**
      * @ingroup vulkan_primitive
@@ -653,20 +669,31 @@ namespace vulkan {
         // is currently bound)
         void bind_geometry_and_push(render_environment const& env) const;
         /**
-         * @brief record ONE MESH DISPATCH over @p geometry's index window, for a session whose pass draws with
-         *        a mesh pipeline (docs/mesh_shaders.md step 1)
-         * @param env the session; it must have `mesh_stage` set and its three mesh endpoints filled
-         * @param geometry the primitive whose vertex/index buffers the stage fetches from
+         * @brief push THIS draw's geometry window into the session's stage block, at the offset it declares
+         *        (docs/mesh_shaders.md)
+         * @param env the session; it must have `mesh_geometry_offset`, `buffer_address` and `push_at` filled
+         * @param geometry the primitive whose vertex/index buffers the window is over
          * @param first_index the draw's first index, @p index_count how many, @p base_vertex what every
-         *        fetched index is offset by (the three values `vkCmdDrawIndexed` would have taken - see
-         *        mesh_geometry_lanes)
+         *        fetched index is offset by (the three values `vkCmdDrawIndexed` would have taken)
+         * @note EVERY draw pushes this, including the ones whose pipeline will never read it, and that is a
+         *       requirement rather than a shortcut: one source file is one push block for every entry it
+         *       contains, so a stage block that declares the lanes must have them written before the draw
+         *       (VUID-vkCmdDrawMeshTasksEXT-None-11376 / its vkCmdDrawIndexed twin). The vertex path therefore
+         *       pays 32 bytes per draw that only a mesh pipeline can spend - and the alternative was two block
+         *       layouts for one shader file, which is the thing that cannot be expressed.
+         */
+        void push_geometry_lanes(render_environment const& env, primitive const& geometry, uint32_t first_index, uint32_t index_count, int32_t base_vertex) const;
+        /**
+         * @brief record ONE MESH DISPATCH over a geometry window already pushed into the stage block
+         * @param env the session; it must have `mesh_stage` set and its mesh endpoints filled
+         * @param index_count how many indices the draw covers (the dispatch's group count follows from it)
          * @param instance_count how many instances to dispatch: a mesh command has no instanceCount, so the
          *        INSTANCE becomes the workgroup grid's Y and the stage reads it as its instance index
          * @note nothing is BOUND here: a mesh pipeline ignores the vertex input state, so binding the buffers
-         *       would be a command with no effect - the stage reaches them through the pushed addresses
-         *       instead, which is the whole difference between this and bind_geometry_and_push.
+         *       would be a command with no effect - the stage reaches them through the pushed lanes instead,
+         *       which is the whole difference between this and bind_geometry_and_push.
          */
-        void mesh_dispatch(render_environment const& env, primitive const& geometry, uint32_t first_index, uint32_t index_count, int32_t base_vertex, uint32_t instance_count) const;
+        void mesh_dispatch(render_environment const& env, uint32_t index_count, uint32_t instance_count) const;
     };
 
     /**

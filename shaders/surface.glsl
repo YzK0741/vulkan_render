@@ -25,6 +25,14 @@
 #ifndef VULKAN_RENDER_SURFACE_GLSL
 #define VULKAN_RENDER_SURFACE_GLSL
 
+// THE GEOMETRY LANES A MESH STAGE OF THIS FILE'S OWNERS NEEDS (docs/mesh_shaders.md step 2). The block below ends
+// with them because their offsets are the block's: the material fields (96 B), the two heap index lanes (8 B) and
+// then `MeshGeometryLanes` - whose first member is a `uint2`, so it lands on the 8-byte boundary at
+// mesh_geometry_offset (112) that the host pushes them at. The VERTEX and FRAGMENT entries of every stage that
+// includes this file declare the same lanes and never read them; only a `mesh_main` entry does, and only
+// `shaders/mesh_geometry.slang` - included here so the type exists - knows how to fetch through them.
+#include "mesh_geometry.slang"
+
 // The runtime's texture array: every material's image lives in one bindless array, indexed by the
 // material record. HEAP-NATIVE (see docs/descriptor_heap_migration.md): the array IS the heap - one 64 B slot per
 // texture, starting at heap_slots_textures - and the sampler is SEPARATE, because a combined image sampler cannot
@@ -96,6 +104,25 @@ layout(push_constant) uniform PushConstants {
     // through vkCmdPushDataEXT because a heap pipeline has no layout to hold push constants.
     uint frame_slot;
     uint image_index;
+    // THE ENDPOINT'S THIRD LANE, declared though no scene stage reads it: the renderer's push endpoint sends
+    // three lanes (frame slot, swapchain image, and the post chain's source slot - see
+    // render_environment::push_block), and declaring all three is what makes the block CONTIGUOUS, which the
+    // geometry lanes below need. With a descriptor-heap pipeline every byte of the declared block must have
+    // been written by vkCmdPushDataEXT before the draw (VUID-...-11376), so a member that is pushed but not
+    // declared, or declared but skipped, is a validation error rather than a wasted word.
+    uint spare_lane;
+    // ... AND THE LANES' OWN ALIGNMENT WORD, declared so their offset is a CONTRACT rather than a consequence:
+    // `MeshGeometryLanes` is a struct, and Slang lays a std140 struct member out on a 16-byte boundary - which
+    // put it at 112 (not at the 108 the members before it end at) and left a 4-byte hole that made every fetch
+    // read another draw's window. Declaring this word makes 112 the end of a real member, so the layout survives
+    // a change of layout rules; the host pushes it as zero (see primitive::mesh_geometry_push_offset_scene).
+    uint geometry_pad;
+    // ... and the geometry lanes at the offset the host pushes them at (see the file's header and
+    // primitive::mesh_geometry_lanes_offset): the window of vertex and index data this draw covers, which a
+    // MESH entry has no input assembler to take it from. The VERTEX and FRAGMENT entries declare them too -
+    // one source file is one block layout for every entry - and the host fills them for every draw, so the
+    // vertex path pays the same bytes and simply never reads them.
+    MeshGeometryLanes geometry;
 } push;
 
 // ... and the two names the shared slot macros use (heap_slots.glsl says why these are macros and not constants).

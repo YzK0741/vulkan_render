@@ -732,6 +732,8 @@ set(VR_SLANG_SOURCES
     # forward default too.
     pbr.slang:main:fragment:pbr.frag.spv
     pbr.slang:vertex_main:vertex:pbr.vert.spv
+# ... and the same file's MESH entry (docs/mesh_shaders.md step 2): the G-buffer/forward geometry as dispatches.
+pbr.slang:mesh_main:mesh:pbr.mesh.spv
     # shadow.slang shares no body: the material table and the albedo fetch through the shim's accessors
     # (`material_at`, `heap_sample`), and the entry returns void because a depth-only stage has no output.
     # Its vertex entry reuses the same matrix-array accessors pbr.vert does, which is the point of the pair:
