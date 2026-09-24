@@ -1,6 +1,10 @@
 # Mesh shaders: what the stage buys here, and how the migration runs
 
-**STATUS: steps 0, 1, 2 and step 3 are DONE, with three measured exceptions.**
+**STATUS: steps 0, 1, 2, 3 and 4 are DONE. The renderer's geometry path IS mesh shaders - every stage that
+draws scene geometry is a mesh stage, the vertex forms are gone, and `VK_EXT_mesh_shader` is a REQUIREMENT (a device
+without it panics with the reason before any pass is created). Two measured exceptions and one optimisation remain,
+each written up below: per-meshlet BACKFACE culling is measured and NOT shipped, the SHADOW pass's share of the
+host-side culling is not implemented, and nothing here has been TIMED.**
 
 - The binding model is proven (the heap-native probe runs through a mesh pipeline and reports the same pixel as the
   vertex one), and EVERY geometry stage this renderer draws leaves with has a mesh form: shadow, G-buffer, forward
@@ -18,11 +22,12 @@
   orientations, so it is reverted - see the negative result and its three candidate causes in step 3); the SHADOW
   pass's share of the host culling (its frustum is per cascade); and a timing of any of it - the counters measure work,
   not milliseconds.
-- Step 4 (removing the vertex path) has not started, and its surface is enumerated in section 5, step 4. It should now
-  be possible - every geometry stage is gate-green in its mesh form - but the vertex forms are the only fallback a
-  device without `VK_EXT_mesh_shader` has, so removing them makes the extension a hard REQUIREMENT (a startup panic
-  with the reason, instead of a fallback), and the gate cannot see the difference because it runs on a device with the
-  extension.
+- Step 4 is DONE, and it was the portability decision rather than a cleanup: the vertex geometry stages are removed
+  from the shaders, from all four registries, from the pipeline builders and from the draw paths, so
+  `VK_EXT_mesh_shader` is now a REQUIREMENT - a device without it PANICS with the reason instead of falling back to a
+  vertex pipeline that no longer exists. The gate cannot see the difference (it runs on a device with the extension),
+  which is why the acceptance was the frames being byte-identical AND the log naming the extension as required.
+  `post.vert` stays: a fullscreen triangle is not a geometry stage.
 
 The measurements behind each of those sentences - the device's limits, the two compiler crashes, the layout bug
 that wedged the GPU, the culling's two-way acceptance and the backface negative - are in section 5, step by step.
