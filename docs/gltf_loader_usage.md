@@ -5,7 +5,7 @@
 
 - Language standard: C++23 (C++20 module)
 - Public interface: `gltf_loader/gltf_loader.cppm` (`import gltf_loader;`)
-- Entry point: `gltf::load_model(path)` → `std::expected<gltf::scenes, gltf::error_code>`
+- Entry point: `gltf::load_model(path)` -> `std::expected<gltf::scenes, gltf::error_code>`
 
 ---
 
@@ -56,8 +56,8 @@ namespace gltf {
     struct skin               { std::string name; std::vector<std::size_t> joints;   // asset node indices
                                 std::vector<glm::mat4> inverse_bind_matrices; };     // identity fallback
     // scenes also carries: std::vector<animation> animations; std::vector<skin> skins; and each
-    // node carries source_index + translation/rotation/scale (TRS base pose) + skin_index —
-    // see §8 (animations) and §9 (skinning)
+    // node carries source_index + translation/rotation/scale (TRS base pose) + skin_index  - 
+    // see section 8 (animations) and section 9 (skinning)
 
     std::expected<scenes, error_code> load_model(std::string_view file_name);
 }
@@ -69,18 +69,18 @@ namespace gltf {
   roots in **DFS pre-order** (roots first, then each subtree), and `root_indices` lists the
   indices of the scene's roots inside `nodes`. Each node records its direct children as
   indices into the same `nodes` list (`node.children`, always greater than the node's own
-  index), so the full parent→child structure is recoverable. Transform-only (intermediate)
+  index), so the full parent->child structure is recoverable. Transform-only (intermediate)
   nodes appear too, with empty `meshes`.
 - `local_transform` is the node's **own** transform relative to its parent (TRS-composed
   matrix, or the raw matrix when the asset stored one). `transform_matrix` keeps the
-  accumulated **world-space** matrix (`parent_world * local_transform`) — same value the
+  accumulated **world-space** matrix (`parent_world * local_transform`)  -  same value the
   loader exposed before the hierarchy was retained, so existing world-space consumers keep
   working unchanged.
-- Keys of `primitive.vertex` are glTF attribute names (`POSITION` / `NORMAL` / `TEXCOORD_0` / `COLOR_0` …).
+- Keys of `primitive.vertex` are glTF attribute names (`POSITION` / `NORMAL` / `TEXCOORD_0` / `COLOR_0` ...).
 - Vertex and index data are **de-interleaved raw bytes**; their type is described by `component` / `index_component_type` (byteStride and sparse accessors are already handled by fastgltf).
 - `scenes.materials` holds one entry per glTF material (in material order); each `material.texture_indices` uses the fixed roles `albedo` / `metallic_roughness` / `normal` / `occlusion` / `emissive`, and the values index into `scenes::textures` (in glTF texture order). `primitive.material_index` selects the primitive's material (`UINT32_MAX` when the glTF primitive has none).
-- `scenes.animations` holds the file's keyframe animations in glTF order (see [§8 Animations](#8-animations)). An animation is file-scoped — its channels can target nodes of any scene. Channel targets reference nodes by their **asset node index**, which each scene-pool `node.source_index` records.
-- `scenes.node_by_source` is the **asset-level node lookup**: glTF asset node index (`node::source_index`) → the loader's `node` copy for it (first scene pool that contains it; a node referenced from several scenes has identical copies). Consumers that animate or skin the nodes of a *runtime* scene tree — where each tree node only carries its `source_index` — look loader metadata up here instead of iterating every scene pool: `scenes.node_by_source.at(tree_node->source_index)` yields that node's TRS base pose, `skin_index`, attached meshes etc. (`animation::controller` does exactly this: the scene tree is the authoritative host, the loader table is pure data.)
+- `scenes.animations` holds the file's keyframe animations in glTF order (see [section 8 Animations](#8-animations)). An animation is file-scoped  -  its channels can target nodes of any scene. Channel targets reference nodes by their **asset node index**, which each scene-pool `node.source_index` records.
+- `scenes.node_by_source` is the **asset-level node lookup**: glTF asset node index (`node::source_index`) -> the loader's `node` copy for it (first scene pool that contains it; a node referenced from several scenes has identical copies). Consumers that animate or skin the nodes of a *runtime* scene tree  -  where each tree node only carries its `source_index`  -  look loader metadata up here instead of iterating every scene pool: `scenes.node_by_source.at(tree_node->source_index)` yields that node's TRS base pose, `skin_index`, attached meshes etc. (`animation::controller` does exactly this: the scene tree is the authoritative host, the loader table is pure data.)
 
 ---
 
@@ -114,7 +114,7 @@ int main() {
 
 Two ways to visit the scene:
 
-1. **Flat (drawable-oriented)** — iterate `scene.nodes` in order; every node that has meshes
+1. **Flat (drawable-oriented)**  -  iterate `scene.nodes` in order; every node that has meshes
    is a drawable with a ready world matrix. This is what the renderer's bounds scan and
    `drawable_iterator` use.
 
@@ -132,7 +132,7 @@ for (const auto& scene : model.scene) {
 }
 ```
 
-2. **Tree (hierarchy-oriented)** — start at `scene.root_indices` and recurse through
+2. **Tree (hierarchy-oriented)**  -  start at `scene.root_indices` and recurse through
    `node.children`, composing world matrices from `local_transform` when you need to
    re-evaluate them (e.g. for animation / programmatic whole-group transforms):
 
@@ -229,8 +229,8 @@ Vertex buffers can be uploaded by memcpy'ing the raw bytes directly, provided th
 ## 7. Notes and Limitations
 
 - The module is compiled with `-fno-exceptions`: fastgltf reports errors via `Expected` and never throws.
-- Runtime dependencies: none beyond the OS — fastgltf/simdjson are compiled into the executable from `third_party/`, and the Windows Release exe is fully static.
-- Static render data (meshes, vertices/indices, textures, materials), **keyframe animations** (§8), **skins** (§9) and **morph targets** (§10) are exported. Non-indexed glTF primitives are supported: the loader synthesizes a sequential uint32 index buffer.
+- Runtime dependencies: none beyond the OS  -  fastgltf/simdjson are compiled into the executable from `third_party/`, and the Windows Release exe is fully static.
+- Static render data (meshes, vertices/indices, textures, materials), **keyframe animations** (section 8), **skins** (section 9) and **morph targets** (section 10) are exported. Non-indexed glTF primitives are supported: the loader synthesizes a sequential uint32 index buffer.
 - Cameras and punctual lights (KHR_lights_punctual) are exported too: `scenes.cameras` / `scenes.lights` hold the file's cameras and lights in glTF order, and each node records its attachment through `camera_index` / `light_index`. Authored cameras are consumed in `main.cpp` as orbit-camera viewpoint seeds (gui "camera" selector); point/spot lights are loaded by `main.cpp` into the runtime's editable gui light slots (up to the GPU cap, fixed to the node's base-pose world transform, position offset by the scene import shift), so they light the scene and stay adjustable in the overlay. KHR *directional* lights are not mapped: the engine's sun is the shadow-casting analytic light configured by `enable_shadows()`, so the loader logs them as ignored.
 - `log_scene_diagnostics(scenes)` is a one-call diagnostic dump: it logs the contents summary (textures/materials/primitives), the world AABB framing numbers (min/max/center/radius), the retained hierarchy shape (per-node tree lines) and the animations/skins/morph targets/cameras/lights present in the file, and returns the `scene_bounds` (panics when the model has no drawable primitives). `main.cpp` calls it once after loading, before framing the orbit camera.
 - All `asset.scenes` are loaded; `asset.defaultScene` is not separately marked yet.
@@ -246,17 +246,17 @@ The loader decodes glTF keyframe animation into `scenes.animations` (glTF order,
 
 ```cpp
 animation            // name + samplers + channels
-├── samplers[i]      // animation_sampler: decoded keyframes
-│     times          //   one float per keyframe (seconds, non-decreasing as stored)
-│     values         //   flat floats, see below
-│     interpolation  //   linear | step | cubic_spline
-└── channels[j]      // animation_channel: animate one property of one node
+|-- samplers[i]      // animation_sampler: decoded keyframes
+|     times          //   one float per keyframe (seconds, non-decreasing as stored)
+|     values         //   flat floats, see below
+|     interpolation  //   linear | step | cubic_spline
+`-- channels[j]      // animation_channel: animate one property of one node
       path           //   translation | rotation | scale | weights (morph)
       sampler        //   index into the owning animation's samplers
       target_node    //   index in the glTF asset's node table (NOT a scene pool index)
 ```
 
-- `values` layout: LINEAR / STEP hold `key_count * components` floats — 3 per key for
+- `values` layout: LINEAR / STEP hold `key_count * components` floats  -  3 per key for
   `translation`/`scale` (xyz triplets), 4 for `rotation` (xyzw, `w` scalar). CUBICSPLINE holds
   `key_count * components * 3` floats, grouped per keyframe in glTF order: in-tangent, value,
   out-tangent.
@@ -290,7 +290,7 @@ for (const auto& ch : anim.channels) {
 **TRS base pose**
 
 `node.translation` / `node.rotation` (`glm::quat`, identity when unset) / `node.scale` hold the
-declared TRS when the node's file transform is TRS — the only form the glTF spec allows
+declared TRS when the node's file transform is TRS  -  the only form the glTF spec allows
 animation to target. Nodes declared as matrices keep identity TRS (they are never animatable);
 only their composed `local_transform` matters. To evaluate keyframes later, compose
 `T * R * S` per node from the (possibly overridden) TRS components and write the result back as
@@ -341,7 +341,7 @@ struct skin {
 ```
 
 - A skinned mesh is attached to a node whose `node.skin_index` selects a skin. Its drawable
-  vertices carry `JOINTS_0` (u8/u16 vec4 → joint indices **into the skin's joint list**) and
+  vertices carry `JOINTS_0` (u8/u16 vec4 -> joint indices **into the skin's joint list**) and
   `WEIGHTS_0` (float or normalized u8/u16 vec4); the interleaved drawable layout keeps both
   (identity joints + full weight for unskinned meshes), so every pipeline shares one vertex
   layout.
@@ -351,8 +351,8 @@ struct skin {
   `node::source_index` (same as animation channels), then evaluate per frame:
 
 ```cpp
-// skinMat_j = inv(W_mesh) * W_joint_j * IBM_j — world matrices of the skinned mesh node and of
-// each joint (the joints follow the animation evaluation of §8); per-vertex the shader blends
+// skinMat_j = inv(W_mesh) * W_joint_j * IBM_j  -  world matrices of the skinned mesh node and of
+// each joint (the joints follow the animation evaluation of section 8); per-vertex the shader blends
 // these matrices by WEIGHTS_0 and the node's own world transform applies afterwards.
 ```
 
@@ -377,7 +377,7 @@ struct morph_target {                                  // one per target of a pr
 // primitive.targets            -> the primitive's morph targets
 // mesh.weights                 -> default morph weights (one per target; empty = all zero)
 // node.weights (optional)      -> per-node override of the mesh defaults
-// animation "weights" channels -> drive the node's weights over time (see §8)
+// animation "weights" channels -> drive the node's weights over time (see section 8)
 ```
 
 - A `weights` animation channel's sampler stores one scalar per keyframe **per morph target** of
@@ -385,7 +385,7 @@ struct morph_target {                                  // one per target of a pr
   the target node). `sample_node` merges the evaluated values into `node_pose::weights`;
   `node_pose::any_transform` stays false for weights-only channels, so playback code must not
   touch the node's local transform for them.
-- Per-vertex the blend is `base + Σ weight_i · delta_i` (positions and normals); the renderer
+- Per-vertex the blend is `base + sum(weight_i * delta_i)` (positions and normals); the renderer
   bakes each morphable primitive's deltas plus its **default weights** (`node.weights` >
   `mesh.weights` > zeros) into the scene morph buffer (set binding 10) and rewrites the weights
   region every frame when a `weights` channel animates the node. The vertex shaders blend the

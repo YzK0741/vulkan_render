@@ -617,7 +617,7 @@ say what that is worth in time: **nothing here was timed**, and the counters are
 It also does not separate the shadow pass from the G-buffer (both add to the same counters), and a DEFORMING draw is
 never culled at all by design, so its meshlets are in `emitted` whatever the frustum says.
 
-The same counter answers the question item ② is about: a rejected meshlet still costs a WORKGROUP LAUNCH today, so
+The same counter answers the question the culling pass was about: a rejected meshlet still costs a WORKGROUP LAUNCH today, so
 `culled` is exactly how many dispatches a compute pass that culled before the dispatch would not have recorded -
 42,800 over 40 frames on Sponza, i.e. about 1070 a frame. Whether that is worth a pass of its own is a decision the
 counts inform and the timings (which do not exist yet) would settle.

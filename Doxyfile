@@ -1028,6 +1028,14 @@ WARN_LOGFILE           =
 # spaces. See also FILE_PATTERNS and EXTENSION_MAPPING
 # Note: If this tag is empty the current directory is searched.
 
+# NOTE ON `./docs`: THE DESIGN RECORDS ARE LISTED ONE BY ONE RATHER THAN AS A DIRECTORY, and that is deliberate -
+# `docs/` also holds doxygen's own OUTPUT (`docs/html`, `docs/latex`, both gitignored: with RECURSIVE = YES a
+# directory input would make the manual document itself, and its generated `.tex`/`.sty`) and two sets that are NOT
+# this project's prose: `docs/reference/` (third-party technique notes) and `docs/official-shaders/` (upstream GLSL,
+# which EXTENSION_MAPPING would read as C++ and warn about). So the documents below are the durable reasoning, named
+# explicitly; a new one has to be added here, and `./docs/mainpage.md` is also the manual's front page
+# (USE_MDFILE_AS_MAINPAGE).
+
 INPUT                  = ./shaders \
 				./vulkan \
 				./utility \
@@ -1038,7 +1046,16 @@ INPUT                  = ./shaders \
 				./vstd \
 				./docs/mainpage.md \
 				./docs/shaders.md \
-				./docs/conventions.md
+				./docs/conventions.md \
+				./docs/gltf_loader_usage.md \
+				./docs/mesh_shaders.md \
+				./docs/slang_migration.md \
+				./docs/deformation_motion_vectors.md \
+				./docs/descriptor_heap_migration.md \
+				./docs/descriptor_heap_handover.md \
+				./docs/megalights.md \
+				./docs/pass_io_design.md \
+				./docs/runtime_split.md
 
 # This tag can be used to specify the character encoding of the source files
 # that Doxygen parses. Internally Doxygen uses the UTF-8 encoding. Doxygen uses

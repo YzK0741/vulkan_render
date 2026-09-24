@@ -325,12 +325,12 @@ through a heap `ConstantBuffer` handle with the production flags:
 
 | source spelling | emitted instruction | |
 | --- | --- | --- |
-| `mul(M, v)` | `OpVectorTimesMatrix(v, M)` | = Mᵀ·v, WRONG |
+| `mul(M, v)` | `OpVectorTimesMatrix(v, M)` | = M^T * v, WRONG |
 | `mul(v, M)` | `OpMatrixTimesVector(M, v)` | correct |
 | `M * v` (the GLSL spelling, legal under `-allow-glsl`) | `OpMatrixTimesVector(M, v)` | correct, and the exact instruction glslc emits |
 
 The rest of the black frame follows arithmetically: a perspective matrix's 4th column is `(0,0,0,0)`, so
-Mᵀ·v has `w = 0` for every vertex, `(x / 0) * 0.5 + 0.5` is inf/NaN, and `clamp` turns that into 0 - a black
+M^T * v has `w = 0` for every vertex, `(x / 0) * 0.5 + 0.5` is inf/NaN, and `clamp` turns that into 0 - a black
 motion channel with everything else in the shader correct. The fix is to keep the GLSL spelling: the shared
 bodies always used `M * v`, and the port is what "improved" it.
 

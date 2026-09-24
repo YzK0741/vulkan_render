@@ -206,7 +206,7 @@ state and pipeline. Read the G-buffer albedo image back with a copy right after 
 take a GPU capture (RenderDoc) of the scene pass. Everything else in this document can wait for that
 answer.
 
-**The measurement worth carrying forward:** the black frame's hash is `dc5f6d66428c26d8…` - byte for byte
+**The measurement worth carrying forward:** the black frame's hash is `dc5f6d66428c26d8...` - byte for byte
 the hash this migration recorded earlier as "a half-migrated frame renders nothing". It is a *uniform*
 image, which is why it survived every fix that changed what the frame does.
 
