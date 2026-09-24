@@ -235,20 +235,24 @@ jobs:
 
       - name: Build the headless tests
         # This list must stay equal to CMakeLists.txt's VR_TEST_TARGETS: ctest below runs every test
-        # that build registers (all nine), and a target missing here is a missing executable, which
-        # ctest reports as "Not Run" - the job goes red for a reason that looks like a test bug. That is
-        # exactly what made this job red on master, twice (runs 34844586370 and 35441060587): the last
-        # two targets were absent from this list, ctest could not find either executable, and every test
-        # it DID run passed. No sanitizer has ever reported anything in this job.
+        # that build registers, and a target missing here is a missing executable, which ctest reports
+        # as "Not Run" - the job goes red for a reason that looks like a test bug. That is exactly what
+        # made this job red on master twice (runs 34844586370 and 35441060587) and then a THIRD time:
+        # `test_meshlet` was registered by CMake and absent from this list (found and fixed with
+        # tests/test_docs.cpp, which now compares the two lists and fails by name). No sanitizer has
+        # ever reported anything in this job.
         #
         # test_shader_sources IS THE SHADER PIPELINE'S OWN GATE and it is deliberately here as well as in the
         # Release job: it compares the four places a .spv is named (VR_SLANG_SOURCES, the two compile scripts,
         # chores.cpp's loads) and requires the MESH entries to exist, so a mesh stage that silently stops being
         # built - or a build rule the escape-hatch scripts do not mirror - fails a job rather than a picture.
+        # test_docs is the same idea one level up: the documents are doxygen INPUT and reach pdflatex, and it
+        # checks the invariants that keep them renderable (every docs/*.md in Doxyfile's INPUT, ASCII only,
+        # anchors resolving, fences balanced, quoted heap slots declared).
         run: >-
           cmake --build build-asan --target
           test_app_config test_utility test_math test_animation test_gltf_loader test_shadow_fit
-          test_render_resources test_pass test_shader_sources
+          test_render_resources test_pass test_shader_sources test_meshlet test_docs
 
       - name: Run the headless tests under the sanitizers
         # ASAN_OPTIONS/UBSAN_OPTIONS: halt on the first finding and print a stack trace, so a report

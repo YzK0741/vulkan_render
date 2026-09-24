@@ -1049,6 +1049,7 @@ INPUT                  = ./shaders \
 				./docs/conventions.md \
 				./docs/gltf_loader_usage.md \
 				./docs/mesh_shaders.md \
+				./docs/migration_tradeoffs.md \
 				./docs/slang_migration.md \
 				./docs/deformation_motion_vectors.md \
 				./docs/descriptor_heap_migration.md \

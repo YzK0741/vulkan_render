@@ -3,7 +3,7 @@
 A Vulkan renderer written in modern C++23 (C++20 modules / `.cppm`), built with
 CMake 4.3 + Ninja on MSYS2 clang64.
 
-Current version: **0.3.0** — single source is `project(VERSION)` in `CMakeLists.txt`
+Current version: **0.3.0** - single source is `project(VERSION)` in `CMakeLists.txt`
 (surfaced by `--version`, the startup log banner and the Vulkan `app_info`); bump it there
 and keep this line in sync.
 
@@ -98,13 +98,13 @@ Most modules are independent building blocks that meet only through narrow
 interfaces, so you are free to recombine or rewire them:
 
 - `gltf_loader`, `app_config` and `utility` are **pure CPU with no Vulkan
-  dependency** — standalone libraries that embed into any host application;
+  dependency** - standalone libraries that embed into any host application;
 - `vulkan.animation` is **format-neutral and runtime-agnostic**: it drives
   whatever scene storage a caller injects through the `backend` surface and
   initializes from any loader whose data satisfies the structural `source`
   concept (it imports no loader and no `vulkan.runtime`);
 - `vulkan.core` / `vulkan.runtime` are a configurable facade
-  (`core_create_info`, granular per-frame phase calls) — the demo entry point
+  (`core_create_info`, granular per-frame phase calls) - the demo entry point
   (`main.cpp` + `chores`) is a thin glue layer on top and can be replaced
   wholesale.
 
