@@ -386,12 +386,12 @@ forward `pbr` pipeline. The flat render mode reaches the same code path through 
 
 ### Step 3 - a TASK stage, meshlets, and indirect dispatch
 
-**STATUS: this step is DONE except for the compute-driven form.** The splitter, the heap table, the meshlet entries
-for both the shadow pass and the G-buffer, the per-meshlet frustum culling and the INDIRECT SEAM a compute culling
-pass writes into are in the tree and gate-green; per-meshlet backface culling was implemented, measured to change six
-scenarios, and reverted (see the negative result below); the task stage the objective names as the pre-culling
-mechanism is blocked by a compiler bug (see the blocker note at the top) and turned out not to be needed for the
-culling itself.
+**STATUS: this step is DONE except for the shadow pass's share of the host culling.** The splitter, the heap table,
+the meshlet entries for both the shadow pass and the G-buffer, the per-meshlet frustum culling, the HOST-side culling
+that keeps a rejected meshlet's workgroup from being launched at all, and the indirect seam it dispatches through are
+in the tree and gate-green; per-meshlet backface culling was implemented twice, measured, and reverted both times
+(see the negative result below); the task stage the objective names as the pre-culling mechanism is blocked by a
+compiler bug (see the blocker note at the top) and turned out not to be needed for the culling itself.
 
 `vulkan/meshlet/meshlet.cppm` is a pure-CPU module that cuts one draw window into meshlets: runs of at most
 `meshlet_max_triangles` (85, the mesh stage's output budget from section 2) triangles in index order, each with an
@@ -639,6 +639,38 @@ Acceptance, both ways: `-Full` 10/10 passed, 0 changed, 0 flaky with references 
 plus a forced probe - `host_clip_sphere_visible` answering false - which turned `deferred` into `8687703DA3BCA7EF`,
 the no-geometry hash this document already records twice. `spirv-val --target-env vulkan1.3`: 29 modules, 0 failures.
 Zero validation findings, ctest 10/10.
+
+**THE BACK-FACE TEST WAS MEASURED A SECOND TIME, WITH THE TWO OBVIOUS CAUSES OF THE FIRST RUN REMOVED, AND IT STILL
+DOES NOT SHIP.** The first attempt applied `meshlet_back_facing` to every meshlet session and changed six scenarios;
+this document recorded "the cone is not a valid bound for part of this scene". Two things were wrong with that
+reading, and the retry settled both:
+
+- **the test was being applied to draws that KEEP both sides.** A two-sided material - and the shadow pass, which
+  forces two-sided rasterization so a caster is never dropped for facing away from the light - draws back faces on
+  purpose, so rejecting a meshlet for facing away removes geometry the pass meant to draw. The lanes now carry that
+  fact per draw (bit1 of the same flag field host culling uses: `!env.two_sided && !material_two_sided`, the predicate
+  `set_cull_mode` already computes), which is what any future attempt has to respect.
+- **the helper's own note about `cone_cos` was backwards.** It claimed `1` means "no statement, never cull"; the
+  cone's half-angle is `acos(cone_cos)`, so `1` is an EXACT cone and the value that never culls is `0`, where the
+  threshold `-sqrt(1 - cone_cos^2)` is `-1`. Fixed in `shaders/mesh_geometry.slang`.
+
+WITH BOTH FIXED - restricted to the single-sided draws where the pass really does drop back faces - the test still
+changes `deferred`, `unlit` and `sponza`, 3 of the core 5, and so does its INVERTED form (`deferred` `ECEBFA87...`
+one way, `2D5EBF5D...` the other). Two orientations, both removing geometry the rasterizer was drawing, means the
+record's cone does not predict the rasterizer's front/back decision for real scene geometry here. The candidates are
+now narrow enough to experiment on, in this order:
+
+1. **the winding convention under the Y-flipped projection**: the camera's projection flips Y while every pipeline
+   uses `VK_FRONT_FACE_COUNTER_CLOCKWISE`, so the rasterizer's "front" may be the geometric normals' "back". The
+   decisive experiment is a controlled single-sided quad of known winding, rendered and compared both ways.
+2. **the cone AXIS under a non-uniform scale**: `world * float4(axis, 0)` is a direction transform, not the
+   inverse-transpose, so a stretched node rotates the axis away from the true normal direction. The model matrices of
+   the three scenarios that change would say whether that is enough to explain it.
+3. **the eye**: `camera_pos` read out of the camera UBO is the only space the test can be written in, so a view-space
+   or stale value would make the test arbitrary.
+
+So per-meshlet back-face culling is NOT shipped, and the honest summary is the one the counters make: frustum culling
+is worth a third of Sponza's meshlet workgroups and facing is worth nothing until one of those three is settled.
 
 **WHAT REMAINS IN THIS STEP** is the shadow pass's half of that saving (8934 workgroups over 40 frames of `sponza`):
 its frustum is the cascade's, one per cascade, so host-culling it needs a per-cascade run - four tables or four

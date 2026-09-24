@@ -75,7 +75,13 @@ namespace vulkan {
         }
     } // namespace
 
-    uint32_t primitive::push_meshlet_lanes(render_environment const& env, primitive const& geometry, uint32_t const first_index, uint32_t const index_count, int32_t const base_vertex) const {
+    uint32_t primitive::push_meshlet_lanes(render_environment const& env, primitive const& geometry, uint32_t const first_index, uint32_t const index_count, int32_t const base_vertex, bool const material_two_sided) const {
+        // WHETHER A BACK-FACE TEST MAY CULL ANYTHING FOR THIS DRAW (docs/mesh_shaders.md step 3): only when the pass
+        // will cull back faces itself. A two-sided material - or a session that forces two-sided rasterization, which
+        // is what the shadow pass does so a caster is never dropped for facing away from the light - KEEPS both sides
+        // on purpose, so rejecting a meshlet for facing away would remove geometry the pass meant to draw. That is
+        // exactly what the first backface experiment did, and why it changed six scenarios.
+        bool const backface_legal = !env.two_sided && !material_two_sided;
         // WHETHER THIS DRAW CAN BE CULLED AT ALL, and every clause is one of the ways a host-side cull could remove
         // something visible:
         //  - only a meshlet session, only when the session asked for it, and only with both endpoints present;
@@ -112,18 +118,19 @@ namespace vulkan {
                 }
             }
         }
-        // the lanes carry the flag (see the declaration): 1 means "read this frame's culled table"
-        this->push_geometry_lanes_impl(env, geometry, first_index, index_count, base_vertex, survivors != not_culled);
+        // the lanes carry the flags (see the declaration): bit0 "read this frame's culled table", bit1 "a back-face
+        // test may cull this draw" - both only meaningful in a meshlet session, where this field is otherwise unused
+        this->push_geometry_lanes_impl(env, geometry, first_index, index_count, base_vertex, survivors != not_culled, backface_legal);
         return survivors;
     }
 
     void primitive::push_geometry_lanes(render_environment const& env, primitive const& geometry, uint32_t const first_index, uint32_t const index_count, int32_t const base_vertex) const {
-        // the vertex path (and every session that does not cull): the lanes go out with the flag cleared, so a mesh
+        // the vertex path (and every session that does not cull): the lanes go out with the flags cleared, so a mesh
         // entry reads the shared table exactly as it did before host-side culling existed
-        this->push_geometry_lanes_impl(env, geometry, first_index, index_count, base_vertex, false);
+        this->push_geometry_lanes_impl(env, geometry, first_index, index_count, base_vertex, false, false);
     }
 
-    void primitive::push_geometry_lanes_impl(render_environment const& env, primitive const& geometry, uint32_t const first_index, uint32_t const index_count, int32_t const base_vertex, bool const host_culled) const {
+    void primitive::push_geometry_lanes_impl(render_environment const& env, primitive const& geometry, uint32_t const first_index, uint32_t const index_count, int32_t const base_vertex, bool const host_culled, bool const backface_legal) const {
         if (env.push_at == nullptr || env.buffer_address == nullptr || env.mesh_geometry_push_offset == 0u) {
             return; // a session that does not use the shared scene block (or a test one) has nothing to fill
         }
@@ -139,7 +146,7 @@ namespace vulkan {
         // ... AND, in a meshlet session, WHETHER THE RUN WAS HOST-CULLED: the field is otherwise unused there (a
         // meshlet record carries its own base vertex), and the entry point reads it as "this frame's culled table,
         // not the shared one" (docs/mesh_shaders.md step 3)
-        lanes.base_vertex = env.meshlets ? (host_culled ? 1 : 0) : base_vertex;
+        lanes.base_vertex = env.meshlets ? ((host_culled ? 1 : 0) | (backface_legal ? 2 : 0)) : base_vertex;
         // the buffer's own index type, which the shader needs because a raw load has no format: 4 for UINT32,
         // 2 for UINT16 (the shader reads the 16-bit case as the half of a 32-bit word its index falls in)
         lanes.index_width = geometry.index_type == VK_INDEX_TYPE_UINT16 ? 2u : 4u;
@@ -224,7 +231,7 @@ namespace vulkan {
             // A MESH SESSION DOES NOT BIND GEOMETRY: the stage fetches it from the lanes pushed below, so binding
             // would be a command with no effect.
             push_stage_block(env, this->push);
-            uint32_t const survivors = this->push_meshlet_lanes(env, *this, 0u, this->index_count, 0);
+            uint32_t const survivors = this->push_meshlet_lanes(env, *this, 0u, this->index_count, 0, this->double_sided);
             this->mesh_dispatch(env, *this, this->index_count, 1u, survivors);
             return;
         }
@@ -262,7 +269,7 @@ namespace vulkan {
             // stage has no SV_InstanceID, so the stage reads its instance index from the workgroup grid's Y -
             // which is exactly what the vertex path's SV_InstanceID meant here (see shadow.slang's mesh entry).
             push_stage_block(env, this->push);
-            uint32_t const survivors = this->push_meshlet_lanes(env, geometry_source, 0u, geometry_source.index_count, 0);
+            uint32_t const survivors = this->push_meshlet_lanes(env, geometry_source, 0u, geometry_source.index_count, 0, this->double_sided);
             this->mesh_dispatch(env, geometry_source, geometry_source.index_count, this->instance_count, survivors);
             return;
         }
@@ -316,7 +323,7 @@ namespace vulkan {
                 // chunk - so the survivors come out identical and the culled table is rewritten with the same
                 // records. (That the dispatch happens once per chunk at all is a known defect of the meshlet
                 // session, recorded in docs/mesh_shaders.md: a chunk's material cannot reach a whole-run dispatch.)
-                uint32_t const survivors = this->push_meshlet_lanes(env, *this, chunk.first_index, chunk.index_count, static_cast<int32_t>(chunk.vertex_offset));
+                uint32_t const survivors = this->push_meshlet_lanes(env, *this, chunk.first_index, chunk.index_count, static_cast<int32_t>(chunk.vertex_offset), chunk.double_sided);
                 this->mesh_dispatch(env, *this, chunk.index_count, 1u, survivors);
                 continue;
             }

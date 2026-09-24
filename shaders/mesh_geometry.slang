@@ -125,7 +125,7 @@ struct MeshletRecord
     float3 center;   // std430 puts a float3 on a 16-byte boundary: the host record carries the padding for it
     float radius;
     float3 axis;     // the normal cone's axis (the average of the window's face normals)
-    float cone_cos;  // the smallest dot any face normal has with it; 1 means "no statement, never cull"
+    float cone_cos;  // the smallest dot any face normal has with the axis, i.e. the cone's half-angle is acos(this)
 };
 
 /// @brief one record of the meshlet table (grid slot `heap_slots_meshlets`)
@@ -207,7 +207,10 @@ float matrix_max_axis_scale(const VR_MAT4 m)
 
 /// @brief whether a meshlet faces entirely AWAY from the eye, i.e. every triangle in it is back-facing
 /// @param axis_world the record's cone axis in world space (the caller transforms and normalizes it)
-/// @param cone_cos the record's cone cosine: `1` means the cone states nothing and this test never culls
+/// @param cone_cos the record's cone cosine: the cone's half-angle is `acos(cone_cos)`, so `1` is an EXACT cone (one
+///        normal direction) and `0` is the widest useful one - at `0` the threshold below is `-1`, which no dot
+///        product can go under, so the test never culls a meshlet whose normals span a hemisphere. (This note said
+///        the opposite until the back-face experiment measured it: the value that "states nothing" is 0, not 1.)
 /// @param centre_world the meshlet's sphere centre in world space, @p radius_world its radius there
 /// @param eye the camera position, which is what "facing" is measured against
 /// @note THE TEST IS THE CONSERVATIVE ONE: a triangle is front-facing when its normal has a positive dot with the

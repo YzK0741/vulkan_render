@@ -280,7 +280,12 @@ void meshlet_main(out vertices pbr_vertex_output verts[mesh_vertices_per_workgro
     // unused there, and the host zeroes it): when it is set, this workgroup's meshlet is the group-th SURVIVOR of the
     // primitive's run rather than the group-th record, and it comes out of this frame's culled table
     // (docs/mesh_shaders.md step 3 - the host culls what the dispatch would otherwise launch a workgroup for).
-    const bool host_culled = geometry.base_vertex != 0;
+    const bool host_culled = (geometry.base_vertex & 1u) != 0u;
+    // ... AND bit1 IS "A BACK-FACE TEST MAY CULL THIS DRAW": the pass culls back faces itself only for a
+    // single-sided material and only when the session does not force two-sided rasterization (the shadow pass does).
+    // A two-sided draw KEEPS both sides on purpose, so a meshlet rejected for facing away would remove geometry the
+    // pass meant to draw - the mistake the first backface experiment made across six scenarios.
+    const bool backface_legal = (geometry.base_vertex & 2u) != 0u;
     const MeshletRecord meshlet = host_culled ? culled_meshlet_at(push.frame_slot, geometry.first_index + group_id.x) : meshlet_at(geometry.first_index + group_id.x);
     // ONE ATOMIC PER WORKGROUP, counting what the culling below decided (docs/mesh_shaders.md step 3's measurement:
     // a rejected meshlet and a meshlet nobody dispatched are the same pixels, so the numbers are the only witness)
@@ -307,6 +312,15 @@ void meshlet_main(out vertices pbr_vertex_output verts[mesh_vertices_per_workgro
         SetMeshOutputCounts(0u, 0u);
         return;
     }
+
+    // ---- THE BACK-FACE TEST IS NOT SHIPPED, AND THE MEASUREMENT SAYS WHY (docs/mesh_shaders.md step 3) ----
+    // `meshlet_back_facing` is the conservative cone test, and the lane flag above is what says whether a draw may be
+    // culled by facing at all - but applying it (in EITHER orientation, and restricted to the single-sided draws
+    // where the pass really does drop back faces) removes geometry the rasterizer was drawing: `deferred`, `unlit`
+    // and `sponza` all change, 3 of the core 5. So the record's cone does not predict the rasterizer's front/back
+    // decision for real scene geometry here, and per-meshlet back-face culling is a hole rather than a saving until
+    // that is settled. The flag stays because it is what any future attempt has to respect.
+    [[maybe_unused]] const bool backface_legal_measured_not_shipped = backface_legal;
 
     const uint triangle_count = min(meshlet.index_count, mesh_triangles_per_workgroup * mesh_indices_per_triangle) / mesh_indices_per_triangle;
     SetMeshOutputCounts(triangle_count * mesh_indices_per_triangle, triangle_count);

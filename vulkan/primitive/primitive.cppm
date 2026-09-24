@@ -699,8 +699,8 @@ namespace vulkan {
          *       layouts for one shader file, which is the thing that cannot be expressed.
          */
         void push_geometry_lanes(render_environment const& env, primitive const& geometry, uint32_t first_index, uint32_t index_count, int32_t base_vertex) const;
-        /// the body both lane pushes share: @p host_culled is the flag the lanes carry (see push_meshlet_lanes)
-        void push_geometry_lanes_impl(render_environment const& env, primitive const& geometry, uint32_t first_index, uint32_t index_count, int32_t base_vertex, bool host_culled) const;
+        /// the body both lane pushes share: @p host_culled and @p backface_legal are the flags the lanes carry
+        void push_geometry_lanes_impl(render_environment const& env, primitive const& geometry, uint32_t first_index, uint32_t index_count, int32_t base_vertex, bool host_culled, bool backface_legal) const;
         /**
          * @brief CULL a meshlet session's run against the camera and push the geometry lanes for it
          *
@@ -713,7 +713,7 @@ namespace vulkan {
          * @note the flag travels in the lanes' `base_vertex`, which a meshlet session never uses for anything else:
          *       it is what tells the entry point to read this frame's CULLED table instead of the shared one.
          */
-        uint32_t push_meshlet_lanes(render_environment const& env, primitive const& geometry, uint32_t first_index, uint32_t index_count, int32_t base_vertex) const;
+        uint32_t push_meshlet_lanes(render_environment const& env, primitive const& geometry, uint32_t first_index, uint32_t index_count, int32_t base_vertex, bool material_two_sided) const;
         /// the `push_meshlet_lanes` answer that means "not culled" (a real run cannot be this long: the table's
         /// capacity is far below it, so no dispatch can collide with the sentinel)
         static constexpr uint32_t not_culled = 0xFFFFFFFFu;
