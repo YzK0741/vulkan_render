@@ -679,27 +679,9 @@ namespace vulkan {
         [[nodiscard]] virtual bool is_valid() const noexcept = 0;
 
     protected:
-        // shared recording: bind this object's geometry buffers and push the push constants
-        // onto the environment's command buffer (the push-constant layout is the environment's
-        // shared scene layout, valid for every pipeline - push does not depend on which pipeline
-        // is currently bound)
-        void bind_geometry_and_push(render_environment const& env) const;
-        /**
-         * @brief push THIS draw's geometry window into the session's stage block, at the offset it declares
-         *        (docs/mesh_shaders.md)
-         * @param env the session; it must have `mesh_geometry_offset`, `buffer_address` and `push_at` filled
-         * @param geometry the primitive whose vertex/index buffers the window is over
-         * @param first_index the draw's first index, @p index_count how many, @p base_vertex what every
-         *        fetched index is offset by (the three values `vkCmdDrawIndexed` would have taken)
-         * @note EVERY draw pushes this, including the ones whose pipeline will never read it, and that is a
-         *       requirement rather than a shortcut: one source file is one push block for every entry it
-         *       contains, so a stage block that declares the lanes must have them written before the draw
-         *       (VUID-vkCmdDrawMeshTasksEXT-None-11376 / its vkCmdDrawIndexed twin). The vertex path therefore
-         *       pays 32 bytes per draw that only a mesh pipeline can spend - and the alternative was two block
-         *       layouts for one shader file, which is the thing that cannot be expressed.
-         */
-        void push_geometry_lanes(render_environment const& env, primitive const& geometry, uint32_t first_index, uint32_t index_count, int32_t base_vertex) const;
-        /// the body both lane pushes share: @p host_culled and @p backface_legal are the flags the lanes carry
+        /// the lane push itself: @p host_culled and @p backface_legal are the flags the lanes carry (both false for
+        /// a session that does not cull, which is why this is the body `push_meshlet_lanes` calls rather than a
+        /// wrapper the vertex path used to share)
         void push_geometry_lanes_impl(render_environment const& env, primitive const& geometry, uint32_t first_index, uint32_t index_count, int32_t base_vertex, bool host_culled, bool backface_legal) const;
         /**
          * @brief CULL a meshlet session's run against the camera and push the geometry lanes for it

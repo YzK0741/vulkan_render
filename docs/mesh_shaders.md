@@ -706,33 +706,40 @@ Acceptance: **gate** with the meshlet path as the only geometry path for a scena
 click for the culling decision (a meshlet that is wrongly culled is a missing object, which the gate sees;
 a meshlet that is wrongly KEPT is invisible to it).
 
-### Step 4 - remove the vertex path (PLANNED, and the surface is measured)
+### Step 4 - remove the vertex path (DONE)
 
-The decision this step waits on is not technical any more - every geometry stage is gate-green in its mesh form - it
-is whether the renderer may REQUIRE `VK_EXT_mesh_shader`. Removing the vertex forms removes the only fallback a device
-without it has, so the step turns "the device lacks the extension" from a slow path into a startup failure. That
-decision has been taken for this work; this is the surface it has to touch, enumerated so the next session does not
-have to re-derive it:
+**The vertex geometry path is gone and `VK_EXT_mesh_shader` is a REQUIREMENT.** The decision this step waited on was
+never technical - every geometry stage was gate-green in its mesh form - it was whether the renderer may require the
+extension, and removing the vertex forms makes "the device lacks it" a startup failure instead of a slow path. It now
+panics with the reason, before any pass is created, and the startup line says what it means:
 
-| what | where | note |
-| --- | --- | --- |
-| the two geometry `vertex_main` entries | `shaders/pbr.slang:203`, `shaders/shadow.slang:172` | the same files keep their `mesh_main` / `meshlet_main` and the shared body they already share with the vertex entry |
-| the two `.spv` sources | `CMakeLists.txt:755,766`, `shaders/compile_shaders.ps1:43,47`, `shaders/compile_shaders.sh:64,68` | `tests/test_shader_sources.cpp` parses all four places, so it will fail by name until all four agree |
-| the loaders | `chores.cpp:177,184` (named pipelines), `:215` (shadow), `:251` (the G-buffer's vertex stage), `:361` (the probe), plus the two `pbr.vert.spv` probes at `:98,109` | `load_and_create_pipeline` loses its vertex-file parameter, and `make_pipeline` loses the vertex pipeline it builds |
-| the pipeline registry | `runtime::make_pipeline` (the vertex `vk_pipeline` + `pipelines` map), `mesh_pipelines`, `meshlet_pipelines` | the two fallback maps collapse: a named pipeline becomes meshlet-then-mesh, and the `pipelines` map keeps only the non-geometry (post/probe) entries |
-| the draw paths | `primitive::draw`'s `if (env.mesh_stage)` branches (`normal`, `instanced`, `static`), `bind_geometry_and_push`, `render_environment::mesh_stage` | with no vertex form the branch is always true: the draws become unconditional dispatches and `mesh_stage` can go |
-| the capability | `evaluate_mesh_shaders`, `mesh_shaders_unavailable_reason`, `runtime::create_passes` | becomes a hard requirement: a device without the extension PANICS with the reason, instead of falling back |
-| the documents | `README.md`, `docs/shaders.md`, `docs/slang_migration.md`, `Doxyfile`, the CI workflow, this document | the last step's own note says what to sync |
+```
+mesh shaders: REQUIRED and available - every geometry stage is dispatched (push block 144 B, within 256 B push constants / 256 B push data)
+```
 
-WHAT IS DELIBERATELY NOT IN THAT LIST: `post.vert.spv` (a fullscreen triangle, not a geometry stage) and the two
-post chains that use it, `heap_probe.slang`'s vertex entry only if the probe's own two-way comparison is retired with
-it - the probe exists to prove a mesh stage reaches the heap, and its vertex form is the control that makes that
-proof two-way.
+WHAT WAS REMOVED, in the order it went:
 
-Acceptance for this step, in the same shape as every other: the gate byte-identical on all ten scenarios (the frames
-are the same or the removal was not a removal), the startup log naming the extension as REQUIRED, a forced probe that
-proves the geometry really is dispatched (see step 1's), `spirv-val` on the remaining modules, and CI green with the
-`.vert.spv` names gone from all four registries at once.
+| what | how |
+| --- | --- |
+| the two geometry `vertex_main` entries | deleted from `shaders/pbr.slang` and `shaders/shadow.slang`; the shared bodies they called stay, because the mesh stages are their callers now |
+| their `.spv` from all four registries | `CMakeLists.txt`, `shaders/compile_shaders.ps1`, `shaders/compile_shaders.sh`, `chores.cpp` - `tests/test_shader_sources.cpp` parses all of them, so a half-done removal fails CI by name (and the two modules were deleted from the build tree, because `CMAKE_SUPPRESS_REGENERATION=ON` means a stale rule would otherwise keep compiling them) |
+| the pipeline builders | `runtime::make_pipeline` (named `pbr`/`unlit`) and `make_gbuffer_pipeline` take a fragment stage plus the MESH/meshlet modules; a missing or refused mesh module is an ERROR, and the G-buffer pass is no longer registered in `gbuffer_pipeline` (its vertex form) at all |
+| the shadow pass's vertex form | `create` builds the MESH form first and requires it - a refusal DISABLES the pass rather than falling back - and `pipeline()`/`pipeline_ready()` consult only the mesh forms |
+| the draw paths | `bind_geometry_and_push` is gone (`vkCmdBindVertexBuffers` + `vkCmdDrawIndexed` for scene geometry), and the three `if (env.mesh_stage)` branches became a guard: a session with no mesh pipeline bound draws nothing and says so once |
+| `post.vert.spv` | **NOT removed**: a synthetic fullscreen triangle is not a geometry stage, and the post chain, TAA, FXAA and the debug views still rasterize with it |
+
+ONE MEASURED MISTAKE IS WORTH THE PARAGRAPH, because the gate is what caught it and the fix is not obvious from the
+diff: the guard was first written BEFORE `env.bind_default()`, and the BIND is what sets `mesh_stage` (the session's
+bind callback picks the form). A scene session starts with it true, so nine scenarios passed - but the transparent
+pass's session starts FALSE, so every one of its leaves skipped itself and `transparent_blend` changed
+(`01A07360E2E60810` against the reference `698869C771C25AA`). Binding first fixed it: `-Full` 10/10, 0 changed,
+0 flaky.
+
+ACCEPTANCE: `-Full` 10/10 passed, 0 changed, 0 flaky against references captured with the vertex path active (the
+frames are the same or the removal was not a removal); ctest 10/10; `spirv-val --target-env vulkan1.3`: 27 modules
+(the two vertex modules are gone), 0 failures; zero validation findings; and the log names the extension as required
+on every run. The mesh forms themselves had already been accepted one at a time (steps 1-3), each against the vertex
+form it replaced.
 
 ## 6. Traps already measured (so nobody re-measures them)
 

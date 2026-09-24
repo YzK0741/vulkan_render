@@ -61,11 +61,9 @@ gbuffer_debug.slang:main:fragment:gbuffer_debug.frag.spv
 taa.slang:main:fragment:taa.frag.spv
 gbuffer.slang:main:fragment:gbuffer.frag.spv
 pbr.slang:main:fragment:pbr.frag.spv
-pbr.slang:vertex_main:vertex:pbr.vert.spv
 pbr.slang:mesh_main:mesh:pbr.mesh.spv
 pbr.slang:meshlet_main:mesh:pbr.meshlet.spv
 shadow.slang:main:fragment:shadow.frag.spv
-shadow.slang:vertex_main:vertex:shadow.vert.spv
 shadow.slang:mesh_main:mesh:shadow.mesh.spv
 shadow.slang:meshlet_main:mesh:shadow.meshlet.spv
 light_cluster.slang:main:compute:light_cluster.comp.spv

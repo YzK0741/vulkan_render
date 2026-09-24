@@ -166,44 +166,29 @@ shadow_vertex_output shadow_shade_vertex(const MeshVertex v, const uint vertex_i
     return o;
 }
 
-/// @brief morph, skin, transform into light clip space, and pass the albedo UV through
-/// @note the vertex INPUT LAYOUT must stay identical to pbr.vert's, and the body is shared with the mesh
-///       entry below (see shadow_shade_vertex).
-[shader("vertex")]
-shadow_vertex_output vertex_main(
-    [[vk::location(0)]] float3 in_position : POSITION0,
-    [[vk::location(1)]] float3 in_normal : NORMAL0,
-    [[vk::location(2)]] float2 in_uv : UV_IN,
-    [[vk::location(4)]] uint4 in_joints : JOINTS0,
-    [[vk::location(5)]] float4 in_weights : WEIGHTS0,
-    uint vertex_index : SV_VertexID,
-    uint instance_index : SV_InstanceID)
-{
-    MeshVertex v;
-    v.position = in_position;
-    v.normal = in_normal;
-    v.uv = in_uv;
-    v.joints = in_joints;
-    v.weights = in_weights;
-    return shadow_shade_vertex(v, vertex_index, instance_index);
-}
+// =============================================================================================================
+// THE VERTEX ENTRY IS GONE (docs/mesh_shaders.md step 4). `shadow.vert.spv` was this file's input-assembler half -
+// the same five attributes pbr.vert declared, with the same vertex input layout - and the renderer no longer builds a
+// vertex pipeline for any geometry stage, so it was removed rather than left compiled-but-unreachable.
+// `shadow_shade_vertex` stays: the mesh stages below are its only callers now.
+// =============================================================================================================
 
 // =============================================================================================================
-// THE MESH STAGE (entry `mesh_main`), which replaces the input assembler AND the vertex entry above:
+// THE MESH STAGE (entry `mesh_main`), which replaced the input assembler AND the vertex entry above:
 // docs/mesh_shaders.md step 1. It fetches the same vertices the input assembler would have bound (through
 // the geometry lanes the host pushes), projects them with THE SAME shared body, and emits exactly the
-// triangles the draw's index window describes - so the two paths must produce the same depth map, and the
-// capture gate is what decides that they do.
+// triangles the draw's index window describes - and it was accepted on the gate being byte-identical BEFORE
+// the vertex entry was removed, which is what makes the removal a removal.
 //
-// IT EXISTS TO BE MEASURED, NOT TO BE FASTER: one workgroup emits up to 85 triangles with 1 invocation
-// doing the work, which is strictly worse than the vertex path. What it establishes is the two facts a
+// IT WAS BUILT TO BE MEASURED, NOT TO BE FASTER: one workgroup emits up to 85 triangles with 1 invocation
+// doing the work, which is strictly worse than the vertex path was. What it established is the two facts a
 // meshlet path (step 3) is built on: that this renderer can feed geometry to a mesh stage at all, and how
 // much of a draw one workgroup's output budget covers.
 //
 // `group_id.y` IS THE INSTANCE COUNT: vkCmdDrawMeshTasksEXT has no instanceCount and a mesh stage has no
 // SV_InstanceID, so the host dispatches (triangle groups, instance_count, 1) and the instanced draw this
-// engine issues as one vkCmdDrawIndexed becomes one dispatch whose Y is the instance. The transform body
-// above reads it exactly as the vertex entry reads SV_InstanceID, so `push.flags & 1` keeps its meaning.
+// engine used to issue as one vkCmdDrawIndexed is now one dispatch whose Y is the instance. The transform body
+// above reads it exactly as the vertex entry read SV_InstanceID, so `push.flags & 1` keeps its meaning.
 // =============================================================================================================
 [shader("mesh")]
 [outputtopology("triangle")]

@@ -195,36 +195,19 @@ pbr_vertex_output pbr_shade_vertex(const MeshVertex v, const uint vertex_index, 
     return o;
 }
 
-/// @brief the model-to-clip transform the input assembler feeds: five vertex attributes, SV_VertexID and
-///        SV_InstanceID, handed to the body above as one record
-/// @note THE FIVE ATTRIBUTES ARE THE PIPELINE'S VERTEX INPUT LAYOUT, which the host derives from this entry's own
-///       declarations: dropping one would silently shrink the bound buffer's stride, so they must stay written to
-///       the record the body reads (locations 0,1,2,4,5 - 64 bytes, the engine's interleaved vertex).
-[shader("vertex")]
-pbr_vertex_output vertex_main(
-    [[vk::location(0)]] float3 in_position : POSITION0,
-    [[vk::location(1)]] float3 in_normal : NORMAL0,
-    [[vk::location(2)]] float2 in_uv : UV_IN,
-    [[vk::location(4)]] uint4 in_joints : JOINTS0,
-    [[vk::location(5)]] float4 in_weights : WEIGHTS0,
-    uint vertex_index : SV_VertexID,
-    uint instance_index : SV_InstanceID)
-{
-    MeshVertex v;
-    v.position = in_position;
-    v.normal = in_normal;
-    v.uv = in_uv;
-    v.joints = in_joints;
-    v.weights = in_weights;
-    return pbr_shade_vertex(v, vertex_index, instance_index);
-}
+// =============================================================================================================
+// THE VERTEX ENTRY IS GONE (docs/mesh_shaders.md step 4). `pbr.vert.spv` was the input assembler's half of this
+// file: five vertex attributes, SV_VertexID and SV_InstanceID, handed to the shared body above as one record. The
+// renderer no longer builds a vertex pipeline for any geometry stage, so the entry was removed rather than left
+// compiled-but-unreachable - and `pbr_shade_vertex` stays, because every mesh stage below still calls it.
+// =============================================================================================================
 
 // =============================================================================================================
-// THE MESH STAGE (entry `mesh_main`), which replaces the input assembler AND the vertex entry above:
+// THE MESH STAGE (entry `mesh_main`), which replaced the input assembler AND the vertex entry above:
 // docs/mesh_shaders.md step 2. It fetches the very vertices the input assembler would have bound - through the
 // geometry lanes the host pushes into this stage's block - projects them with THE SAME body, and emits exactly the
-// triangles the draw's index window describes, so the G-buffer (and, through the same file, the forward and unlit
-// pipelines) must come out identical, and the capture gate is what decides that they do.
+// triangles the draw's index window describes. The capture gate is what decides that it comes out identical, and it
+// was accepted on that basis BEFORE the vertex entry was removed, which is what makes the removal a removal.
 //
 // IT IS THE SHADOW PASS'S STAGE ONE FAMILY LARGER: the same loop, the same 85-triangle workgroup budget (see
 // shaders/mesh_geometry.slang), the same `SV_GroupID.y` as the instance index - and the difference is what the

@@ -35,22 +35,9 @@ namespace vulkan {
         this->push.model = world;
     }
 
-    // shared recording for draw strategies that render this object's own geometry with its
-    // push constants (normal_draw_primitive; instanced_draw_primitive overrides both pieces),
-    // recorded onto the environment's command buffer. The push-constant layout is the
-    // environment's shared scene layout - every pipeline shares it, so pushing does not depend
-    // on which pipeline is currently bound.
-    void primitive::bind_geometry_and_push(render_environment const& env) const {
-        VkCommandBuffer const command_buffer = env.command_buffer;
-        constexpr VkDeviceSize vertex_offset = 0;
-        vkCmdBindVertexBuffers(command_buffer, 0, 1, &this->vertex_detail->buffer, &vertex_offset);
-        vkCmdBindIndexBuffer(command_buffer, this->index_detail->buffer, 0, this->index_type);
-
-        push_stage_block(env, this->push);
-        // ... and the geometry window, which this pipeline's stages declare and never read: see push_geometry_lanes
-        // (a heap pipeline requires every byte of a declared block to be written before the draw).
-        this->push_geometry_lanes(env, *this, 0u, this->index_count, 0);
-    }
+    // `bind_geometry_and_push` IS GONE (docs/mesh_shaders.md step 4): it bound a primitive's vertex and index
+    // buffers and pushed its block, and with the vertex path removed nothing calls it - a geometry draw pushes its
+    // lanes and dispatches (see push_meshlet_lanes), so there is no binding step left to share.
 
     // ---- THE HOST'S COPY OF THE SHADER'S CULLING MATHS (docs/mesh_shaders.md step 3) ----
     // These are deliberate duplicates of `matrix_max_axis_scale` and `clip_sphere_visible` in
@@ -122,12 +109,6 @@ namespace vulkan {
         // test may cull this draw" - both only meaningful in a meshlet session, where this field is otherwise unused
         this->push_geometry_lanes_impl(env, geometry, first_index, index_count, base_vertex, survivors != not_culled, backface_legal);
         return survivors;
-    }
-
-    void primitive::push_geometry_lanes(render_environment const& env, primitive const& geometry, uint32_t const first_index, uint32_t const index_count, int32_t const base_vertex) const {
-        // the vertex path (and every session that does not cull): the lanes go out with the flags cleared, so a mesh
-        // entry reads the shared table exactly as it did before host-side culling existed
-        this->push_geometry_lanes_impl(env, geometry, first_index, index_count, base_vertex, false, false);
     }
 
     void primitive::push_geometry_lanes_impl(render_environment const& env, primitive const& geometry, uint32_t const first_index, uint32_t const index_count, int32_t const base_vertex, bool const host_culled, bool const backface_legal) const {
@@ -216,6 +197,20 @@ namespace vulkan {
         }
     }
 
+    // A GEOMETRY DRAW IS A DISPATCH, and there is nothing to fall back to any more (docs/mesh_shaders.md step 4):
+    // the vertex path is gone, so a session with no mesh pipeline bound (a leaf naming an unknown pipeline) draws
+    // NOTHING and says so once - recording the command anyway would be a draw with no pipeline, which is a
+    // validation error rather than a missing object.
+    namespace {
+        void log_meshless_draw_once() {
+            static bool logged = false;
+            if (!logged) {
+                logged = true;
+                utility::log("a geometry draw ran in a session with no mesh pipeline bound - the draw is skipped (docs/mesh_shaders.md step 4)");
+            }
+        }
+    } // namespace
+
     // Default-semantics draws (normal / instanced / static): request the recording session's
     // default pipeline - bind_default() no-ops when it is already bound, so consecutive leaves
     // of the same pass share one bind. Cull mode stays per draw (dynamic state, pipeline
@@ -223,20 +218,20 @@ namespace vulkan {
     // leaves disable depth writes so they blend onto whatever is behind them. All commands
     // record onto env.command_buffer.
     void normal_draw_primitive::draw(render_environment& env) const {
+        // THE BIND COMES FIRST, and it is what decides `mesh_stage` - the session's bind callback picks the form.
+        // Checking the flag before it was a measured mistake: a session built for the transparent pass starts with it
+        // FALSE, so every one of that pass's leaves skipped itself and the scenario's frame changed.
         env.bind_default();
-        env.set_depth_write(!this->transparent);
-        VkCommandBuffer const command_buffer = env.command_buffer;
-        env.set_cull_mode(this->double_sided);
-        if (env.mesh_stage) {
-            // A MESH SESSION DOES NOT BIND GEOMETRY: the stage fetches it from the lanes pushed below, so binding
-            // would be a command with no effect.
-            push_stage_block(env, this->push);
-            uint32_t const survivors = this->push_meshlet_lanes(env, *this, 0u, this->index_count, 0, this->double_sided);
-            this->mesh_dispatch(env, *this, this->index_count, 1u, survivors);
+        if (!env.mesh_stage) {
+            log_meshless_draw_once();
             return;
         }
-        this->bind_geometry_and_push(env);
-        vkCmdDrawIndexed(command_buffer, this->index_count, 1, 0, 0, 0);
+        env.set_depth_write(!this->transparent);
+        env.set_cull_mode(this->double_sided);
+        // A MESH SESSION DOES NOT BIND GEOMETRY: the stage fetches it from the lanes pushed below.
+        push_stage_block(env, this->push);
+        uint32_t const survivors = this->push_meshlet_lanes(env, *this, 0u, this->index_count, 0, this->double_sided);
+        this->mesh_dispatch(env, *this, this->index_count, 1u, survivors);
     }
 
     void normal_draw_primitive::destroy(vma_allocator&) noexcept {
@@ -257,30 +252,21 @@ namespace vulkan {
     }
 
     void instanced_draw_primitive::draw(render_environment& env) const {
-        env.bind_default();
-        env.set_depth_write(!this->transparent);
-        VkCommandBuffer const command_buffer = env.command_buffer;
-        // geometry belongs to source: bind ITS buffers, then draw it instance_count times;
-        // push flag bit0 makes pbr.vert pick instances[gl_InstanceIndex] per instance
-        primitive const& geometry_source = *this->source;
-        env.set_cull_mode(this->double_sided);
-        if (env.mesh_stage) {
-            // THE INSTANCE COUNT BECOMES THE DISPATCH'S Y: vkCmdDrawMeshTasksEXT has no instanceCount and a mesh
-            // stage has no SV_InstanceID, so the stage reads its instance index from the workgroup grid's Y -
-            // which is exactly what the vertex path's SV_InstanceID meant here (see shadow.slang's mesh entry).
-            push_stage_block(env, this->push);
-            uint32_t const survivors = this->push_meshlet_lanes(env, geometry_source, 0u, geometry_source.index_count, 0, this->double_sided);
-            this->mesh_dispatch(env, geometry_source, geometry_source.index_count, this->instance_count, survivors);
+        env.bind_default(); // the bind decides `mesh_stage`, so it happens before the flag is read
+        if (!env.mesh_stage) {
+            log_meshless_draw_once();
             return;
         }
-        constexpr VkDeviceSize vertex_offset = 0;
-        vkCmdBindVertexBuffers(command_buffer, 0, 1, &geometry_source.vertex_detail->buffer, &vertex_offset);
-        vkCmdBindIndexBuffer(command_buffer, geometry_source.index_detail->buffer, 0, geometry_source.index_type);
-
+        env.set_depth_write(!this->transparent);
+        // geometry belongs to source; push flag bit0 makes the mesh stage pick instances[group_id.y] per instance
+        primitive const& geometry_source = *this->source;
+        env.set_cull_mode(this->double_sided);
+        // THE INSTANCE COUNT BECOMES THE DISPATCH'S Y: vkCmdDrawMeshTasksEXT has no instanceCount and a mesh stage
+        // has no SV_InstanceID, so the stage reads its instance index from the workgroup grid's Y - which is exactly
+        // what the vertex path's SV_InstanceID meant here (see shadow.slang's mesh entry).
         push_stage_block(env, this->push);
-        // the lanes go out for the VERTEX pipeline too (its stages declare them): see push_geometry_lanes
-        this->push_geometry_lanes(env, geometry_source, 0u, geometry_source.index_count, 0);
-        vkCmdDrawIndexed(command_buffer, geometry_source.index_count, this->instance_count, 0, 0, 0);
+        uint32_t const survivors = this->push_meshlet_lanes(env, geometry_source, 0u, geometry_source.index_count, 0, this->double_sided);
+        this->mesh_dispatch(env, geometry_source, geometry_source.index_count, this->instance_count, survivors);
     }
 
     void instanced_draw_primitive::destroy([[maybe_unused]] vma_allocator& vma) noexcept {
@@ -292,16 +278,14 @@ namespace vulkan {
     }
 
     void static_draw_primitive::draw(render_environment& env) const {
-        env.bind_default();
-        env.set_depth_write(!this->transparent);
-        VkCommandBuffer const command_buffer = env.command_buffer;
-        // ONE bind for the whole merged geometry, then one offset draw per chunk (each chunk
-        // pushes its own material_index — the batch shares push.model, set by update_world)
-        constexpr VkDeviceSize vertex_offset_bytes = 0;
+        env.bind_default(); // the bind decides `mesh_stage`, so it happens before the flag is read
         if (!env.mesh_stage) {
-            vkCmdBindVertexBuffers(command_buffer, 0, 1, &this->vertex_detail->buffer, &vertex_offset_bytes);
-            vkCmdBindIndexBuffer(command_buffer, this->index_detail->buffer, 0, this->index_type);
+            log_meshless_draw_once();
+            return;
         }
+        env.set_depth_write(!this->transparent);
+        // Nothing is BOUND any more: one merged geometry, one dispatch per chunk, and the chunk's window travels in
+        // the lanes rather than as vkCmdDrawIndexed's arguments (which is what the vertex path used them for).
 
         // chunked: per chunk set the cull mode + material_index (push.material_index is the
         // first field, so only that slice needs re-pushing; model stays from the base push).
@@ -315,25 +299,12 @@ namespace vulkan {
                 return p;
             }();
             push_stage_block(env, chunk_push);
-            // THE CHUNK'S WINDOW IS THE LANES' WHOLE POINT: first index, count and base vertex are exactly the
-            // three arguments the vkCmdDrawIndexed below takes and a mesh dispatch has no place for, so both
-            // paths push them per chunk (the vertex path's stages declare them too - see push_geometry_lanes).
-            if (env.mesh_stage) {
-                // the cull is the SAME for every chunk of one primitive - the run covers the merged buffer, not the
-                // chunk - so the survivors come out identical and the culled table is rewritten with the same
-                // records. (That the dispatch happens once per chunk at all is a known defect of the meshlet
-                // session, recorded in docs/mesh_shaders.md: a chunk's material cannot reach a whole-run dispatch.)
-                uint32_t const survivors = this->push_meshlet_lanes(env, *this, chunk.first_index, chunk.index_count, static_cast<int32_t>(chunk.vertex_offset), chunk.double_sided);
-                this->mesh_dispatch(env, *this, chunk.index_count, 1u, survivors);
-                continue;
-            }
-            this->push_geometry_lanes(env, *this, chunk.first_index, chunk.index_count, static_cast<int32_t>(chunk.vertex_offset));
-            vkCmdDrawIndexed(command_buffer,
-                             chunk.index_count,
-                             1,
-                             chunk.first_index,
-                             static_cast<int32_t>(chunk.vertex_offset),
-                             0);
+            // the cull is the SAME for every chunk of one primitive - the run covers the merged buffer, not the
+            // chunk - so the survivors come out identical and the culled table is rewritten with the same records.
+            // (That the dispatch happens once per chunk at all is a known defect of the meshlet session, recorded in
+            // docs/mesh_shaders.md: a chunk's material cannot reach a whole-run dispatch.)
+            uint32_t const survivors = this->push_meshlet_lanes(env, *this, chunk.first_index, chunk.index_count, static_cast<int32_t>(chunk.vertex_offset), chunk.double_sided);
+            this->mesh_dispatch(env, *this, chunk.index_count, 1u, survivors);
         }
     }
 

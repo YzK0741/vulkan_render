@@ -748,22 +748,22 @@ set(VR_SLANG_SOURCES
     # finding. That is also why the camera and the light are written as STORAGE descriptors.
     gbuffer.slang:main:fragment:gbuffer.frag.spv
     # pbr.slang is the FORWARD path's shader PAIR: the fragment stage is where the sun/shadow/punctual/
-    # cluster/IBL fetches are proven under Slang, and the vertex stage is the one the G-BUFFER pass loads for
-    # every opaque draw - so the vertex entry is verified by all ten scenarios, and by the transparent pass's
-    # forward default too.
+    # cluster/IBL fetches are proven under Slang, and its GEOMETRY entry is what the G-BUFFER pass loads for
+    # every opaque draw - so it is verified by all ten scenarios, and by the transparent pass's
+    # forward default too. THAT ENTRY IS THE MESH ONE SINCE STEP 4 (docs/mesh_shaders.md): `pbr.vert.spv`
+    # was removed with the rest of the vertex geometry path, so there is no vertex entry to list here.
     pbr.slang:main:fragment:pbr.frag.spv
-    pbr.slang:vertex_main:vertex:pbr.vert.spv
-    # ... and the same file's MESH entry (docs/mesh_shaders.md step 2): the G-buffer/forward geometry as
+    # ... the same file's MESH entry (docs/mesh_shaders.md step 2): the G-buffer/forward geometry as
     # dispatches, which is what the scene's opaque, forward and transparent leaves are drawn with.
     pbr.slang:mesh_main:mesh:pbr.mesh.spv
     # ... and the MESHLET entry (docs/mesh_shaders.md step 3): one workgroup per meshlet, camera-culled.
     pbr.slang:meshlet_main:mesh:pbr.meshlet.spv
     # shadow.slang shares no body: the material table and the albedo fetch through the shim's accessors
     # (`material_at`, `heap_sample`), and the entry returns void because a depth-only stage has no output.
-    # Its vertex entry reuses the same matrix-array accessors pbr.vert does, which is the point of the pair:
+    # Its MESH entry reuses the same matrix-array accessors pbr.slang does, which is the point of the pair:
     # both stages must place the geometry identically or the shadow silhouette detaches from the surface.
+    # Its vertex entry went the same way as pbr's in step 4.
     shadow.slang:main:fragment:shadow.frag.spv
-    shadow.slang:vertex_main:vertex:shadow.vert.spv
     # ... and the SAME file's MESH entry (docs/mesh_shaders.md step 1): the depth pass drawn as dispatches
     # instead of indexed draws. It REPLACES the vertex entry rather than joining it (one pipeline is MESH +
     # fragment), and the host keeps both - a device without VK_EXT_mesh_shader has no mesh stage at all.

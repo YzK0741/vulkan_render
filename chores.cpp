@@ -95,7 +95,7 @@ namespace chores {
         std::filesystem::path const exe_dir = utility::executable_directory();
         if (!exe_dir.empty()) {
             std::filesystem::path const candidate = exe_dir / "shaders";
-            if (std::filesystem::is_regular_file(candidate / "pbr.vert.spv")) {
+            if (std::filesystem::is_regular_file(candidate / "pbr.mesh.spv")) {
                 return candidate;
             }
         }
@@ -106,7 +106,7 @@ namespace chores {
             // `shaders` that holds no compiled SPIR-V (the source tree's own, since the build writes
             // the .spv into the build tree) is not the answer this function is looking for - returning
             // it only moves the failure into a much less clear "cannot open shader file" panic.
-            if (std::filesystem::is_regular_file(candidate / "pbr.vert.spv")) {
+            if (std::filesystem::is_regular_file(candidate / "pbr.mesh.spv")) {
                 return candidate;
             }
             std::filesystem::path const parent = current.parent_path();
