@@ -13,14 +13,16 @@
   dispatch goes through `vkCmdDrawMeshTasksIndirectEXT`, and the CAMERA's runs are culled by the HOST before the
   dispatch (33,866 of Sponza's 42,800 culled workgroups over 40 frames are never launched at all), so the culling has
   both stages: the host removes the workgroup, the entry point still removes the meshlet.
-- What is NOT done, each measured and recorded above: per-meshlet BACKFACE culling (the cone is computed and
-  tested, but enabling the test changes six scenarios, so it is reverted - see the negative result in step 3);
-  the SHADOW pass's share of the host culling (its frustum is per cascade); and a timing of any of it - the counters
-  measure work, not milliseconds.
-- Step 4 (removing the vertex path) has not started. It should now be possible - every geometry stage is
-  gate-green in its mesh form - but the vertex forms are the only fallback a device without `VK_EXT_mesh_shader`
-  has, so removing them is a portability decision rather than a cleanup, and the gate cannot see the difference
-  (it runs on a device with the extension).
+- What is NOT done, each measured and recorded above: per-meshlet BACKFACE culling (the cone is computed and tested;
+  with the two-sided-draw and `cone_cos` mistakes of the first attempt fixed it STILL removes visible geometry, in both
+  orientations, so it is reverted - see the negative result and its three candidate causes in step 3); the SHADOW
+  pass's share of the host culling (its frustum is per cascade); and a timing of any of it - the counters measure work,
+  not milliseconds.
+- Step 4 (removing the vertex path) has not started, and its surface is enumerated in section 5, step 4. It should now
+  be possible - every geometry stage is gate-green in its mesh form - but the vertex forms are the only fallback a
+  device without `VK_EXT_mesh_shader` has, so removing them makes the extension a hard REQUIREMENT (a startup panic
+  with the reason, instead of a fallback), and the gate cannot see the difference because it runs on a device with the
+  extension.
 
 The measurements behind each of those sentences - the device's limits, the two compiler crashes, the layout bug
 that wedged the GPU, the culling's two-way acceptance and the backface negative - are in section 5, step by step.
@@ -704,11 +706,33 @@ Acceptance: **gate** with the meshlet path as the only geometry path for a scena
 click for the culling decision (a meshlet that is wrongly culled is a missing object, which the gate sees;
 a meshlet that is wrongly KEPT is invisible to it).
 
-### Step 4 - remove the vertex path
+### Step 4 - remove the vertex path (PLANNED, and the surface is measured)
 
-Only once steps 1-3 are green: delete the vertex-stage pipelines and their `.spv`, sync
-`CMakeLists.txt`'s `VR_SLANG_SOURCES`, `compile_shaders.ps1`/`.sh`, `chores.cpp`, `Doxyfile`, the CI
-workflow, `README` and this document.
+The decision this step waits on is not technical any more - every geometry stage is gate-green in its mesh form - it
+is whether the renderer may REQUIRE `VK_EXT_mesh_shader`. Removing the vertex forms removes the only fallback a device
+without it has, so the step turns "the device lacks the extension" from a slow path into a startup failure. That
+decision has been taken for this work; this is the surface it has to touch, enumerated so the next session does not
+have to re-derive it:
+
+| what | where | note |
+| --- | --- | --- |
+| the two geometry `vertex_main` entries | `shaders/pbr.slang:203`, `shaders/shadow.slang:172` | the same files keep their `mesh_main` / `meshlet_main` and the shared body they already share with the vertex entry |
+| the two `.spv` sources | `CMakeLists.txt:755,766`, `shaders/compile_shaders.ps1:43,47`, `shaders/compile_shaders.sh:64,68` | `tests/test_shader_sources.cpp` parses all four places, so it will fail by name until all four agree |
+| the loaders | `chores.cpp:177,184` (named pipelines), `:215` (shadow), `:251` (the G-buffer's vertex stage), `:361` (the probe), plus the two `pbr.vert.spv` probes at `:98,109` | `load_and_create_pipeline` loses its vertex-file parameter, and `make_pipeline` loses the vertex pipeline it builds |
+| the pipeline registry | `runtime::make_pipeline` (the vertex `vk_pipeline` + `pipelines` map), `mesh_pipelines`, `meshlet_pipelines` | the two fallback maps collapse: a named pipeline becomes meshlet-then-mesh, and the `pipelines` map keeps only the non-geometry (post/probe) entries |
+| the draw paths | `primitive::draw`'s `if (env.mesh_stage)` branches (`normal`, `instanced`, `static`), `bind_geometry_and_push`, `render_environment::mesh_stage` | with no vertex form the branch is always true: the draws become unconditional dispatches and `mesh_stage` can go |
+| the capability | `evaluate_mesh_shaders`, `mesh_shaders_unavailable_reason`, `runtime::create_passes` | becomes a hard requirement: a device without the extension PANICS with the reason, instead of falling back |
+| the documents | `README.md`, `docs/shaders.md`, `docs/slang_migration.md`, `Doxyfile`, the CI workflow, this document | the last step's own note says what to sync |
+
+WHAT IS DELIBERATELY NOT IN THAT LIST: `post.vert.spv` (a fullscreen triangle, not a geometry stage) and the two
+post chains that use it, `heap_probe.slang`'s vertex entry only if the probe's own two-way comparison is retired with
+it - the probe exists to prove a mesh stage reaches the heap, and its vertex form is the control that makes that
+proof two-way.
+
+Acceptance for this step, in the same shape as every other: the gate byte-identical on all ten scenarios (the frames
+are the same or the removal was not a removal), the startup log naming the extension as REQUIRED, a forced probe that
+proves the geometry really is dispatched (see step 1's), `spirv-val` on the remaining modules, and CI green with the
+`.vert.spv` names gone from all four registries at once.
 
 ## 6. Traps already measured (so nobody re-measures them)
 
