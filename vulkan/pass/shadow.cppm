@@ -141,12 +141,11 @@ export namespace vulkan::pass {
         void release_owned() noexcept;
 
         VkDevice device_ = VK_NULL_HANDLE;
-        std::optional<vk_pipeline> pipeline_ = std::nullopt;
-        /// the MESH form of the same pass, built beside it when the device can run one: `pipeline()` answers
-        /// with it whenever it exists, and a device that cannot run it (or a shader that failed to build) keeps
-        /// the vertex form. The two are one pass in the frame's eyes: same targets, same viewport, same casters.
+        /// THE MESH FORM, and since step 4 (docs/mesh_shaders.md) it is the pass's ONLY form: the vertex pipeline is
+        /// gone with the rest of the vertex geometry path, so a device that cannot build this one gets no shadow map
+        /// rather than a different rasterizer. It fetches its casters' vertices the way the input assembler used to.
         std::optional<vk_pipeline> mesh_pipeline_ = std::nullopt;
-        /// ... and the MESHLET form of the same pass (see meshlet_shader_name)
+        /// ... and the MESHLET form, preferred over it when it exists (see meshlet_shader_name)
         std::optional<vk_pipeline> meshlet_pipeline_ = std::nullopt;
         shadow_frame frame_ = {};
     };

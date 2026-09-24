@@ -135,33 +135,25 @@ namespace chores {
         return std::nullopt;
     }
 
-    // Load a vertex/fragment SPIR-V pair and create the pipeline via runtime; panic on failure. The MESH stage is
-    // optional and passed with it (docs/mesh_shaders.md step 2): the runtime builds the mesh form beside the vertex
-    // one under the same name, so a device without mesh shaders (or a missing file) leaves the vertex path alone.
-    // ... AND THE MESHLET ENTRY TOO (step 3), which is a third form under the same name: one workgroup per meshlet,
-    // its window read out of the heap table and culled against the camera. Both are optional and independent - what
-    // is missing is simply not offered, and the forms are tried in the order of how much they save.
+    // Load a fragment/mesh SPIR-V pair for a named pipeline and create it via runtime; panic on failure. THE VERTEX
+    // FILE IS GONE (docs/mesh_shaders.md step 4): a named geometry pipeline is built from a MESH stage and the
+    // meshlet entry beside it, and the runtime refuses a name with no mesh module rather than falling back.
     void load_and_create_pipeline(vulkan::runtime& runtime,
                                   std::filesystem::path const& shaders_dir,
                                   std::string_view const pipeline_name,
-                                  std::string_view const vertex_file,
                                   std::string_view const fragment_file,
-                                  std::string_view const mesh_file = {},
+                                  std::string_view const mesh_file,
                                   std::string_view const meshlet_file = {}) {
-        std::vector<unsigned char> vertex_code;
         std::vector<unsigned char> fragment_code;
         std::vector<unsigned char> mesh_code;
         std::vector<unsigned char> meshlet_code;
-        load_shader(shaders_dir, vertex_file, vertex_code);
         load_shader(shaders_dir, fragment_file, fragment_code);
-        if (!mesh_file.empty()) {
-            load_shader(shaders_dir, mesh_file, mesh_code);
-        }
+        load_shader(shaders_dir, mesh_file, mesh_code);
         if (!meshlet_file.empty()) {
             load_shader(shaders_dir, meshlet_file, meshlet_code);
         }
 
-        std::expected<void, std::string> const result = runtime.make_pipeline(pipeline_name, vertex_code, fragment_code, mesh_code, meshlet_code);
+        std::expected<void, std::string> const result = runtime.make_pipeline(pipeline_name, fragment_code, mesh_code, meshlet_code);
         if (!result) {
             utility::panic(std::source_location::current(), "failed to create pipeline '{}': {}", pipeline_name, result.error());
         }
@@ -174,14 +166,14 @@ namespace chores {
     void setup_pipeline(vulkan::runtime& runtime, std::filesystem::path const& shaders_dir) {
         // Standard PBR pipeline: the imported scene's primitives bind to it (the FIRST pipeline
         // created becomes the runtime's implicit default)
-        load_and_create_pipeline(runtime, shaders_dir, "pbr", "pbr.vert.spv", "pbr.frag.spv", "pbr.mesh.spv", "pbr.meshlet.spv");
+        load_and_create_pipeline(runtime, shaders_dir, "pbr", "pbr.frag.spv", "pbr.mesh.spv", "pbr.meshlet.spv");
         // Non-PBR "unlit" pipeline: flat base color, no lighting/shadows/IBL (see unlit.frag).
         // Registered as a SECOND named pipeline - the scene tree's default-semantics leaves draw
         // with whatever the runtime default is, so switching set_default_pipeline() between
         // "pbr" and "unlit" (gui "render mode") re-shades the whole scene without re-baking.
         // It shares pbr's GEOMETRY (pbr.vert.spv or its pbr.mesh.spv form) and differs only in its fragment
         // stage, so it gets a mesh form of its own from the same file.
-        load_and_create_pipeline(runtime, shaders_dir, "unlit", "pbr.vert.spv", "unlit.frag.spv", "pbr.mesh.spv", "pbr.meshlet.spv");
+        load_and_create_pipeline(runtime, shaders_dir, "unlit", "unlit.frag.spv", "pbr.mesh.spv", "pbr.meshlet.spv");
 
         {
             // The post chain is a PASS PAIR now (vulkan.pass.post): the composite owns the chain's two pipelines,
@@ -209,16 +201,13 @@ namespace chores {
             // The shadow pass is a PASS (vulkan.pass.shadow): the app REGISTERS its two shaders and the pass builds
             // the depth-only pipeline itself, from them and the context's depth format - which is why there is no
             // make_* here any more. Optional: without the pipeline the scene simply renders without shadows.
-            std::vector<unsigned char> vertex_code;
             std::vector<unsigned char> fragment_code;
             std::vector<unsigned char> mesh_code;
-            load_shader(shaders_dir, "shadow.vert.spv", vertex_code);
             load_shader(shaders_dir, "shadow.frag.spv", fragment_code);
-            runtime.register_shader("shadow.vert.spv", vertex_code);
             runtime.register_shader("shadow.frag.spv", fragment_code);
-            // ... and the SAME pass's MESH stage (docs/mesh_shaders.md step 1), which replaces the vertex entry when
-            // the device can run one: the pass prefers it and falls back to the vertex shader above when it cannot,
-            // so both are registered and a missing one is a log line rather than a failure.
+            // ... and the MESH stage, which is the pass's ONLY geometry stage since step 4 (docs/mesh_shaders.md):
+            // `shadow.vert.spv` is neither compiled nor registered any more, so the two below are what the pass
+            // builds from.
             load_shader(shaders_dir, "shadow.mesh.spv", mesh_code);
             runtime.register_shader("shadow.mesh.spv", mesh_code);
             // ... and the MESHLET form of the same pass (docs/mesh_shaders.md step 3): one workgroup per meshlet.
@@ -245,19 +234,16 @@ namespace chores {
             // opaque pass binds when it writes the G-buffer, and the fullscreen debug view that
             // turns one stored channel into a visible image. Both optional - without them
             // runtime::set_gbuffer_debug() has no effect and the opaque pass shades into the HDR target directly.
-            std::vector<unsigned char> vertex_code;
             std::vector<unsigned char> fragment_code;
             std::vector<unsigned char> mesh_code;
-            load_shader(shaders_dir, "pbr.vert.spv", vertex_code); // the G-buffer vertex stage (instancing/skinning/morphing)
+            load_shader(shaders_dir, "pbr.mesh.spv", mesh_code); // the G-buffer pass's geometry stage, and the only one it has
             load_shader(shaders_dir, "gbuffer.frag.spv", fragment_code);
-            // ... and the SAME pair's MESH stage (docs/mesh_shaders.md step 2), which replaces the vertex entry when
-            // the device can run one: the runtime builds the mesh form beside the vertex one and the scene session
-            // prefers it, so a missing or refused mesh shader is a log line rather than a failure.
-            load_shader(shaders_dir, "pbr.mesh.spv", mesh_code);
-            // ... and the MESHLET form (docs/mesh_shaders.md step 3): one workgroup per meshlet, camera-culled.
+            // ... and the MESHLET form (docs/mesh_shaders.md step 3): one workgroup per meshlet, camera-culled. The
+            // runtime prefers it and falls back to the mesh form, which is now the pass's REQUIREMENT - its vertex
+            // form went with the rest of the vertex geometry path (step 4).
             std::vector<unsigned char> meshlet_code;
             load_shader(shaders_dir, "pbr.meshlet.spv", meshlet_code);
-            auto const gbuffer_result = runtime.make_gbuffer_pipeline(vertex_code, fragment_code, mesh_code, meshlet_code);
+            auto const gbuffer_result = runtime.make_gbuffer_pipeline(fragment_code, mesh_code, meshlet_code);
 
             if (!gbuffer_result) {
                 utility::log("gbuffer pipeline disabled: {}", gbuffer_result.error());
@@ -265,6 +251,9 @@ namespace chores {
                 // The debug view is a PASS (vulkan.pass.geometry_buffer_debug): the app registers its two shaders and the
                 // pass builds its pipeline, which is all it owns. The samplers those declarations
                 // choose between are the device root's now (`core::create_samplers`).
+                // ... AND THIS IS `post.vert.spv`, NOT A GEOMETRY STAGE: a synthetic fullscreen triangle, which is a
+                // vertex stage by nature and stays one (docs/mesh_shaders.md step 4 is about the geometry path).
+                std::vector<unsigned char> vertex_code;
                 load_shader(shaders_dir, "post.vert.spv", vertex_code);
                 load_shader(shaders_dir, "gbuffer_debug.frag.spv", fragment_code);
                 runtime.register_shader("post.vert.spv", vertex_code);

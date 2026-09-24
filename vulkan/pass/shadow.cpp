@@ -28,7 +28,6 @@ namespace vulkan::pass {
     }
 
     void shadow_pass::release_owned() noexcept {
-        this->pipeline_.reset();
         this->mesh_pipeline_.reset();
         this->meshlet_pipeline_.reset();
     }
@@ -56,47 +55,41 @@ namespace vulkan::pass {
             this->release_owned();
         }
         this->device_ = context.device;
-        if (this->pipeline_.has_value()) {
+        if (this->mesh_pipeline_.has_value()) {
             return; // already built for this device
         }
-        std::span<unsigned char const> const vertex_spirv = context.shader != nullptr ? context.shader(context.owner, vertex_shader_name) : std::span<unsigned char const>{};
         std::span<unsigned char const> const fragment_spirv = context.shader != nullptr ? context.shader(context.owner, fragment_shader_name) : std::span<unsigned char const>{};
-        if (vertex_spirv.empty() || fragment_spirv.empty()) {
-            utility::log("shadow disabled: the owner has no {} or {}", vertex_shader_name, fragment_shader_name);
+        // ---- THE VERTEX FORM IS GONE (docs/mesh_shaders.md step 4): the pass's geometry arrives through a MESH
+        // stage, so the vertex module is neither loaded nor registered anywhere, and the mesh one is REQUIRED. A
+        // device without VK_EXT_mesh_shader does not reach here at all (the runtime refuses to start), which is why
+        // the two checks below are defensive: they keep a mis-registered shader a log line rather than a crash.
+        if (context.shader == nullptr || fragment_spirv.empty()) {
+            utility::log("shadow disabled: the owner has no {}", fragment_shader_name);
             return;
         }
-        // The pipeline is heap-native: nothing about the draw's descriptors or push travels through a layout.
-        auto built = pipelines::build_shadow(context.device, context.depth_format, create_bias_constant, create_bias_slope, create_bias_clamp, vertex_spirv, fragment_spirv);
-        if (!built) {
-            utility::log("shadow disabled: {}", built.error());
-            this->release_owned();
-            return;
-        }
-        this->pipeline_ = std::move(*built);
-        utility::log("SUCCESS: shadow pipeline created (directional depth-only cascade pass)");
-        // ---- ... and the MESH form of the same pass, when the device can run one (docs/mesh_shaders.md step 1).
-        // The two differ in ONE stage type: `shadow.mesh.spv`'s mesh entry fetches the vertices the input
-        // assembler would have bound and emits the same triangles, through the same fragment stage - so the two
-        // pipelines are interchangeable per frame, and `pipeline()` answers with the mesh one whenever it is
-        // there. A device without mesh shaders (`context.mesh_shaders` false) must not even create the module,
-        // and a shader file that is missing is the same answer: keep the vertex form and say so.
         if (!context.mesh_shaders) {
-            utility::log("shadow: the device has no mesh shaders, so the pass keeps its vertex stage");
+            utility::log("shadow disabled: the device has no mesh shaders, and the vertex form is gone (docs/mesh_shaders.md step 4)");
             return;
         }
         std::span<unsigned char const> const mesh_spirv = context.shader != nullptr ? context.shader(context.owner, mesh_shader_name) : std::span<unsigned char const>{};
         if (mesh_spirv.empty()) {
-            utility::log("shadow: no {} beside {}, so the pass keeps its vertex stage", mesh_shader_name, vertex_shader_name);
+            utility::log("shadow disabled: the owner has no {}", mesh_shader_name);
             return;
         }
+        // The pipeline is heap-native: nothing about the draw's descriptors or push travels through a layout.
+        // IT IS THE MESH FORM THAT IS BUILT FIRST NOW, and it is required: with the vertex form gone this pass cannot
+        // draw its casters any other way, so a refusal is a DISABLED PASS rather than a fallback - visible as a
+        // missing shadow rather than as a wrong picture, and named in the log.
         auto mesh_built = pipelines::build_shadow(context.device, context.depth_format, create_bias_constant, create_bias_slope, create_bias_clamp, mesh_spirv, fragment_spirv, VK_SHADER_STAGE_MESH_BIT_EXT);
         if (!mesh_built) {
-            utility::log("shadow: the mesh pipeline was refused ({}), so the pass keeps its vertex stage", mesh_built.error());
+            utility::log("shadow disabled: the mesh pipeline was refused ({})", mesh_built.error());
+            this->release_owned();
             return;
         }
         this->mesh_pipeline_ = std::move(*mesh_built);
+        utility::log("SUCCESS: shadow MESH pipeline created (the depth-only pass, fed by mesh dispatches)");
         // ---- ... and the MESHLET form (docs/mesh_shaders.md step 3): only the MESH module differs (same fragment
-        // stage), and a missing shader or a refusal is a log line - the two pipelines above are complete answers.
+        // stage), and a missing shader or a refusal is a log line - the mesh form above is a complete answer.
         std::span<unsigned char const> const meshlet_spirv = context.shader != nullptr ? context.shader(context.owner, meshlet_shader_name) : std::span<unsigned char const>{};
         if (!meshlet_spirv.empty()) {
             auto meshlet_built = pipelines::build_shadow(context.device, context.depth_format, create_bias_constant, create_bias_slope, create_bias_clamp, meshlet_spirv, fragment_spirv, VK_SHADER_STAGE_MESH_BIT_EXT);
@@ -107,7 +100,6 @@ namespace vulkan::pass {
                 utility::log("shadow: the meshlet pipeline was refused ({}), so the pass keeps the mesh form", meshlet_built.error());
             }
         }
-        utility::log("SUCCESS: shadow MESH pipeline created (the same depth-only pass, fed by mesh dispatches)");
     }
 
     void shadow_pass::on_swapchain_recreated(pass_host const&) {
@@ -116,21 +108,22 @@ namespace vulkan::pass {
     }
 
     bool shadow_pass::pipeline_ready() const noexcept {
-        return this->pipeline_.has_value();
+        // ONE FORM IS ENOUGH, and neither is the vertex one: the mesh form is required at create and the meshlet form
+        // is preferred over it, so "ready" is "either was built" (docs/mesh_shaders.md step 4)
+        return this->meshlet_pipeline_.has_value() || this->mesh_pipeline_.has_value();
     }
 
     VkPipeline shadow_pass::pipeline() const noexcept {
-        // THE MESH FORM WHEN THERE IS ONE, because it is the same pass: it emits the same triangles through the
-        // same fragment stage, so which pipeline draws is not the frame's business. A device that cannot run one
-        // (or a refused pipeline) leaves the vertex form, which is why the fallback is a fallback rather than a
-        // configuration (see create).
+        // THE MESHLET FORM WHEN THERE IS ONE, and the MESH form otherwise: they are the same pass (same targets, same
+        // fragment stage, same casters), so which one draws is not the frame's business. There is NO vertex form
+        // since step 4 (docs/mesh_shaders.md): a null here means no shadow map rather than a different rasterizer.
         if (this->meshlet_pipeline_.has_value()) {
             return this->meshlet_pipeline_->get_pipeline();
         }
         if (this->mesh_pipeline_.has_value()) {
             return this->mesh_pipeline_->get_pipeline();
         }
-        return this->pipeline_.has_value() ? this->pipeline_->get_pipeline() : VK_NULL_HANDLE;
+        return VK_NULL_HANDLE; // no mesh form, no shadow map: the vertex form is gone (see create)
     }
 
     void shadow_pass::set_frame(shadow_frame const& frame) noexcept {

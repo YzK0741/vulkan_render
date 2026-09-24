@@ -1058,30 +1058,28 @@ namespace vulkan {
     // stage, same primitives, same scene set, same instancing/skinning/morphing. What changes is
     // where the fragments go (three 1x targets + a 1x depth image instead of the scene color)
     // and that nothing is lit - see shaders/gbuffer.frag.
-    std::expected<void, std::string> runtime::make_gbuffer_pipeline(std::span<unsigned char const> const vertex_shader_code, std::span<unsigned char const> const fragment_shader_code,
+    std::expected<void, std::string> runtime::make_gbuffer_pipeline(std::span<unsigned char const> const fragment_shader_code,
                                                                     std::span<unsigned char const> const mesh_vertex_shader_code, std::span<unsigned char const> const meshlet_vertex_shader_code) {
-        auto result = this->vulkan_core.make_gbuffer_pipeline(vertex_shader_code, fragment_shader_code);
-        if (!result) {
-            return std::unexpected(std::string(result.error()));
+        // ---- THE VERTEX FORM IS GONE (docs/mesh_shaders.md step 4): the G-buffer pass's surface write is fed by a
+        // MESH stage, which is why the mesh module is required here and its refusal is an ERROR rather than a log
+        // line - with no vertex stage there is nothing to fall back to. (The caller disables the deferred path and
+        // says so; a device without the extension never gets this far, the runtime refuses to start.)
+        if (mesh_vertex_shader_code.empty()) {
+            return std::unexpected(std::string("no mesh stage for the G-buffer pass, and its vertex form is gone (docs/mesh_shaders.md step 4)"));
         }
-        this->gbuffer_pipeline = std::move(result).value();
-        // ---- ... and the MESH form of the same pass (docs/mesh_shaders.md step 2): the same fragment stage and a
-        // MESH entry that fetches the vertices the input assembler would have bound. Built only when the device can
-        // run one AND the caller handed the mesh stage's SPIR-V over - and a refusal is a log line, not a failure,
-        // because the vertex pipeline above is a complete answer on its own.
-        if (!mesh_vertex_shader_code.empty() && this->evaluate_mesh_shaders(nullptr)) {
-            auto mesh_result = this->vulkan_core.make_gbuffer_pipeline(mesh_vertex_shader_code, fragment_shader_code, VK_SHADER_STAGE_MESH_BIT_EXT);
-            if (mesh_result) {
-                this->gbuffer_pipeline_mesh = std::move(mesh_result).value();
-                utility::log("SUCCESS: G-buffer MESH pipeline created (the same surface write, fed by mesh dispatches)");
-            } else {
-                utility::log("G-buffer MESH pipeline refused ({}), so the pass keeps its vertex stage", mesh_result.error());
-            }
+        if (!this->evaluate_mesh_shaders(nullptr)) {
+            return std::unexpected(std::string("the device cannot run the mesh stage the G-buffer pass now requires"));
         }
+        auto mesh_result = this->vulkan_core.make_gbuffer_pipeline(mesh_vertex_shader_code, fragment_shader_code, VK_SHADER_STAGE_MESH_BIT_EXT);
+        if (!mesh_result) {
+            return std::unexpected(std::string(mesh_result.error()));
+        }
+        this->gbuffer_pipeline_mesh = std::move(mesh_result).value();
+        utility::log("SUCCESS: G-buffer MESH pipeline created (the surface write, fed by mesh dispatches)");
         // ---- ... and the MESHLET form (docs/mesh_shaders.md step 3): one workgroup per meshlet, its window read
         //      out of the table and each meshlet culled against the camera before it emits anything. Preferred over
-        //      both others when it exists, and a refusal is again a log line rather than a failure.
-        if (!meshlet_vertex_shader_code.empty() && this->evaluate_mesh_shaders(nullptr)) {
+        //      the mesh form when it exists, and a refusal is again a log line rather than a failure.
+        if (!meshlet_vertex_shader_code.empty()) {
             auto meshlet_result = this->vulkan_core.make_gbuffer_pipeline(meshlet_vertex_shader_code, fragment_shader_code, VK_SHADER_STAGE_MESH_BIT_EXT);
             if (meshlet_result) {
                 this->gbuffer_pipeline_meshlet = std::move(meshlet_result).value();
@@ -1272,7 +1270,9 @@ namespace vulkan {
     }
 
     bool runtime::gbuffer_pass_active() const noexcept {
-        if (!this->gbuffer_pipeline.has_value()) {
+        // THE MESH FORMS ARE THE PIPELINE NOW (docs/mesh_shaders.md step 4): `gbuffer_pipeline` is the vertex form,
+        // which no longer exists, so the question is whether EITHER mesh form was built.
+        if (!this->gbuffer_pipeline_mesh.has_value() && !this->gbuffer_pipeline_meshlet.has_value()) {
             return false;
         }
         if (this->gbuffer_debug) {
@@ -1384,14 +1384,19 @@ namespace vulkan {
             uint32_t const push_constants = this->vulkan_core.device_properties.limits.maxPushConstantsSize;
             uint32_t const push_data = this->vulkan_core.descriptor_heap_limits.max_push_data;
             this->mesh_shaders = this->evaluate_mesh_shaders(&this->mesh_shaders_unavailable_reason);
-            if (this->mesh_shaders) {
-                utility::log("mesh shaders: available - a pass may build a MESH pipeline (push block {} B, within {} B push constants / {} B push data)",
-                             vulkan::mesh_stage_block_size,
-                             push_constants,
-                             push_data);
-            } else {
-                utility::log("mesh shaders: not used - {} (the vertex stage stays)", this->mesh_shaders_unavailable_reason);
+            if (!this->mesh_shaders) {
+                // ---- THE EXTENSION IS A REQUIREMENT NOW (docs/mesh_shaders.md step 4): the vertex geometry path is
+                // gone, so there is no second rasterizer to fall back to and a device that cannot run a mesh stage
+                // cannot draw the scene at all. Saying so here, once, with the reason, is the whole of the fallback
+                // that is left - and it happens BEFORE any pass is created.
+                utility::panic(std::source_location::current(),
+                               "mesh shaders are required and this device does not offer them: {} (docs/mesh_shaders.md step 4)",
+                               this->mesh_shaders_unavailable_reason);
             }
+            utility::log("mesh shaders: REQUIRED and available - every geometry stage is dispatched (push block {} B, within {} B push constants / {} B push data)",
+                         vulkan::mesh_stage_block_size,
+                         push_constants,
+                         push_data);
         }
         pass::pass_context const build = this->make_pass_context();
         // ONE CREATE STEP OVER EVERY PASS, in the order the OWNING chain holds them (see the member block in the
@@ -1895,10 +1900,13 @@ namespace vulkan {
                 }
                 return;
             }
+            // A NAME THAT IS NEITHER A MESHLET NOR A MESH FORM IS NOT A PIPELINE ANY MORE (docs/mesh_shaders.md
+            // step 4): every geometry name is dispatched, so there is no vertex form left to bind, and the only
+            // thing to do with an unknown name is to say so once rather than record a draw with no pipeline.
             env.mesh_stage = false;
-            env.meshlets = false; // a vertex-path leaf: its window is the DRAW's, not a meshlet run (see the mesh form above)
+            env.meshlets = false;
             if (auto const it = self.pipelines.find(name); it != self.pipelines.end()) {
-                it->second.begin_pipeline(cb);
+                it->second.begin_pipeline(cb); // a non-geometry named pipeline (none today: kept for the registry's sake)
             } else {
                 utility::log("runtime: main pass references unknown pipeline '{}' - draw skipped", name);
             }

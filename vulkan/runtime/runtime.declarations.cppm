@@ -2145,15 +2145,14 @@ namespace vulkan {
          */
         std::expected<void, std::string> make_pipeline(
             std::string_view pipeline_name,
-            std::span<unsigned char const> vertex_shader_code,
             std::span<unsigned char const> fragment_shader_code,
-            /// THE MESH FORM OF THE SAME PIPELINE (docs/mesh_shaders.md step 2): the same fragment stage and a MESH
-            /// entry that fetches its own vertices, stored under the same NAME in `mesh_pipelines` so the sessions
-            /// that bind by name can prefer it. Empty, or a refusal, leaves the vertex form as the only one.
-            std::span<unsigned char const> mesh_vertex_shader_code = {},
+            /// THE MESH FORM, which is the pipeline itself since step 4 (docs/mesh_shaders.md): the vertex stage is
+            /// gone, so a name without a mesh module is an ERROR rather than a fallback. Stored under @p pipeline_name
+            /// in `mesh_pipelines`, which is what a session that binds by name looks in first.
+            std::span<unsigned char const> mesh_vertex_shader_code,
             /// ... AND THE MESHLET FORM OF IT (docs/mesh_shaders.md step 3), the same shape again one level in: one
-            /// workgroup per meshlet, culled against the camera, stored in `meshlet_pipelines` under the same name.
-            /// The named sessions prefer it over the mesh form, and the bind callback is what says so.
+            /// workgroup per meshlet, culled against the camera, stored in `meshlet_pipelines` under the same name
+            /// and preferred by the named sessions over the mesh form.
             std::span<unsigned char const> meshlet_shader_code = {});
 
         /**
@@ -2498,7 +2497,7 @@ namespace vulkan {
          *       one set_gbuffer_debug() builds. Register it like any other pipeline (it is NOT the
          *       default: the G-buffer pass binds it explicitly).
          */
-        std::expected<void, std::string> make_gbuffer_pipeline(std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code,
+        std::expected<void, std::string> make_gbuffer_pipeline(std::span<unsigned char const> fragment_shader_code,
                                                                std::span<unsigned char const> mesh_vertex_shader_code = {}, std::span<unsigned char const> meshlet_vertex_shader_code = {});
 
         /**

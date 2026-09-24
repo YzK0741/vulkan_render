@@ -340,17 +340,23 @@ namespace vulkan {
         return this->debug_overlay;
     }
 
-    std::expected<void, std::string> runtime::make_pipeline(std::string_view pipeline_name, std::span<unsigned char const> vertex_shader_code, std::span<unsigned char const> fragment_shader_code,
+    std::expected<void, std::string> runtime::make_pipeline(std::string_view pipeline_name, std::span<unsigned char const> fragment_shader_code,
                                                             std::span<unsigned char const> const mesh_vertex_shader_code, std::span<unsigned char const> const meshlet_shader_code) {
         using fail = std::unexpected<std::string>;
+        // ---- THE VERTEX FORM IS GONE (docs/mesh_shaders.md step 4): a named geometry pipeline is built from a MESH
+        // stage, so the mesh module is REQUIRED and its absence or refusal is an error - there is no vertex pipeline
+        // left to be a complete answer. The meshlet form is optional and preferred when it exists.
         bool const want_mesh = !mesh_vertex_shader_code.empty() && this->evaluate_mesh_shaders(nullptr);
         {
             // unique lock around the duplicate check + registry append: a concurrent reader
             // (recording worker) must never observe a half-inserted map / name table
             std::unique_lock const lock(this->access_mutex);
-            if (this->pipelines.contains(pipeline_name)) {
+            if (this->mesh_pipelines.contains(pipeline_name)) {
                 return fail(std::string("pipeline '") + std::string(pipeline_name) + "' already exists");
             }
+        }
+        if (!want_mesh) {
+            return fail(std::string("pipeline '") + std::string(pipeline_name) + "' has no mesh stage to build from, and its vertex form is gone (docs/mesh_shaders.md step 4)");
         }
         // GPU pipeline creation is expensive and touches no shared registry state: build it
         // OUTSIDE the lock so a reader is never blocked by shader compilation.
@@ -367,33 +373,12 @@ namespace vulkan {
         // Omitting it is not a no-op - the gate caught it as a changed scenario, and this is why the conversion
         // is a re-expression rather than a rewrite.
         std::array<VkPipelineColorBlendAttachmentState, 1> const blend_attachments = {make_color_blend_attachment()};
-        auto make_result = vulkan::make_pipeline(this->vulkan_core.device,
-                                                 std::span<VkFormat const>(color_formats),
-                                                 this->vulkan_core.depth_format,
-                                                 vertex_shader_code,
-                                                 fragment_shader_code,
-                                                 VK_SAMPLE_COUNT_1_BIT,
-                                                 /*depth_test_enabled=*/true,
-                                                 0.0f,
-                                                 0.0f,
-                                                 0.0f,
-                                                 std::span<VkPipelineColorBlendAttachmentState const>(blend_attachments));
-        if (!make_result) {
-            return fail(std::string(make_result.error()));
-        }
-        // ... AND THE VIEWPORT THE OLD ENTRY POINT ALSO SAVED, which is not incidental: these pipelines are
-        // drawn through `vk_pipeline::begin_pipeline`, which re-emits the cached viewport, and the scene path
-        // resyncs it once per frame in update_pass_geometry. Leaving it at its creation-time zero is the
-        // zero-width viewport this project has already paid for once - and the gate caught exactly this
-        // omission here, as one changed scenario.
-        make_result->viewport = {0.0f, 0.0f, static_cast<float>(this->vulkan_core.swap_chain_extent.width), static_cast<float>(this->vulkan_core.swap_chain_extent.height), 0.0f, 1.0f};
-        make_result->scissor = {{0, 0}, this->vulkan_core.swap_chain_extent};
-        // ---- ... AND THE MESH FORM UNDER THE SAME NAME, when the app handed one over and the device can run it
-        //      (docs/mesh_shaders.md step 2). Built BEFORE the registry insert, because the two are stored together
-        //      and a session that binds by name has to find either both or neither. A refusal is a log line: the
-        //      vertex pipeline above is a complete answer.
+        // ---- THE MESH FORM, which IS the pipeline now (docs/mesh_shaders.md step 4): built before the registry
+        //      insert, cached with the same two viewport values its draws need (begin_pipeline re-emits them and
+        //      update_pass_geometry resyncs every registered pipeline once per frame), and a failure is the CALLER's
+        //      - the vertex pipeline that used to absorb a refusal does not exist any more.
         std::optional<vk_pipeline> mesh_result = std::nullopt;
-        if (want_mesh) {
+        {
             auto built = vulkan::make_pipeline(this->vulkan_core.device,
                                                std::span<VkFormat const>(color_formats),
                                                this->vulkan_core.depth_format,
@@ -407,13 +392,14 @@ namespace vulkan {
                                                std::span<VkPipelineColorBlendAttachmentState const>(blend_attachments),
                                                VK_SHADER_STAGE_MESH_BIT_EXT);
             if (built) {
-                // the same two cached values the vertex form needs, and for the same reason (begin_pipeline
-                // re-emits them, and update_pass_geometry resyncs every registered pipeline once per frame)
+                // the two cached values every named pipeline needs (begin_pipeline re-emits them, and
+                // update_pass_geometry resyncs every registered pipeline once per frame)
                 built->viewport = {0.0f, 0.0f, static_cast<float>(this->vulkan_core.swap_chain_extent.width), static_cast<float>(this->vulkan_core.swap_chain_extent.height), 0.0f, 1.0f};
                 built->scissor = {{0, 0}, this->vulkan_core.swap_chain_extent};
                 mesh_result = std::move(*built);
             } else {
-                utility::log("pipeline '{}': no mesh form ({}), so its leaves stay on the vertex pipeline", pipeline_name, built.error());
+                // NO FALLBACK LEFT (docs/mesh_shaders.md step 4): the caller sees this as the pipeline's failure
+                return fail("pipeline '" + std::string(pipeline_name) + "': the mesh stage was refused (" + std::string(built.error()) + ")");
             }
         }
         std::optional<vk_pipeline> meshlet_result = std::nullopt;
@@ -439,12 +425,14 @@ namespace vulkan {
                 built->scissor = {{0, 0}, this->vulkan_core.swap_chain_extent};
                 meshlet_result = std::move(*built);
             } else {
-                utility::log("pipeline '{}': no meshlet form ({}), so its leaves stay on the mesh (or vertex) pipeline", pipeline_name, built.error());
+                utility::log("pipeline '{}': no meshlet form ({}), so its leaves stay on the mesh pipeline", pipeline_name, built.error());
             }
         }
         {
             std::unique_lock const lock(this->access_mutex);
-            this->pipelines.emplace(pipeline_name, std::move(make_result).value());
+            // THE MESH FORM IS THE PIPELINE (docs/mesh_shaders.md step 4): there is no vertex entry in the registry
+            // for a geometry name any more, so a session that binds by name finds this one, or the meshlet one, or
+            // nothing at all - and `set_default_pipeline` answers the same question the same way.
             if (mesh_result.has_value()) {
                 this->mesh_pipelines.emplace(pipeline_name, std::move(*mesh_result));
                 utility::log("SUCCESS: pipeline '{}' created with a MESH form (its leaves are dispatched)", pipeline_name);
@@ -462,7 +450,7 @@ namespace vulkan {
 
     void runtime::set_default_pipeline(std::string_view const pipeline_name) {
         std::unique_lock const lock(this->access_mutex);
-        if (this->pipelines.contains(pipeline_name)) {
+        if (this->mesh_pipelines.contains(pipeline_name) || this->meshlet_pipelines.contains(pipeline_name)) {
             this->default_pipeline_name = pipeline_name;
         }
     }
@@ -505,7 +493,7 @@ namespace vulkan {
             .taa = this->taa_on,
             .bloom = this->bloom_intensity > 0.0f,
             .transparent_pending = !this->frame_transparent.empty(),
-            .gbuffer_pipeline = this->gbuffer_pipeline.has_value(),
+            .gbuffer_pipeline = this->gbuffer_pipeline_mesh.has_value() || this->gbuffer_pipeline_meshlet.has_value(),
             .structures_ready = this->structures.ready() && this->structures.handle(static_cast<uint32_t>(vk.current_frame)) != VK_NULL_HANDLE,
             .furnace = this->furnace,
             .punctual_lights = this->light_state.light_count.x,
@@ -565,7 +553,7 @@ namespace vulkan {
 
     void runtime::set_gbuffer_debug(bool const enabled) noexcept {
         this->gbuffer_debug = enabled;
-        if (enabled && (!this->gbuffer_pipeline.has_value() || !this->pass_ready("gbuffer-debug"))) {
+        if (enabled && ((!this->gbuffer_pipeline_mesh.has_value() && !this->gbuffer_pipeline_meshlet.has_value()) || !this->pass_ready("gbuffer-debug"))) {
             this->warn_missing_feature("gbuffer-debug", "the G-buffer debug view has no effect: its pipelines were not created (see the startup log)");
         }
     }
@@ -591,7 +579,7 @@ namespace vulkan {
                      this->feature_available("fxaa") ? "on" : "UNAVAILABLE",
                      this->feature_available("shadow") ? "on" : "UNAVAILABLE",
                      this->feature_available("clustered") ? "on" : "UNAVAILABLE");
-        if (!this->gbuffer_pipeline.has_value() || !this->pass_ready("deferred")) {
+        if ((!this->gbuffer_pipeline_mesh.has_value() && !this->gbuffer_pipeline_meshlet.has_value()) || !this->pass_ready("deferred")) {
             utility::log("features: the G-buffer pass or its lighting stage was not created, so NO SCENE IS DRAWN this session (see the startup log's 'deferred lighting disabled' line)");
         }
     }
@@ -1224,8 +1212,18 @@ namespace vulkan {
 
     vk_pipeline const* runtime::get_pipeline(std::string_view const pipeline_name) const noexcept {
         std::shared_lock const lock(this->access_mutex);
-        auto const it = this->pipelines.find(pipeline_name);
-        return it == this->pipelines.end() ? nullptr : &it->second;
+        // A GEOMETRY NAME LIVES IN THE MESH MAPS NOW (docs/mesh_shaders.md step 4), so the lookup asks all three: the
+        // vertex registry is what is left of the non-geometry pipelines that still have one.
+        if (auto const it = this->pipelines.find(pipeline_name); it != this->pipelines.end()) {
+            return &it->second;
+        }
+        if (auto const it = this->mesh_pipelines.find(pipeline_name); it != this->mesh_pipelines.end()) {
+            return &it->second;
+        }
+        if (auto const it = this->meshlet_pipelines.find(pipeline_name); it != this->meshlet_pipelines.end()) {
+            return &it->second;
+        }
+        return nullptr;
     }
 
     std::unique_ptr<primitive> runtime::create_primitive(std::string_view const pipeline_name, primitive_create_info const& info) {
@@ -1235,7 +1233,7 @@ namespace vulkan {
         // draw strategy that needs a specific pipeline stores its own name and requests it.
         {
             std::shared_lock const lock(this->access_mutex);
-            if (!this->pipelines.contains(pipeline_name)) {
+            if (!this->pipelines.contains(pipeline_name) && !this->mesh_pipelines.contains(pipeline_name) && !this->meshlet_pipelines.contains(pipeline_name)) {
                 return nullptr;
             }
         }
