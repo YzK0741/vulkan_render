@@ -2,14 +2,16 @@
 
 **STATUS: steps 0, 1, 2, 3 and 4 are DONE. The renderer's geometry path IS mesh shaders - every stage that
 draws scene geometry is a mesh stage, the vertex forms are gone, and `VK_EXT_mesh_shader` is a REQUIREMENT (a device
-without it panics with the reason before any pass is created). Two measured exceptions and one optimisation remain,
-each written up below: per-meshlet BACKFACE culling is measured and NOT shipped, the SHADOW pass's share of the
-host-side culling is not implemented, and nothing here has been TIMED.**
+without it panics with the reason before any pass is created). What is left is section 7's list: per-meshlet BACKFACE
+culling (measured, NOT shipped - it removes visible geometry in both orientations), the SHADOW pass's share of the
+host-side culling and a static draw's per-chunk meshlet dispatch (both unimplemented, both measured where a number
+exists), and TIMINGS (there are none: the counters measure work, not milliseconds).**
 
 - The binding model is proven (the heap-native probe runs through a mesh pipeline and reports the same pixel as the
-  vertex one), and EVERY geometry stage this renderer draws leaves with has a mesh form: shadow, G-buffer, forward
-  `pbr`/`unlit`. The capture gate is byte-identical to the committed vertex-path references with either path
-  active, and forced probes prove which one produced the frames.
+  vertex one did), and EVERY geometry stage this renderer draws leaves with is a mesh stage: shadow, G-buffer, forward
+  `pbr`/`unlit`. The capture gate is byte-identical to the committed vertex-path references, which is the strongest
+  form that acceptance can take now that the vertex path is gone, and forced probes prove which stage produced the
+  frames.
 - THE MESHLET PATH IS THE ONE IN USE: every primitive's geometry is cut into 85-triangle meshlets with object-space
   bounding spheres and normal cones (`vulkan.meshlet`, 3145 records over 103 primitives on Sponza), the records live
   in a heap table written once at import, and both geometry passes draw them ONE WORKGROUP PER MESHLET - the shadow
