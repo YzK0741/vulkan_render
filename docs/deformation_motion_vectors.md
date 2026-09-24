@@ -3,6 +3,14 @@
 The design for the renderer's one remaining systematic error in its anti-aliasing path, and the
 instrument that has to exist before the fix can be accepted at all.
 
+> **A NOTE ON THE FILE REFERENCES, since two migrations have moved under them.** Every `shaders/pbr.vert` /
+> `shaders/shadow.vert` reference below is to the source as it stood when this feature was implemented: the Slang
+> migration moved those bodies into `shaders/pbr.slang` / `shaders/shadow.slang` (the GLSL originals are in
+> `shaders/glsl.old/`), and the mesh-shader migration then removed those files' vertex ENTRIES altogether
+> (docs/mesh_shaders.md step 4) - the morph/skin/motion code they argue about now lives in the shared
+> `pbr_shade_vertex` body that the mesh entries call. The measurements, the fixtures and the acceptance are
+> unaffected; only the paths changed.
+
 ## 1. The gap, stated by the code
 
 `shaders/pbr.vert:149-154` builds the previous world position like this:

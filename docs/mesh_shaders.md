@@ -42,11 +42,14 @@ that wedged the GPU, the culling's two-way acceptance and the backface negative 
   every record after the first was read four bytes off - and not anything about meshlets.
 - The SECOND mechanism step 3 names - cull in a COMPUTE pass and dispatch with `vkCmdDrawMeshTasksIndirectEXT` - has
   its SEAM in the tree: every meshlet dispatch already goes through the indirect entry point, reading its counts out
-  of a command table at a slot the primitive owns. What it lacks is the pass that writes those counts after culling.
-  (The first, cursor-driven version of that seam made `sponza` flaky and was reverted; the design that replaced it is
-  in section 5.)
-- Step 4 (removing the vertex path) has not started, and should not until a culling path exists, because the vertex
-  forms are the fallback every device without mesh shaders runs.
+  of a command table at a slot the primitive owns. The CULLING itself closed on the HOST instead of in that pass (the
+  host already holds the meshlets, the model matrix and the camera), which is measured: 33,866 of Sponza's 42,800
+  culled workgroups over 40 frames are never launched, with the triangles emitted identical to the digit. (The first,
+  cursor-driven version of the seam made `sponza` flaky and was reverted; both designs are in section 5.)
+- Step 4 is DONE: the vertex geometry path is removed and `VK_EXT_mesh_shader` is a REQUIREMENT - a device without it
+  panics with the reason before any pass is created, instead of falling back to a vertex pipeline that no longer
+  exists. The ten scenarios are byte-identical to references captured while the vertex path was active, which is what
+  makes the removal a removal rather than a visual change.
 
 The measurements behind each of those sentences - the device's limits, the two compiler crashes, the GPU hang and
 the exact next experiments - are in section 5, step by step.
@@ -85,18 +88,22 @@ this machine, not read out of a spec - where a spec is quoted it is because vali
 
 ## 1. Why a mesh stage, in this renderer specifically
 
-Geometry currently reaches the rasterizer through four vertex stages, and three of them are real geometry:
+**THIS SECTION DESCRIBES THE STARTING POINT** - the state the migration began from, kept because it is what the mesh
+forms had to reproduce. The two geometry rows below are HISTORY now: `pbr.vert.spv` and `shadow.vert.spv` were removed
+in step 4, and the only vertex modules left in the tree are the two that never drew scene geometry.
 
-| `.spv` | source | who loads it |
-| --- | --- | --- |
-| `pbr.vert.spv` | `pbr.slang:vertex_main` | every opaque draw in the G-buffer pass, the forward default, and the transparent pass |
-| `shadow.vert.spv` | `shadow.slang:vertex_main` | every cascade of the shadow pass |
-| `post.vert.spv` | `post.slang:main` | the post chain's fullscreen triangle (no input) |
-| `heap_probe.vert.spv` | `heap_probe.slang:main` | the binding probe (no input) |
+Geometry used to reach the rasterizer through four vertex stages, and three of them were real geometry:
+
+| `.spv` | source | who loaded it | state now |
+| --- | --- | --- | --- |
+| `pbr.vert.spv` | `pbr.slang:vertex_main` | every opaque draw in the G-buffer pass, the forward default, and the transparent pass | **removed (step 4)** - the mesh/meshlet entries draw all of it |
+| `shadow.vert.spv` | `shadow.slang:vertex_main` | every cascade of the shadow pass | **removed (step 4)** - the shadow pass requires its mesh form |
+| `post.vert.spv` | `post.slang:main` | the post chain's fullscreen triangle (no input) | kept: not a geometry stage |
+| `heap_probe.vert.spv` | `heap_probe.slang:main` | the binding probe (no input) | kept: the probe's control |
 
 A MESH stage replaces the vertex stage **and** the input assembler: the shader fetches its own vertices
 from buffers it names itself, and it emits primitives per WORKGROUP, which means a workgroup can decide
-not to emit anything after looking at all of its geometry. The vertex path can only reject a vertex, or a
+not to emit anything after looking at all of its geometry. The vertex path could only reject a vertex, or a
 whole draw from the CPU.
 
 What that makes possible, and what it does not:
@@ -235,6 +242,12 @@ a pass the gate's scenarios do not reach) and **shape-only** (SPIR-V/limit reaso
 possible). A step is not done until its route says so, plus `ctest` 10/10, `spirv-val --target-env
 vulkan1.3` on every emitted `.spv`, and zero validation findings.
 
+**A NOTE ON NAMES, because every step below is named after the stage it converted.** "`pbr.vert` becomes a mesh
+stage" means "the geometry entry `shaders/pbr.slang` used to hold is replaced by its `mesh_main`": the Slang
+migration made every shader source a `.slang` file (the GLSL originals live in `shaders/glsl.old/`), and step 4
+deleted those two vertex entries outright. So `pbr.vert` / `shadow.vert` below name A PATH, not a file that exists
+in the tree today - and `shaders/pbr.slang` / `shaders/shadow.slang` are where the entries actually are.
+
 **"The gate" means the CORE set, and the exact scope matters because the numbers above were not all
 taken over the same one.** `check_render.ps1` defines ten scenarios and tags five of them `core`; the
 default run is those five x 2 runs = 10 renders. The earlier rounds in this document ran all ten (20
@@ -286,22 +299,24 @@ guarantees. Sixteen free bytes cannot hold two device addresses and a draw windo
 144-byte block or a new per-frame geometry TABLE in the heap (4 bytes of lanes, the rest read through a slot).
 The table is the better long-term shape - it is what step 3's meshlets need anyway - but it is a new heap resource,
 slot region and upload path for one consumer, while the block is measurable NOW. So: the mesh path is enabled only
-when the device reports room for it, and the vertex path stays where it does not.
+when the device reports room for it - which, since step 4 removed the vertex forms, means the renderer RUNS only
+there, and a device under those limits is a startup panic rather than a slow path.
 
 ```
-mesh shaders: available - a pass may build a MESH pipeline (push block 144 B, within 256 B push constants / 256 B push data)
+mesh shaders: REQUIRED and available - every geometry stage is dispatched (push block 144 B, within 256 B push constants / 256 B push data)
 ```
 
 That line is the gate: `core::mesh_shader_available` AND `maxPushConstantsSize >= 144` AND the heap's
 `maxPushDataSize >= 144`, checked once in `runtime::create_passes` before any pass is created (a pass that tried
 and was refused would already have produced a validation ERROR at `vkCreateShaderModule`). On this device the two
-limits are 256/256; the same box's other GPU reports 128, which is exactly why the check exists and why the
-fallback is the vertex path rather than a failure. A mesh pipeline also has to be built before `create_passes`
-returns, and it is not: the pass builds it at create time only when `pass_context::mesh_shaders` says the device
-can run one.
+limits are 256/256, and the same box's other GPU reporting 128 is exactly why the check exists. (While the vertex
+form was still there, that device fell back to it; after step 4 the same answer is a panic naming the limit.) A mesh
+pipeline also has to be built before `create_passes` returns, and it is not: the pass builds it at create time only
+when `pass_context::mesh_shaders` says the device can run one.
 
 **Acceptance: the gate, both ways.** The ten scenarios were captured with the VERTEX path (the committed
-references), and the mesh path reproduces every one of them **byte for byte**:
+references), and the mesh path reproduces every one of them **byte for byte** - and still does after step 4 removed
+that vertex path entirely, which is the strongest form this acceptance can take:
 
 | run | result |
 | --- | --- |
@@ -314,8 +329,9 @@ same picture BY CONSTRUCTION, so a green gate alone cannot distinguish "the mesh
 path was never used". The startup log says which one it was (`shadow: the casters are DISPATCHED (mesh stage) - 103
 casters`), and the forced probe proves the log is telling the truth.
 
-The vertex entry, the fragment entry and the pass's fallback are all still there, and `ctest` (8/8), `spirv-val`
-(26 modules) and the validation layer stay clean with the mesh path active.
+The vertex entry, the fragment entry and the pass's fallback were all still there AT THE TIME this was measured, and
+`ctest` (8/8 then, 10/10 now), `spirv-val` (26 modules then, 27 after step 4 removed the two vertex geometry modules)
+and the validation layer stayed clean with the mesh path active.
 
 ### Step 2 - `pbr.vert` becomes a mesh stage (DONE: the G-buffer, the forward/unlit/transparent leaves and the shadow pass all have mesh forms)
 
@@ -330,8 +346,9 @@ the same `shaders/mesh_geometry.slang` fetch.
 
 This is the widest coverage a geometry port can have: the G-buffer pass draws every opaque leaf of every scenario,
 so nine of the ten gate scenarios exercise it (`unlit` shades through the forward pipeline, `transparent_blend`
-composites through the transparent one - both still vertex stages, and both stay byte-identical, which also proves
-the widened stage block did not disturb the vertex path).
+composites through the transparent one - both were still vertex stages at THIS point, and both stayed byte-identical,
+which also proves the widened stage block did not disturb the vertex path; step 3 gave both a meshlet form and step 4
+removed the vertex one).
 
 **THE VUID THIS STEP FOUND, which changes what "one block" means.** A heap-native pipeline requires EVERY byte of
 each declared push block to have been written by `vkCmdPushDataEXT` before the draw
@@ -355,13 +372,14 @@ Three consequences, each measured:
    `mesh_geometry_push_offset` (108 scene / 112 shadow) to `mesh_stage_block_size` (144), with the lanes copied to
    where the shader reads them (112 in both).
 
-**AND EVERY DRAW PUSHES THE LANES, INCLUDING THE VERTEX PATH'S.** One source file is one block layout for every
-entry it contains, so `pbr.vert` and `gbuffer.frag` declare the lanes that only `mesh_main` reads - and a
-descriptor-heap pipeline requires the declared bytes to be written whatever stage reads them. The vertex path
-therefore pays 32 bytes and one extra push per draw that it never looks at; the alternative was two block layouts
-for one shader file, which the language does not express. Verified both ways: forcing the gate off (both passes on
-their vertex pipelines) produces a log with zero validation findings, and `unlit`/`transparent_blend` run through
-the vertex path with the widened block in the gate itself.
+**AND EVERY DRAW PUSHED THE LANES, INCLUDING THE VERTEX PATH'S - WHICH IS HISTORY NOW.** At this point one source
+file was one block layout for every entry it contained, so `pbr.vert` and `gbuffer.frag` declared the lanes only
+`mesh_main` read, and a descriptor-heap pipeline requires the declared bytes to be written whatever stage reads them:
+the vertex path paid 32 bytes and one extra push per draw that it never looked at, and the alternative was two block
+layouts for one shader file, which the language does not express. Step 4 removed that path, so today every draw that
+pushes the lanes is a draw that reads them. Verified both ways AT THE TIME: forcing the gate off (both passes on their
+vertex pipelines) produced a log with zero validation findings, and `unlit`/`transparent_blend` ran through the vertex
+path with the widened block in the gate itself.
 
 **Acceptance: the gate, both ways, again.**
 
@@ -369,7 +387,7 @@ the vertex path with the widened block in the gate itself.
 | --- | --- |
 | step 2 (mesh shadow AND mesh G-buffer) | 10/10 passed, 0 changed, 0 flaky - the same ten hashes as the committed references |
 | forced probe: `SetMeshOutputCounts(0, 0)` in `pbr.slang`'s mesh entry, then reverted | `deferred` CHANGED (8687703DA3BCA7EF vs FA1C1BED4DD611C5) - the model leaves the frame entirely |
-| gate forced off (`evaluate_mesh_shaders` returning false), then reverted | "mesh shaders: not used", zero validation findings, i.e. a device without the extension runs the vertex path cleanly |
+| gate forced off (`evaluate_mesh_shaders` returning false), then reverted | "mesh shaders: not used", zero validation findings, i.e. a device without the extension ran the vertex path cleanly (since step 4 that same condition is a startup PANIC - there is no vertex path to run) |
 
 The middle row is again what makes the first mean something, and this time the two failure modes have their own
 hashes: `61770EA9EBFE0714` was the frame with the G-buffer RIGHT and no shadows (a lane-offset bug that fed the
@@ -541,9 +559,9 @@ lanes, session flag, pipeline, registration, both script lists and the CMake rul
 layout was fixed.) The G-buffer got the same treatment next (`f67c92a`), with the camera frustum as its plane, and
 the NAMED pipelines followed (`pbr` and `unlit`, i.e. the forward and transparent leaves too): `make_pipeline` now
 takes a third SPIR-V file and keeps a third map, so a leaf that binds by name gets one workgroup per meshlet when the
-device has it, then a mesh stage, then the vertex path. `transparent_blend` is the scenario that proves it - its
-BLEND leaves log `scene: the leaves of 'pbr' are DISPATCHED per meshlet (meshlet stage)` and the frame is
-byte-identical to the reference captured before that form existed, on 30 indirect dispatches with 0 direct.
+device has it, then a mesh stage, then (until step 4 removed it) the vertex path. `transparent_blend` is the scenario
+that proves it - its BLEND leaves log `scene: the leaves of 'pbr' are DISPATCHED per meshlet (meshlet stage)` and the
+frame is byte-identical to the reference captured before that form existed, on 30 indirect dispatches with 0 direct.
 
 **THE INDIRECT SEAM IS IN, AND ITS FIRST DESIGN IS THE REASON IT IS WORTH DESCRIBING.** `vkCmdDrawMeshTasksIndirectEXT`
 reads `{groupCountX, groupCountY, groupCountZ}` from a buffer, so the counts can be decided on the GPU - which is
@@ -771,37 +789,51 @@ form it replaced.
   vertex input (and therefore its buffer stride) from the first stage's Input variables; a mesh stage declares
   none, so the derived list is empty and the pipeline would silently read no geometry. Its `first_stage`
   parameter is what turns that branch off, and the shader must be passed as the first stage either way.
-- **The normal has to stay "used" in the shared depth body.** `shadow.vert`'s vertex input layout is derived from
-  its own declarations, so a normal that Slang can prove unused disappears from the module and the stride shrinks
-  from 64 to 52 with no error anywhere. The never-taken `isnan && isinf` branch that keeps it alive now lives in
-  the SHARED body, so both entries keep it - and both entries must keep reading the same five attributes.
+- **A VERTEX-ERA TRAP, retired by step 4, kept because the reasoning is what would bite again.** `shadow.vert`'s
+  vertex input layout was derived from its own declarations, so a normal that Slang could prove unused disappeared
+  from the module and the stride shrank from 64 to 52 with no error anywhere. The never-taken `isnan && isinf` branch
+  that kept it alive lives in the SHARED body, so it is still there and still harmless - and a vertex entry that came
+  back would need it back.
 - **Slang rejects west-const in a parameter list and in a pointer declarator.** `MeshVertex const v` /
   `uint const* words` are both `E20001 unexpected token`; Slang's spelling is `const MeshVertex v` and `uint*`.
 - **`vkCmdDrawMeshTasksEXT` is not exported by the import library.** Calling it directly is a link error
   (`ld.lld: undefined symbol: vkCmdDrawMeshTasksEXT`); it is fetched with `vkGetDeviceProcAddr` (into
   `core::mesh_dispatch` for the draw path, and ad hoc for the probe) and a null answer means "skip the dispatch".
-- **Slang names every SPIR-V entry `main`** regardless of the source function's name, which is why three
-  entries of one `.slang` file are three `-entry`/`-stage` pairs (`main`/`vertex`, `mesh_main`/`mesh`,
-  `frag_main`/`fragment`).
+- **Slang names every SPIR-V entry `main`** regardless of the source function's name, which is why the entries of one
+  `.slang` file are one `-entry`/`-stage` pair each (`main`/`fragment`, `mesh_main`/`mesh`, `meshlet_main`/`mesh` -
+  and `main`/`vertex` for the fullscreen triangle, the one vertex entry left).
 - **`topology` must be `TRIANGLE_LIST`** for a mesh pipeline - the engine's builders already are - and the
-  vertex-input state is IGNORED for one, so a mesh draw binds nothing: `vkCmdBindVertexBuffers` on a session whose
-  pass dispatched would be a command with no effect (the draw paths skip it for that reason).
+  vertex-input state is IGNORED for one, so a geometry draw binds NOTHING: `vkCmdBindVertexBuffers` on a session whose
+  pass dispatched would be a command with no effect, which is why the draw paths stopped binding at all when step 4
+  removed the last path that needed it.
 - **A 144-byte push block is legal on THIS device and not on every device.** The check is
   `maxPushConstantsSize` (256 here, 128 on the same box's other GPU) and the heap's `maxPushDataSize` (256 here);
   see step 1 for why the block is that size and why the gate exists.
 - **`serialize` the strings, not the code**: the mesh `.spv` is 12996 B against the vertex entry's 8288 B for the
   same depth pass (and 3660 B against 920 B for the probe's one triangle), which is a cheap way to tell which
-  compiler produced the module you are looking at when a probe's result does not move.
+  compiler produced the module you are looking at when a probe's result does not move. (Both comparisons are from
+  before step 4, which removed the geometry vertex modules; the probe's pair is still there.)
 
-## 7. Open questions
+## 7. Open questions (what measurement already closed, and what is genuinely left)
 
-- **Meshlet size.** Nothing here has been split into meshlets yet, so the interaction between
-  `maxMeshOutputComponents` (128) and this renderer's vertex format is a documented limit rather than a
-  measured one.
-- **Whether the win is in the culling or the vertex reuse.** A mesh stage that emits one triangle per
-  workgroup - which is what step 0 does - is strictly worse than the vertex path; the case for the stage
-  is entirely in step 3.
-- **Task shader vs compute culling.** A compute pass writing an indirect command buffer would also remove
-  the CPU draw list. The task stage's advantage is that it runs per workgroup without a second dispatch;
-  nothing has been measured, and the honest position is that step 3 should try the one that fits the
-  existing pass structure with the smaller change.
+- **The shadow pass's share of the host-side culling.** Its frustum is the cascade's, one per cascade, and its casters
+  are recorded in parallel secondaries - so host-culling it needs a per-cascade run (four tables or four command
+  classes). Measured size: 8934 workgroups over 40 frames of `sponza`, the difference between the entry point's 42800
+  rejections and the camera's 33866 that the host now removes before the dispatch.
+- **A static draw's meshlet run is dispatched once per CHUNK.** The lanes carry the primitive's run rather than the
+  chunk's, so the same meshlets are dispatched for every chunk of one primitive. Invisible in a depth pass, wrong the
+  moment two chunks of one primitive disagree about a material - the culling path would have to learn the per-chunk
+  material, or the meshlet record grows one.
+- **Per-meshlet back-face culling.** Measured twice and not shipped: with the two-sided-draw and `cone_cos` mistakes
+  fixed it still removes visible geometry, in BOTH orientations. Step 3 lists the three candidate causes (the winding
+  convention under the Y-flipped projection, the cone axis under a non-uniform scale, the eye) and the experiment that
+  settles each.
+- **Whether the win is in the culling or the vertex reuse.** Step 0 measured that a mesh stage emitting one triangle
+  per workgroup is STRICTLY worse than the vertex path was, so what this migration banked is the per-meshlet culling
+  (a third of Sponza's meshlet workgroups), the host-side culling that removes 33866 of them before the dispatch, and
+  a geometry path with no CPU draw list - and **nothing here has been TIMED**, which is why this stays a question
+  rather than a claim. The counters measure work, not milliseconds.
+- **Meshlet size versus the output limits.** Section 2's limits are what fixed the 85-triangle budget (85 triangles =
+  255 vertices, the largest count that fits `maxMeshOutputVertices`), and step 3 measured the split on real scenes
+  (3145 meshlets over 103 Sponza primitives). What is NOT measured is a split tuned for a specific vertex format -
+  the components budget is stated, not optimised against.

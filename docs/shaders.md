@@ -16,26 +16,27 @@
  * `shaders/glsl.old/` and are not built; the four shared bodies still carry GLSL syntax and are `#include`d
  * by the Slang leaves (see docs/slang_migration.md for how that works).
  *
- * EVERY GEOMETRY STAGE BELOW IS ALSO A MESH STAGE, and on a device with VK_EXT_mesh_shader the mesh form is what
- * runs: `shadow.mesh.spv` replaces `shadow.vert`'s pipeline (step 1 of docs/mesh_shaders.md) and `pbr.mesh.spv`
- * replaces `pbr.vert`'s in the G-buffer, forward and transparent passes (step 2) - one workgroup emits up to 85
- * triangles, the stage fetches its own vertices by device address (no input assembler), and it shares the SAME
- * fragment stage and the same projection body as the vertex entry, which is why the capture gate is byte-identical
- * with either form. The `.vert` entries stay because a device without the extension runs them. The fullscreen
- * `post.vert` passes are not geometry stages and have no mesh form.
+ * EVERY GEOMETRY STAGE BELOW IS A MESH STAGE, AND THE MESH FORM IS THE ONLY FORM: `VK_EXT_mesh_shader` is a
+ * REQUIREMENT since docs/mesh_shaders.md step 4, so the geometry vertex entries (`pbr.vert`, `shadow.vert`) no longer
+ * exist - neither as files nor in any registry. What runs is the MESHLET entry where one was built (one workgroup per
+ * 85-triangle meshlet, culled against the pass's frustum) and the MESH entry otherwise (one workgroup per 85
+ * triangles): the stage fetches its own vertices by device address because there is no input assembler, and every
+ * mesh form shares the SAME fragment stage and the same projection body the vertex entry used to call - which is why
+ * the capture gate is byte-identical to the references captured while that path was still there, and why removing it
+ * changed no pixel. The fullscreen `post.vert` passes are not geometry stages and have no mesh form.
  *
  * @code
  *  light_cluster.comp            compute: sorts the punctual lights into the frame cluster grid (M5)
- *  shadow.vert + shadow.frag     depth-only, from the sun, into the per-slot shadow map array
+ *  shadow.mesh.spv + shadow.frag depth-only, from the sun, into the per-slot shadow map array
  *                                (one layer per cascade, `[render] shadow_cascades` = 1..4)
- *                                [or shadow.mesh.spv, same fragment stage]
+ *                                [or shadow.meshlet.spv: one workgroup per meshlet]
  *        |
  *  surface.glsl                  (include) the shared material-surface gather, and
  *  shading.glsl                  (include) the shared lighting - used by the G-buffer path below and
  *                                by the transparent pass
  *        |
- *  pbr.vert + gbuffer.frag       opaque geometry -> three 1x G-buffer targets + a 1x depth image
- *                                [or pbr.mesh.spv]
+ *  pbr.mesh.spv + gbuffer.frag   opaque geometry -> three 1x G-buffer targets + a 1x depth image
+ *                                [or pbr.meshlet.spv: one workgroup per meshlet, camera-culled]
  *                                (albedo+metallic, world normal+roughness, material id+AO+flags),
  *                                the motion-vector target, and the emissive term ADDED into the
  *                                scene color (5th attachment)
@@ -44,8 +45,8 @@
  *                                from the depth, light the surface with shading.glsl, add the result
  *                                into the scene color - sky where no geometry wrote depth
  *        |
- *  pbr.vert + pbr.frag/unlit.frag  the TRANSPARENT pass: alphaMode BLEND geometry, shaded while it
- *                                [or pbr.mesh.spv]
+ *  pbr.mesh.spv + pbr.frag/unlit.frag  the TRANSPARENT pass: alphaMode BLEND geometry, shaded while it
+ *                                [or pbr.meshlet.spv]
  *                                draws and blended over the shaded frame (a G-buffer cannot carry a
  *                                blended surface)
  *        |
@@ -65,7 +66,7 @@
  *  Dear ImGui                    overlay, drawn on the final 1x swapchain image
  * @endcode
  *
- * That is the whole frame: `pbr.vert + gbuffer.frag` is the engine's only scene path (the opaque
+ * That is the whole frame: `pbr.mesh.spv + gbuffer.frag` is the engine's only scene path (the opaque
  * surface write), and everything after it shades or composites the result. A 1x G-buffer cannot be
  * multisampled without per-sample shading, so there is no MSAA - `taa.frag` is the anti-aliasing.
  *
@@ -90,8 +91,9 @@
  *   between lit and shadowed - the TAA history then averages that flicker into a dark band.
  *
  * The motion vectors carry CAMERA motion, RIGID object motion and a DEFORMING mesh's own movement. The
- * camera half is the unjittered view-projection pair; the object half is binding 13, where `pbr.vert`
- * reads the world matrix this draw had one frame ago (`runtime::advance_motion_transforms()` publishes
+ * camera half is the unjittered view-projection pair; the object half is binding 13, where the geometry
+ * stage (`pbr_shade_vertex` in `shaders/pbr.slang` - one body for every entry in the file) reads the world
+ * matrix this draw had one frame ago (`runtime::advance_motion_transforms()` publishes
  * it, once per frame, before anything is recorded) and passes the resulting previous world position down
  * as `v_prev_world_pos`. A vertex's movement INSIDE its own object space is the second half of that
  * position, and both of its sources are stored: the four joint matrices as they were one frame ago, from
@@ -215,9 +217,9 @@
  * show as a line. A receiver outside its cascade's fitted box is reported lit: each cascade's map
  * covers its own fitted box only, and `runtime::update_shadow_frustum()` keeps those boxes on the
  * part of the scene the camera can see. The shadow pass renders the same caster set once per
- * cascade, each into its own array layer with its own `push_constant` cascade index - `shadow.vert`
- * declares the material fields AND that trailing `uint cascade` in ONE block, because GLSL allows
- * only one `push_constant` block per stage, and the shared layout's single range covers both
+ * cascade, each into its own array layer with its own `push_constant` cascade index - `shadow.slang`'s
+ * geometry entries declare the material fields AND that trailing `uint cascade` in ONE block, because a heap
+ * pipeline has one push block per stage file, and the shared layout's single range covers both
  * (`scene_push_constant_size` + `scene_cascade_push_size`).
  *
  * Bindings 0/7/8/9/10 are per frame slot, so a frame in flight never shares a buffer with the
@@ -269,9 +271,11 @@
  *   and docs ASCII.
  * - **`const` goes first.** GLSL wants `const float x`, not `float const x`: glslc rejects the
  *   east-const form with a bare "unexpected CONST".
- * - **Keep the interface matching.** The vertex input layout is derived from the shader's inputs
- *   (64-byte interleaved stride, locations 0,1,2,4,5), so shadow.vert declares the unused inputs
- *   and keeps them alive in a never-taken branch; a fragment output must match the pipeline's
+ * - **Keep the interface matching.** A VERTEX pipeline derived its input layout from the shader's inputs
+ *   (64-byte interleaved stride, locations 0,1,2,4,5), which is why those entries declared the unused inputs and kept
+ *   them alive in a never-taken branch; the geometry stages are mesh stages now (docs/mesh_shaders.md step 4), so
+ *   nothing derives an input layout from them and the fetch reads the same 64-byte record by device address instead.
+ *   The rule that survives is the fragment one: a fragment output must match the pipeline's
  *   color format, which is why the composite and the FXAA pass are separate pipelines.
  * - **A multi-target pipeline must not use the forward blend state.** `make_color_blend_attachment()`
  *   blends with src alpha, which is the right convention while alpha means coverage (opaque draws

@@ -359,7 +359,8 @@ struct skin {
 - The renderer (`main.cpp`) assigns each skinned primitive a block of the shared skin-matrix
   buffer (`material_push_constants::skin_base`; indices 0-3 are the identity block used by
   unskinned draws), rebuilds the per-skin matrices every frame and uploads them via
-  `runtime::set_skin_matrices()`; `pbr.vert` / `shadow.vert` sample them. Verified with
+  `runtime::set_skin_matrices()`; the geometry stages of `pbr.slang` / `shadow.slang` sample them (their mesh
+  entries - there is no vertex geometry entry any more, see docs/mesh_shaders.md step 4). Verified with
   `glTF-Sample-Assets` `RiggedSimple` (2 joints) and `BrainStem` (18 joints).
 
 ---
