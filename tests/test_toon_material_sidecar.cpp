@@ -283,6 +283,12 @@ namespace {
         // constants above still matched.
         CHECK(host.find("smoothstep(0.5f - baked_ramp_half_width, 0.5f + baked_ramp_half_width") != std::string::npos);
         CHECK(shader.find("saturate(0.5 + (gated - params.center)") != std::string::npos);
+
+        // BOTH RAMP LANES ARE ON THE SAME CONTRACT, and this assertion is what keeps the second one from being
+        // wired with a constant of its own: the specular lane's remap has to divide by the SAME
+        // `character_ramp_half_width`, because the host bakes ONE asset for the two lanes and cannot invert it
+        // at two different widths.
+        CHECK(shader.find("saturate(0.5 + (no_h - params.spec_center) * (character_ramp_half_width") != std::string::npos);
     }
 
 } // namespace

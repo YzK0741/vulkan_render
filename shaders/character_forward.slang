@@ -64,12 +64,19 @@ static const float character_rim_light_end = 0.35;
  */
 static const float character_ramp_band_v = 0.125;
 
+/// @brief the V band the reference's SPECULAR ramp lives at, in the same atlas as the diffuse band above
+///
+/// The reference samples one atlas twice, and this is the second sample. The two bands are different MECHANISMS
+/// rather than the same curve at two offsets - the diffuse band is indexed by the shadow-gated half-Lambert and
+/// this one by the half-vector angle - so they get a constant each instead of one constant and an assumption.
+static const float character_ramp_spec_band_v = 0.375;
+
 /**
  * @brief the neutral ramp's HALF edge width, and the other half of a shared contract
  *
  * The ramp this stage reads when a material HAS one is not the game's and not any family's: it is a NEUTRAL
  * UNIT STEP baked by the host - zero through the shadow side, one through the lit side, a step at x = 0.5 with
- * this half width (see `bake_diffuse_ramp` in main.cpp). ONE redistributable asset therefore serves every
+ * this half width (see `bake_unit_ramp` in main.cpp). ONE redistributable asset therefore serves every
  * family, and where along it this material's terminator sits comes from the family's own `center` / `softness`
  * rather than from the pixels.
  *
@@ -95,7 +102,7 @@ static const float character_ramp_half_width = 0.035;
  * WHAT STANDS IN FOR THE RAMP TEXTURE, and why it is not a shortcut: the reference reads its colour from a
  * layered ramp atlas (`SampleDirectShadowRamp(ramp, x, 0.125)` / `SampleDirectSpecularRamp(ramp, x, 0.375)`),
  * and those atlases are game assets its own license boundary excludes from redistribution. What replaced them
- * is a NEUTRAL UNIT STEP baked by the host (`bake_diffuse_ramp`) and read through the material's own sidecar
+ * is a NEUTRAL UNIT STEP baked by the host (`bake_unit_ramp`) and read through the material's own sidecar
  * lane - the same lane, the same texture heap slot and the same read as the game's atlas had - with the
  * family's `center` / `softness` deciding where the step is read (see `character_ramp_half_width`). So the ramp
  * data path is exercised by an asset this repository can carry, and the shading still varies per material
@@ -110,8 +117,12 @@ static const float character_ramp_half_width = 0.035;
  * @param shadow_tint the colour the unlit side is tinted toward. A TINT rather than a multiplier: the
  *        reference's dark side is a hue shift as much as a darkening, and a grey scale factor cannot
  *        express it. Cooler than the albedo, which is what the reference's skin and cloth ramps encode.
+ * @param toon_indices the material's FOUR sidecar LANES (see `vulkan::toon_slot`): x is the diffuse ramp, y the
+ *        shadow LUT, z the specular ramp, w the matcap. A lane of 0 is "the artist switched this off, or the
+ *        model does not have it", and every read below is gated on that rather than on a separate flag - which
+ *        is what makes the `_Use` flag in the sidecar the only switch there is.
  */
-float3 toon_diffuse(float3 albedo, float3 n, float3 world_pos, float ao, toon_params params, uint ramp_index) {
+float3 toon_diffuse(float3 albedo, float3 n, float3 world_pos, float ao, toon_params params, uint4 toon_indices) {
     // THE LIGHT VECTOR IS THE SURFACE-TO-LIGHT DIRECTION, which is the engine's existing convention
     // (`evaluate_direct_light` normalizes this same field into its `l`).
     const float3 l = normalize(light_at(heap_light_slot).light_dir.xyz);
@@ -145,7 +156,7 @@ float3 toon_diffuse(float3 albedo, float3 n, float3 world_pos, float ao, toon_pa
     // keeps the family table's thresholds meaningful: they are what a character looks like BEFORE its ramps
     // arrive, not a second opinion about them.
     float3 light_tint;
-    if (ramp_index != 0u) {
+    if (toon_indices.x != 0u) {
         // THE REMAP, and each factor is doing a different job: `- center` slides the neutral step to this
         // family's threshold, and `* (character_ramp_half_width / softness)` rescales the coordinate so the
         // family's edge width lands on the ramp's own. `saturate` gives the flat shadow and lit sides, which is
@@ -154,7 +165,7 @@ float3 toon_diffuse(float3 albedo, float3 n, float3 world_pos, float ao, toon_pa
         // `.r` because the baked ramp holds the STEP in all three channels and no colour - the dark side's
         // colour is `params.shadow_tint` below, so one shared asset can serve a family whose shadow is warm and
         // one whose shadow is cool, which a baked-in tint could not.
-        const float ramp_step = heap_texel(heap_at<Texture2D<float4>>(heap_slots_textures + ramp_index), heap_sampler_texture, float2(ramp_x, character_ramp_band_v)).r;
+        const float ramp_step = heap_texel(heap_at<Texture2D<float4>>(heap_slots_textures + toon_indices.x), heap_sampler_texture, float2(ramp_x, character_ramp_band_v)).r;
         light_tint = lerp(params.shadow_tint, float3(1.0, 1.0, 1.0), ramp_step);
     } else {
         light_tint = lerp(params.shadow_tint, float3(1.0, 1.0, 1.0), smoothstep(params.center - params.softness, params.center + params.softness, gated));
@@ -202,7 +213,27 @@ float3 toon_diffuse(float3 albedo, float3 n, float3 world_pos, float ao, toon_pa
     // angle, which is what makes a highlight follow the camera instead of the light's terminator.
     const float3 h = normalize(l + v);
     const float no_h = saturate(dot(n, h));
-    const float spec_band = smoothstep(params.spec_center - params.spec_softness, params.spec_center + params.spec_softness, no_h);
+    // ---- THE SECOND RAMP LANE, read exactly like the first ----
+    //
+    // THE SAME NEUTRAL STEP AND THE SAME REMAP, which is the point of the bake being neutral: `_DiffRampMap` and
+    // `_SpecRampMap` are two LANES of one sidecar, they are read with the same inversion, and the only thing
+    // that differs between them is which pair of family numbers moves the step. A lane of 0 means this material
+    // has no specular ramp or its artist switched `_UseSpecRampMap` off, and it takes the procedural threshold
+    // - the same contract as the diffuse lane, checked the same way.
+    //
+    // THE TWO BRANCHES ARE THE SAME FUNCTION HERE TOO, and that is deliberate rather than a wasted read: the
+    // bake is `smoothstep(0.5 - w, 0.5 + w, x)` and the remap inverts it, so a material whose lane is live gets
+    // the number `smoothstep(spec_center - spec_softness, spec_center + spec_softness, no_h)` back - through a
+    // texture fetch and its 8-bit quantization instead of in registers. What the lane buys is not a different
+    // look at these parameters; it is that the ARTIST'S asset is what decides the look, and a hand-authored
+    // ramp (a highlight with a falloff, a shaped spike) would be honoured without this stage changing at all.
+    float spec_band;
+    if (toon_indices.z != 0u) {
+        const float spec_x = saturate(0.5 + (no_h - params.spec_center) * (character_ramp_half_width / max(params.spec_softness, 1e-4)));
+        spec_band = heap_texel(heap_at<Texture2D<float4>>(heap_slots_textures + toon_indices.z), heap_sampler_texture, float2(spec_x, character_ramp_spec_band_v)).r;
+    } else {
+        spec_band = smoothstep(params.spec_center - params.spec_softness, params.spec_center + params.spec_softness, no_h);
+    }
     // GATED BY THE SHADOW AND THE LIT SIDE, and both gates are the references': a highlight that survives
     // into the shadow reads as a glow rather than as a reflection, and the MME pack's skin ships
     // `lightSideMask = smoothstep(0, EF_SKIN_SPECULAR_LIGHT_END, noL) * diffuseWeight` for exactly this.
@@ -227,7 +258,7 @@ float4 main(
     // gltf_loader's toon_family_of) and carried through the material record. An unclassified material gets
     // `toon_params_for(0)`, which is the family-independent path.
     const toon_params params = toon_params_for(s.toon_family);
-    const float3 colour = toon_diffuse(s.albedo, normalize(s.normal), v_world_pos, s.ao, params, s.toon_indices.x);
+    const float3 colour = toon_diffuse(s.albedo, normalize(s.normal), v_world_pos, s.ao, params, s.toon_indices);
 
     // the BLEND rule, copied from unlit.slang: an alphaMode BLEND material carries its own coverage, and
     // every other material is fully opaque regardless of what its base colour's alpha says

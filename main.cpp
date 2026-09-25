@@ -425,20 +425,27 @@ int main(int argc, char** argv) {
     struct toon_lookup_state {
         toon::sidecar const* sidecar = nullptr;
         gltf::scenes const* scenes = nullptr;
-        /// the PROCEDURALLY BAKED diffuse ramp (see the baker below), kept alive here because the texture input
-        /// the lookup returns is a SPAN INTO IT and `register_material` reads it during the import
-        std::vector<unsigned char> baked_ramp = {};
+        /// the PROCEDURALLY BAKED neutral unit ramp (see the baker below), kept alive here because the texture
+        /// input the lookup returns is a SPAN INTO IT and `register_material` reads it during the import. ONE
+        /// buffer serves BOTH ramp lanes: the diffuse ramp and the specular ramp are the same neutral step, and
+        /// what tells them apart is which family numbers the shader moves it with
+        std::vector<unsigned char> baked_unit_ramp = {};
         uint32_t baked_ramp_width = 0;
         uint32_t baked_ramp_height = 0;
     };
 
-    // ---- THE PROCEDURAL RAMP, which is what replaces the game's own ramp on the read path ----
+    // ---- THE PROCEDURAL RAMP, which is what replaces the game's own ramps on the read path ----
     //
-    // WHY IT IS BAKED RATHER THAN SAMPLED FROM THE MODEL: the ramp a character ships with is the GAME's texture,
-    // and `ASSET_LICENSE_BOUNDARY_CN.md` excludes those from redistribution - so a read path that depends on it
-    // is a read path this repository cannot carry. This bakes an equivalent SHAPE instead: a flat shadow side,
-    // a step, a flat lit side, which is what a toon ramp IS (see character_forward.slang's note on why a ramp
-    // replaces the procedural threshold rather than layering with it).
+    // WHY IT IS BAKED RATHER THAN SAMPLED FROM THE MODEL: the ramps a character ships with are the GAME's
+    // textures, and `ASSET_LICENSE_BOUNDARY_CN.md` excludes those from redistribution - so a read path that
+    // depends on them is a read path this repository cannot carry. This bakes an equivalent SHAPE instead: a flat
+    // shadow side, a step, a flat lit side, which is what a toon ramp IS (see character_forward.slang's note on
+    // why a ramp replaces the procedural threshold rather than layering with it).
+    //
+    // ONE ASSET SERVES BOTH LANES, the diffuse ramp and the specular ramp. The reference keeps them in two V
+    // bands of one atlas for exactly this reason - they are the same step read with two different coordinates,
+    // one from the shadow-gated half-Lambert and one from the half-vector angle - and a neutral step is the
+    // shape both of them need. Two files would be two things to keep in step for no gain.
     //
     // THE BAKE IS A NEUTRAL UNIT STEP, NOT ANY ONE FAMILY'S RAMP, and that is what lets a SINGLE redistributable
     // asset serve every family without copying the family table into this file. The texture holds the SHAPE -
@@ -462,7 +469,7 @@ int main(int argc, char** argv) {
     constexpr uint32_t baked_ramp_width = 256;
     constexpr uint32_t baked_ramp_height = 8;
     constexpr float baked_ramp_half_width = 0.035f;
-    auto const bake_diffuse_ramp = []() {
+    auto const bake_unit_ramp = []() {
         // `smoothstep(0.5 - w, 0.5 + w, x)`: the same Hermite step the shader's procedural branch builds, with
         // the step moved to the ramp's centre and its width normalised so the remap can undo it.
         auto const srgb_encode = [](float const linear) {
@@ -517,12 +524,13 @@ int main(int argc, char** argv) {
         if (!material->enabled(slot_name)) {
             return out;
         }
-        // THE DIFFUSE RAMP IS THE BAKED ONE, NOT THE MODEL'S IMAGE - see bake_diffuse_ramp for why a path that
-        // read the game's own ramp is a path this repository cannot carry, and note that the artist's switch
-        // above is still what decides WHETHER there is a ramp at all. The other lanes keep the model's images
-        // for now: nothing reads them yet, and baking them is the same question one lane at a time.
-        if (lane == vulkan::toon_slot::diffuse_ramp && !state.baked_ramp.empty()) {
-            out.data = std::span<unsigned char const>(state.baked_ramp.data(), state.baked_ramp.size());
+        // THE DIFFUSE AND SPECULAR RAMP LANES BOTH GET THE BAKED UNIT STEP, NOT THE MODEL'S IMAGE - see
+        // bake_unit_ramp for why a path that read the game's own ramps is a path this repository cannot carry,
+        // and note that the artist's switch above is still what decides WHETHER there is a ramp at all. The
+        // other two lanes keep the model's images for now: nothing reads them yet, and baking them is the same
+        // question one lane at a time.
+        if ((lane == vulkan::toon_slot::diffuse_ramp || lane == vulkan::toon_slot::specular_ramp) && !state.baked_unit_ramp.empty()) {
+            out.data = std::span<unsigned char const>(state.baked_unit_ramp.data(), state.baked_unit_ramp.size());
             out.width = state.baked_ramp_width;
             out.height = state.baked_ramp_height;
             out.mip_levels = 1;
@@ -549,7 +557,7 @@ int main(int argc, char** argv) {
         return out;
     };
     toon_lookup_state toon_state{.sidecar = toon_sidecar.has_value() ? &*toon_sidecar : nullptr, .scenes = &*scenes};
-    toon_state.baked_ramp = bake_diffuse_ramp();
+    toon_state.baked_unit_ramp = bake_unit_ramp();
     toon_state.baked_ramp_width = baked_ramp_width;
     toon_state.baked_ramp_height = baked_ramp_height;
     runtime.set_toon_lookup(vulkan::runtime::toon_lookup{.owner = &toon_state, .texture = toon_texture});
