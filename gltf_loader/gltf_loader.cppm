@@ -12,8 +12,12 @@
 module;
 
 #include <cstdint>
+// `std::optional`: `scenes::texture_index_by_name` returns one, because a name that matches nothing is a
+// state the caller handles rather than an error (see the method's note).
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
+#include <optional>
+#include <string_view> // the name it looks up
 
 export module gltf_loader;
 export import vstd;
@@ -211,6 +215,18 @@ namespace gltf {
         uint32_t width = 0;
         uint32_t height = 0;
         uint8_t component = 0; // aka. channels
+        /**
+         * THE glTF IMAGE'S NAME, which the loader used to discard.
+         *
+         * It is carried for ONE join, and it is the join a toon character needs: a glTF material's five slots
+         * reach the albedo, the metallic-roughness, the normal, the occlusion and the emissive map, and a toon
+         * character ALSO reads a diffuse ramp, a shadow LUT, a specular ramp, a matcap and a face SDF - none of
+         * which glTF has a slot for. Those are named by the ASSET PIPELINE and referenced by name in the toon
+         * material sidecar (see toon_material_sidecar.cppm), so the image NAME is the only thing that connects
+         * the two files. Empty for an unnamed image, which is what most glTF files have (the repository's own
+         * DamagedHelmet sample names none of its five).
+         */
+        std::string name = {};
     };
 
     /**
@@ -722,6 +738,21 @@ namespace gltf {
         static scene_iterator end() noexcept;
         [[nodiscard]] scene_node_iterator nodes_begin() const;
         static scene_node_iterator nodes_end() noexcept;
+
+        /**
+         * @brief the index into `textures` of the one NAMED @p name, or nothing when no texture has it
+         *
+         * THE OTHER HALF OF THE JOIN `texture_data::name` DESCRIBES: a toon material sidecar refers to its
+         * ramp, LUT, matcap and SDF by bare asset name, so this is how a consumer turns such a name into
+         * something it can load. A LINEAR SCAN, deliberately - a character carries tens of textures and a map
+         * would be a second index to keep in step with the vector for no measurable gain.
+         *
+         * AN ABSENT NAME IS NOT AN ERROR HERE, because "the sidecar names a texture this file does not have" is
+         * a real and common state: the sidecar is written for a character whose optional maps the artist may not
+         * have exported. The caller decides what a miss means - the safe answer, and the one the sidecar's own
+         * `_Use` rule already implies, is to leave that feature off.
+         */
+        [[nodiscard]] std::optional<uint16_t> texture_index_by_name(std::string_view name) const noexcept;
     };
 
     /**

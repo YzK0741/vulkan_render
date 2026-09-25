@@ -8,6 +8,9 @@ module;
 
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb/stb_image.h>
+// `std::optional`: `scenes::texture_index_by_name` answers "no such name" with one, and `load_texture`'s
+// name lookup is a lookup that can miss by design.
+#include <optional>
 
 module gltf_loader;
 
@@ -276,6 +279,11 @@ namespace {
             return out;
         }
         auto const& image = asset.images[*texture.imageIndex];
+        // THE NAME IS SET BEFORE ANYTHING CAN FAIL, so a texture that decodes to nothing is still FINDABLE by
+        // name: a consumer asking for the sidecar's ramp should be able to tell "this file has that image but it
+        // did not decode" from "this file has no such image", and only the name makes that distinction
+        // expressible. It is the join between the toon sidecar and this file - see texture_data::name.
+        out.name = std::string(image.name);
         auto const bytes = get_source_bytes(asset, image.data);
         if (bytes.empty()) {
             return out;
@@ -1273,6 +1281,18 @@ namespace gltf {
             return toon_family::face;
         }
         return toon_family::none;
+    }
+
+    std::optional<uint16_t> scenes::texture_index_by_name(std::string_view const name) const noexcept {
+        if (name.empty()) {
+            return std::nullopt; // an unnamed texture must never match an empty query: most files are all-unnamed
+        }
+        for (std::size_t i = 0; i < this->textures.size(); ++i) {
+            if (this->textures[i].name == name) {
+                return static_cast<uint16_t>(i);
+            }
+        }
+        return std::nullopt;
     }
 
     std::expected<scenes, error_code> load_model(std::string_view file_name) {

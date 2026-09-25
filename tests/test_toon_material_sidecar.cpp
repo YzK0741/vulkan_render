@@ -14,6 +14,7 @@
 #include <string>
 #include <string_view>
 
+import gltf_loader;
 import toon_material_sidecar;
 
 namespace {
@@ -182,6 +183,48 @@ namespace {
         CHECK(loaded.error().find("broken.gltf.toon.tsv") != std::string::npos);
     }
 
+    void test_the_sidecar_and_the_model_join_by_texture_name() {
+        // THE JOIN THE TWO MODULES EXIST FOR, and it is the whole reason the loader carries image names: the
+        // sidecar refers to a toon map by bare asset name, and the model's IMAGE NAMES are what turn that into
+        // something loadable. Nothing else connects the two files.
+        auto const model = gltf::load_model(VR_TEST_SOURCE_DIR "/tests/fixtures/toon/named_texture.gltf");
+        CHECK(model.has_value());
+        if (!model.has_value()) {
+            return;
+        }
+        auto const sidecar = toon::load_sidecar(VR_TEST_SOURCE_DIR "/tests/fixtures/toon/named_texture.gltf");
+        CHECK(sidecar.has_value());
+        if (!sidecar.has_value()) {
+            return;
+        }
+        toon::material_sidecar const* const body = sidecar->find("M_actor_test_body_01");
+        CHECK(body != nullptr);
+        if (body == nullptr) {
+            return;
+        }
+        CHECK(model->textures.size() == 2);
+        std::optional<uint16_t> const base = model->texture_index_by_name(body->slot("_BaseMap"));
+        std::optional<uint16_t> const ramp = model->texture_index_by_name(body->slot("_DiffRampMap"));
+        CHECK(base.has_value());
+        CHECK(ramp.has_value());
+        // two DIFFERENT images, so the join really resolved names rather than returning a constant
+        CHECK(base.has_value() && ramp.has_value() && *base != *ramp);
+
+        // A NAME THE MODEL DOES NOT HAVE MISSES, AND THAT IS A STATE RATHER THAN AN ERROR: the sidecar turns a
+        // feature ON for a texture the artist did not export, which happens whenever an optional map is absent.
+        // The consumer's safe answer is to leave the feature off - which is the same rule as the `_Use` flag,
+        // arriving from the other side.
+        CHECK(body->enabled("_SpecRampMap"));
+        CHECK(!model->texture_index_by_name(body->slot("_SpecRampMap")).has_value());
+
+        // the round trip: a texture that HAS a name is found by it
+        CHECK(model->texture_index_by_name(model->textures[0].name).has_value());
+        CHECK(model->texture_index_by_name(model->textures[0].name) == std::optional<uint16_t>{0});
+        // AN EMPTY NAME MATCHES NOTHING, which is what keeps a model whose images are all unnamed (every other
+        // model in this repository) from resolving every query to its first texture
+        CHECK(!model->texture_index_by_name("").has_value());
+    }
+
 } // namespace
 
 int main() {
@@ -194,5 +237,6 @@ int main() {
     test_a_missing_file_is_an_empty_sidecar_and_not_an_error();
     test_a_file_on_disk_is_read_through_the_convention();
     test_a_malformed_file_on_disk_reports_its_path();
+    test_the_sidecar_and_the_model_join_by_texture_name();
     return vk_test::finish("test_toon_material_sidecar");
 }
