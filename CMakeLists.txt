@@ -210,9 +210,16 @@ target_sources(gltf_loader
         FILE_SET CXX_MODULES
         FILES
         gltf_loader/gltf_loader.cppm
+        # The TOON MATERIAL SIDECAR is a module of its own rather than more code in gltf_loader, because what
+        # it reads is not glTF: a glTF material carries the spec's five texture slots and six factors, and a
+        # toon character needs a second set (a diffuse ramp, a shadow LUT, a specular ramp, a matcap, a face
+        # SDF) that glTF has no concept of and that lives in a sidecar keyed by MATERIAL NAME. Two formats,
+        # two concerns, two modules - and it is in this target because it is a model-loading concern.
+        gltf_loader/toon_material_sidecar.cppm
 
     PRIVATE
         gltf_loader/gltf_loader.cpp
+        gltf_loader/toon_material_sidecar.cpp
 )
 
 # fastgltf + simdjson, vendored under third_party/ (the sources ship in the repo, so no
@@ -453,7 +460,7 @@ option(VR_BUILD_TESTS "Build the headless unit tests" ON)
 if(VR_BUILD_TESTS)
     enable_testing()
 
-    set(VR_TEST_TARGETS test_app_config test_utility test_math test_animation test_gltf_loader test_shadow_fit test_render_resources test_pass test_shader_sources test_meshlet test_docs)
+    set(VR_TEST_TARGETS test_app_config test_utility test_math test_animation test_gltf_loader test_toon_material_sidecar test_shadow_fit test_render_resources test_pass test_shader_sources test_meshlet test_docs)
     file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/test-run")
 
     foreach(test_target IN ITEMS ${VR_TEST_TARGETS})
@@ -467,6 +474,10 @@ if(VR_BUILD_TESTS)
     # source root for fixture/model paths (tests no longer assume the repo root is the cwd)
     target_compile_definitions(test_app_config PRIVATE VR_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
     target_compile_definitions(test_gltf_loader PRIVATE VR_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+    # test_toon_material_sidecar reads the sidecars under tests/fixtures/toon/, so it needs the source root
+    # for the same reason test_gltf_loader does - and it asserts the MISSING-file path too, which is a path
+    # that must NOT exist, so the root has to be the real one rather than the build tree.
+    target_compile_definitions(test_toon_material_sidecar PRIVATE VR_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
     # test_render_resources reads shaders/heap_slots.glsl and vulkan/core/core.declarations.cppm to compare the slot grid's two
     # sources of truth (see the last block of that test): both are text, neither is generated from the other.
     target_compile_definitions(test_render_resources PRIVATE VR_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
@@ -527,6 +538,12 @@ if(VR_BUILD_TESTS)
     target_link_libraries(test_gltf_loader
             gltf_loader
             glm::glm
+            vstd_lib
+    )
+    # The sidecar reader lives in the gltf_loader TARGET (it is a model-loading concern) but not in the
+    # gltf_loader MODULE, so this test links the same library and imports a different module.
+    target_link_libraries(test_toon_material_sidecar
+            gltf_loader
             vstd_lib
     )
     # vulkan.shadow_fit is pure CPU arithmetic (no Vulkan object is touched), and the module lives in
