@@ -690,6 +690,12 @@ endif()
 # dependency bookkeeping that would avoid it.
 set(VR_SHADER_INCLUDES
     "${VR_SHADER_SRC_DIR}/surface.glsl"
+    # toon_params.slang is the TOON FAMILY TABLE, shared by every stage that shades a character (the
+    # character-forward stage and the screen-space rim). It is here for the reason the bodies below are:
+    # editing a family's parameters must rebuild every stage that read them, and a stage left on stale SPIR-V
+    # would shade with the previous table - which looks like a tuning that did not take rather than like a
+    # build error.
+    "${VR_SHADER_SRC_DIR}/toon_params.slang"
     "${VR_SHADER_SRC_DIR}/shading.glsl"
     "${VR_SHADER_SRC_DIR}/sky.glsl"
     # ibl_specular.glsl is included by shading.glsl, so it belongs here for the same reason the three above
