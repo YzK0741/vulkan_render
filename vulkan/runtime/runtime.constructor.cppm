@@ -1103,6 +1103,9 @@ namespace vulkan {
         record.normal_scale = info.factors.normal_scale;
         record.alpha_cutoff = info.factors.alpha_cutoff;
         record.occlusion_strength = info.factors.occlusion_strength;
+        // The toon family the loader classified this material's name into (0 == none). It rides the record's
+        // fourth uint lane, which the std430 layout had already reserved as padding - see material_record.
+        record.toon_family = info.toon_family;
         record.flags = 0;
         if (info.normal.valid) {
             record.flags |= 1u;
@@ -1148,6 +1151,15 @@ namespace vulkan {
         uint32_t const material_index = this->material_count++;
         std::memcpy(static_cast<unsigned char*>(this->material_mapped) + static_cast<size_t>(material_index) * sizeof(material_record), &record, sizeof(record));
         this->material_slot_cache.emplace(material_key, material_id{material_index});
+        // THE TOON FAMILY, LOGGED WHEN IT IS NOT `none`, and this is the one place it can be logged once per
+        // MATERIAL rather than once per primitive (the dedup above returns early for a shared record). A
+        // classification is a DECISION about a string, and a wrong one is invisible in the frame: a face
+        // material shaded with hair's ramp still looks like a toon character, just not like the reference's.
+        // Printing the assignment at import is what makes a mis-classification a line to read instead of a
+        // look to argue about. Silent for `none`, which is every non-character model and would be log spam.
+        if (record.toon_family != 0u) {
+            utility::log("toon: material {} -> family {} (1=base 2=skin 3=face 4=hair 5=eye 6=cloth)", material_index, record.toon_family);
+        }
         return material_id{material_index};
     }
 

@@ -46,7 +46,9 @@ struct Material {
     uint emissive_index;
     float alpha_cutoff;       // alphaMode MASK threshold
     float occlusion_strength; // mix(1, sampled AO, strength)
-    uint _pad;
+    uint toon_family; // the toon material family (see gltf_loader's toon_family_of); 0 == none. Completes the
+                      // std430 group of four uints that starts at emissive_index, so naming it changes no
+                      // offset - see material_record's note in vulkan/primitive/primitive.cppm.
     vec4 base_color_factor;
     vec4 emissive_factor;
     float metallic_factor;
@@ -143,6 +145,7 @@ struct surface_sample {
     float metallic;  // metallic_factor * metallic-roughness texture .b
     float ao;        // mix(1, occlusion texture .r, occlusion_strength)
     uint flags;      // the material record's flag bits (see Material)
+    uint toon_family; // the toon material family (see Material::toon_family); 0 == none
 };
 
 /**
@@ -179,6 +182,7 @@ surface_sample gather_surface(vec3 world_pos, vec3 geo_normal, vec2 uv) {
     s.ao = mix(1.0, heap_sample(mat.tex_indices.w, uv).r, mat.occlusion_strength);
     s.emissive = mat.emissive_factor.rgb * heap_sample(mat.emissive_index, uv).rgb;
     s.flags = mat.flags;
+    s.toon_family = mat.toon_family;
 
     // ---- normal: optional tangent-space normal map, else the interpolated normal ----
     if ((mat.flags & 1u) != 0u) {

@@ -340,6 +340,9 @@ namespace {
         result.factors.alpha_blend = material.alphaMode == fastgltf::AlphaMode::Blend;
         result.double_sided = material.doubleSided;
         result.texture_indices = get_texture_indices(material);
+        // THE NAME IS CARRIED, not used here: it is what `toon_family_of` classifies a character material by
+        // (see gltf_loader.cppm), and this is the last point in the pipeline where it still exists.
+        result.name = material.name;
         return result;
     }
 
@@ -1224,6 +1227,54 @@ namespace {
 } // namespace
 
 namespace gltf {
+    toon_family toon_family_of(std::string_view const name) {
+        if (name.empty()) {
+            return toon_family::none;
+        }
+        // LOWERCASED because a glTF material name is authored text: the character models this was written
+        // against use `M_actor_zhuangfy_body_01` (mixed case), and the references' own classifiers lowercase
+        // before matching. ASCII only, deliberately - the CJK patterns below are matched byte-wise, and a
+        // Unicode case fold would need a table for no gain.
+        std::string lowered;
+        lowered.reserve(name.size());
+        for (char const c : name) {
+            lowered.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+        }
+        auto const has = [&lowered](std::string_view const needle) { return lowered.find(needle) != std::string::npos; };
+        // PRIORITY ORDER IS THE SUBSTANCE OF THIS FUNCTION - see the declaration's note in the interface
+        // unit. Each group is written as the patterns the reference's classifier uses for the same family,
+        // and the ones that could collide with a later group come first.
+        //
+        // eye BEFORE face: `眼白`/`目白`/`sclera` and `高光`/`highlight` are eye layers.
+        if (has("虹膜") || has("瞳") || has("眼白") || has("目白") || has("高光") || has("iris") || has("sclera") ||
+            has("eyewhite") || has("eyehl") || has("eye_hl") || has("catchlight") || has("eyebase")) {
+            return toon_family::eye;
+        }
+        // hair BEFORE skin and face: `髪`/`发` are unambiguous, but this comes early because the reference's
+        // hair materials also carry `頭` (head), which a face pattern must not claim.
+        if (has("髪") || has("头发") || has("頭髪") || has("hair")) {
+            return toon_family::hair;
+        }
+        // cloth BEFORE skin: the two sets never overlap, and this order is the reference's.
+        if (has("衣") || has("布") || has("服") || has("裙") || has("靴") || has("cloth") || has("coat") ||
+            has("dress") || has("skirt") || has("shoe") || has("boot")) {
+            return toon_family::cloth;
+        }
+        // skin: `body` is here because the character models name the skin material `..._body_01`, which is
+        // the reference's own mapping (its `MaterialRole.Skin` classifier matches `body` too).
+        if (has("皮肤") || has("皮膚") || has("肌") || has("skin") || has("body")) {
+            return toon_family::skin;
+        }
+        // face LAST of the named families: `面`/`脸`/`顔` and `face` are short tokens that appear inside other
+        // words, so everything more specific above gets its chance first. The lash/brow/mouth layers belong to
+        // the face group and are matched here.
+        if (has("面") || has("脸") || has("顔") || has("face") || has("brow") || has("lash") || has("mouth") ||
+            has("teeth") || has("tongue") || has("睫毛") || has("眉毛") || has("口内")) {
+            return toon_family::face;
+        }
+        return toon_family::none;
+    }
+
     std::expected<scenes, error_code> load_model(std::string_view file_name) {
         std::filesystem::path const path(file_name);
         if (!std::filesystem::is_regular_file(path)) {
@@ -1514,6 +1565,12 @@ namespace gltf {
             out.factors.alpha_mask = mat.factors.alpha_mask;
             out.factors.alpha_blend = mat.factors.alpha_blend;
             out.double_sided = mat.double_sided;
+            // THE FAMILY IS RESOLVED HERE, ONCE. This is the last place the material's NAME exists - the
+            // resolved form that everything downstream consumes carries five slots, the factors and the
+            // family, and no string. Classifying at the consumer instead would mean either carrying the name
+            // through the whole pipeline or re-deriving it, and a per-draw string match is exactly the kind
+            // of work that belongs at import.
+            out.toon_family = static_cast<uint32_t>(toon_family_of(mat.name));
             for (int i = 0; i < 5; ++i) {
                 auto const it = mat.texture_indices.find(std::string(slot_names[i]));
                 if (it == mat.texture_indices.end() || it->second >= scenes.textures.size()) {
@@ -1615,6 +1672,11 @@ namespace gltf {
     bool drawable_iterator::get_double_sided() const {
         resolved_material const* material = this->current_material();
         return material != nullptr && material->double_sided;
+    }
+
+    uint32_t drawable_iterator::get_toon_family() const {
+        resolved_material const* material = this->current_material();
+        return material == nullptr ? 0u : material->toon_family; // 0 == toon_family::none
     }
 
     // ---- async twins (see gltf_loader.cppm): delegate to the sync functions on a

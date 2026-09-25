@@ -30,7 +30,7 @@
 #include "shading.glsl"
 
 /**
- * @brief the toon stage's ramp, until the per-material ramp atlas replaces it
+ * @brief the toon stage's ramp, PER MATERIAL FAMILY
  *
  * WHY A RAMP AND NOT THE ENGINE'S `toon_band`, which is measured rather than assumed: `toon_band` is a
  * QUANTIZER - it multiplies by the step count, takes `floor`, and steps at the half-way point of each cell,
@@ -40,15 +40,74 @@
  * maximum of 7/255 - present, and visually invisible, which is exactly what "the banding does not work"
  * looks like when the term is technically active.
  *
- * The two numbers are the same two the references carry PER MATERIAL: the MME pack's
- * `EF_*_SHADOW_CENTER` / `EF_*_SHADOW_SMOOTHNESS`, whose toon step is
- * `EfSigmoidSharp(vis, center, smoothness)`, and MyZmdShaders' `Sigmoid(blend, offset, x)`. The threshold
- * decides where the dark side ends; the softness is the edge width, and a small one is what makes the edge
- * read as a drawn line rather than as a gradient. This constant is where that per-material pair will land
- * once the ramp data exists, which is what keeps the substitution a data change rather than a rewrite.
+ * WHY PER FAMILY, and where the numbers come from. The references carry this pair PER MATERIAL, and the
+ * differences between the families are the visible ones: hair's shadow edge is the hardest and sits highest
+ * (a strand's terminator is a line), skin's is the softest and lowest (a soft terminator across a curved
+ * cheek), and cloth and the eye sit between. `EF_*_SHADOW_CENTER` / `EF_*_SHADOW_SMOOTHNESS` in the MME
+ * pack and `Sigmoid(blend, offset, x)` in MyZmdShaders are the same two parameters, and each family's entry
+ * file gives them different values.
+ *
+ * THE VALUES BELOW ARE THE REFERENCES' RELATIVE ORDER, NOT THEIR FIGURES - they cannot be their figures,
+ * because the reference's ramps are TEXTURES whose own contrast is part of the number and those textures are
+ * assets this port cannot carry (see the note on the family textures below). What is reproduced here is the
+ * STRUCTURE the order expresses: which family gets the hard edge, which gets the soft one, and which side
+ * of the albedo each one's tint moves toward. They are named as the place the measured values land.
+ *
+ * THE FAMILY IDS MUST MATCH `gltf::toon_family` (gltf_loader.cppm) - they are the same enum, written out
+ * here because a shader cannot include a C++ enum and the numbers ARE the contract.
  */
-static const float character_toon_center = 0.42;
-static const float character_toon_softness = 0.035;
+#define VR_FAMILY_BASE 1u
+#define VR_FAMILY_SKIN 2u
+#define VR_FAMILY_FACE 3u
+#define VR_FAMILY_HAIR 4u
+#define VR_FAMILY_EYE 5u
+#define VR_FAMILY_CLOTH 6u
+
+/// @brief one family's ramp: the threshold, the edge width, and the colour the shadow side is tinted toward
+struct toon_params {
+    float center;
+    float softness;
+    float3 shadow_tint;
+};
+
+/// @brief the parameters for @p family, falling back to the family-independent ones for `none` and anything
+///        this shader does not know - so an unclassified material is shaded exactly as it was before
+toon_params toon_params_for(uint family) {
+    // THE DEFAULT IS THE FAMILY-INDEPENDENT PATH (family 0 == none), and it is also the fallback for a family
+    // this shader has no entry for. Keeping it first and returning it unchanged is what makes "an
+    // unclassified material did not move" a property of the code rather than a promise.
+    toon_params p = {0.42, 0.035, float3(0.58, 0.60, 0.72)};
+    if (family == VR_FAMILY_HAIR) {
+        // the hardest edge, the highest threshold: a strand's terminator is a drawn line
+        p.center = 0.52;
+        p.softness = 0.015;
+        p.shadow_tint = float3(0.42, 0.42, 0.50);
+    } else if (family == VR_FAMILY_SKIN) {
+        // the softest edge and a red-shifted dark side: the MME pack's skin ships `EF_SKIN_SSS_COLOR`
+        // as a warm colour and its ramp's dark side is warm too
+        p.center = 0.36;
+        p.softness = 0.07;
+        p.shadow_tint = float3(0.80, 0.66, 0.63);
+    } else if (family == VR_FAMILY_FACE) {
+        // near skin's, slightly harder: the face is shaded by its SDF in the full reference, and the
+        // fallback before that data exists should not be softer than skin's
+        p.center = 0.40;
+        p.softness = 0.06;
+        p.shadow_tint = float3(0.82, 0.70, 0.67);
+    } else if (family == VR_FAMILY_CLOTH) {
+        // a hard edge and a cool dark side: cloth's shadow reads as a fold, not as a gradient
+        p.center = 0.46;
+        p.softness = 0.025;
+        p.shadow_tint = float3(0.50, 0.52, 0.64);
+    } else if (family == VR_FAMILY_EYE) {
+        // the softest of all: an eye is a sphere whose highlight moves, and a hard terminator on it reads
+        // as a painted dot rather than as a lit surface
+        p.center = 0.30;
+        p.softness = 0.20;
+        p.shadow_tint = float3(0.74, 0.74, 0.78);
+    }
+    return p;
+}
 
 /**
  * @brief the toon stage's VIEW-ANGLE rim - the second half of both references' rim light
@@ -102,7 +161,7 @@ static const float3 character_rim_colour = float3(1.0, 0.94, 0.90);
  *        reference's dark side is a hue shift as much as a darkening, and a grey scale factor cannot
  *        express it. Cooler than the albedo, which is what the reference's skin and cloth ramps encode.
  */
-float3 toon_diffuse(float3 albedo, float3 n, float3 world_pos, float ao, float3 shadow_tint) {
+float3 toon_diffuse(float3 albedo, float3 n, float3 world_pos, float ao, toon_params params) {
     // THE LIGHT VECTOR IS THE SURFACE-TO-LIGHT DIRECTION, which is the engine's existing convention
     // (`evaluate_direct_light` normalizes this same field into its `l`).
     const float3 l = normalize(light_at(heap_light_slot).light_dir.xyz);
@@ -118,7 +177,7 @@ float3 toon_diffuse(float3 albedo, float3 n, float3 world_pos, float ao, float3 
     const float gated = saturate(shadow * half_lambert);
     // THE RAMP: one hard-ish threshold, not a quantizer. See character_toon_center for why these are two
     // different shapes and why the difference was measured rather than assumed.
-    const float band = smoothstep(character_toon_center - character_toon_softness, character_toon_center + character_toon_softness, gated);
+    const float band = smoothstep(params.center - params.softness, params.center + params.softness, gated);
 
     // The sun's radiance and the /PI are the ENGINE'S expressions (`shade_surface` builds the same pair:
     // `vec3(7.5 * sun_intensity)` and `kd * base_color / PI`), so a toon fragment and a deferred fragment
@@ -132,7 +191,7 @@ float3 toon_diffuse(float3 albedo, float3 n, float3 world_pos, float ao, float3 
     // is to CHOOSE the side of the ramp; the tint is what the shadow side looks like, and it is a colour,
     // not an extinction. Measured: the double-applied version and the flat-albedo probe were hard to tell
     // apart by eye, which is what a banding term multiplied by its own gate does.
-    const float3 direct = albedo * sun * lerp(shadow_tint, float3(1.0, 1.0, 1.0), band) / PI;
+    const float3 direct = albedo * sun * lerp(params.shadow_tint, float3(1.0, 1.0, 1.0), band) / PI;
 
     // The ambient is the engine's irradiance map and the engine's composition
     // (`ibl_diffuse * albedo * ao`), so a toon character in a scene is lit by the same sky as everything
@@ -171,7 +230,11 @@ float4 main(
     // implementation of them.
     const surface_sample s = gather_surface(v_world_pos, v_normal, v_uv);
 
-    const float3 colour = toon_diffuse(s.albedo, normalize(s.normal), v_world_pos, s.ao, float3(0.58, 0.60, 0.72));
+    // THE PER-FAMILY RAMP, selected by the family the LOADER classified this material's name into (see
+    // gltf_loader's toon_family_of) and carried through the material record. An unclassified material gets
+    // `toon_params_for(0)`, which is the family-independent path.
+    const toon_params params = toon_params_for(s.toon_family);
+    const float3 colour = toon_diffuse(s.albedo, normalize(s.normal), v_world_pos, s.ao, params);
 
     // the BLEND rule, copied from unlit.slang: an alphaMode BLEND material carries its own coverage, and
     // every other material is fully opaque regardless of what its base colour's alpha says

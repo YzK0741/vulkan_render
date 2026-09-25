@@ -3171,6 +3171,9 @@ namespace vulkan {
                 info.factors.alpha_mask = factors.alpha_mask;
                 info.factors.alpha_blend = factors.alpha_blend;
                 info.double_sided = drawable.get_double_sided();
+                // THE TOON FAMILY, resolved by the loader from the material's NAME (the last place the name
+                // exists). Copied here like every other per-material fact so the runtime never sees a string.
+                info.toon_family = drawable.get_toon_family();
             };
             // attach one leaf primitive to @p node (geometry from the next drawable of the stream);
             // returns the created primitive or nullptr if the pipeline is missing

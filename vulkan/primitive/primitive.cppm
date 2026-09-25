@@ -357,6 +357,15 @@ namespace vulkan {
         // PBR factors, stored in the primitive's material_record
         material_factors factors = {};
 
+        /**
+         * THE TOON MATERIAL FAMILY (`gltf::toon_family`), carried into the primitive's `material_record`.
+         *
+         * Passed as a NUMBER rather than as a name, because the classification happens in the loader where
+         * the name still exists (see gltf_loader's `toon_family_of`) and nothing downstream should be
+         * matching strings. 0 == `toon_family::none`.
+         */
+        uint32_t toon_family = 0;
+
         // glTF doubleSided: render back faces and flip their normals (cull mode + record flag)
         bool double_sided = false;
 
@@ -378,7 +387,20 @@ namespace vulkan {
         uint32_t emissive_index = 0;     // emissive texture index
         float alpha_cutoff = 0.5f;       // alphaMode MASK threshold (fragment discard below it)
         float occlusion_strength = 1.0f; // occlusion map influence: mix(1, sampled AO, strength)
-        uint32_t _pad = 0;               // keep the vec4 members 16-byte aligned (std430)
+        /**
+         * THE TOON MATERIAL FAMILY (`gltf::toon_family`, resolved at import from the material's name).
+         *
+         * THIS LANE WAS `_pad`, and reusing it rather than adding a field is not a space optimisation: the
+         * record sits in a 16-byte std430 group of four uints (`emissive_index`, `alpha_cutoff`,
+         * `occlusion_strength`, this one), so the padding is ALREADY THERE and a new field would have had to
+         * come from somewhere - either by growing the record past its `static_assert(sizeof(...) == 80)` and
+         * every shader's copy of the struct with it, or by taking bits from `flags`, which is a used
+         * contract. Naming the lane is a zero-cost extension because the bytes were always being uploaded.
+         *
+         * 0 means `toon_family::none`: the toon stage's family-independent path, which is every material
+         * whose name claimed no family - so a frame with no character in it is unchanged by the family test.
+         */
+        uint32_t toon_family = 0;
         glm::vec4 base_color_factor = glm::vec4(1.0f);
         glm::vec4 emissive_factor = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
         float metallic_factor = 1.0f;

@@ -248,6 +248,17 @@ namespace gltf {
         material_factors factors = {};
         std::map<std::string, uint16_t> texture_indices = {};
         bool double_sided = false; // glTF doubleSided: back faces are rendered, normals flipped
+        /**
+         * THE glTF MATERIAL NAME, which the loader used to discard.
+         *
+         * It is carried for ONE consumer: `toon_family_of()`, which classifies a character material into the
+         * family whose toon parameters it uses (see that function). A character model's materials are named
+         * after what they ARE - `M_actor_zhuangfy_body_01`, `_face_01`, `_hair_01`, `_iris_01`, `_cloth_01` -
+         * and that name is the only per-material fact available at import that says which family a material
+         * belongs to. Empty for an unnamed material, which classifies as `toon_family::none` and keeps the
+         * famiy-independent path every non-character model already had.
+         */
+        std::string name = {};
     };
 
     /**
@@ -781,10 +792,62 @@ namespace gltf {
      * @brief one resolved material: the 5 texture slots + PBR factors, indexed by the glTF
      *        material index; a primitive without a material reads defaults instead
      */
+    /**
+     * @ingroup gltf_loader
+     * @brief the character material family a material's NAME identifies, which selects its toon parameters
+     *
+     * THE DECOMPOSITION IS THE REFERENCE'S, not an invention: DanbaidongRP's toon pipeline ships one shader
+     * per family (`PBRToonBase`, `PBRToonFace`, `PBRToonFace_AllDirSDF`, `PBRToonHair`, `PBRToonEye`,
+     * `PBRToonEyeBlend`, `PBRToonStockings`, `PBRToonTrans`), and the MME pack this port started from has the
+     * same split. This enum is the smaller set those collapse to for a port that does not yet carry the
+     * per-family TEXTURES: the families still differ in their toon parameters (a hair shadow is harder and
+     * wider than skin's, cloth's dark side is tinted differently), so the split earns its place before the
+     * textures arrive - and it is the seam they arrive INTO.
+     *
+     * `none` is the default and means "no family claimed this material", which is every model that is not a
+     * character and every character material whose name says nothing. The toon stage treats it exactly as it
+     * treated every material before this existed, so the family test cannot change a frame that has no
+     * character in it.
+     */
+    export enum class toon_family : uint32_t {
+        none = 0,  // no family claimed it: the family-independent path
+        base = 1,  // generic body/prop geometry
+        skin = 2,  // skin: the softest shadow edge and the strongest tint
+        face = 3,  // face and its adjacent layers (brow, mouth, lash)
+        hair = 4,  // hair: the hardest, widest shadow edge
+        eye = 5,   // eye: iris, sclera, highlight
+        cloth = 6, // clothing: the flattest, most saturated dark side
+    };
+
+    /**
+     * @ingroup gltf_loader
+     * @brief classify a glTF material name into the family whose toon parameters it uses
+     *
+     * SUBSTRING MATCHING over a lowercased name, in PRIORITY ORDER, and the order is the substance of the
+     * function rather than a detail: the reference's own classifier is written the same way for the same
+     * reason - a material called `M_actor_zhuangfy_body_01_eye` would match both `body` and `eye`, and only
+     * the order decides. The specific collisions that forced this order, and they are the ones its patterns
+     * are written against: `睫毛`/`眉毛` (lash, brow) contain neither skin nor face but belong to the face
+     * group; `眼白` (sclera) contains `眼` (eye) so it must be tested before the general eye patterns; and
+     * `髪` (hair) vs `肌`/`皮肤` (skin) never overlap, so their order is free.
+     *
+     * @param name the glTF material name (case-insensitive; ASCII and CJK both matched)
+     * @return the family, or `toon_family::none` when nothing matched
+     */
+    export toon_family toon_family_of(std::string_view name);
+
+    /**
+     * @ingroup gltf_loader
+     * @brief a glTF material that has been RESOLVED: its factors, its five decoded texture slots, and the
+     *        toon family its name classified into
+     */
     export struct resolved_material {
         std::array<image_view, 5> slots = {}; // albedo, metallic_roughness, normal, occlusion, emissive
         resolved_factors factors = {};
         bool double_sided = false; // glTF doubleSided: disable back-face culling + flip normals
+        /// the TOON FAMILY this material's name classified into (see toon_family_of), resolved ONCE here so
+        /// no later stage re-derives it from a string
+        uint32_t toon_family = 0;
     };
 
     /**
@@ -837,6 +900,8 @@ namespace gltf {
         image_view get_emissive() const;
         resolved_factors get_factors() const;
         bool get_double_sided() const;
+        /// the current drawable's TOON FAMILY (see toon_family_of), already resolved with the material
+        uint32_t get_toon_family() const;
 
     private:
         void ensure_built() const; // build the current drawable's interleaved geometry lazily
