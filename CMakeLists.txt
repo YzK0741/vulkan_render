@@ -169,6 +169,7 @@ target_sources(vulkancorekit
         vulkan/render_environment/render_environment.cppm
         vulkan/graphical_user_interface/graphical_user_interface.cppm
         vulkan/animation/controller.cppm
+        vulkan/animation/mmd_motion.cppm
     PRIVATE
         vulkan/core/core.cpp
         vulkan/core/filter/filters.cpp
@@ -202,6 +203,7 @@ target_sources(vulkancorekit
         vulkan/primitive/primitive.cpp
         vulkan/graphical_user_interface/graphical_user_interface.cpp
         vulkan/animation/controller.cpp
+        vulkan/animation/mmd_motion.cpp
         third_party/spirv-reflect/spirv_reflect.c
 )
 add_library(gltf_loader STATIC)
