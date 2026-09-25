@@ -293,8 +293,12 @@ taa_blend_min = 0.5
 # is bit-for-bit what it was before the stage existed. See vulkan/pass/character_forward.cppm and
 # _toon_ref/PORT_SPEC.md for the architecture this follows.
 #
-# NOTE: this is the PIPELINE only. What the stage outputs is still a probe (the surface albedo); the toon
-# shading chain replaces it once the per-material data it reads exists.
+# The toon SHADING CHAIN HAS LANDED and this stage now reads the material's four sidecar lanes -
+# `_DiffRampMap`, `_ShadowLutTex`, `_SpecRampMap`, `_MatcapTex` - through the descriptor heap, selected per
+# material FAMILY (see shaders/toon_params.slang). It also gates the screen-space rim (vulkan/pass/toon_screen_rim).
+# The game's own maps for those lanes are not redistributable (ASSET_LICENSE_BOUNDARY_CN.md), so a neutral,
+# redistributable bake stands in for each one; see main.cpp's bake_unit_ramp / bake_shadow_lut / bake_matcap and
+# gltf_loader/toon_material_sidecar.cppm for the `.toon.tsv` the slots come from.
 character_forward = false
 
 # validation_layers: Vulkan validation layers + debug messenger (VK_LAYER_KHRONOS_validation).
