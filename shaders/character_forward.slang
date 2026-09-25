@@ -51,6 +51,31 @@ static const float character_toon_center = 0.42;
 static const float character_toon_softness = 0.035;
 
 /**
+ * @brief the toon stage's VIEW-ANGLE rim - the second half of both references' rim light
+ *
+ * BOTH references carry TWO rim terms, and they are different mechanisms rather than two tunings of one:
+ * a view-angle term here, and a SCREEN-SPACE DEPTH term that compares this fragment's depth against the
+ * depth at a screen offset (the MME pack's `Draw*ScreenRim` passes sampling the viewport map's depth
+ * channel; the reference's `GetCharacterDirectRimLightArea` sampling `_CameraDepthTexture`). This is the
+ * first one, and it is here first because it needs NOTHING the stage does not already have - a normal, the
+ * view vector and the light vector.
+ *
+ * THE DEPTH TERM CANNOT FOLLOW WITHOUT A NEW RESOURCE, and the reason is a Vulkan rule rather than an
+ * omission: this pass holds the depth image as its DEPTH ATTACHMENT (that is what makes `EQUAL` possible),
+ * and an image cannot be a depth attachment and a sampled texture in the same instance. The reference has a
+ * `CopyDepthPass` producing `_CameraDepthTexture` for exactly this. That copy is the next stage's work.
+ *
+ * `rim_power` is the MME pack's `EF_*_RIM_AREA`-adjacent sharpness and MyZmdShaders' rim exponent; a higher
+ * power narrows the rim to the silhouette. `rim_light_end` is the reference's light-side mask: the rim is
+ * drawn on the LIT side only, because a rim on the shadow side reads as a second light source rather than
+ * as a contour.
+ */
+static const float character_rim_power = 3.0;
+static const float character_rim_light_end = 0.35;
+static const float character_rim_strength = 0.9;
+static const float3 character_rim_colour = float3(1.0, 0.94, 0.90);
+
+/**
  * @brief the toon diffuse: half-Lambert GATED by the shadow term, then banded
  *
  * THIS IS THE REFERENCE'S STRUCTURE, and the gating is the part worth stating because it is what makes the
@@ -115,7 +140,23 @@ float3 toon_diffuse(float3 albedo, float3 n, float3 world_pos, float ao, float3 
     // shadow - and a toon look without ambient is the single most common way this style reads as broken.
     const float3 ambient = irradiance_sample(n) * albedo * ao;
 
-    return direct + ambient;
+    // ---- the view-angle rim ----
+    // The view vector, the engine's own expression for it (`shade_surface` builds the same one).
+    const float3 v = normalize(camera_at(heap_camera_slot).camera_pos - world_pos);
+    const float no_v = saturate(dot(n, v));
+    // Fresnel-shaped: strongest where the surface turns away from the camera, which is the silhouette.
+    const float fresnel = pow(1.0 - no_v, character_rim_power);
+    // THE LIGHT-SIDE MASK. Without it the rim doubles on the shadow side and reads as a second light source
+    // rather than a contour - which is the single most common way a rim light looks wrong. The references
+    // both gate it (`EF_*_RIM_AREA` with a NoL term; `GetRimColor`'s `frontRim`/`backRim` split by the
+    // sign of `dot(normalVS, lightDirVS)`).
+    const float light_side = smoothstep(0.0, character_rim_light_end, dot(n, l));
+    // The MME pack lightens the albedo for the rim rather than adding a flat colour
+    // (`albedoRimColor = saturate(albedo + 0.3)`), so a dark material's rim is still recognisably ITS
+    // colour instead of a white outline pasted on.
+    const float3 rim = character_rim_colour * fresnel * light_side * character_rim_strength * saturate(albedo + 0.3);
+
+    return direct + ambient + rim;
 }
 
 [shader("fragment")]
