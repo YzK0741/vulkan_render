@@ -833,6 +833,36 @@ export namespace vulkan::render_resource {
         .push = std::nullopt,
     };
 
+    /**
+     * @brief the character-forward pass's declaration: the same TWO targets as the transparent pass, and
+     *        for the same structural reason
+     *
+     * It re-shades surfaces the deferred stage has already lit, so it needs the scene colour to overwrite
+     * and the surface depth to test against - and it LOADs both, because everything it does not draw must
+     * survive untouched. That is the whole reason it is a pass of its own rather than a step inside the
+     * lighting instance: an image cannot be a sampled texture and a depth attachment at once.
+     *
+     * The difference from `transparent_io` is entirely in the pipeline and the raster state, none of which
+     * a declaration names (see render_target): depth compare EQUAL rather than LESS_OR_EQUAL, depth write
+     * OFF and held off, and blending OFF because this pass overwrites rather than composites.
+     *
+     * It declares no binding of its own: it reads the same materials, camera and light the scene pass does,
+     * and all of those reach its shaders through the frame's heap.
+     */
+    inline constexpr std::array<render_target, 2> character_forward_targets = {{
+        {.resource = resource_id::scene_color, .element = 0},
+        {.resource = resource_id::gbuffer_depth, .element = 0, .kind = target_kind::depth},
+    }};
+
+    /// @brief the character-forward pass's declaration
+    /// @ingroup vulkan_render_resource
+    inline constexpr pass_io character_forward_io = {
+        .name = "character_forward",
+        .bindings = {},
+        .targets = character_forward_targets,
+        .push = std::nullopt,
+    };
+
     // =============================================================================================
     // 7. THE SHARED RESOURCES - what a full-screen compute pass reaches without owning a binding
     // =============================================================================================

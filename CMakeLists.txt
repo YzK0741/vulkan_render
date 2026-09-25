@@ -142,6 +142,7 @@ target_sources(vulkancorekit
         vulkan/pass/taa.cppm
         vulkan/pass/scene.cppm
         vulkan/pass/transparent.cppm
+        vulkan/pass/character_forward.cppm
         vulkan/pass/megalights_trace.cppm
         vulkan/pass/megalights_temporal.cppm
         vulkan/pass/ray_traced_shadow.cppm
@@ -178,6 +179,7 @@ target_sources(vulkancorekit
         vulkan/pass/taa.cpp
         vulkan/pass/scene.cpp
         vulkan/pass/transparent.cpp
+        vulkan/pass/character_forward.cpp
         vulkan/pass/megalights_trace.cpp
         vulkan/pass/megalights_temporal.cpp
         vulkan/pass/ray_traced_shadow.cpp
@@ -737,6 +739,11 @@ set(VR_SHADER_OUTPUTS "")
 # backwards here: `column_major float4x4` emits RowMajor, `row_major float4x4` emits ColMajor.
 set(VR_SLANG_SOURCES
     unlit.slang:main:fragment:unlit.frag.spv
+    # character_forward.slang is the toon character stage: the same leaves the scene pass drew, shaded a
+    # second time OVER the deferred result. It is gated behind the `character_forward` feature, which is OFF
+    # by default, so none of the ten capture scenarios records it until a scenario turns it on - which is
+    # what makes its landing behaviour-neutral.
+    character_forward.slang:main:fragment:character_forward.frag.spv
     fxaa.slang:main:fragment:fxaa.frag.spv
     post.slang:main:vertex:post.vert.spv
     # post.frag is the post chain's stage for ALL THREE modes (bright pass / downsample / composite), so every

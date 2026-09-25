@@ -35,6 +35,10 @@ namespace vulkan {
         this->chain_.emplace<pass::shadow_pass>();
         this->chain_.emplace<pass::scene_pass>();
         this->chain_.emplace<pass::transparent_pass>();
+        // ... and the toon character stage, right after the blended geometry: it re-shades the OPAQUE leaves
+        // over the lit frame, at depth-EQUAL, so it must come after the lighting stage that produced what it
+        // overwrites and after the blends that composite over the same pixels.
+        this->chain_.emplace<pass::character_forward_pass>();
         this->chain_.emplace<pass::megalights_trace_pass>();
         this->chain_.emplace<pass::megalights_temporal_pass>();
         this->chain_.emplace<pass::taa_pass>();
@@ -58,6 +62,7 @@ namespace vulkan {
         this->shadow_ = this->find<pass::shadow_pass>("shadow");
         this->scene_ = this->find<pass::scene_pass>("scene");
         this->transparent_ = this->find<pass::transparent_pass>("transparent");
+        this->character_forward_ = this->find<pass::character_forward_pass>("character_forward");
         this->rt_shadow_ = this->find<pass::rt_shadow_pass>("rt_shadow");
         this->deferred_ = this->find<pass::deferred_pass>("deferred");
         this->taa_ = this->find<pass::taa_pass>("taa");
@@ -72,6 +77,7 @@ namespace vulkan {
         found += this->shadow_ != nullptr ? 1u : 0u;
         found += this->scene_ != nullptr ? 1u : 0u;
         found += this->transparent_ != nullptr ? 1u : 0u;
+        found += this->character_forward_ != nullptr ? 1u : 0u;
         found += this->rt_shadow_ != nullptr ? 1u : 0u;
         found += this->deferred_ != nullptr ? 1u : 0u;
         found += this->taa_ != nullptr ? 1u : 0u;
@@ -137,6 +143,15 @@ namespace vulkan {
         } else if (stage == "transparent") {
             if (self.transparent_ != nullptr) {
                 self.transparent_->set_frame(services.make_transparent_frame(services.owner));
+            }
+        } else if (stage == "character_forward") {
+            // NO FRAME-ORDER DUTY of its own: this stage's two declared targets were both published long before
+            // it runs (the lighting stage samples the depth, so `ensure_gbuffer_depth_sampled` is already what the
+            // stage that first read it did), and the pass itself owns the two transitions between "sampled" and
+            // "attachment" that it needs. So this branch hands over the frame - the leaf list and the pipeline
+            // name - and nothing else.
+            if (self.character_forward_ != nullptr) {
+                self.character_forward_->set_frame(services.make_character_forward_frame(services.owner));
             }
         } else if (stage == "rt_shadow") {
             // THIS STAGE'S FRAME-ORDER DUTY: it may be the first sampler of the stored surface this frame, and
@@ -332,6 +347,13 @@ namespace vulkan {
         if (name == "transparent") {
             return facts.transparent_pending;
         }
+        if (name == "character_forward") {
+            // THE RUNTIME'S COMPOSED PREDICATE (the knob AND this frame's opaque leaf list, see
+            // feature_facts::character_forward_pending) AND the pass being ready. The pass is ready as soon as
+            // it exists - it builds no pipeline of its own (the renderer registers the named one) - so the
+            // second term is the same "the chain has this pass" answer every other branch gives.
+            return facts.character_forward_pending && self.character_forward_ != nullptr && self.character_forward_->ready();
+        }
         if (name == "gbuffer-debug") {
             return gbuffer_debug;
         }
@@ -399,6 +421,14 @@ namespace vulkan {
         }
         if (name == "fxaa") {
             return self.fxaa_ != nullptr && self.fxaa_->ready();
+        }
+        if (name == "character_forward") {
+            // CAN it run at all, which is a different question from whether it is on: the overlay offers the
+            // switch only when the chain has the pass AND the renderer registered the pipeline it binds. That
+            // second half is the one that can be false - the pipeline needs the mesh stage, so a device without
+            // VK_EXT_mesh_shader creates none - and an offered switch that would do nothing is exactly the bug
+            // this function's header records.
+            return self.character_forward_ != nullptr && self.character_forward_->ready() && self.runtime_ != nullptr && self.runtime_->character_forward_ready();
         }
         if (name == "shadow") {
             return self.shadow_ != nullptr && self.shadow_->ready();

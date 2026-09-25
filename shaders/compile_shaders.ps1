@@ -33,6 +33,7 @@ $shaderDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 # source:entry:stage:output - the same shape CMakeLists.txt's VR_SLANG_SOURCES uses.
 $slangSources = @(
     "unlit.slang:main:fragment:unlit.frag.spv",
+    "character_forward.slang:main:fragment:character_forward.frag.spv",
     "fxaa.slang:main:fragment:fxaa.frag.spv",
     "post.slang:main:vertex:post.vert.spv",
     "post.slang:frag_main:fragment:post.frag.spv",

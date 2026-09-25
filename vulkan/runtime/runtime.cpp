@@ -448,6 +448,63 @@ namespace vulkan {
         return {};
     }
 
+    std::expected<void, std::string> runtime::make_character_forward_pipeline(std::string_view const pipeline_name,
+                                                                              std::span<unsigned char const> const fragment_shader_code,
+                                                                              std::span<unsigned char const> const mesh_vertex_shader_code,
+                                                                              std::span<unsigned char const> const meshlet_shader_code) {
+        using fail = std::unexpected<std::string>;
+        if (fragment_shader_code.empty()) {
+            return fail(std::string("character-forward pipeline '") + std::string(pipeline_name) + "': no fragment stage was given");
+        }
+        // The mesh stage is REQUIRED, exactly as it is for every other geometry pipeline (docs/mesh_shaders.md
+        // step 4): the vertex path is gone, so a name without a mesh module has no complete answer.
+        bool const want_mesh = !mesh_vertex_shader_code.empty() && this->evaluate_mesh_shaders(nullptr);
+        {
+            std::unique_lock const lock(this->access_mutex);
+            if (this->mesh_pipelines.contains(pipeline_name) || this->meshlet_pipelines.contains(pipeline_name)) {
+                return fail(std::string("pipeline '") + std::string(pipeline_name) + "' already exists");
+            }
+        }
+        if (!want_mesh) {
+            return fail(std::string("character-forward pipeline '") + std::string(pipeline_name) + "' has no mesh stage to build from, and its vertex form is gone (docs/mesh_shaders.md step 4)");
+        }
+        // GPU pipeline creation outside the lock, for the reason make_pipeline gives: a recording worker must
+        // never be blocked by shader compilation.
+        std::optional<vk_pipeline> mesh_result = std::nullopt;
+        {
+            auto built = this->vulkan_core.make_character_forward_pipeline(mesh_vertex_shader_code, fragment_shader_code, VK_SHADER_STAGE_MESH_BIT_EXT);
+            if (!built) {
+                return fail("character-forward pipeline '" + std::string(pipeline_name) + "': the mesh stage was refused (" + std::string(built.error()) + ")");
+            }
+            mesh_result = std::move(*built);
+        }
+        std::optional<vk_pipeline> meshlet_result = std::nullopt;
+        if (!meshlet_shader_code.empty()) {
+            // A refusal here leaves the mesh form as the answer rather than failing the call - the same
+            // relationship the named forward pipelines have between their two forms.
+            auto built = this->vulkan_core.make_character_forward_pipeline(meshlet_shader_code, fragment_shader_code, VK_SHADER_STAGE_MESH_BIT_EXT);
+            if (built) {
+                meshlet_result = std::move(*built);
+            } else {
+                utility::log("character-forward pipeline '{}': no meshlet form ({}), so its leaves stay on the mesh pipeline", pipeline_name, built.error());
+            }
+        }
+        {
+            std::unique_lock const lock(this->access_mutex);
+            this->mesh_pipelines.emplace(pipeline_name, std::move(*mesh_result));
+            utility::log("SUCCESS: character-forward pipeline '{}' created with a MESH form (one HDR target, blending off, depth compare EQUAL, depth write held off)", pipeline_name);
+            if (meshlet_result.has_value()) {
+                this->meshlet_pipelines.emplace(pipeline_name, std::move(*meshlet_result));
+                utility::log("SUCCESS: character-forward pipeline '{}' created with a MESHLET form (one workgroup per meshlet)", pipeline_name);
+            }
+            // NOTE: `default_pipeline_name` is deliberately NOT set here, even when it is empty. This pipeline
+            // is only valid inside the character-forward pass's instance (it declares ONE colour attachment),
+            // so making it the runtime default would let a default-semantics leaf elsewhere be drawn by it -
+            // the same hazard the G-buffer pipeline is kept out of the registry for.
+        }
+        return {};
+    }
+
     void runtime::set_default_pipeline(std::string_view const pipeline_name) {
         std::unique_lock const lock(this->access_mutex);
         if (this->mesh_pipelines.contains(pipeline_name) || this->meshlet_pipelines.contains(pipeline_name)) {
@@ -493,6 +550,12 @@ namespace vulkan {
             .taa = this->taa_on,
             .bloom = this->bloom_intensity > 0.0f,
             .transparent_pending = !this->frame_transparent.empty(),
+            // THE TOON STAGE'S GATE, and it is the knob AND the frame's content for the same reason `.shadow`
+            // is the checkbox and `enable_shadows()`: a frame with no opaque geometry has no surface for the
+            // pass to re-shade, and a scene with no toon character must not pay for the stage at all. When it
+            // is false the pass's `feature()` answers inactive and the runner never resolves its declaration -
+            // which is exactly what keeps the ten capture-gate scenarios byte-identical while it is off.
+            .character_forward_pending = this->character_forward_on && !this->frame_visible.empty(),
             .gbuffer_pipeline = this->gbuffer_pipeline_mesh.has_value() || this->gbuffer_pipeline_meshlet.has_value(),
             .structures_ready = this->structures.ready() && this->structures.handle(static_cast<uint32_t>(vk.current_frame)) != VK_NULL_HANDLE,
             .furnace = this->furnace,
@@ -609,8 +672,24 @@ namespace vulkan {
     // renderer's features ask the PASS for it through `active_features` - so there was never a second copy here
     // to keep, and nothing in this file read it.
 
-    void runtime::set_clustered_lights(bool const enabled) noexcept {
-        // CPU-side only, like set_brdf_model: the flag rides light_state's cluster_grid.w lane and
+    bool runtime::character_forward_ready() const noexcept {
+        std::shared_lock const lock(this->access_mutex);
+        return this->mesh_pipelines.contains(character_forward_pipeline_name) || this->meshlet_pipelines.contains(character_forward_pipeline_name);
+    }
+
+    void runtime::set_character_forward(bool const enabled) noexcept {
+        // CPU-side only, like set_clustered_lights: the flag rides `feature_facts::character_forward_pending`,
+        // which `make_feature_facts` composes per frame and the pass's own `feature()` reads - so the next
+        // frame's stage sees it and no in-flight recording is disturbed.
+        this->character_forward_on = enabled;
+        if (enabled && !(this->mesh_pipelines.contains(character_forward_pipeline_name) || this->meshlet_pipelines.contains(character_forward_pipeline_name))) {
+            // The knob is on but there is no pipeline to draw with: say why rather than leaving a frame that
+            // silently keeps the deferred shading (the same answer `warn_missing_feature` gives elsewhere).
+            this->warn_missing_feature("character_forward", "the toon character stage has no effect: the character-forward pipeline was not created (see the startup log - it needs the mesh stage and the device's VK_EXT_mesh_shader)");
+        }
+    }
+
+    void runtime::set_clustered_lights(bool const enabled) noexcept { // CPU-side only, like set_brdf_model: the flag rides light_state's cluster_grid.w lane and
         // pace_and_acquire() copies light_state into the paced slot's buffer, so the next frame's
         // cluster dispatch and shading both see it (no in-flight buffer is touched).
         this->clustered_lights = enabled;

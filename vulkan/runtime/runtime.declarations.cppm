@@ -37,6 +37,7 @@ import vulkan.pass;                       // the pass framework: the host the ru
 import vulkan.pass.taa;                   // the second, and the first GRAPHICS one
 import vulkan.pass.scene;                 // the third: the scene itself, whose work is DATA rather than a declaration
 import vulkan.pass.transparent;           // the fourth: the blended geometry, over the shaded frame
+import vulkan.pass.character_forward;     // ... and the toon character stage, which re-shades the OPAQUE leaves over it
 import vulkan.pass.ray_traced_shadow;     // the ninth, and the only pass that traces outside the chain: the ray-traced shadow
 import vulkan.pass.mask_bake;             // ... and the one-shot MASK bake, which is a JOB rather than a frame pass
 import vulkan.pass.compute_skin;          // ... and the compute-skinning job, which is a job for the same reason
@@ -533,13 +534,27 @@ namespace vulkan {
         std::array<pass::frame_pass*, 1> scene_stage = {};
         /// THE TRANSPARENT PASS (vulkan.pass.transparent): the same scene, its own LOAD instance, after lighting
         std::array<pass::frame_pass*, 1> transparent_stage = {};
+        /**
+         * THE CHARACTER-FORWARD PASS (vulkan.pass.character_forward): the same OPAQUE leaves a second time,
+         * shaded by the toon pipeline and written OVER the deferred result at depth-EQUAL. It sits after the
+         * transparent pass (a toon body drawn under a blended surface would be composited over, which is the
+         * right order: the blend belongs on top) and before the resolve.
+         */
+        std::array<pass::frame_pass*, 1> character_forward_stage = {};
         /// the scene frame's view of the per-slot segments (a member, so the span it hands the pass outlives it)
         std::vector<pass::segment_buffer> scene_segment_view = {};
         /// the colour formats the scene pass's secondaries inherit, in attachment order
         std::array<VkFormat, vulkan::gbuffer_pass_attachment_count> scene_color_formats = {};
         std::array<pass::frame_pass*, 1> taa_stage = {};
         bool taa_on = false; // [render] taa
-        // The two blend weights are NOT here any more: they are the TAA pass's own parameters now, set through
+        /**
+         * WHETHER THE TOON CHARACTER STAGE IS SWITCHED ON. Default FALSE, and that default is the whole
+         * contract of this feature's landing: with it off the pass's `feature()` answers inactive, the runner
+         * never resolves or records it, and every frame is bit-for-bit what it was before the stage existed -
+         * which is what the capture gate checks and what this project requires of a behaviour-visible
+         * addition. `set_character_forward` is the only writer.
+         */
+        bool character_forward_on = false; // The two blend weights are NOT here any more: they are the TAA pass's own parameters now, set through
         // `set_taa` (which forwards them) and clamped by the pass - see vulkan.pass.taa::set_blend. What stays
         // here is the SWITCH and the jitter phase, because both are frame-loop state: the switch decides whether
         // the projection is jittered at all and which target the scene side writes, and the jitter index is the
@@ -1557,10 +1572,17 @@ namespace vulkan {
             bool taa = false;                 // the TAA knob
             bool bloom = false;               // the bloom knob, resolved (intensity > 0)
             bool transparent_pending = false; // this frame has alpha-blended geometry to composite
-            bool gbuffer_pipeline = false;    // the surface pipeline exists (the scene pass records with it)
-            bool structures_ready = false;    // this frame's top level structure is built for the slot
-            bool furnace = false;             // the analytic verification mode
-            float punctual_lights = 0.0f;     // live punctual lights (the light UBO's own lane)
+            /**
+             * this frame has OPAQUE geometry for the character-forward stage to re-shade, AND the stage is
+             * switched on. The two are one flag rather than two because the stage has nothing to say about a
+             * frame with no opaque geometry - and because the pass's own gate must be able to answer "skip"
+             * without the runner ever resolving its declaration.
+             */
+            bool character_forward_pending = false;
+            bool gbuffer_pipeline = false; // the surface pipeline exists (the scene pass records with it)
+            bool structures_ready = false; // this frame's top level structure is built for the slot
+            bool furnace = false;          // the analytic verification mode
+            float punctual_lights = 0.0f;  // live punctual lights (the light UBO's own lane)
         };
 
         /**
@@ -1604,6 +1626,10 @@ namespace vulkan {
             pass::shadow_frame (*make_shadow_frame)(void* owner) = nullptr;
             pass::scene_frame (*make_scene_frame)(void* owner) = nullptr;
             pass::transparent_frame (*make_transparent_frame)(void* owner) = nullptr;
+            /// the character-forward frame: the OPAQUE leaves again, plus the pipeline name the session binds.
+            /// Unlike the two above it carries no recording machinery of its own - the pass draws directly into
+            /// the primary - so it is here because the LEAF LIST is the runtime's, not because of a secondary.
+            pass::character_forward_frame (*make_character_forward_frame)(void* owner) = nullptr;
             // ---- the frame's ORDERING RULES a stage preamble runs: the runtime's per-image bookkeeping, whose
             //      flags belong to the passes that WROTE those images (see each accessor) ----
             bool (*ensure_gbuffer_targets_sampled)(void* owner, VkCommandBuffer cmd, uint32_t image_index) = nullptr;
@@ -2157,6 +2183,30 @@ namespace vulkan {
 
         /**
          * @ingroup vulkan_runtime
+         * @brief register the CHARACTER-FORWARD pipeline under @p pipeline_name
+         *
+         * A SEPARATE ENTRY POINT FROM make_pipeline rather than an overload of it, because that one builds
+         * the FORWARD FAMILY's pipeline - the swapchain format, src-alpha blending, depth LESS_OR_EQUAL -
+         * which is right for a leaf that shades straight into the display target and wrong for this stage in
+         * all three. This one goes through `core::make_character_forward_pipeline`: ONE HDR target, blending
+         * OFF, depth compare EQUAL (see that builder for why each of the three is forced rather than chosen).
+         *
+         * The result lands in the SAME two registries (`mesh_pipelines` / `meshlet_pipelines`) under the same
+         * name, so a session that binds by name finds it through the one lookup every forward session already
+         * performs. That is what lets the character-forward pass get its pipeline by setting
+         * `render_environment::default_name` and nothing else - no binder change, no redirect flag.
+         *
+         * It does NOT become the implicit default: `default_pipeline_name` is left alone, because a frame
+         * whose leaves are drawn before any character pipeline is registered must not silently acquire one.
+         */
+        std::expected<void, std::string> make_character_forward_pipeline(
+            std::string_view pipeline_name,
+            std::span<unsigned char const> fragment_shader_code,
+            std::span<unsigned char const> mesh_vertex_shader_code,
+            std::span<unsigned char const> meshlet_shader_code = {});
+
+        /**
+         * @ingroup vulkan_runtime
          * @brief make @p pipeline_name the runtime's default pipeline (the one default-semantics
          *        primitives draw with; see make_pipeline for the implicit first-pipeline default)
          * @param pipeline_name a pipeline previously created via make_pipeline()
@@ -2171,6 +2221,31 @@ namespace vulkan {
          *       cluster pass and shading both read it, so it is safe to toggle mid-run.
          */
         void set_clustered_lights(bool enabled) noexcept;
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief turn the TOON CHARACTER STAGE on/off
+         *
+         * OFF BY DEFAULT, and that is the feature's contract rather than a conservative choice: the stage
+         * re-shades the scene's opaque leaves over the lit frame, so with it on every opaque surface in the
+         * scene is drawn by the character pipeline - which is what a character viewer wants and what a
+         * scenario comparing against the pre-existing references must not have.
+         *
+         * @param enabled true = the character-forward pass records this frame (when there is opaque geometry
+         *        to re-shade and the pipeline was created); false = it is skipped without even resolving
+         * @note CPU-side only: the flag rides `feature_facts::character_forward_pending`, which the pass's own
+         *       gate reads, so it is safe to toggle mid-run - the next frame's stage sees it.
+         */
+        void set_character_forward(bool enabled) noexcept;
+
+        /**
+         * @brief whether the character-forward pipeline exists, i.e. whether the toon stage CAN run
+         *
+         * The pipeline needs the mesh stage, so a device without `VK_EXT_mesh_shader` registers none - and a
+         * switch offered for a stage that cannot draw is the bug `feature_available` exists to prevent. This is
+         * that question asked of the registry rather than of the knob.
+         */
+        [[nodiscard]] bool character_forward_ready() const noexcept;
 
         /**
          * @ingroup vulkan_runtime
@@ -2485,6 +2560,21 @@ namespace vulkan {
         static constexpr std::string_view gbuffer_pipeline_name = "gbuffer";
 
         /**
+         * @brief the name the character-forward pipeline is registered under, which is what its pass binds
+         *
+         * THE ONE PLACE THE STRING LIVES, and it has to be reachable from three: `chores.cpp` registers the
+         * pipeline under it, `make_character_forward_frame` hands it to the pass, and a log or a test that
+         * wants to ask "is the toon stage's pipeline present" uses it rather than a literal of its own.
+         *
+         * UNLIKE `gbuffer_pipeline_name`, this name IS in the runtime's registry (`mesh_pipelines` /
+         * `meshlet_pipelines`): the character-forward pass binds it by setting `render_environment::default_name`,
+         * and a session that binds by name looks those maps up. The G-buffer pipeline is kept OUT of them
+         * because it is only ever the pass's own default, whereas this one has to be findable by the one
+         * lookup every forward session already performs.
+         */
+        static constexpr std::string_view character_forward_pipeline_name = "character_forward";
+
+        /**
          * @ingroup vulkan_runtime
          * @brief create the G-buffer pipeline: the deferred path's surface-only fragment stage
          * @param vertex_shader_code raw SPIR-V of pbr.vert (the G-buffer reuses the forward vertex
@@ -2544,6 +2634,14 @@ namespace vulkan {
         [[nodiscard]] pass::owned_pipeline resolve_pipeline(std::string_view name) const noexcept;
         /** @brief this frame's blended geometry, as the transparent pass needs it */
         [[nodiscard]] pass::transparent_frame make_transparent_frame() noexcept;
+        /**
+         * @brief this frame's OPAQUE geometry again, as the character-forward pass needs it
+         *
+         * The SAME leaf list the scene pass drew (`frame_visible`), because the pass re-shades those surfaces
+         * rather than a set of its own: a leaf the scene pass culled has no lit pixel to overwrite, and a leaf
+         * it drew but this list omitted would keep the deferred shading while its neighbours did not.
+         */
+        [[nodiscard]] pass::character_forward_frame make_character_forward_frame() noexcept;
 
         // =============================================================================================
         // THE CHAIN OWNER'S SEAM: the frames ONLY this renderer can build (they

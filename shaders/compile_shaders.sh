@@ -54,6 +54,7 @@ while IFS=: read -r src entry_point stage dst; do
     count=$((count + 1))
 done <<'SLANG_SOURCES'
 unlit.slang:main:fragment:unlit.frag.spv
+character_forward.slang:main:fragment:character_forward.frag.spv
 fxaa.slang:main:fragment:fxaa.frag.spv
 post.slang:main:vertex:post.vert.spv
 post.slang:frag_main:fragment:post.frag.spv

@@ -176,6 +176,33 @@ namespace chores {
         load_and_create_pipeline(runtime, shaders_dir, "unlit", "unlit.frag.spv", "pbr.mesh.spv", "pbr.meshlet.spv");
 
         {
+            // THE TOON CHARACTER STAGE'S PIPELINE, and it is registered through a DIFFERENT entry point on
+            // purpose: `runtime::make_pipeline` above builds the forward family's pipeline (swapchain format,
+            // src-alpha blending, depth LESS_OR_EQUAL), and this stage needs the opposite of all three - one
+            // HDR target, no blending, depth compare EQUAL - so it goes through
+            // `runtime::make_character_forward_pipeline` (see `core::make_character_forward_pipeline` for why
+            // each of the three is forced).
+            //
+            // THE GEOMETRY IS pbr's, unchanged: it is the same leaves drawn a second time, so the varying
+            // block the fragment stage reads (location 0/1/2 = world position, normal, uv) is the one
+            // gbuffer.slang already reads, and the two passes cannot disagree about a surface's shape.
+            //
+            // The name is the one the character-forward pass binds through `render_environment::default_name`;
+            // the pass is handed it rather than hardcoding it (see pass::character_forward_frame).
+            std::vector<unsigned char> character_fragment_code;
+            std::vector<unsigned char> character_mesh_code;
+            std::vector<unsigned char> character_meshlet_code;
+            load_shader(shaders_dir, "character_forward.frag.spv", character_fragment_code);
+            load_shader(shaders_dir, "pbr.mesh.spv", character_mesh_code);
+            load_shader(shaders_dir, "pbr.meshlet.spv", character_meshlet_code);
+            runtime.register_shader("character_forward.frag.spv", character_fragment_code);
+            auto const character_result = runtime.make_character_forward_pipeline("character_forward", character_fragment_code, character_mesh_code, character_meshlet_code);
+            if (!character_result) {
+                utility::log("WARNING: the character-forward pipeline was not created ({}); the toon character stage will draw nothing", character_result.error());
+            }
+        }
+
+        {
             // The post chain is a PASS PAIR now (vulkan.pass.post): the composite owns the chain's two pipelines,
             // and the four bloom levels record with them. So the app REGISTERS the two shaders the pass builds
             // from (post.vert's synthetic triangle and post.frag, whose `mode` lane selects the stage) and the pass

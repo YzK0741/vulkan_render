@@ -166,6 +166,21 @@ namespace vulkan {
         // invalid (VUID). known == true once any set has been recorded.
         VkBool32 depth_write_recorded = VK_TRUE;
         bool depth_write_known = false;
+        /**
+         * WHETHER THE SESSION, RATHER THAN THE LEAF, OWNS THE DEPTH-WRITE STATE.
+         *
+         * Every primitive's draw() sets its own depth write (`set_depth_write(!this->transparent)`), which is
+         * right for the scene, shadow and transparent passes - an opaque surface writes depth and a blended
+         * one does not, and that is the material's business. It is WRONG for a pass that must draw the same
+         * leaves with the write held off: the leaf would turn it back on a few instructions after the pass
+         * turned it off, and the pass's state would be a statement of intent rather than a fact. That is
+         * exactly what the outline pass's `ZWrite Off` amounted to before this flag existed.
+         *
+         * The character-forward pass is the case that needs it (it re-shades the surface the G-buffer pass
+         * already recorded, at depth-EQUAL, and must not touch the depth buffer at all). Default false, so
+         * every existing session is bit-for-bit what it was.
+         */
+        bool depth_write_locked = false;
 
         /** @brief whether the session's default pipeline is the one currently bound */
         [[nodiscard]] bool in_default_pipeline() const noexcept {
@@ -192,8 +207,15 @@ namespace vulkan {
          * @brief record the depth-write state when it differs from what is already recorded
          * @param enabled true = depth writes on (opaque passes); false = off (transparent
          *        draws, which must not occlude later back-to-front geometry)
+         * @note a request from a LEAF is IGNORED when the session has locked the state (see
+         *       depth_write_locked): a pass that must hold the write off cannot have it turned back on by
+         *       the leaves it is drawing. The session's own first set is the one that counts, which is why
+         *       the lock is meant to be taken AFTER that set.
          */
         void set_depth_write(bool const enabled) {
+            if (this->depth_write_locked) {
+                return;
+            }
             VkBool32 const want = enabled ? VK_TRUE : VK_FALSE;
             if (!this->depth_write_known || this->depth_write_recorded != want) {
                 this->set_depth_write_fn(this->command_buffer, want);

@@ -1976,6 +1976,26 @@ namespace vulkan {
     // - "nothing blended this frame" - is the pass's FEATURE ("transparent", answered by `frame_transparent`
     // being empty in `feature_active`), which is the frame's content rather than the declaration's shape.
 
+    pass::character_forward_frame runtime::make_character_forward_frame() noexcept {
+        core const& vk = this->vulkan_core;
+        // THE OPAQUE LEAVES, which are the SCENE pass's - this stage re-shades the surfaces the scene pass
+        // already drew, so it must see exactly that list. A leaf the culling dropped has no lit pixel to
+        // overwrite, and one it kept but this frame omitted would keep the deferred shading while its
+        // neighbours were re-shaded.
+        return pass::character_forward_frame{
+            .leaves = this->frame_visible,
+            .make_environment = &runtime::make_scene_environment,
+            .owner = this,
+            // The name the pipeline was registered under (chores.cpp). Handed over rather than hardcoded in
+            // the pass, because the registry is the runtime's: a pass asserting a string another module chose
+            // would be a name with no owner.
+            .pipeline_name = character_forward_pipeline_name,
+            .color_format = vulkan::hdr_format, // one HDR target, and NOT the swapchain format - see the pass
+            .depth_format = vk.depth_format,
+            .extent = vk.swap_chain_extent,
+        };
+    }
+
     // =============================================================================================
     // THE CHAIN OWNER'S SEAM (see runtime::frame_services)
     // =============================================================================================
@@ -2041,6 +2061,7 @@ namespace vulkan {
             .make_shadow_frame = [](void* owner) { return static_cast<runtime*>(owner)->make_shadow_frame(); },
             .make_scene_frame = [](void* owner) { return static_cast<runtime*>(owner)->make_scene_frame(); },
             .make_transparent_frame = [](void* owner) { return static_cast<runtime*>(owner)->make_transparent_frame(); },
+            .make_character_forward_frame = [](void* owner) { return static_cast<runtime*>(owner)->make_character_forward_frame(); },
             .ensure_gbuffer_targets_sampled =
                 [](void* owner, VkCommandBuffer cmd, uint32_t image) { return static_cast<runtime*>(owner)->ensure_gbuffer_targets_sampled(cmd, image); },
             .ensure_gbuffer_depth_sampled =
@@ -2063,6 +2084,7 @@ namespace vulkan {
         this->shadow_stage = {at("shadow")};
         this->scene_stage = {at("scene")};
         this->transparent_stage = {at("transparent")};
+        this->character_forward_stage = {at("character_forward")};
         this->gbuffer_debug_stage = {at("gbuffer-debug")};
         this->rt_shadow_stage = {at("rt_shadow")};
         this->megalights_stage = {at("megalights_trace"), at("megalights_temporal")};
@@ -2479,6 +2501,24 @@ namespace vulkan {
                 this->clear_scene_color_for_missing_gbuffer(command_buffer);
             }
             this->record_transparent_pass(command_buffer);
+
+            // THE TOON CHARACTER STAGE, and its position here is the whole point of it: AFTER the lighting
+            // stage (so there is a lit pixel to overwrite) and after the transparent pass (so a blended
+            // surface in front of the character has already been composited and the depth test can reject the
+            // character fragment behind it - the reference draws its `CharacterForward` pass before the
+            // transparents, which is the same thing seen from the other side, and depth-EQUAL is what makes
+            // both orders correct). Before the resolve, so the anti-aliasing sees the re-shaded frame.
+            //
+            // NO MARK OF ITS OWN: the frame's mark sequence is a fixed positional contract with a 16-mark
+            // capacity, and a stage that carries none is what the other chain stages already do.
+            //
+            // IT IS SKIPPED WITHOUT RESOLVING ANYTHING when the feature table says the frame has no toon
+            // character (`character_forward_pending`), which is what keeps every frame of every capture-gate
+            // scenario byte-identical while the feature is off - the runner asks the pass's `feature()` before
+            // it resolves the declaration, so the skip costs no barrier and no resolve.
+            pass::stage const character_forward_stage = {.name = "character_forward", .passes = this->character_forward_stage, .marks = false};
+            this->prepare_stage(character_forward_stage, command_buffer);
+            [[maybe_unused]] pass::run_report const character_forward_report = pass::record_stage(character_forward_stage, this->make_pass_host());
         } else {
             // The pass does not run (the debug view replaces the lighting stage, and a skipped lighting stage has
             // no G-buffer to start rays from), but every mark is written in order on every frame - the
