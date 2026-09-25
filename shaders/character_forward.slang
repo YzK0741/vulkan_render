@@ -65,6 +65,24 @@ static const float character_rim_light_end = 0.35;
 static const float character_ramp_band_v = 0.125;
 
 /**
+ * @brief the neutral ramp's HALF edge width, and the other half of a shared contract
+ *
+ * The ramp this stage reads when a material HAS one is not the game's and not any family's: it is a NEUTRAL
+ * UNIT STEP baked by the host - zero through the shadow side, one through the lit side, a step at x = 0.5 with
+ * this half width (see `bake_diffuse_ramp` in main.cpp). ONE redistributable asset therefore serves every
+ * family, and where along it this material's terminator sits comes from the family's own `center` / `softness`
+ * rather than from the pixels.
+ *
+ * THE REMAP BELOW INVERTS THE BAKE EXACTLY WHEN THESE TWO NUMBERS MATCH, and that is the whole point rather
+ * than a nicety: with them equal, reading the texture at `0.5 + (gated - center) * (w / softness)` produces the
+ * same value `smoothstep(center - softness, center + softness, gated)` would have, so the two branches of
+ * `toon_diffuse` disagree only by the sampler's 8-bit quantization. Drift between the numbers breaks that
+ * quietly - the ramp still looks like a ramp, it is just read at the wrong width - so
+ * `tests/test_toon_material_sidecar.cpp` reads this file and main.cpp and fails when they differ.
+ */
+static const float character_ramp_half_width = 0.035;
+
+/**
  * @brief the toon diffuse: half-Lambert GATED by the shadow term, then banded
  *
  * THIS IS THE REFERENCE'S STRUCTURE, and the gating is the part worth stating because it is what makes the
@@ -76,10 +94,12 @@ static const float character_ramp_band_v = 0.125;
  *
  * WHAT STANDS IN FOR THE RAMP TEXTURE, and why it is not a shortcut: the reference reads its colour from a
  * layered ramp atlas (`SampleDirectShadowRamp(ramp, x, 0.125)` / `SampleDirectSpecularRamp(ramp, x, 0.375)`),
- * and those atlases are game assets its own license boundary excludes from redistribution. A procedural tint
- * plus the engine's existing `toon_band` reproduces the STRUCTURE (a gated coordinate, a quantized read, a
- * dark-side tint that is a colour rather than a scale) with no asset at all, so the per-material ramp can be
- * added later as data rather than as a dependency of the pipeline being correct.
+ * and those atlases are game assets its own license boundary excludes from redistribution. What replaced them
+ * is a NEUTRAL UNIT STEP baked by the host (`bake_diffuse_ramp`) and read through the material's own sidecar
+ * lane - the same lane, the same texture heap slot and the same read as the game's atlas had - with the
+ * family's `center` / `softness` deciding where the step is read (see `character_ramp_half_width`). So the ramp
+ * data path is exercised by an asset this repository can carry, and the shading still varies per material
+ * family rather than collapsing to one look.
  *
  * @param albedo the surface albedo (linear)
  * @param n world-space shading normal
@@ -108,10 +128,17 @@ float3 toon_diffuse(float3 albedo, float3 n, float3 world_pos, float ao, toon_pa
 
     // ---- THE LIGHT TINT: the material's OWN RAMP when it has one, the procedural threshold otherwise ----
     //
-    // THE TEXTURE CARRIES BOTH THE STEP AND THE COLOUR, and that is why the procedural threshold is NOT also
-    // applied on top of a looked-up value: a ramp atlas IS a quantizer, baked - its hard edge is in its pixels,
-    // at the V band the reference samples - and running a second threshold over a ramp read would quantize an
-    // already-quantized value and flatten the step back out. The two branches are ALTERNATIVES, not layers.
+    // THE RAMP CARRIES THE SHAPE AND THE FAMILY CARRIES THE MAPPING. Both branches build the same number -
+    // `smoothstep(center - softness, center + softness, gated)` - and they differ only in WHERE that step comes
+    // from: the procedural branch evaluates the Hermite curve here, and the texture branch READS a neutral unit
+    // step out of the material's own heap lane at a coordinate that inverts it. That inversion is the reason
+    // the baked asset can be shared by every family without the family table having to exist twice - the
+    // pixels hold a step at 0.5 and the family's `center` / `softness` are what move it.
+    //
+    // THE TWO ARE ALTERNATIVES, NOT LAYERS, and that is unchanged from when the ramp was the game's own atlas:
+    // a ramp IS a baked quantizer, so running the procedural threshold over a ramp read would quantize an
+    // already-quantized value and flatten the step back out. The texture branch replaces the procedural one
+    // rather than refining it.
     //
     // A LANE OF 0 MEANS "DO NOT READ" (it is the white fallback - see material_record::toon_indices), so a
     // material with no ramp, or one whose artist switched the ramp off, takes the procedural path. That is what
@@ -119,7 +146,16 @@ float3 toon_diffuse(float3 albedo, float3 n, float3 world_pos, float ao, toon_pa
     // arrive, not a second opinion about them.
     float3 light_tint;
     if (ramp_index != 0u) {
-        light_tint = heap_texel(heap_at<Texture2D<float4>>(heap_slots_textures + ramp_index), heap_sampler_texture, float2(gated, character_ramp_band_v)).rgb;
+        // THE REMAP, and each factor is doing a different job: `- center` slides the neutral step to this
+        // family's threshold, and `* (character_ramp_half_width / softness)` rescales the coordinate so the
+        // family's edge width lands on the ramp's own. `saturate` gives the flat shadow and lit sides, which is
+        // what a ramp has and a bare `smoothstep` does not.
+        const float ramp_x = saturate(0.5 + (gated - params.center) * (character_ramp_half_width / max(params.softness, 1e-4)));
+        // `.r` because the baked ramp holds the STEP in all three channels and no colour - the dark side's
+        // colour is `params.shadow_tint` below, so one shared asset can serve a family whose shadow is warm and
+        // one whose shadow is cool, which a baked-in tint could not.
+        const float ramp_step = heap_texel(heap_at<Texture2D<float4>>(heap_slots_textures + ramp_index), heap_sampler_texture, float2(ramp_x, character_ramp_band_v)).r;
+        light_tint = lerp(params.shadow_tint, float3(1.0, 1.0, 1.0), ramp_step);
     } else {
         light_tint = lerp(params.shadow_tint, float3(1.0, 1.0, 1.0), smoothstep(params.center - params.softness, params.center + params.softness, gated));
     }

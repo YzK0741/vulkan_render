@@ -7,10 +7,18 @@
 // THE FAILURE CASES ARE THE TEST, as in test_render_resources: most of the checks below assert that something
 // is REJECTED, and each one is a disagreement between this reader and the asset pipeline that would otherwise
 // pass silently.
+//
+// THE LAST CHECK IS NOT ABOUT THE SIDECAR READER AT ALL, and it is here deliberately: the host bakes the ramp
+// that fills a sidecar's `_DiffRampMap` LANE, and the stage that reads that lane inverts the bake using a
+// constant of its own. The two numbers are written in two languages in two files, so their agreement is a
+// contract nothing else can check - see `test_the_baked_ramp_and_the_shader_agree_on_its_width`.
 #include "vk_test.h"
 
 #include <cstddef>
+#include <cstdlib>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <string>
 #include <string_view>
 
@@ -225,6 +233,58 @@ namespace {
         CHECK(!model->texture_index_by_name("").has_value());
     }
 
+    /// the value of the first `<name> = <number>` in @p text, or nothing - a five-line parser, because a regex
+    /// or a build dependency would be more machinery than one shared constant is worth
+    std::optional<float> float_constant_of(std::string_view const text, std::string_view const name) {
+        std::string const needle = std::string(name) + " =";
+        std::size_t const at = text.find(needle);
+        if (at == std::string_view::npos) {
+            return std::nullopt;
+        }
+        char const* const begin = text.data() + at + needle.size();
+        char* end = nullptr;
+        float const value = std::strtof(begin, &end);
+        if (end == begin) {
+            return std::nullopt;
+        }
+        return value;
+    }
+
+    void test_the_baked_ramp_and_the_shader_agree_on_its_width() {
+        // THE ONE NUMBER THE BAKE AND THE READ SHARE, and why it needs a test rather than a comment on each
+        // side: the host bakes a neutral step at x = 0.5 with half width `w`, and the shader inverts that bake
+        // by reading at `0.5 + (gated - center) * (w' / softness)`. When `w != w'` the ramp STILL LOOKS LIKE A
+        // RAMP - a step is a step - so nothing about the frame announces that the contract broke; what happens
+        // is that the texture branch and the procedural branch stop agreeing and each family's terminator sits
+        // at the wrong place. That is the silent-drift shape this project writes tests for.
+        //
+        // IT LIVES HERE rather than in a test of its own because it is a contract between the host's sidecar
+        // LANE bake and the stage that reads that lane, which is what this test is about - and because a test
+        // target of its own would have to be mirrored into VR_TEST_TARGETS, the workflow and the docs.
+        std::ifstream host_file{VR_TEST_SOURCE_DIR "/main.cpp"};
+        std::ifstream shader_file{VR_TEST_SOURCE_DIR "/shaders/character_forward.slang"};
+        CHECK(host_file.good());
+        CHECK(shader_file.good());
+        if (!host_file.good() || !shader_file.good()) {
+            return;
+        }
+        std::string const host{std::istreambuf_iterator<char>{host_file}, std::istreambuf_iterator<char>{}};
+        std::string const shader{std::istreambuf_iterator<char>{shader_file}, std::istreambuf_iterator<char>{}};
+
+        std::optional<float> const baked = float_constant_of(host, "baked_ramp_half_width");
+        std::optional<float> const read_at = float_constant_of(shader, "character_ramp_half_width");
+        CHECK(baked.has_value());
+        CHECK(read_at.has_value());
+        CHECK(baked == read_at);
+
+        // AND THE BAKE PUTS THE STEP AT THE CENTRE THE SHADER'S REMAP ASSUMES. `0.5` is written into both the
+        // bake's `smoothstep` call and the shader's remap, so asserting the two SPELLINGS is what keeps a bake
+        // whose step sat anywhere else from shifting every family's terminator by the difference while both
+        // constants above still matched.
+        CHECK(host.find("smoothstep(0.5f - baked_ramp_half_width, 0.5f + baked_ramp_half_width") != std::string::npos);
+        CHECK(shader.find("saturate(0.5 + (gated - params.center)") != std::string::npos);
+    }
+
 } // namespace
 
 int main() {
@@ -238,5 +298,6 @@ int main() {
     test_a_file_on_disk_is_read_through_the_convention();
     test_a_malformed_file_on_disk_reports_its_path();
     test_the_sidecar_and_the_model_join_by_texture_name();
+    test_the_baked_ramp_and_the_shader_agree_on_its_width();
     return vk_test::finish("test_toon_material_sidecar");
 }

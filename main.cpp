@@ -440,20 +440,31 @@ int main(int argc, char** argv) {
     // a step, a flat lit side, which is what a toon ramp IS (see character_forward.slang's note on why a ramp
     // replaces the procedural threshold rather than layering with it).
     //
-    // IT IS THE FAMILY-INDEPENDENT RAMP, DELIBERATELY. A per-family bake would need the numbers in
-    // `shaders/toon_params.slang`, which live in the SHADER; reproducing them here would be the duplicate this
-    // project refuses elsewhere, and the fix is to make that table a single source (a generator plus a test
-    // that the two agree) rather than to copy it. Until then this ramp reproduces the `none`-family look - the
-    // one the shader already falls back to - so the read path is exercised by a redistributable asset and the
-    // per-family ramps remain the next step rather than being silently approximated.
+    // THE BAKE IS A NEUTRAL UNIT STEP, NOT ANY ONE FAMILY'S RAMP, and that is what lets a SINGLE redistributable
+    // asset serve every family without copying the family table into this file. The texture holds the SHAPE -
+    // zero through the shadow side, one through the lit side, a step at x = 0.5 - and the SHADER maps the
+    // family's own threshold and edge width onto that step when it builds the coordinate it reads at (see
+    // `character_ramp_half_width` in character_forward.slang). The family's numbers therefore stay in ONE place,
+    // in the shader, where the procedural branch and the rim stage already read them; what this file supplies is
+    // the shape, and what the shader supplies is where along it this material's terminator sits.
+    //
+    // THAT IS NOT A WORKAROUND FOR THE TABLE BEING IN THE SHADER, it is the structure the reference uses: its
+    // ramp atlas is shared across materials and each material's own `_ShadowCenter` / `_ShadowSmoothness` decide
+    // the UV it is read at. A per-family BAKE would be the copy - and it would be a worse one, because the
+    // family's edge width would be frozen into pixels at load time instead of staying a number the shader can
+    // evaluate the procedural branch with.
+    //
+    // `baked_ramp_half_width` IS HALF OF A SHARED CONTRACT; the other half is the shader's
+    // `character_ramp_half_width`. The shader's remap inverts this bake exactly when the two agree, which is
+    // what makes the texture branch and the procedural branch produce the same tint for the same family rather
+    // than merely similar ones. `tests/test_toon_material_sidecar.cpp` reads both files and fails on drift -
+    // and it is there rather than in a test of its own because the contract is a sidecar-lane contract.
     constexpr uint32_t baked_ramp_width = 256;
     constexpr uint32_t baked_ramp_height = 8;
+    constexpr float baked_ramp_half_width = 0.035f;
     auto const bake_diffuse_ramp = []() {
-        // The same shape the shader's fallback builds: `lerp(shadow_tint, white, smoothstep(center - s, center +
-        // s, x))` over the ramp coordinate, with the fallback's own three numbers.
-        constexpr float center = 0.42f;
-        constexpr float softness = 0.035f;
-        constexpr float tint[3] = {0.58f, 0.60f, 0.72f};
+        // `smoothstep(0.5 - w, 0.5 + w, x)`: the same Hermite step the shader's procedural branch builds, with
+        // the step moved to the ramp's centre and its width normalised so the remap can undo it.
         auto const srgb_encode = [](float const linear) {
             return linear <= 0.0031308f ? linear * 12.92f : 1.055f * std::pow(linear, 1.0f / 2.4f) - 0.055f;
         };
@@ -465,15 +476,21 @@ int main(int argc, char** argv) {
         for (uint32_t v = 0; v < baked_ramp_height; ++v) {
             for (uint32_t u = 0; u < baked_ramp_width; ++u) {
                 float const x = static_cast<float>(u) / static_cast<float>(baked_ramp_width - 1u);
-                float const step = smoothstep(center - softness, center + softness, x);
+                float const step = smoothstep(0.5f - baked_ramp_half_width, 0.5f + baked_ramp_half_width, x);
                 unsigned char* const texel = pixels.data() + (static_cast<std::size_t>(v) * baked_ramp_width + u) * 4u;
-                for (int c = 0; c < 3; ++c) {
-                    float const linear = tint[c] + (1.0f - tint[c]) * step;
-                    // THE UPLOAD IS SRGB (see register_material's slot table), so the texel holds the ENCODED
-                    // value: what the sampler hands the shader is then the linear tint, which is what the
-                    // procedural path multiplied by.
-                    texel[c] = static_cast<unsigned char>(std::clamp(srgb_encode(linear), 0.0f, 1.0f) * 255.0f + 0.5f);
-                }
+                // GREY, and the SHADER READS `.r`: the ramp carries the step and nothing else, so the family's
+                // own `shadow_tint` is what colours the dark side rather than a bake that could only ever hold
+                // one family's tint. Writing the same value into R, G and B keeps the asset readable as a ramp
+                // by eye.
+                //
+                // THE UPLOAD IS SRGB (see register_material's slot table), so the texel holds the ENCODED value:
+                // what the sampler hands the shader is then the LINEAR step, which is the number the procedural
+                // branch's `smoothstep` produced. Encoding is what makes the two branches agree on the VALUE and
+                // not just on the shape.
+                unsigned char const encoded = static_cast<unsigned char>(std::clamp(srgb_encode(step), 0.0f, 1.0f) * 255.0f + 0.5f);
+                texel[0] = encoded;
+                texel[1] = encoded;
+                texel[2] = encoded;
                 texel[3] = 255u;
             }
         }
