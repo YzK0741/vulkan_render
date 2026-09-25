@@ -203,6 +203,17 @@ namespace chores {
         }
 
         {
+            // THE SCREEN-SPACE DEPTH RIM'S STAGE. Only the two shaders are registered here: the pass builds its
+            // own pipeline in its `create` step (it is a fullscreen stage with one additive target and no depth
+            // attachment, which is nothing `runtime::make_pipeline`'s forward family describes), so there is no
+            // named pipeline to create and no registration path of its own - the same arrangement the deferred
+            // and TAA stages have.
+            std::vector<unsigned char> rim_fragment_code;
+            load_shader(shaders_dir, "toon_screen_rim.frag.spv", rim_fragment_code);
+            runtime.register_shader("toon_screen_rim.frag.spv", rim_fragment_code);
+        }
+
+        {
             // The post chain is a PASS PAIR now (vulkan.pass.post): the composite owns the chain's two pipelines,
             // and the four bloom levels record with them. So the app REGISTERS the two shaders the pass builds
             // from (post.vert's synthetic triangle and post.frag, whose `mode` lane selects the stage) and the pass

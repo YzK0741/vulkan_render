@@ -41,22 +41,10 @@
 
 // One entry of the material table; layout matches material_record in vulkan/primitive.cppm
 // (std430, 80 bytes). Field order and the flag bits are a CPU/GPU contract - see register_material.
-struct Material {
-    uvec4 tex_indices; // albedo, metallic-roughness, normal, occlusion (indices into textures[])
-    uint emissive_index;
-    float alpha_cutoff;       // alphaMode MASK threshold
-    float occlusion_strength; // mix(1, sampled AO, strength)
-    uint toon_family; // the toon material family (see gltf_loader's toon_family_of); 0 == none. Completes the
-                      // std430 group of four uints that starts at emissive_index, so naming it changes no
-                      // offset - see material_record's note in vulkan/primitive/primitive.cppm.
-    vec4 base_color_factor;
-    vec4 emissive_factor;
-    float metallic_factor;
-    float roughness_factor;
-    float normal_scale;
-    uint flags; // bit0: normal map, bit1: occlusion map, bit2: emissive map, bit3: double-sided,
-                // bit4: alphaMode MASK, bit5: alphaMode BLEND
-};
+// THE MATERIAL RECORD'S LAYOUT LIVES IN ITS OWN FILE, because a FULLSCREEN stage cannot include this one
+// (the shared scene push block below is 144 bytes, over the 128-byte heap limit, so only a geometry stage
+// can declare it) and a fullscreen stage may still need the material table. See material_record.glsl.
+#include "material_record.glsl"
 // The ARRAY name carries the HEAP slot and the block member carries the record index: two index spaces, which is
 // why a lookup is `heap_material_tables[heap_slots_materials].materials[push.material_index]`.
 #ifndef VR_SLANG

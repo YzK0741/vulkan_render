@@ -39,6 +39,9 @@ namespace vulkan {
         // over the lit frame, at depth-EQUAL, so it must come after the lighting stage that produced what it
         // overwrites and after the blends that composite over the same pixels.
         this->chain_.emplace<pass::character_forward_pass>();
+        // ... and the toon stage's SECOND rim: a fullscreen additive contour from the depth, right after the
+        // surface it outlines and before the resolve, so the anti-aliasing sees it in the frame it belongs to.
+        this->chain_.emplace<pass::toon_screen_rim_pass>();
         this->chain_.emplace<pass::megalights_trace_pass>();
         this->chain_.emplace<pass::megalights_temporal_pass>();
         this->chain_.emplace<pass::taa_pass>();
@@ -63,6 +66,7 @@ namespace vulkan {
         this->scene_ = this->find<pass::scene_pass>("scene");
         this->transparent_ = this->find<pass::transparent_pass>("transparent");
         this->character_forward_ = this->find<pass::character_forward_pass>("character_forward");
+        this->toon_screen_rim_ = this->find<pass::toon_screen_rim_pass>("toon_screen_rim");
         this->rt_shadow_ = this->find<pass::rt_shadow_pass>("rt_shadow");
         this->deferred_ = this->find<pass::deferred_pass>("deferred");
         this->taa_ = this->find<pass::taa_pass>("taa");
@@ -152,6 +156,16 @@ namespace vulkan {
             // name - and nothing else.
             if (self.character_forward_ != nullptr) {
                 self.character_forward_->set_frame(services.make_character_forward_frame(services.owner));
+            }
+        } else if (stage == "toon_screen_rim") {
+            // THIS STAGE'S FRAME-ORDER DUTY, and it is the reason it declares no barrier images: it SAMPLES the
+            // G-buffer (the depth it compares and the albedo it lightens), so whoever samples that surface FIRST
+            // this frame has to publish the G-buffer instance's attachment writes. Gated on the same predicate
+            // the runner gates the stage on, so a frame that does not run it touches nothing - the same rule the
+            // ray-traced shadow and the stochastic lighting stages follow.
+            if (services.feature_active != nullptr && services.feature_active(services.owner, "character_forward")) {
+                static_cast<void>(services.ensure_gbuffer_targets_sampled(services.owner, services.cmd, services.image_index));
+                static_cast<void>(services.ensure_gbuffer_depth_sampled(services.owner, services.cmd, services.image_index));
             }
         } else if (stage == "rt_shadow") {
             // THIS STAGE'S FRAME-ORDER DUTY: it may be the first sampler of the stored surface this frame, and
@@ -349,9 +363,9 @@ namespace vulkan {
         }
         if (name == "character_forward") {
             // THE RUNTIME'S COMPOSED PREDICATE (the knob AND this frame's opaque leaf list, see
-            // feature_facts::character_forward_pending) AND the pass being ready. The pass is ready as soon as
-            // it exists - it builds no pipeline of its own (the renderer registers the named one) - so the
-            // second term is the same "the chain has this pass" answer every other branch gives.
+            // feature_facts::character_forward_pending) AND the pass being ready. This ONE gate answers for BOTH
+            // toon stages - the surface pass and the screen-space rim - because the contour means nothing
+            // without the shading it outlines, so they are one feature with one switch.
             return facts.character_forward_pending && self.character_forward_ != nullptr && self.character_forward_->ready();
         }
         if (name == "gbuffer-debug") {

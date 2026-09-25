@@ -863,6 +863,39 @@ export namespace vulkan::render_resource {
         .push = std::nullopt,
     };
 
+    /**
+     * @brief the screen-space depth rim's declaration: ONE target and NO bindings, because it samples the
+     *        frame's own G-buffer through the heap
+     *
+     * THE TARGET IS THE SCENE COLOUR AND THE PIPELINE BLENDS ADDITIVELY: the rim is a contribution to the
+     * frame the character-forward stage produced, so the pass never has to read the image it writes - which is
+     * what keeps it from needing a copy of it.
+     *
+     * NO DEPTH ATTACHMENT IS DECLARED, and that is the whole reason this pass exists separately: it samples the
+     * depth, and a pass cannot both attach an image and sample it. See the declaration's neighbours for the
+     * opposite arrangement (the character-forward and transparent passes both attach the depth).
+     *
+     * NO BARRIER IMAGES EITHER: the G-buffer targets and the depth are published to a sampled layout by the
+     * RENDERER's stage preamble, because that publication is per-image bookkeeping about images the G-buffer
+     * pass wrote - the same rule the ray-traced shadow and the stochastic lighting stages follow. The push
+     * block is 48 bytes: the two projection terms from the frame, the rim's width/gain/strength and its colour
+     * from the pass, and the framework appends the two heap lanes on top.
+     */
+    inline constexpr std::array<render_target, 1> toon_screen_rim_targets = {{
+        {.resource = resource_id::scene_color, .element = 0},
+    }};
+
+    /// @brief the screen-space depth rim's declaration
+    /// @ingroup vulkan_render_resource
+    inline constexpr pass_io toon_screen_rim_io = {
+        .name = "toon_screen_rim",
+        .bindings = {},
+        .targets = toon_screen_rim_targets,
+        .barrier_images = {},
+        .barrier_buffers = {},
+        .push = push_block{.offset = 0, .size = 48, .stages = stage_flag::fragment},
+    };
+
     // =============================================================================================
     // 7. THE SHARED RESOURCES - what a full-screen compute pass reaches without owning a binding
     // =============================================================================================

@@ -34,6 +34,7 @@ $shaderDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $slangSources = @(
     "unlit.slang:main:fragment:unlit.frag.spv",
     "character_forward.slang:main:fragment:character_forward.frag.spv",
+    "toon_screen_rim.slang:main:fragment:toon_screen_rim.frag.spv",
     "fxaa.slang:main:fragment:fxaa.frag.spv",
     "post.slang:main:vertex:post.vert.spv",
     "post.slang:frag_main:fragment:post.frag.spv",

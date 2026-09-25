@@ -143,6 +143,7 @@ target_sources(vulkancorekit
         vulkan/pass/scene.cppm
         vulkan/pass/transparent.cppm
         vulkan/pass/character_forward.cppm
+        vulkan/pass/toon_screen_rim.cppm
         vulkan/pass/megalights_trace.cppm
         vulkan/pass/megalights_temporal.cppm
         vulkan/pass/ray_traced_shadow.cppm
@@ -180,6 +181,7 @@ target_sources(vulkancorekit
         vulkan/pass/scene.cpp
         vulkan/pass/transparent.cpp
         vulkan/pass/character_forward.cpp
+        vulkan/pass/toon_screen_rim.cpp
         vulkan/pass/megalights_trace.cpp
         vulkan/pass/megalights_temporal.cpp
         vulkan/pass/ray_traced_shadow.cpp
@@ -690,6 +692,11 @@ endif()
 # dependency bookkeeping that would avoid it.
 set(VR_SHADER_INCLUDES
     "${VR_SHADER_SRC_DIR}/surface.glsl"
+    # material_record.glsl is the Material LAYOUT, split out of surface.glsl so a FULLSCREEN stage can name
+    # the type it reads from the material table - a fullscreen stage cannot include surface.glsl at all (its
+    # shared scene push block is 144 bytes, over the 128-byte limit). It is here for the same reason the
+    # other bodies are: a field added to it must rebuild every stage that reads the table.
+    "${VR_SHADER_SRC_DIR}/material_record.glsl"
     # toon_params.slang is the TOON FAMILY TABLE, shared by every stage that shades a character (the
     # character-forward stage and the screen-space rim). It is here for the reason the bodies below are:
     # editing a family's parameters must rebuild every stage that read them, and a stage left on stale SPIR-V
@@ -750,6 +757,9 @@ set(VR_SLANG_SOURCES
     # by default, so none of the ten capture scenarios records it until a scenario turns it on - which is
     # what makes its landing behaviour-neutral.
     character_forward.slang:main:fragment:character_forward.frag.spv
+    # toon_screen_rim.slang is the toon stage's SECOND rim: a fullscreen additive contour from the depth,
+    # gated by the SAME `character_forward` feature, so no capture scenario records it either.
+    toon_screen_rim.slang:main:fragment:toon_screen_rim.frag.spv
     fxaa.slang:main:fragment:fxaa.frag.spv
     post.slang:main:vertex:post.vert.spv
     # post.frag is the post chain's stage for ALL THREE modes (bright pass / downsample / composite), so every

@@ -38,6 +38,7 @@ import vulkan.pass.taa;                   // the second, and the first GRAPHICS 
 import vulkan.pass.scene;                 // the third: the scene itself, whose work is DATA rather than a declaration
 import vulkan.pass.transparent;           // the fourth: the blended geometry, over the shaded frame
 import vulkan.pass.character_forward;     // ... and the toon character stage, which re-shades the OPAQUE leaves over it
+import vulkan.pass.toon_screen_rim;       // ... and its second rim, a fullscreen additive contour from the depth
 import vulkan.pass.ray_traced_shadow;     // the ninth, and the only pass that traces outside the chain: the ray-traced shadow
 import vulkan.pass.mask_bake;             // ... and the one-shot MASK bake, which is a JOB rather than a frame pass
 import vulkan.pass.compute_skin;          // ... and the compute-skinning job, which is a job for the same reason
@@ -541,6 +542,12 @@ namespace vulkan {
          * right order: the blend belongs on top) and before the resolve.
          */
         std::array<pass::frame_pass*, 1> character_forward_stage = {};
+        /**
+         * THE SCREEN-SPACE DEPTH RIM (vulkan.pass.toon_screen_rim): a fullscreen additive contour, right after
+         * the surface it outlines and before the resolve. It has no frame of its own - its parameters are the
+         * pass's and its inputs are heap slots - so this array is only what the chain lookup fills.
+         */
+        std::array<pass::frame_pass*, 1> toon_screen_rim_stage = {};
         /// the scene frame's view of the per-slot segments (a member, so the span it hands the pass outlives it)
         std::vector<pass::segment_buffer> scene_segment_view = {};
         /// the colour formats the scene pass's secondaries inherit, in attachment order

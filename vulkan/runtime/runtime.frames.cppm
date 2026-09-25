@@ -2085,6 +2085,7 @@ namespace vulkan {
         this->scene_stage = {at("scene")};
         this->transparent_stage = {at("transparent")};
         this->character_forward_stage = {at("character_forward")};
+        this->toon_screen_rim_stage = {at("toon_screen_rim")};
         this->gbuffer_debug_stage = {at("gbuffer-debug")};
         this->rt_shadow_stage = {at("rt_shadow")};
         this->megalights_stage = {at("megalights_trace"), at("megalights_temporal")};
@@ -2519,6 +2520,17 @@ namespace vulkan {
             pass::stage const character_forward_stage = {.name = "character_forward", .passes = this->character_forward_stage, .marks = false};
             this->prepare_stage(character_forward_stage, command_buffer);
             [[maybe_unused]] pass::run_report const character_forward_report = pass::record_stage(character_forward_stage, this->make_pass_host());
+
+            // THE SCREEN-SPACE DEPTH RIM, immediately after the stage it outlines: it samples the depth (which
+            // the character-forward pass has just handed back to a sampled layout) and ADDS a contour to the
+            // scene colour that stage wrote. Still before the resolve, so the anti-aliasing sees the two
+            // together rather than a contour drawn over an already-resolved frame.
+            //
+            // IT IS GATED BY THE SAME FEATURE as the stage above (see its `feature()`), so a frame with no toon
+            // character records neither and the two cannot come apart.
+            pass::stage const toon_screen_rim_stage = {.name = "toon_screen_rim", .passes = this->toon_screen_rim_stage, .marks = false};
+            this->prepare_stage(toon_screen_rim_stage, command_buffer);
+            [[maybe_unused]] pass::run_report const toon_screen_rim_report = pass::record_stage(toon_screen_rim_stage, this->make_pass_host());
         } else {
             // The pass does not run (the debug view replaces the lighting stage, and a skipped lighting stage has
             // no G-buffer to start rays from), but every mark is written in order on every frame - the
