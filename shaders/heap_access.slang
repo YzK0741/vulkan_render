@@ -52,6 +52,10 @@ DescriptorHandle<Sampler2D> combined_at(uint texture_slot, uint sampler_slot)
 #define material_at(slot, index) heap_at<StructuredBuffer<Material>>(slot)[index]
 #define camera_at(slot) heap_at<ConstantBuffer<CameraUBO>>(slot)
 #define light_at(slot) heap_at<ConstantBuffer<LightUBO>>(slot)
+// THE FACE SDF'S HEAD FRAME (scene block slot 749): three axes per frame slot, resolved by the application from
+// the character's head bone or from the reference's fallback and uploaded every frame - see head_ubo in
+// vulkan/primitive.cppm. The struct is declared by the stage that reads it, like every other block here.
+#define head_frame_at(slot) heap_at<ConstantBuffer<HeadUBO>>(slot)
 #define cluster_count_at(slot, cluster) heap_at<StructuredBuffer<uint>>(slot)[cluster]
 #define cluster_indices_at(slot, i) heap_at<StructuredBuffer<uint>>(slot)[i]
 

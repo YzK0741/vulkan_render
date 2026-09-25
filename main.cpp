@@ -716,6 +716,40 @@ int main(int argc, char** argv) {
     toon_state.baked_matcap_size = baked_matcap_size;
     runtime.set_toon_lookup(vulkan::runtime::toon_lookup{.owner = &toon_state, .texture = toon_texture});
 
+    // ---- THE HEAD FRAME the face SDF shades against, resolved once here and published every frame ----
+    //
+    // THE LOADER IS ASKED FIRST, and the answer is a decision this code makes rather than a constant it never
+    // questioned - which matters, because for the models in this repository the two answers happen to coincide.
+    //
+    // THE FALLBACK IS THE REFERENCE'S OWN FRAME (`EfFaceGetHeadBasis`'s `valid < 0.5` branch), so a model with
+    // no usable skeleton is shaded by the answer the reference itself gives for that case rather than by a guess
+    // made here. This model is exactly that case: `zhuangfy_scalar.glb` is seven nodes and zero skins, a static
+    // pose split by body part, and a model that cannot turn its head has one head frame whether it is read from
+    // a bone or from these three constants.
+    {
+        gltf::head_basis head = gltf::head_basis_fallback();
+        bool has_head_bone = false;
+        for (std::size_t scene_index = 0; scene_index < scenes->scene.size() && !has_head_bone; ++scene_index) {
+            for (std::size_t skin_index = 0; skin_index < scenes->skins.size(); ++skin_index) {
+                if (gltf::head_joint_of(*scenes, scene_index, skin_index).has_value()) {
+                    has_head_bone = true;
+                    break;
+                }
+            }
+        }
+        if (has_head_bone) {
+            // SAID OUT LOUD RATHER THAN SILENTLY: turning a joint into these three axes is
+            // `gltf::head_basis_from_axes`, and what is missing is the JOINT MATRIX itself - it lives in the
+            // animation controller's per-frame skin matrices, and no model in this repository has a skeleton to
+            // exercise that path against. So a character WITH a head bone is shaded by the fallback until that
+            // wiring exists, and this line is how that is noticeable instead of mysterious.
+            utility::log("head frame: '{}' HAS a head bone, but the joint-matrix path is not wired - shading from the fallback frame", model_path);
+        } else {
+            utility::log("head frame: no head bone in '{}' ({} skin(s)) - shading from the reference's fallback frame", model_path, scenes->skins.size());
+        }
+        runtime.set_head_basis(vulkan::head_ubo{.front = glm::vec4(head.front, 0.0f), .right = glm::vec4(head.right, 0.0f), .up = glm::vec4(head.up, 0.0f)});
+    }
+
     vulkan::scene_import_result const imported = runtime.import_scene(node_first, node_last, scene_first, scene_last, scene_import_shift);
     utility::log("imported {} primitives ({} new materials)", imported.primitive_count, imported.material_count);
     runtime.log_scene_tree();

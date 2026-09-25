@@ -871,6 +871,17 @@ namespace vulkan {
         std::vector<vk_buffer> light_buffers = {};
         std::vector<void*> light_mapped = {};
         light_ubo light_state = {};
+        // THE HEAD FRAME (scene block slot 749), the same per-frame-slot arrangement as the light UBO above and
+        // for the same reason: on a model whose head TURNS these three vectors change every frame, so a frame in
+        // flight must not read a buffer the next frame is rewriting. `head_state` is the CPU-side value and
+        // `set_head_basis` is the only thing that writes it; pace_and_acquire copies it into the paced slot.
+        //
+        // IT IS INITIALISED TO THE REFERENCE'S FALLBACK FRAME rather than to zeros, which is what a scene that
+        // never calls set_head_basis gets: zero vectors would reach the sigmoid's `atan2` and produce NaNs, i.e.
+        // a face that is black or flickering instead of one shaded by the fallback.
+        std::vector<vk_buffer> head_buffers = {};
+        std::vector<void*> head_mapped = {};
+        head_ubo head_state = {};
         // linear exposure scale applied before tonemapping; copied into light_state.light_count.y
         // (the light UBO's first unused lane) right before the per-frame UBO upload, and pushed to
         // the shading stages apply through the scene layout's push-constant range (see
@@ -2412,6 +2423,21 @@ namespace vulkan {
          *       every frame, so this is safe at any time (GUI slider included)
          */
         void set_exposure(float exposure) noexcept;
+        /**
+         * @ingroup vulkan_runtime
+         * @brief publish the FACE SDF's head frame (scene block slot 749) for the next frame
+         *
+         * WHY THE APPLICATION OWNS THIS RATHER THAN THE RUNTIME: the head frame comes from a BONE, and bones live
+         * in the loader's skeleton - which `vulkancorekit` deliberately does not depend on (the engine is
+         * loader-agnostic, the same reason `set_toon_lookup` exists). So the layer that links both resolves the
+         * head joint and hands the three axes over, and the runtime only stores and uploads them.
+         *
+         * ARBITRARY-TIME, like `set_exposure`: it writes `head_state` and the next `pace_and_acquire` copies that
+         * into the paced slot, so a frame already in flight keeps the frame it started with. Calling it every
+         * frame is how a model whose head TURNS stays correct; calling it once is correct for a model that cannot
+         * turn its head, which is what this repository's only SDF-bearing model is.
+         */
+        void set_head_basis(head_ubo const& basis) noexcept;
         /**
          * @ingroup vulkan_runtime
          * @brief the current exposure scale (see set_exposure)

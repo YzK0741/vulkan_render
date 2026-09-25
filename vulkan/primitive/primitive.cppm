@@ -138,6 +138,43 @@ namespace vulkan {
      *       exactly the single-map behavior this used to have - one fit over the whole visible
      *       range - which is what makes the cascaded version an A/B rather than a rewrite.
      */
+    /**
+     * @ingroup vulkan_primitive
+     * @brief the FACE SDF's HEAD FRAME (scene block slot 749), one block per frame slot
+     *
+     * WHY IT IS ITS OWN BLOCK AND NOT A FIELD OF THE CAMERA'S, which would have been the smaller change: the
+     * head frame is a property of the CHARACTER rather than of the eye looking at it. A renderer that put it in
+     * the camera UBO would have one more thing to unpick the day a scene holds two characters facing different
+     * ways - and the SDF's whole premise is that a face is shaded in ITS OWN frame rather than in anyone else's.
+     *
+     * THREE `vec4`s RATHER THAN THREE `vec3`s, so the layout is unambiguous: a std430 `vec3` has a 16-byte
+     * stride and a std140 one does too, but a struct of three of them is the kind of thing that agrees by
+     * accident until someone reorders it. The fourth component is unused and the shader reads `.xyz`.
+     */
+    export struct head_ubo {
+        glm::vec4 front = glm::vec4(0.0f, 0.0f, -1.0f, 0.0f); // the direction the face looks
+        glm::vec4 right = glm::vec4(-1.0f, 0.0f, 0.0f, 0.0f); // its right
+        glm::vec4 up = glm::vec4(0.0f, 1.0f, 0.0f, 0.0f);     // its up
+    };
+    // 48: three vec4s and no padding, which is what lets the shader's copy be the same three members with no
+    // `alignas` or explicit padding anywhere - and the values above are the reference's own FALLBACK frame
+    // (`EfFaceGetHeadBasis`'s `valid < 0.5` branch), so a block nobody writes is still a usable frame rather
+    // than three zeros that would produce NaNs on the way to the sigmoid.
+    static_assert(sizeof(head_ubo) == 48);
+
+    /**
+     * @ingroup vulkan_primitive
+     * @brief light UBO content, layout matches the LightUBO block in shaders/shading.glsl and
+     *        shadow.vert (scene block slot 7): the per-cascade light-space view-projections, the
+     *        light direction, the cascade ranges/texel sizes, then the punctual light array
+     * @note the directional sun is built from the scene bounds (enable_shadows) and the shadow
+     *       map samples agree on its direction; punctual lights never cast shadows and ride the
+     *       same block after the directional header
+     * @note CASCADES: `light_view_proj[0]` covers the near range, the following entries the ranges
+     *       given by `cascade_splits` (view-space far distance). A frame with cascade_count == 1 is
+     *       exactly the single-map behavior this used to have - one fit over the whole visible
+     *       range - which is what makes the cascaded version an A/B rather than a rewrite.
+     */
     export struct light_ubo {
         std::array<glm::mat4, max_shadow_cascades> light_view_proj = {}; // world -> light clip, per cascade
         glm::vec4 light_dir = {};                                        // xyz: normalized light direction (sun), w: 1 / shadow map size

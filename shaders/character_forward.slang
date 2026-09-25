@@ -106,6 +106,16 @@ float2 toon_matcap_uv(const float3 n, const float3 v) {
     return saturate(float2(dot(n, right), -dot(n, up_ortho)) * 0.5 + 0.5);
 }
 
+/// THE HEAD FRAME the face SDF shades against (scene block slot 749). Layout matches `head_ubo` in
+/// vulkan/primitive.cppm: three `vec4`s rather than three `vec3`s, so the host's struct and this one agree
+/// without either side needing padding or `alignas`. Declared BY THIS STAGE, exactly as `LightUBO` and
+/// `CameraUBO` are declared by the stages that read them - the heap accessor is a macro and expands here.
+struct HeadUBO {
+    float4 front; // the direction the face looks
+    float4 right; // its right
+    float4 up;    // its up
+};
+
 /// @brief the reference's `EF_FACE_SDF_GOO_SHARP` - the Sigmoid's SLOPE, neutral 0.5 (range 0.05..5.0)
 static const float character_sdf_sharp = 0.5;
 /// @brief the reference's `EF_FACE_SDF_GOO_CENTER` - a constant added to the per-pixel angle threshold
@@ -156,9 +166,16 @@ static const float character_sdf_base = 100000.0;
  * @return the light/dark weight, 0 = shadow side, 1 = lit side
  */
 float toon_sdf_mask(const float2 uv, const uint lane, const float3 light_ws) {
-    const float3 head_front = float3(0.0, 0.0, -1.0);
-    const float3 head_right = float3(-1.0, 0.0, 0.0);
-    const float3 head_up = float3(0.0, 1.0, 0.0);
+    // THE HEAD FRAME, READ FROM THE PER-FRAME BLOCK rather than written as constants here. `HeadUBO` is declared
+    // by this stage exactly as `LightUBO` and `CameraUBO` are declared by the stages that read them - a macro is
+    // text, so the accessor above expands at this point and finds the declaration below.
+    //
+    // The values are the SAME as the reference's fallback constants for a model with no usable skeleton (the
+    // application resolves it, and this repository's model has none), so moving them out of here changed no
+    // pixel - which is the capture gate's job to confirm rather than this comment's to assert.
+    const float3 head_front = normalize(head_frame_at(heap_slots_scene_head + heap_frame_slot).front.xyz);
+    const float3 head_right = normalize(head_frame_at(heap_slots_scene_head + heap_frame_slot).right.xyz);
+    const float3 head_up = normalize(head_frame_at(heap_slots_scene_head + heap_frame_slot).up.xyz);
     // THE LIGHT IS PROJECTED ONTO THE HEAD PLANE. A light straight down the head's up axis has no stable
     // left/right side, and the reference bails out of that case (`return float4(1,1,0,1)`); this returns "lit",
     // because a magenta debug frame is not an option in a shipped stage and 1.0 is the value the ramp treats as

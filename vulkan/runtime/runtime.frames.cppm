@@ -220,6 +220,13 @@ namespace vulkan {
             }
             std::memcpy(this->light_mapped[frame_slot], &this->light_state, sizeof(light_ubo));
         }
+        // THE HEAD FRAME RIDES THE SAME SLOT RULE, and for the same reason: it can change every frame on a model
+        // whose head turns, so the paced slot gets its own copy and a frame in flight keeps reading the one it
+        // started with. `head_state` is only ever written by set_head_basis, which is an arbitrary-time call -
+        // this is where that value reaches the GPU, exactly as the light's does.
+        if (this->head_mapped.size() > static_cast<std::size_t>(frame_slot) && this->head_mapped[frame_slot] != nullptr) {
+            std::memcpy(this->head_mapped[frame_slot], &this->head_state, sizeof(head_ubo));
+        }
         // Remember the paced slot: the caller's per-frame host writes (set_skin_matrices /
         // morph_scratch) land in this slot's buffers and are safe to make now that the slot's
         // previous submission has completed.

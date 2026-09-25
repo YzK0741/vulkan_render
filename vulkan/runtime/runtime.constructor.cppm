@@ -732,6 +732,18 @@ namespace vulkan {
                                         // matching usage bit (see the camera UBO above and the note on
                                         // write_heap_scene_buffer)
                                         VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+
+        // THE HEAD FRAME (scene block slot 749): the same per-frame-slot arrangement as the light UBO above, and
+        // `head_state` starts at the reference's fallback frame - see that member for why it is not zeros.
+        head_ubo initial_head = {};
+        init_utils::create_host_buffers(this->vulkan_core,
+                                        vulkan::core::MAX_FRAMES_IN_FLIGHT,
+                                        std::as_bytes(std::span(&initial_head, 1)),
+                                        vulkan::buffer_type::uniform_coherent,
+                                        "head frame buffer",
+                                        this->head_buffers,
+                                        &this->head_mapped,
+                                        VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     }
 
     namespace {
@@ -915,6 +927,22 @@ namespace vulkan {
                 VkDeviceSize const heap_offset = core::heap_slot_offset(core::heap_slots::scene_light + slot);
                 if (!this->vulkan_core.descriptor_heaps.write_buffer(heap_offset, light_address, sizeof(light_ubo), VK_DESCRIPTOR_TYPE_STORAGE_BUFFER)) {
                     utility::log("descriptor heap: the light UBO did not fit slot {}'s block at offset {}", slot, heap_offset);
+                }
+            }
+
+            // ---- AND THE HEAD FRAME, into its own block for this slot ----
+            //
+            // Its own block rather than a field of the light's, because it is a property of the CHARACTER rather
+            // than of the scene's lighting - see `core::heap_slots::scene_head`. Written here beside the light
+            // because it is per-frame-slot for the same reason: on a model whose head turns it changes every
+            // frame, so each slot needs its own copy.
+            auto const* const head_detail = this->vulkan_core.vma.get_buffer_detail(this->head_buffers[static_cast<std::size_t>(slot)].handle());
+            if (head_detail != nullptr && this->vulkan_core.descriptor_heaps.ready() && this->vulkan_core.heap_grid_offset != VK_WHOLE_SIZE) {
+                VkBufferDeviceAddressInfo const head_address_info = {.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .pNext = nullptr, .buffer = head_detail->buffer};
+                VkDeviceAddress const head_address = vkGetBufferDeviceAddress(this->vulkan_core.device, &head_address_info);
+                VkDeviceSize const head_offset = core::heap_slot_offset(core::heap_slots::scene_head + slot);
+                if (!this->vulkan_core.descriptor_heaps.write_buffer(head_offset, head_address, sizeof(head_ubo), VK_DESCRIPTOR_TYPE_STORAGE_BUFFER)) {
+                    utility::log("descriptor heap: the head frame did not fit slot {}'s block at offset {}", slot, head_offset);
                 }
             }
         }

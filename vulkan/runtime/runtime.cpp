@@ -1203,6 +1203,30 @@ namespace vulkan {
         this->light_state.diffuse_model = static_cast<float>(std::clamp(model, 0, 1));
     }
 
+    void runtime::set_head_basis(head_ubo const& basis) noexcept {
+        // CPU-side only, the same rule set_exposure and set_brdf_model follow: remember it here and let
+        // pace_and_acquire copy it into the paced slot's buffer, so a call from a GUI callback or from the import
+        // path can never write memory a frame in flight is reading.
+        //
+        // THE THREE AXES ARE REJECTED IF THEY ARE DEGENERATE rather than stored: a zero or NaN frame reaching the
+        // shader's `atan2` produces a face that is black or flickering with nothing in the log to say why, and the
+        // fallback frame is a usable answer where a broken one is not. The reference guards the same case in
+        // `EfFaceGetHeadBasis` (`valid < 0.5`).
+        glm::vec3 const front = glm::vec3(basis.front);
+        glm::vec3 const right = glm::vec3(basis.right);
+        glm::vec3 const up = glm::vec3(basis.up);
+        float const front_len_sq = glm::dot(front, front);
+        float const right_len_sq = glm::dot(right, right);
+        float const up_len_sq = glm::dot(up, up);
+        if (!std::isfinite(front_len_sq) || !std::isfinite(right_len_sq) || !std::isfinite(up_len_sq) || front_len_sq <= 1e-8f || right_len_sq <= 1e-8f || up_len_sq <= 1e-8f) {
+            utility::log("head frame: refusing a degenerate basis (lengths {} {} {}), keeping the fallback", front_len_sq, right_len_sq, up_len_sq);
+            return;
+        }
+        this->head_state.front = glm::vec4(glm::normalize(front), 0.0f);
+        this->head_state.right = glm::vec4(glm::normalize(right), 0.0f);
+        this->head_state.up = glm::vec4(glm::normalize(up), 0.0f);
+    }
+
     void runtime::set_exposure(float const exposure) noexcept {
         // CPU-side only (same rule as set_brdf_model): remembered here, written into the light
         // UBO's light_count.y lane by pace_and_acquire() and pushed to the skybox pass

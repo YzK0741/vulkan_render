@@ -588,6 +588,10 @@ namespace vulkan {
             // heap_slot_constants.glsl for why it is a buffer of its own rather than a fifth component of the
             // material record, and why it is one descriptor rather than a per-frame pair.
             static constexpr uint32_t sdf_lanes = heap_slot_base + 748u;
+            // THE HEAD FRAME the face SDF shades against, one block per frame slot because on a model whose
+            // head turns it changes every frame. It is its own block rather than a field of the camera's: the
+            // head frame belongs to the CHARACTER, not to the eye looking at it.
+            static constexpr uint32_t scene_head = heap_slot_base + 749u;
             static constexpr uint32_t scene_camera = heap_slot_base + 514u;        // binding 0, per frame slot
             static constexpr uint32_t scene_light = heap_slot_base + 516u;         // binding 7, per frame slot
             static constexpr uint32_t cluster_counts = heap_slot_base + 518u;      // binding 11, per frame slot

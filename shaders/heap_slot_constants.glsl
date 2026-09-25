@@ -79,6 +79,17 @@ const uint heap_slots_meshlet_culled = heap_slot_base + 747u;
 // import and never rewritten, so there is no frame in flight that could read a buffer the next frame is writing
 // - which is the whole reason the frame-varying arrays above are pairs.
 const uint heap_slots_sdf_lanes = heap_slot_base + 748u;
+// THE HEAD FRAME the face SDF shades against: three vectors per frame slot, written every frame.
+//
+// A PAIR, unlike the lane table above, and the difference is the whole rule: the lane table holds values fixed
+// at import, while these CAN change every frame on a model whose head turns. So this is the frame-in-flight
+// arrangement every other per-frame array here uses - one buffer per frame slot, so a frame being rendered
+// never reads a buffer the next frame is rewriting.
+//
+// IT IS A BLOCK OF ITS OWN RATHER THAN A FIELD OF THE CAMERA'S, which would have been smaller: the head frame
+// is a property of the CHARACTER and not of the eye looking at it, and a renderer that put it in the camera UBO
+// would have a second thing to move the day a scene holds two characters facing different ways.
+const uint heap_slots_scene_head = heap_slot_base + 749u;
 const uint heap_slots_mask_instances = heap_slot_base + 530u;
 // frame-invariant images the shading stage samples
 const uint heap_slots_env_cube = heap_slot_base + 532u;
