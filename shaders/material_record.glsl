@@ -19,6 +19,13 @@
 // THE LAYOUT MUST MATCH `vulkan::material_record` (std430, 80 bytes, `static_assert`ed on the host side).
 // A field added here without the host - or the host without here - moves every material's texture indices,
 // and the failure is a wrong texture rather than a build error.
+//
+// AN INCLUDE GUARD, because this file is reached by two routes that meet: `surface.glsl` includes it, and a
+// stage that needs the material table but CANNOT include `surface.glsl` (a fullscreen one - see above)
+// includes it directly. A stage that took both routes would declare the struct twice.
+
+#ifndef VULKAN_RENDER_MATERIAL_RECORD_GLSL
+#define VULKAN_RENDER_MATERIAL_RECORD_GLSL
 
 struct Material {
     uvec4 tex_indices; // albedo, metallic-roughness, normal, occlusion (indices into textures[])
@@ -37,3 +44,5 @@ struct Material {
     uint flags; // bit0: normal map, bit1: occlusion map, bit2: emissive map, bit3: double-sided,
                 // bit4: alphaMode MASK, bit5: alphaMode BLEND
 };
+
+#endif // VULKAN_RENDER_MATERIAL_RECORD_GLSL

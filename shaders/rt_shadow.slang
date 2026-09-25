@@ -43,25 +43,12 @@ struct LightUBO
     float4 light_dir;           // xyz = surface-to-light direction (see shading.glsl)
 };
 
-// ---- THE ANY-HIT STAGE'S RECORDS (see the entry at the end of this file) ----
-//
-// The material record, under the name the shim's accessor expects (the GLSL file calls its copy MaskMaterial).
-// The LAYOUT is the contract and it is identical in both - byte-identical to material_record in
-// vulkan/primitive.cppm.
-struct Material
-{
-    uint4 tex_indices;
-    uint emissive_index;
-    float alpha_cutoff;
-    float occlusion_strength;
-    uint _pad;
-    float4 base_color_factor;
-    float4 emissive_factor;
-    float metallic_factor;
-    float roughness_factor;
-    float normal_scale;
-    uint flags; // bit4: alphaMode MASK - the bit that makes the any-hit stage do anything at all
-};
+// THE MATERIAL LAYOUT IS NOT DECLARED HERE ANY MORE: it is `material_record.glsl`, the one place the
+// record's std430 layout lives, and this stage includes it. A second copy is a second thing to keep in
+// step with the host's `static_assert(sizeof(material_record) == 80)`, and a copy that drifts indexes
+// every material after the first by the wrong STRIDE - which shows up as a wrong texture on every
+// material but one, not as a build error.
+#include "material_record.glsl"
 
 // The instance table: one record per instance of the top level structure, filled by EVERY structure build
 // (acceleration_structure::instance_record, whose 96-byte std430 layout this mirrors). The two addresses are

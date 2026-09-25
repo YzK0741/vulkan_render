@@ -15,22 +15,12 @@
 
 #include "heap_slot_constants.glsl"
 
-// One entry of the material table; layout matches material_record (std430, 80 bytes) - must stay identical
-// to the GLSL Material and to the host's struct.
-struct Material
-{
-    uint4 tex_indices; // albedo, metallic-roughness, normal, occlusion (indices into the texture heap)
-    uint emissive_index;
-    float alpha_cutoff;       // alphaMode MASK threshold
-    float occlusion_strength; // mix(1, sampled AO, strength)
-    uint pad_;
-    float4 base_color_factor;
-    float4 emissive_factor;
-    float metallic_factor;
-    float roughness_factor;
-    float normal_scale;
-    uint flags; // bit0: normal map, bit1: occlusion map, bit2: emissive map, bit3: double-sided, bit4: alphaMode MASK, bit5: alphaMode BLEND
-};
+// THE MATERIAL LAYOUT IS NOT DECLARED HERE ANY MORE: it is `material_record.glsl`, the one place the
+// record's std430 layout lives, and this stage includes it. A second copy is a second thing to keep in
+// step with the host's `static_assert(sizeof(material_record) == 80)`, and a copy that drifts indexes
+// every material after the first by the wrong STRIDE - which shows up as a wrong texture on every
+// material but one, not as a build error.
+#include "material_record.glsl"
 
 // Push constant block: identical layout to pbr.vert / pbr.frag (only material_index is read here).
 // -fvk-use-gl-layout gives std430, which is what the GLSL block and the CPU struct use.

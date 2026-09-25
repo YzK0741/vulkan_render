@@ -31,22 +31,12 @@
 
 #include "heap_access.slang"
 
-// The material record, byte-identical to material_record in vulkan/primitive.cppm. Declared here rather than
-// shared because this file declares its own push block (a stage may declare only one).
-struct Material
-{
-    uint4 tex_indices;
-    uint emissive_index;
-    float alpha_cutoff;
-    float occlusion_strength;
-    uint _pad;
-    float4 base_color_factor;
-    float4 emissive_factor;
-    float metallic_factor;
-    float roughness_factor;
-    float normal_scale;
-    uint flags; // bit4: alphaMode MASK - the bit that makes this pass meaningful for a material
-};
+// THE MATERIAL LAYOUT IS NOT DECLARED HERE ANY MORE: it is `material_record.glsl`, the one place the
+// record's std430 layout lives, and this stage includes it. A second copy is a second thing to keep in
+// step with the host's `static_assert(sizeof(material_record) == 80)`, and a copy that drifts indexes
+// every material after the first by the wrong STRIDE - which shows up as a wrong texture on every
+// material but one, not as a build error.
+#include "material_record.glsl"
 
 struct MaskBakePush
 {

@@ -24,24 +24,12 @@
 
 #include "heap_access.slang"
 
-// The material record, under the name the shim's accessor expects, and byte-identical to material_record in
-// vulkan/primitive.cppm. It is declared here rather than shared because the graphics probe's file declares it
-// too and the two stages cannot share a file (see the header) - the LAYOUT is the contract, and the probe's
-// own answer is what confirms it.
-struct Material
-{
-    uint4 tex_indices;
-    uint emissive_index;
-    float alpha_cutoff;
-    float occlusion_strength;
-    uint _pad;
-    float4 base_color_factor;
-    float4 emissive_factor;
-    float metallic_factor;
-    float roughness_factor;
-    float normal_scale;
-    uint flags;
-};
+// THE MATERIAL LAYOUT IS NOT DECLARED HERE ANY MORE: it is `material_record.glsl`, the one place the
+// record's std430 layout lives, and this stage includes it. A second copy is a second thing to keep in
+// step with the host's `static_assert(sizeof(material_record) == 80)`, and a copy that drifts indexes
+// every material after the first by the wrong STRIDE - which shows up as a wrong texture on every
+// material but one, not as a build error.
+#include "material_record.glsl"
 
 struct HeapProbeCompPush
 {

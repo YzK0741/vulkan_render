@@ -18,23 +18,12 @@
 
 #include "heap_access.slang"
 
-// The material record, under the name the shim's accessor expects: the GLSL file calls its copy ProbeMaterial
-// (it declares its own block), while `material_at` in heap_access.slang is defined over `Material`. The LAYOUT
-// is the contract and it is identical in both - byte-identical to material_record in vulkan/primitive.cppm.
-struct Material
-{
-    uint4 tex_indices;
-    uint emissive_index;
-    float alpha_cutoff;
-    float occlusion_strength;
-    uint _pad;
-    float4 base_color_factor;
-    float4 emissive_factor;
-    float metallic_factor;
-    float roughness_factor;
-    float normal_scale;
-    uint flags;
-};
+// THE MATERIAL LAYOUT IS NOT DECLARED HERE ANY MORE: it is `material_record.glsl`, the one place the
+// record's std430 layout lives, and this stage includes it. A second copy is a second thing to keep in
+// step with the host's `static_assert(sizeof(material_record) == 80)`, and a copy that drifts indexes
+// every material after the first by the wrong STRIDE - which shows up as a wrong texture on every
+// material but one, not as a build error.
+#include "material_record.glsl"
 
 // The slot is a PARAMETER rather than a constant, and that is the point: the host pushes it, so the probe can
 // be run a second time with a deliberately WRONG slot - a probe that could only say "fine" would pass every
