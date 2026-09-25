@@ -6,7 +6,8 @@ import chores; // demo bootstrap helpers (shader loading / dir locating / pipeli
 import gltf_loader;
 import toon_material_sidecar; // the .toon.tsv a character model carries: its toon maps, and the _Use flags
 import utility;               // re-exports utility:frame_clock / frame_stats / bvh / better_pmr / thread_pool / data_block
-import vulkan.animation;      // animation::controller: glTF playback / skinning / morphs on the runtime tree
+import vulkan.animation;
+import vulkan.animation.mmd_motion; // VMD (MMD motion) parsing, retargeting and clip baking      // animation::controller: glTF playback / skinning / morphs on the runtime tree
 import vulkan.math;
 import vulkan.scene_tree; // scene storage + GPU primitives (was vulkan.model)
 import vulkan.runtime;
@@ -87,6 +88,12 @@ namespace {
         };
         for (int i = 1; i < argc; ++i) {
             std::string_view const arg(argv[i]);
+            // --mmd-motion is consumed here even though main scans argv for it itself: the app's
+            // parser would otherwise treat the flag as the positional model path and panic with
+            // 0xC0000409 (exactly what an unknown first positional does).
+            if (take_value(i, arg, "--mmd-motion").has_value()) {
+                continue;
+            }
             if (std::optional<std::string_view> const value = take_value(i, arg, "--capture-frames")) {
                 if (std::optional<float> const frames = parse_number(*value)) {
                     options.frames = static_cast<int>(std::max(0.0f, *frames));
@@ -815,6 +822,100 @@ int main(int argc, char** argv) {
     vulkan::animation::controller animation;
     // the controller drives the runtime through an injected surface (chores wires the scene,
     // per-slot buffers and task pool), so it never depends on vulkan::runtime itself
+    // ---- MMD motion (--mmd-motion): parsed, retargeted onto this model's own skeleton, and
+    // appended to the loaded file's animations.  Appended rather than handed to the controller
+    // because the controller takes its clip list from the scene at init() and never grows one
+    // afterwards (select() only swaps the active clip), so a runtime clip has to join the
+    // scene's list BEFORE init.  Names come from the pool nodes, and target_node stays the ASSET
+    // node index (gltf::node::source_index): animations are file-scoped, the pool index is a
+    // different numbering.
+    {
+        std::string mmd_motion_path;
+        for (int i = 1; i + 1 < argc; ++i) {
+            if (std::string_view(argv[i]) == "--mmd-motion") {
+                mmd_motion_path = argv[i + 1];
+            }
+        }
+        if (!mmd_motion_path.empty()) {
+            std::optional<vulkan::animation::mmd_motion> motion =
+                vulkan::animation::load_mmd_motion(mmd_motion_path);
+            if (!motion.has_value()) {
+                utility::panic(std::source_location::current(), "failed to parse MMD motion '{}'", mmd_motion_path);
+            }
+            // Names come from the asset-level lookup (asset node index -> the loader's node copy),
+            // walked over the skin's joints: skin::joints and animation_channel::target_node are
+            // BOTH asset node indices, so pairing the two here keeps target_node exact.
+            std::vector<std::string> joint_names;
+            std::vector<std::size_t> joint_sources;
+            for (gltf::skin const& skin : scenes->skins) {
+                for (std::size_t const joint_source : skin.joints) {
+                    auto const found = scenes->node_by_source.find(joint_source);
+                    if (found == scenes->node_by_source.end() || found->second == nullptr) {
+                        continue;
+                    }
+                    joint_names.push_back(found->second->name);
+                    joint_sources.push_back(joint_source);
+                }
+            }
+            vulkan::animation::mmd_retarget const retarget =
+                vulkan::animation::build_mmd_retarget(*motion, joint_names);
+            utility::log("mmd motion '{}': {} bones, {} mapped onto this skeleton, {} unmapped", mmd_motion_path,
+                         motion->bones.size(), retarget.mapped, retarget.unmapped);
+            for (std::size_t const bone : retarget.unresolved_bones) {
+                if (bone < 8) {
+                    utility::log("  unmapped: {}", vulkan::animation::escape_mmd_name(motion->bones[bone].name));
+                }
+            }
+            vulkan::animation::clip const baked = vulkan::animation::bake_mmd_clip(*motion, retarget);
+            gltf::animation converted;
+            converted.name = "mmd";
+            converted.samplers.reserve(baked.samplers.size());
+            for (vulkan::animation::sampler const& s : baked.samplers) {
+                gltf::animation_sampler out;
+                out.times = s.times;
+                out.values = s.values;
+                out.per_key = s.per_key;
+                switch (s.interp) {
+                case vulkan::animation::interpolation::step:
+                    out.interpolation = gltf::animation_interpolation::step;
+                    break;
+                case vulkan::animation::interpolation::cubic_spline:
+                    out.interpolation = gltf::animation_interpolation::cubic_spline;
+                    break;
+                case vulkan::animation::interpolation::linear:
+                default:
+                    out.interpolation = gltf::animation_interpolation::linear;
+                    break;
+                }
+                converted.samplers.push_back(std::move(out));
+            }
+            converted.channels.reserve(baked.channels.size());
+            for (vulkan::animation::channel const& c : baked.channels) {
+                gltf::animation_channel out;
+                out.sampler = c.sampler;
+                out.target_node = joint_sources[c.target_node];
+                switch (c.path) {
+                case vulkan::animation::channel_path::rotation:
+                    out.path = gltf::animation_path::rotation;
+                    break;
+                case vulkan::animation::channel_path::scale:
+                    out.path = gltf::animation_path::scale;
+                    break;
+                case vulkan::animation::channel_path::weights:
+                    out.path = gltf::animation_path::weights;
+                    break;
+                case vulkan::animation::channel_path::translation:
+                default:
+                    out.path = gltf::animation_path::translation;
+                    break;
+                }
+                converted.channels.push_back(out);
+            }
+            utility::log("mmd motion: baked clip '{}' - {} samplers, {} channels", converted.name,
+                         converted.samplers.size(), converted.channels.size());
+            scenes->animations.push_back(std::move(converted));
+        }
+    }
     animation.init(*scenes, chores::make_animation_backend(runtime), scene_import_shift);
     // [render] animation_time >= 0 PINS the pose: playback is wall-clock driven, so two captures of an
     // animated scene differ unless the time is fixed - and this is also what makes such a scene usable in
