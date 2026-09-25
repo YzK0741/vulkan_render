@@ -346,4 +346,88 @@ namespace vulkan::animation {
         return parse_mmd_motion(bytes);
     }
 
+    namespace {
+
+        /**
+         * The MMD standard humanoid subset, as (VMD name bytes, joint name).
+         *
+         * Every byte string here was read out of a real motion rather than typed from memory, and
+         * test_mmd_motion_real_file_when_available asserts that each entry matches a bone in that
+         * motion when VR_MMD_MOTION points at it.  That check is the point: comparing against a
+         * synthetic file would only prove the table agrees with itself, so a mistyped byte would
+         * survive it.
+         */
+        constexpr mmd_bone_alias mmd_alias_table[] = {
+            {"\x91\x53\x82\xc4\x82\xcc\x90\x65", "mmd_root"},                     // 全ての親
+            {"\x83\x5a\x83\x93\x83\x5e\x81\x5b", "mmd_center"},                   // センター
+            {"\x83\x4f\x83\x8b\x81\x5b\x83\x75", "mmd_groove"},                   // グルーブ
+            {"\x8d\x98", "mmd_waist"},                                            // 腰
+            {"\x89\xba\x94\xbc\x90\x67", "mmd_lower_body"},                       // 下半身
+            {"\x8f\xe3\x94\xbc\x90\x67", "mmd_upper_body"},                       // 上半身
+            {"\x8f\xe3\x94\xbc\x90\x67\x32", "mmd_upper_body2"},                  // 上半身2
+            {"\x8e\xf1", "mmd_neck"},                                             // 首
+            {"\x93\xaa", "mmd_head"},                                             // 頭
+            {"\x8d\xb6\x8c\xa8", "mmd_shoulder_l"},                               // 左肩
+            {"\x8d\xb6\x98\x72", "mmd_arm_l"},                                    // 左腕
+            {"\x8d\xb6\x82\xd0\x82\xb6", "mmd_elbow_l"},                          // 左ひじ
+            {"\x8d\xb6\x8e\xe8\x8e\xf1", "mmd_wrist_l"},                          // 左手首
+            {"\x89\x45\x8c\xa8", "mmd_shoulder_r"},                               // 右肩
+            {"\x89\x45\x98\x72", "mmd_arm_r"},                                    // 右腕
+            {"\x89\x45\x82\xd0\x82\xb6", "mmd_elbow_r"},                          // 右ひじ
+            {"\x89\x45\x8e\xe8\x8e\xf1", "mmd_wrist_r"},                          // 右手首
+            {"\x8d\xb6\x91\xab", "mmd_leg_l"},                                    // 左足
+            {"\x8d\xb6\x82\xd0\x82\xb4", "mmd_knee_l"},                           // 左ひざ
+            {"\x8d\xb6\x91\xab\x8e\xf1", "mmd_ankle_l"},                          // 左足首
+            {"\x89\x45\x91\xab", "mmd_leg_r"},                                    // 右足
+            {"\x89\x45\x82\xd0\x82\xb4", "mmd_knee_r"},                           // 右ひざ
+            {"\x89\x45\x91\xab\x8e\xf1", "mmd_ankle_r"},                          // 右足首
+            {"\x8d\xb6\x91\xab\x90\xe6\x45\x58", "mmd_toe_ex_l"},                 // 左足先EX
+            {"\x89\x45\x91\xab\x90\xe6\x45\x58", "mmd_toe_ex_r"},                 // 右足先EX
+            {"\x8d\xb6\x91\xab\x82\x68\x82\x6a", "mmd_ik_leg_l"},                 // 左足ＩＫ
+            {"\x89\x45\x91\xab\x82\x68\x82\x6a", "mmd_ik_leg_r"},                 // 右足ＩＫ
+            {"\x8d\xb6\x82\xc2\x82\xdc\x90\xe6\x82\x68\x82\x6a", "mmd_ik_toe_l"}, // 左つま先ＩＫ
+            {"\x89\x45\x82\xc2\x82\xdc\x90\xe6\x82\x68\x82\x6a", "mmd_ik_toe_r"}, // 右つま先ＩＫ
+        };
+
+    } // namespace
+
+    std::vector<mmd_bone_alias> const& mmd_bone_aliases() {
+        static std::vector<mmd_bone_alias> const table(std::begin(mmd_alias_table),
+                                                       std::end(mmd_alias_table));
+        return table;
+    }
+
+    std::int32_t mmd_retarget::joint_of(std::size_t const bone_index) const noexcept {
+        return bone_index < joint_of_bone.size() ? joint_of_bone[bone_index] : -1;
+    }
+
+    mmd_retarget build_mmd_retarget(mmd_motion const& motion,
+                                    std::vector<std::string> const& joint_names) {
+        std::unordered_map<std::string_view, std::size_t> joint_index;
+        for (std::size_t i = 0; i < joint_names.size(); ++i) {
+            joint_index.try_emplace(joint_names[i], i); // the first joint of a name wins
+        }
+        mmd_retarget result;
+        result.joint_of_bone.assign(motion.bones.size(), -1);
+        for (std::size_t bone = 0; bone < motion.bones.size(); ++bone) {
+            for (mmd_bone_alias const& alias : mmd_bone_aliases()) {
+                if (alias.mmd_name != motion.bones[bone].name) {
+                    continue;
+                }
+                auto const joint = joint_index.find(alias.joint_name);
+                if (joint != joint_index.end()) {
+                    result.joint_of_bone[bone] = static_cast<std::int32_t>(joint->second);
+                }
+                break;
+            }
+            if (result.joint_of_bone[bone] < 0) {
+                result.unresolved_bones.push_back(bone);
+            } else {
+                ++result.mapped;
+            }
+        }
+        result.unmapped = result.unresolved_bones.size();
+        return result;
+    }
+
 } // namespace vulkan::animation

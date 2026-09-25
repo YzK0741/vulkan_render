@@ -188,4 +188,49 @@ namespace vulkan::animation {
      */
     export std::string escape_mmd_name(std::string_view raw);
 
+    /**
+     * @brief one MMD standard bone name paired with the joint name a skeleton should carry
+     *
+     * @p mmd_name holds the raw Shift-JIS bytes a VMD stores, so a table built from it is
+     * byte-exact instead of depending on a codepage.  @p joint_name is ASCII because glTF node
+     * names live in a UTF-8 JSON string, which cannot carry those bytes.
+     */
+    export struct mmd_bone_alias {
+        std::string_view mmd_name = {};
+        std::string_view joint_name = {};
+    };
+
+    /** @brief the MMD standard humanoid subset this engine knows how to drive */
+    export std::vector<mmd_bone_alias> const& mmd_bone_aliases();
+
+    /**
+     * @ingroup vulkan_animation
+     * @brief which skeleton joint each bone of a parsed motion drives
+     *
+     * A VMD addresses bones by name, so the mapping is resolved once against a skeleton's joint
+     * names (@ref build_mmd_retarget) and then read per frame.
+     */
+    export struct mmd_retarget {
+        /** per motion bone, the joint it drives, or -1 when the bone has no counterpart */
+        std::vector<std::int32_t> joint_of_bone = {};
+        /** the motion bones that resolved to nothing, for reporting coverage */
+        std::vector<std::size_t> unresolved_bones = {};
+        std::size_t mapped = 0;
+        std::size_t unmapped = 0;
+
+        /** @brief the joint for @p bone_index, or -1 when it is unmapped or out of range */
+        [[nodiscard]] std::int32_t joint_of(std::size_t bone_index) const noexcept;
+    };
+
+    /**
+     * @brief resolve every bone of @p motion against @p joint_names
+     *
+     * Matching goes through @ref mmd_bone_aliases, so a skeleton only has to name its joints after
+     * that table (mmd_head, mmd_wrist_l, ...).  Bones with no alias - the cloth, hair, accessory
+     * and finger chains a motion may also carry - stay unmapped and are reported rather than
+     * guessed at.
+     */
+    export mmd_retarget build_mmd_retarget(mmd_motion const& motion,
+                                           std::vector<std::string> const& joint_names);
+
 } // namespace vulkan::animation

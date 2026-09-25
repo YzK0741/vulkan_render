@@ -337,6 +337,19 @@ namespace {
         CHECK(m->last_frame == 3954);
         CHECK(m->unparsed_bytes == 0);
         CHECK(m->ik.size() == 4);
+
+        // Every alias entry must match a bone in the real motion. This is the check that catches a
+        // mistyped byte in the alias table: the synthetic test only compares the table with a file
+        // built from the same table, so it would agree with itself.
+        std::vector<std::string> aliased;
+        aliased.reserve(mmd_bone_aliases().size());
+        for (mmd_bone_alias const& alias : mmd_bone_aliases()) {
+            aliased.emplace_back(alias.joint_name);
+        }
+        mmd_retarget const retarget = build_mmd_retarget(*m, aliased);
+        CHECK(mmd_bone_aliases().size() == 29);
+        CHECK(retarget.mapped == mmd_bone_aliases().size());
+        CHECK(retarget.unmapped == m->bones.size() - mmd_bone_aliases().size());
     }
 
     void test_mmd_name_escape_is_an_unambiguous_literal() {
@@ -358,6 +371,80 @@ namespace {
             CHECK(!hex);
         }
     }
+
+    /** @brief a VMD holding one keyframe per given bone name and nothing else */
+    [[nodiscard]] std::vector<std::uint8_t> build_vmd_named(std::vector<std::string> const& names) {
+        std::vector<std::uint8_t> d;
+        auto text = [&d](std::string_view const s, std::size_t const width) {
+            for (char const c : s) {
+                d.push_back(static_cast<std::uint8_t>(c));
+            }
+            for (std::size_t i = s.size(); i < width; ++i) {
+                d.push_back(0);
+            }
+        };
+        auto u32 = [&d](std::uint32_t const value) {
+            for (int byte = 0; byte < 4; ++byte) {
+                d.push_back(static_cast<std::uint8_t>((value >> (8 * byte)) & 0xffu));
+            }
+        };
+        text("Vocaloid Motion Data 0002", 30);
+        text("named", 20);
+        u32(static_cast<std::uint32_t>(names.size()));
+        for (auto const& name : names) {
+            text(name, 15);
+            u32(0); // frame
+            u32(0);
+            u32(0);
+            u32(0); // position
+            u32(0);
+            u32(0);
+            u32(0);
+            u32(0x3f800000u); // rotation x, y, z, w = 0, 0, 0, 1
+            for (int byte = 0; byte < 64; ++byte) {
+                d.push_back(0); // interpolation block
+            }
+        }
+        u32(0); // morph keyframes
+        u32(0); // camera keyframes
+        u32(0); // light keyframes
+        u32(0); // self-shadow keyframes
+        u32(0); // property keyframes
+        return d;
+    }
+
+    void test_mmd_retarget_resolves_by_alias() {
+        // センター, 頭, 首 - the third one deliberately has no joint to land on
+        std::vector<std::uint8_t> const bytes = build_vmd_named({
+            std::string("\x83\x5a\x83\x93\x83\x5e\x81\x5b", 8), // センター
+            std::string("\x93\xaa", 2),                         // 頭
+            std::string("\x8e\xf1", 2),                         // 首
+        });
+        std::optional<mmd_motion> const motion = parse_mmd_motion(bytes);
+        CHECK(motion.has_value());
+        if (!motion.has_value()) {
+            return;
+        }
+        // order matters: the joint index is the position in this list, not the alias table's
+        std::vector<std::string> const joints = {"mmd_head", "mmd_center"};
+        mmd_retarget const retarget = build_mmd_retarget(*motion, joints);
+
+        CHECK(retarget.joint_of_bone.size() == 3);
+        CHECK(retarget.joint_of(0) == 1);  // センター -> joints[1]
+        CHECK(retarget.joint_of(1) == 0);  // 頭 -> joints[0]
+        CHECK(retarget.joint_of(2) == -1); // 首 -> mmd_neck, which the skeleton does not have
+        CHECK(retarget.mapped == 2);
+        CHECK(retarget.unmapped == 1);
+        CHECK(retarget.unresolved_bones.size() == 1);
+        CHECK(!retarget.unresolved_bones.empty() && retarget.unresolved_bones[0] == 2);
+        CHECK(retarget.joint_of(99) == -1); // out of range reads as unmapped, never out of bounds
+
+        // a skeleton whose joints carry none of the alias names maps nothing, and says so
+        mmd_retarget const empty = build_mmd_retarget(*motion, {"root", "head"});
+        CHECK(empty.mapped == 0);
+        CHECK(empty.unmapped == 3);
+        CHECK(empty.joint_of(0) == -1);
+    }
 } // namespace
 
 int main() {
@@ -373,5 +460,6 @@ int main() {
     test_mmd_motion_rejects_bad_input();
     test_mmd_motion_real_file_when_available();
     test_mmd_name_escape_is_an_unambiguous_literal();
+    test_mmd_retarget_resolves_by_alias();
     return vk_test::finish("test_animation");
 }
