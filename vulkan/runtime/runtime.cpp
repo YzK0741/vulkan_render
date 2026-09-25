@@ -677,6 +677,13 @@ namespace vulkan {
         return this->mesh_pipelines.contains(character_forward_pipeline_name) || this->meshlet_pipelines.contains(character_forward_pipeline_name);
     }
 
+    void runtime::set_toon_lookup(toon_lookup const& lookup) noexcept {
+        // A SOURCE, not per-frame state: it is read while `import_scene` builds each primitive's create info, so
+        // installing one AFTER an import changes nothing about what was already imported - which is what the
+        // declaration says, rather than something a caller has to discover.
+        this->toon_lookup_ = lookup;
+    }
+
     void runtime::set_character_forward(bool const enabled) noexcept {
         // CPU-side only, like set_clustered_lights: the flag rides `feature_facts::character_forward_pending`,
         // which `make_feature_facts` composes per frame and the pass's own `feature()` reads - so the next

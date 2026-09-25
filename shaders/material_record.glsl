@@ -43,6 +43,13 @@ struct Material {
     float normal_scale;
     uint flags; // bit0: normal map, bit1: occlusion map, bit2: emissive map, bit3: double-sided,
                 // bit4: alphaMode MASK, bit5: alphaMode BLEND
+    // ---- THE TOON SLOTS: what glTF's five cannot reach (see material_record in primitive.cppm) ----
+    // x = diffuse ramp, y = shadow LUT, z = specular ramp, w = matcap. THE WHITE FALLBACK (element 0) IS THE
+    // "DO NOT READ" VALUE and that is the contract rather than a convention: a lane holds a real index only
+    // when the material has that map AND the artist's `_Use` flag is on. So `toon_indices.x != 0u` IS "read
+    // the ramp", no enable word is needed, and a ramp lookup against white - which would be a CONSTANT rather
+    // than a no-op - cannot happen by accident.
+    uvec4 toon_indices;
 };
 
 #endif // VULKAN_RENDER_MATERIAL_RECORD_GLSL

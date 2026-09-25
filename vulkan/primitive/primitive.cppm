@@ -337,6 +337,36 @@ namespace vulkan {
     };
 
     /**
+     * @brief the LANES of `material_record::toon_indices`, in order
+     *
+     * THE ORDER IS THE CONTRACT, and it is spelled out on both sides of the boundary: here for the host that
+     * fills the record, and in the shader's `toon_slot_*` constants. The names are what the slot IS rather than
+     * the sidecar's spelling (`_DiffRampMap` and friends), because that spelling is one ASSET PIPELINE's and the
+     * mapping between the two belongs where the sidecar is read, not in a record layout.
+     */
+    export enum class toon_slot : uint32_t {
+        diffuse_ramp = 0,  // `_DiffRampMap`: what the lit/shadow ramp is looked up in
+        shadow_lut = 1,    // `_ShadowLutTex`: the colour the shadow side is tinted toward
+        specular_ramp = 2, // `_SpecRampMap`: the highlight's shape and strength
+        matcap = 3,        // `_MatcapTex`: the eye's reflection map
+        count = 4,
+    };
+
+    /**
+     * @ingroup vulkan_primitive
+     * @brief one primitive's TOON TEXTURE INPUTS, in `toon_slot` order
+     *
+     * These come from the model's toon material SIDECAR rather than from glTF, and the runtime does not read
+     * that file: it asks a `toon_lookup` the application installs (see `runtime::set_toon_lookup`), because
+     * `vulkancorekit` deliberately does not depend on `gltf_loader` and the sidecar reader lives there. An
+     * INVALID input means "this material has no such map" - and `flags` is what says whether the artist wanted
+     * it at all, which is a different question: a map can exist while its `_Use` flag is off.
+     */
+    export struct toon_inputs {
+        std::array<texture_input, static_cast<std::size_t>(toon_slot::count)> slots = {};
+    };
+
+    /**
      * @ingroup vulkan_primitive
      * @brief everything runtime::make_primitive() needs: geometry + material textures + factors
      */
@@ -365,6 +395,15 @@ namespace vulkan {
          * matching strings. 0 == `toon_family::none`.
          */
         uint32_t toon_family = 0;
+
+        /**
+         * THE TOON TEXTURE INPUTS, filled by whoever installs a `toon_lookup` - the application, which is the
+         * layer that reads the sidecar (see `runtime::set_toon_lookup`). Empty and flagless for a model with no
+         * sidecar, which is every model that is not a character; then every lane points at the white fallback
+         * and every bit is clear, so a shader that reads the block finds nothing switched ON rather than finding
+         * white as a value.
+         */
+        toon_inputs toon = {};
 
         // glTF doubleSided: render back faces and flip their normals (cull mode + record flag)
         bool double_sided = false;
@@ -407,8 +446,30 @@ namespace vulkan {
         float roughness_factor = 1.0f;
         float normal_scale = 1.0f;
         uint32_t flags = 0; // bit0: normal map, bit1: occlusion map, bit2: emissive map, bit3: double-sided, bit4: alphaMode MASK, bit5: alphaMode BLEND
+        /**
+         * THE TOON TEXTURE SLOTS, which are the ones glTF's five cannot reach.
+         *
+         * A toon character reads a SECOND set of maps that the glTF spec has no slot for - a diffuse ramp, a
+         * shadow LUT, a specular ramp, a matcap - and the toon material sidecar beside the model names them
+         * (see toon_material_sidecar.cppm). They arrive here as texture-array indices, exactly like the five
+         * above, and the ORDER IS THE CONTRACT with the shader's `toon_slot_*` constants:
+         *
+         *   x = diffuse ramp (`_DiffRampMap`), y = shadow LUT (`_ShadowLutTex`),
+         *   z = specular ramp (`_SpecRampMap`), w = matcap (`_MatcapTex`)
+         *
+         * THE WHITE FALLBACK (element 0) IS THE "DO NOT READ" VALUE, and that is the whole contract rather than a
+         * convention: a lane holds a real index when the material has that map AND the artist's `_Use` flag is
+         * on, and element 0 otherwise. So the shader needs no separate enable word - `toon_indices.x != 0u` IS
+         * "read the ramp" - and a ramp lookup against white (which would be a CONSTANT, not a no-op) cannot
+         * happen by accident. THE SIDECAR KEEPS THE TWO REASONS APART for diagnosis; here they collapse because
+         * to a shader they are the same instruction.
+         */
+        glm::uvec4 toon_indices = {};
     };
-    static_assert(sizeof(material_record) == 80);
+    // 96: the toon block is a uvec4 (16 bytes), which takes the record from 80 to 96. It cannot be 80 and it
+    // does not have to grow further - an enable WORD beside the indices would push std430's 16-byte struct
+    // alignment to 112, and the "element 0 means do not read" rule above is what makes the word unnecessary.
+    static_assert(sizeof(material_record) == 96);
 
     /**
      * @ingroup vulkan_primitive

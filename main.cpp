@@ -296,6 +296,7 @@ int main(int argc, char** argv) {
     //     no sidecar at all (the normal case for a model that is not a character), a slot whose flag is off,
     //     and a slot that is ON while the model has no such image - which is the case a consumer must handle by
     //     leaving the feature off rather than by substituting something.
+    std::optional<toon::sidecar> toon_sidecar = {}; // kept in scope: the import below is what consumes it
     {
         auto const sidecar = toon::load_sidecar(model_path);
         if (!sidecar.has_value()) {
@@ -303,6 +304,7 @@ int main(int argc, char** argv) {
         } else if (sidecar->empty()) {
             utility::log("toon sidecar: none beside '{}' (the normal case for a model that is not a character)", model_path);
         } else {
+            toon_sidecar = *sidecar;
             utility::log("toon sidecar: {} material(s) described ({} line(s) skipped)", sidecar->materials.size(), sidecar->skipped_lines);
             for (toon::material_sidecar const& material : sidecar->materials) {
                 // THE FAMILY COMES FROM THE LOADER'S CLASSIFIER over the SAME name, so the sidecar (which
@@ -414,6 +416,58 @@ int main(int argc, char** argv) {
     gltf::drawable_iterator const scene_first(*scenes, materials);
     gltf::drawable_iterator const scene_last;
     glm::vec3 const scene_import_shift = -scene_center + scene_sink;
+
+    // ---- THE TOON LOOKUP: the one place the sidecar reader and the renderer meet ----
+    // `vulkancorekit` deliberately does not depend on `gltf_loader` (see that target's note: the engine is
+    // loader-agnostic), so the runtime cannot hold a sidecar and must not learn what one is. What it CAN ask for
+    // is "the texture input for this material and this lane", and this application is the layer that links both
+    // - so this is where they are joined.
+    struct toon_lookup_state {
+        toon::sidecar const* sidecar = nullptr;
+        gltf::scenes const* scenes = nullptr;
+    };
+    // THE MAPPING between the asset pipeline's vocabulary and the record's layout, and the only place it appears:
+    // one sidecar slot name per `toon_slot` lane, in lane order.
+    static constexpr std::array<std::string_view, static_cast<std::size_t>(vulkan::toon_slot::count)> toon_slot_names = {"_DiffRampMap", "_ShadowLutTex", "_SpecRampMap", "_MatcapTex"};
+    auto const toon_texture = [](void* const owner, std::string_view const material_name, vulkan::toon_slot const lane) -> vulkan::texture_input {
+        toon_lookup_state const& state = *static_cast<toon_lookup_state*>(owner);
+        vulkan::texture_input out = {};
+        if (state.sidecar == nullptr || state.scenes == nullptr) {
+            return out;
+        }
+        toon::material_sidecar const* const material = state.sidecar->find(material_name);
+        if (material == nullptr) {
+            return out;
+        }
+        std::string_view const slot_name = toon_slot_names[static_cast<std::size_t>(lane)];
+        // THE ARTIST'S SWITCH DECIDES, and an off flag produces an INVALID input, which the record turns into the
+        // white fallback - i.e. "do not read" (see material_record::toon_indices). A map that exists while its
+        // flag is off must NOT be read: that is the first rule the sidecar module exists to keep.
+        if (!material->enabled(slot_name)) {
+            return out;
+        }
+        std::string_view const texture_name = material->slot(slot_name);
+        if (texture_name.empty()) {
+            return out;
+        }
+        std::optional<uint16_t> const index = state.scenes->texture_index_by_name(texture_name);
+        if (!index.has_value()) {
+            return out; // the sidecar names a map this model does not have
+        }
+        gltf::texture_data const& tex = state.scenes->textures[*index];
+        if (tex.data.empty() || tex.width == 0 || tex.height == 0) {
+            return out; // present but unusable: still "do not read" rather than a guess
+        }
+        out.data = std::span<unsigned char const>(tex.data.data(), tex.data.size());
+        out.width = tex.width;
+        out.height = tex.height;
+        out.mip_levels = 1;
+        out.valid = true;
+        return out;
+    };
+    toon_lookup_state const toon_state{.sidecar = toon_sidecar.has_value() ? &*toon_sidecar : nullptr, .scenes = &*scenes};
+    runtime.set_toon_lookup(vulkan::runtime::toon_lookup{.owner = const_cast<toon_lookup_state*>(&toon_state), .texture = toon_texture});
+
     vulkan::scene_import_result const imported = runtime.import_scene(node_first, node_last, scene_first, scene_last, scene_import_shift);
     utility::log("imported {} primitives ({} new materials)", imported.primitive_count, imported.material_count);
     runtime.log_scene_tree();

@@ -876,6 +876,16 @@ namespace gltf {
         std::array<image_view, 5> slots = {}; // albedo, metallic_roughness, normal, occlusion, emissive
         resolved_factors factors = {};
         bool double_sided = false; // glTF doubleSided: disable back-face culling + flip normals
+        /**
+         * THE MATERIAL'S NAME, carried alongside the family it classified into.
+         *
+         * The family alone is NOT enough for the toon material sidecar, and this is why: the sidecar is keyed by
+         * MATERIAL NAME, so a consumer holding only the family cannot find the entry that describes this
+         * material - it would have to guess, and two materials of one family (the character's two cloth
+         * materials, or its face and its brow) would collapse onto one entry. Carrying the name here is the
+         * same decision as carrying it on `gltf::material`, one stage closer to the consumer.
+         */
+        std::string name = {};
         /// the TOON FAMILY this material's name classified into (see toon_family_of), resolved ONCE here so
         /// no later stage re-derives it from a string
         uint32_t toon_family = 0;
@@ -933,6 +943,8 @@ namespace gltf {
         bool get_double_sided() const;
         /// the current drawable's TOON FAMILY (see toon_family_of), already resolved with the material
         uint32_t get_toon_family() const;
+        /// the current drawable's MATERIAL NAME, which is what the toon material sidecar is keyed by
+        [[nodiscard]] std::string_view get_material_name() const;
 
     private:
         void ensure_built() const; // build the current drawable's interleaved geometry lazily

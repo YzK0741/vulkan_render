@@ -1591,6 +1591,9 @@ namespace gltf {
             // through the whole pipeline or re-deriving it, and a per-draw string match is exactly the kind
             // of work that belongs at import.
             out.toon_family = static_cast<uint32_t>(toon_family_of(mat.name));
+            // ... AND THE NAME ITSELF, because the toon sidecar is keyed by it: a consumer that has only the
+            // family cannot look up the entry describing THIS material. See resolved_material::name.
+            out.name = mat.name;
             for (int i = 0; i < 5; ++i) {
                 auto const it = mat.texture_indices.find(std::string(slot_names[i]));
                 if (it == mat.texture_indices.end() || it->second >= scenes.textures.size()) {
@@ -1697,6 +1700,11 @@ namespace gltf {
     uint32_t drawable_iterator::get_toon_family() const {
         resolved_material const* material = this->current_material();
         return material == nullptr ? 0u : material->toon_family; // 0 == toon_family::none
+    }
+
+    std::string_view drawable_iterator::get_material_name() const {
+        resolved_material const* material = this->current_material();
+        return material == nullptr ? std::string_view{} : std::string_view(material->name);
     }
 
     // ---- async twins (see gltf_loader.cppm): delegate to the sync functions on a

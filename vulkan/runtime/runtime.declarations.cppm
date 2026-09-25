@@ -2256,6 +2256,48 @@ namespace vulkan {
 
         /**
          * @ingroup vulkan_runtime
+         * @brief HOW THE RUNTIME REACHES A MATERIAL'S TOON MAPS, without knowing what a sidecar is
+         *
+         * WHY A CALLBACK RATHER THAN THE DATA: the toon maps are named in a `.toon.tsv` beside the model, and
+         * the module that reads it lives in `gltf_loader` - which `vulkancorekit` deliberately does not depend
+         * on (see that target's note: the engine is loader-agnostic). So the runtime cannot hold a sidecar, and
+         * it must not learn what one is. What it CAN say is what it needs: given a material's NAME and one of
+         * the four `toon_slot` lanes, the texture input for it, and the artist's `_Use` bits for that material.
+         * The APPLICATION is the layer that links both, so the application installs this.
+         *
+         * A NULL `texture` MEANS "THIS RENDERER HAS NO TOON SOURCE", and then every primitive's toon block stays
+         * empty - which is every model that is not a character, and every build that never installs one. A null
+         * `flags` with a live `texture` is allowed and means "every lane that resolved is wanted"; the two are
+         * separable because a caller may have the maps without the sidecar's switches.
+         */
+        struct toon_lookup {
+            void* owner = nullptr;
+            /// the texture input for @p lane of @p material_name, or an INVALID one when the material has no such
+            /// map OR the artist's `_Use` flag is off - the two collapse HERE on purpose, because to a shader
+            /// they are one instruction ("do not read a ramp") and the record carries no enable word for it (see
+            /// `material_record::toon_indices`). The sidecar keeps them apart for diagnosis, and the application
+            /// is where the distinction is consumed.
+            texture_input (*texture)(void* owner, std::string_view material_name, toon_slot lane) = nullptr;
+        };
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief install the toon map source used by the NEXT import (see toon_lookup)
+         * @note the owner must outlive the import. The lookup is read while `import_scene` builds each
+         *       primitive's `primitive_create_info`, so a lookup installed after the import has no effect on
+         *       what was imported - which is the honest behaviour for a source rather than a mystery.
+         */
+        void set_toon_lookup(toon_lookup const& lookup) noexcept;
+
+        /**
+         * WHERE THIS RENDERER GETS A MATERIAL'S TOON MAPS (see `toon_lookup`). Empty by default, and then every
+         * primitive's toon block stays empty - which is what makes "no source installed" and "no sidecar beside
+         * this model" the same state rather than two to handle.
+         */
+        toon_lookup toon_lookup_ = {};
+
+        /**
+         * @ingroup vulkan_runtime
          * @brief enable directional shadow mapping: fills the light UBO with an orthographic
          *        view-proj framing the given scene bounds (plus the light direction, matching
          *        the sky sun). Must be called after the models exist (the shadow pass draws them).
@@ -3181,6 +3223,16 @@ namespace vulkan {
                 // THE TOON FAMILY, resolved by the loader from the material's NAME (the last place the name
                 // exists). Copied here like every other per-material fact so the runtime never sees a string.
                 info.toon_family = drawable.get_toon_family();
+                // ---- THE TOON MAPS, from the installed lookup (see set_toon_lookup) ----
+                // The runtime asks by NAME because the sidecar is keyed by name; it never sees the sidecar.
+                // A null lookup leaves `info.toon` empty, which is what a model with no sidecar gets: an empty
+                // block rather than a block of white, so a shader finds nothing switched on.
+                if (this->toon_lookup_.texture != nullptr) {
+                    std::string_view const material_name = drawable.get_material_name();
+                    for (uint32_t lane = 0; lane < static_cast<uint32_t>(toon_slot::count); ++lane) {
+                        info.toon.slots[lane] = this->toon_lookup_.texture(this->toon_lookup_.owner, material_name, static_cast<toon_slot>(lane));
+                    }
+                }
             };
             // attach one leaf primitive to @p node (geometry from the next drawable of the stream);
             // returns the created primitive or nullptr if the pipeline is missing

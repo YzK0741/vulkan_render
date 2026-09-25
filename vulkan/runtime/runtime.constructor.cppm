@@ -969,17 +969,25 @@ namespace vulkan {
         //         glTF image, so a raw data pointer is NOT a stable identity; the digest lookup
         //         below is what actually dedups); missing slots point at the white fallback
         //         (element 0).
-        std::array<std::pair<texture_input const*, VkFormat>, 5> const slots = {
+        std::array<std::pair<texture_input const*, VkFormat>, 5 + static_cast<std::size_t>(toon_slot::count)> const slots = {
             std::pair{&info.albedo, VK_FORMAT_R8G8B8A8_SRGB},
             std::pair{&info.metallic_roughness, VK_FORMAT_R8G8B8A8_UNORM},
             std::pair{&info.normal, VK_FORMAT_R8G8B8A8_UNORM},
             std::pair{&info.occlusion, VK_FORMAT_R8G8B8A8_UNORM},
             std::pair{&info.emissive, VK_FORMAT_R8G8B8A8_SRGB}, // glTF emissive textures are sRGB
+            // ---- THE TOON SLOTS, in `toon_slot` order, and ALL FOUR ARE sRGB ----
+            // They are colour data the reference decodes before using (its ramp lookup is followed by
+            // `srgbToLinear(rd.rgb)`), so uploading them as linear would double-decode them. The specular ramp
+            // is in there for the same reason: it is a COLOUR ramp rather than a scalar curve.
+            std::pair{&info.toon.slots[static_cast<std::size_t>(toon_slot::diffuse_ramp)], VK_FORMAT_R8G8B8A8_SRGB},
+            std::pair{&info.toon.slots[static_cast<std::size_t>(toon_slot::shadow_lut)], VK_FORMAT_R8G8B8A8_SRGB},
+            std::pair{&info.toon.slots[static_cast<std::size_t>(toon_slot::specular_ramp)], VK_FORMAT_R8G8B8A8_SRGB},
+            std::pair{&info.toon.slots[static_cast<std::size_t>(toon_slot::matcap)], VK_FORMAT_R8G8B8A8_SRGB},
         };
 
-        std::array<uint32_t, 5> texture_indices = {};
+        std::array<uint32_t, 5 + static_cast<std::size_t>(toon_slot::count)> texture_indices = {};
         uint32_t heap_texture_descriptors = 0; // how many went into the descriptor heap (see the log below)
-        for (int i = 0; i < 5; ++i) {
+        for (std::size_t i = 0; i < slots.size(); ++i) {
             texture_input const& tex = *slots[i].first;
             if (!tex.valid || tex.data.empty()) {
                 texture_indices[i] = this->white_texture_index; // white fallback
@@ -1096,6 +1104,12 @@ namespace vulkan {
         material_record record = {};
         record.tex_indices = glm::uvec4(texture_indices[0], texture_indices[1], texture_indices[2], texture_indices[3]);
         record.emissive_index = texture_indices[4];
+        // ---- THE TOON SLOTS, from the same upload loop and therefore through the same content-addressed dedup:
+        //      a ramp shared by six materials of one character is uploaded ONCE. The FLAGS come from the sidecar
+        //      rather than from the indices, because a lane can hold a real texture whose `_Use` flag is off -
+        //      and a shader must not read it (see material_record::toon_flags).
+        constexpr std::size_t toon_base = 5;
+        record.toon_indices = glm::uvec4(texture_indices[toon_base + 0], texture_indices[toon_base + 1], texture_indices[toon_base + 2], texture_indices[toon_base + 3]);
         record.base_color_factor = info.factors.base_color_factor;
         record.emissive_factor = info.factors.emissive_factor;
         record.metallic_factor = info.factors.metallic_factor;
