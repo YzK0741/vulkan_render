@@ -4,8 +4,9 @@ import vstd;
 import application_configuration;
 import chores; // demo bootstrap helpers (shader loading / dir locating / pipelines)
 import gltf_loader;
-import utility;          // re-exports utility:frame_clock / frame_stats / bvh / better_pmr / thread_pool / data_block
-import vulkan.animation; // animation::controller: glTF playback / skinning / morphs on the runtime tree
+import toon_material_sidecar; // the .toon.tsv a character model carries: its toon maps, and the _Use flags
+import utility;               // re-exports utility:frame_clock / frame_stats / bvh / better_pmr / thread_pool / data_block
+import vulkan.animation;      // animation::controller: glTF playback / skinning / morphs on the runtime tree
 import vulkan.math;
 import vulkan.scene_tree; // scene storage + GPU primitives (was vulkan.model)
 import vulkan.runtime;
@@ -279,6 +280,42 @@ int main(int argc, char** argv) {
     // the camera then orbits/looks at the model's position instead of the scene origin.
     glm::vec3 const scene_sink(0.0f, -scene_radius, 0.0f);
     runtime.camera.target = scene_sink;
+
+    // 8b. THE TOON MATERIAL SIDECAR, RESOLVED AGAINST THIS MODEL'S OWN IMAGES.
+    //
+    //     A toon character's materials read a SECOND set of texture slots that glTF has no concept of - a
+    //     diffuse ramp, a shadow LUT, a specular ramp, a matcap, a face SDF - and the `.toon.tsv` beside the
+    //     model names them. Nothing connects that file to the model except IMAGE NAMES, which is why
+    //     `gltf_loader` now carries them (see `texture_data::name` and `scenes::texture_index_by_name`).
+    //
+    //     THIS BLOCK RESOLVES THE JOIN AND REPORTS IT, which is deliberately all it does so far: it is the one
+    //     place the resolution can be SEEN on a real character rather than on a test fixture, and what it
+    //     prints is exactly the data the shading stage needs next - each material's family, and for every toon
+    //     slot the sidecar declares, whether the artist switched it on and which of the model's images it
+    //     names. The three outcomes are each reported distinctly because they are three different situations:
+    //     no sidecar at all (the normal case for a model that is not a character), a slot whose flag is off,
+    //     and a slot that is ON while the model has no such image - which is the case a consumer must handle by
+    //     leaving the feature off rather than by substituting something.
+    {
+        auto const sidecar = toon::load_sidecar(model_path);
+        if (!sidecar.has_value()) {
+            utility::log("toon sidecar: NOT READ - {}", sidecar.error());
+        } else if (sidecar->empty()) {
+            utility::log("toon sidecar: none beside '{}' (the normal case for a model that is not a character)", model_path);
+        } else {
+            utility::log("toon sidecar: {} material(s) described ({} line(s) skipped)", sidecar->materials.size(), sidecar->skipped_lines);
+            for (toon::material_sidecar const& material : sidecar->materials) {
+                // THE FAMILY COMES FROM THE LOADER'S CLASSIFIER over the SAME name, so the sidecar (which
+                // supplies the parameters) and the renderer (which selects them) cannot disagree about which
+                // family a material is: there is one classifier and both sides ask it.
+                utility::log("  '{}' -> family {} | {} slot(s), {} scalar(s)", material.name, static_cast<uint32_t>(gltf::toon_family_of(material.name)), material.slots.size(), material.scalars.size());
+                for (auto const& [slot_name, texture_name] : material.slots) {
+                    std::optional<uint16_t> const index = scenes->texture_index_by_name(texture_name);
+                    utility::log("      {} = '{}' -> {} | {}", slot_name, texture_name, index.has_value() ? std::format("texture #{}", *index) : std::string("ABSENT from this model"), material.enabled(slot_name) ? "ON" : "off");
+                }
+            }
+        }
+    }
 
     // 9. IBL stage 2 + material resolve run concurrently via their _async wrappers: the
     //    prefilter (GGX importance sampling), irradiance map, BRDF LUT and the per-material
