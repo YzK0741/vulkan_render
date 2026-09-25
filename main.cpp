@@ -320,6 +320,7 @@ int main(int argc, char** argv) {
         {"_ShadowLutTex", "_UseShadowLutTex"},
         {"_SpecRampMap", "_UseSpecRampMap"},
         {"_MatcapTex", "_UseMatcap"},
+        {"_SDFLightmap", "_UseSDFLightmap"},
     }};
     // The declared flag for a toon lane; the `_Use<Slot>` convention for every OTHER slot, which the diagnostic
     // needs because it walks the whole file (`_BaseMap`, `_BumpMap`, the outline and SDF masks and the rest).

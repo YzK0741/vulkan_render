@@ -349,7 +349,8 @@ namespace vulkan {
         shadow_lut = 1,    // `_ShadowLutTex`: the colour the shadow side is tinted toward
         specular_ramp = 2, // `_SpecRampMap`: the highlight's shape and strength
         matcap = 3,        // `_MatcapTex`: the eye's reflection map
-        count = 4,
+        sdf_lightmap = 4,  // `_SDFLightmap`: the FACE's shadow terminator, as a 2D distance field
+        count = 5,
     };
 
     /**

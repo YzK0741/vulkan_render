@@ -975,14 +975,27 @@ namespace vulkan {
             std::pair{&info.normal, VK_FORMAT_R8G8B8A8_UNORM},
             std::pair{&info.occlusion, VK_FORMAT_R8G8B8A8_UNORM},
             std::pair{&info.emissive, VK_FORMAT_R8G8B8A8_SRGB}, // glTF emissive textures are sRGB
-            // ---- THE TOON SLOTS, in `toon_slot` order, and ALL FOUR ARE sRGB ----
-            // They are colour data the reference decodes before using (its ramp lookup is followed by
-            // `srgbToLinear(rd.rgb)`), so uploading them as linear would double-decode them. The specular ramp
-            // is in there for the same reason: it is a COLOUR ramp rather than a scalar curve.
+            // ---- THE TOON SLOTS, in `toon_slot` order ----
+            // THE FOUR COLOUR LANES ARE sRGB. They are colour data the reference decodes before using (its ramp
+            // lookup is followed by `srgbToLinear(rd.rgb)`), so uploading them as linear would double-decode
+            // them. The specular ramp is in there for the same reason: it is a COLOUR ramp rather than a scalar
+            // curve.
+            //
+            // THE SDF IS NOT, AND THAT IS NOT AN OVERSIGHT: the reference declares its SDF sampler with LINEAR
+            // filtering and CLAMP addressing and NO sRGB read flag, because the lightmap holds a DISTANCE FIELD
+            // - a number per texel, not a colour - and decoding it as sRGB would bend the very quantity the
+            // sigmoid thresholds. So this is the one toon lane uploaded UNORM.
+            //
+            // AND THIS ARRAY IS WHY THE ENUM AND THE INITIALISERS MUST AGREE: its size is `5 + toon_slot::count`,
+            // so adding a lane to the enum without adding it here makes the last element value-initialised -
+            // `{nullptr, VK_FORMAT_UNDEFINED}` - and the loop below dereferences `slots[i].first`. Measured: the
+            // renderer died with an access violation inside `register_material` and the log stopped one stage
+            // earlier, which is what sent the search to the descriptor writes instead of here.
             std::pair{&info.toon.slots[static_cast<std::size_t>(toon_slot::diffuse_ramp)], VK_FORMAT_R8G8B8A8_SRGB},
             std::pair{&info.toon.slots[static_cast<std::size_t>(toon_slot::shadow_lut)], VK_FORMAT_R8G8B8A8_SRGB},
             std::pair{&info.toon.slots[static_cast<std::size_t>(toon_slot::specular_ramp)], VK_FORMAT_R8G8B8A8_SRGB},
             std::pair{&info.toon.slots[static_cast<std::size_t>(toon_slot::matcap)], VK_FORMAT_R8G8B8A8_SRGB},
+            std::pair{&info.toon.slots[static_cast<std::size_t>(toon_slot::sdf_lightmap)], VK_FORMAT_R8G8B8A8_UNORM},
         };
 
         std::array<uint32_t, 5 + static_cast<std::size_t>(toon_slot::count)> texture_indices = {};
