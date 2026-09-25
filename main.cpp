@@ -726,24 +726,24 @@ int main(int argc, char** argv) {
     // made here. This model is exactly that case: `zhuangfy_scalar.glb` is seven nodes and zero skins, a static
     // pose split by body part, and a model that cannot turn its head has one head frame whether it is read from
     // a bone or from these three constants.
+    // WHICH RIG AND WHICH JOINT, kept for the frame loop below: both are needed there to read the bone's world
+    // matrix, and the joint index is the SAME number `head_joint_of` returns (an index into `skin::joints`, not
+    // an asset node index) because that is what picks a matrix out of the rig's joint block.
+    std::size_t head_rig = 0;
+    std::optional<std::size_t> head_joint = std::nullopt;
     {
         gltf::head_basis head = gltf::head_basis_fallback();
-        bool has_head_bone = false;
-        for (std::size_t scene_index = 0; scene_index < scenes->scene.size() && !has_head_bone; ++scene_index) {
+        for (std::size_t scene_index = 0; scene_index < scenes->scene.size() && !head_joint.has_value(); ++scene_index) {
             for (std::size_t skin_index = 0; skin_index < scenes->skins.size(); ++skin_index) {
-                if (gltf::head_joint_of(*scenes, scene_index, skin_index).has_value()) {
-                    has_head_bone = true;
+                if (std::optional<std::size_t> const joint = gltf::head_joint_of(*scenes, scene_index, skin_index); joint.has_value()) {
+                    head_rig = skin_index;
+                    head_joint = joint;
                     break;
                 }
             }
         }
-        if (has_head_bone) {
-            // SAID OUT LOUD RATHER THAN SILENTLY: turning a joint into these three axes is
-            // `gltf::head_basis_from_axes`, and what is missing is the JOINT MATRIX itself - it lives in the
-            // animation controller's per-frame skin matrices, and no model in this repository has a skeleton to
-            // exercise that path against. So a character WITH a head bone is shaded by the fallback until that
-            // wiring exists, and this line is how that is noticeable instead of mysterious.
-            utility::log("head frame: '{}' HAS a head bone, but the joint-matrix path is not wired - shading from the fallback frame", model_path);
+        if (head_joint.has_value()) {
+            utility::log("head frame: '{}' HAS a head bone at rig {} joint {} - the frame is read from it every frame", model_path, head_rig, *head_joint);
         } else {
             utility::log("head frame: no head bone in '{}' ({} skin(s)) - shading from the reference's fallback frame", model_path, scenes->skins.size());
         }
@@ -1108,6 +1108,39 @@ int main(int argc, char** argv) {
                              ? capture.animation_seconds_per_frame
                              : static_cast<float>(std::min(frame_clock.delta_seconds(), 0.25));
         animation.update(dt);
+        // ---- THE HEAD FRAME FOLLOWS THE BONE, published here because this is where the pose exists ----
+        //
+        // IT LANDS ONE FRAME LATE, and that is a consequence of the per-frame-slot arrangement rather than an
+        // oversight: the runtime copies `head_state` into the paced slot INSIDE pace_and_acquire(), which has
+        // already run by the time this frame's pose is produced. So a pose is shaded with the head frame
+        // computed from the previous pose. For a pose that is standing still - which is what a capture gates on,
+        // and what this model's rest pose is - the difference is exactly zero, and for a turning head it is one
+        // frame of lag: the same trade every other per-frame write in this loop makes.
+        //
+        // THE EXTRACTION IS THE REFERENCE'S (`EfFaceGetHeadBasis`): `-row3` of the bone's world matrix is the
+        // head's forward and `-row1` its right, where "row" is HLSL's and therefore a COLUMN of the
+        // column-major matrix this engine stores. `head_basis_from_axes` negates, re-orthogonalises and falls
+        // back when the bone is degenerate, so a zero matrix here cannot put NaNs in the sigmoid.
+        if (head_joint.has_value()) {
+            if (std::optional<glm::mat4> const bone = animation.joint_world(head_rig, *head_joint); bone.has_value()) {
+                glm::mat4 const& joint = *bone;
+                glm::vec3 const forward_row(joint[0][2], joint[1][2], joint[2][2]); // HLSL `_31_32_33`
+                glm::vec3 const right_row(joint[0][0], joint[1][0], joint[2][0]);   // HLSL `_11_12_13`
+                gltf::head_basis const basis = gltf::head_basis_from_axes(forward_row, right_row);
+                runtime.set_head_basis(vulkan::head_ubo{.front = glm::vec4(basis.front, 0.0f), .right = glm::vec4(basis.right, 0.0f), .up = glm::vec4(basis.up, 0.0f)});
+                static bool logged_head_probe = false;
+                if (!logged_head_probe) {
+                    logged_head_probe = true;
+                    utility::log("head probe: bone forward row ({:.3f} {:.3f} {:.3f}) right row ({:.3f} {:.3f} {:.3f}) -> basis front ({:.3f} {:.3f} {:.3f}) from_skeleton {}", forward_row.x, forward_row.y, forward_row.z, right_row.x, right_row.y, right_row.z, basis.front.x, basis.front.y, basis.front.z, basis.from_skeleton);
+                }
+            } else {
+                static bool logged_head_miss = false;
+                if (!logged_head_miss) {
+                    logged_head_miss = true;
+                    utility::log("head probe: joint_world({}, {}) returned NOTHING", head_rig, *head_joint);
+                }
+            }
+        }
         gui.anim_time = animation.current_time();  // keep the gui time slider in sync
         gui.anim_playing = animation.is_playing(); // reflect controller-side pauses (scrub / select)
         gui.anim_index = static_cast<int>(animation.current());

@@ -626,6 +626,30 @@ namespace vulkan::animation {
 
         // ---- playback table / gui binding ----
 
+        /**
+         * @brief the WORLD matrix a JOINT had in the frame this controller last produced, or nothing
+         *
+         * WHY THIS IS A PUBLIC READER RATHER THAN A CALLBACK: the face SDF shades a face in the HEAD'S frame, and
+         * that frame is `-row3` / `-row1` of this matrix (see gltf_loader's `head_basis_from_axes`). Pushing it
+         * through a host callback would mean the controller had to know what a head basis is; reading it means
+         * the layer that already knows - the application, which links both the loader and the runtime - asks a
+         * question about a joint and gets a matrix.
+         *
+         * THE CACHE IT READS IS REBUILT EVERY FRAME (`skin_world_cache`, indexed through `skin_world_index`), so
+         * the answer is the pose the last update produced rather than a stale one, and a caller that reads it
+         * after `update()` and before the next one gets a consistent frame.
+         *
+         * @param rig_index index into the active skin rigs, in the order the scene was imported
+         * @param joint_index index into that rig's `skin::joints` - the SAME number `gltf::head_joint_of`
+         *        returns, and NOT an asset node index; the two differ and confusing them reads the wrong bone
+         * @return the joint's world matrix, or nothing when either index is out of range or the joint was not
+         *         collected into the cache - a caller has no matrix to use, which is not an error
+         */
+        [[nodiscard]] std::optional<glm::mat4> joint_world(std::size_t rig_index, std::size_t joint_index) const noexcept;
+
+        /** @brief number of active skin rigs, so a caller can iterate them without reaching into the internals */
+        [[nodiscard]] std::size_t skin_rig_count() const noexcept;
+
         /** @brief number of channel-bearing clips (the combo lists these) */
         [[nodiscard]] std::size_t playable_count() const noexcept;
         /** @brief display name of playable @p index ("<unnamed>" when the glTF has none) */

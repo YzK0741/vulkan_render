@@ -159,6 +159,28 @@ namespace vulkan::animation {
 
     // ---- playback table / gui binding ----
 
+    std::size_t controller::skin_rig_count() const noexcept {
+        return this->skin_rigs.size();
+    }
+
+    std::optional<glm::mat4> controller::joint_world(std::size_t const rig_index, std::size_t const joint_index) const noexcept {
+        if (rig_index >= this->skin_rigs.size()) {
+            return std::nullopt;
+        }
+        skin_rig const& rig = this->skin_rigs[rig_index];
+        if (joint_index >= rig.s.joints.size()) {
+            return std::nullopt;
+        }
+        // THE JOINT IS AN ASSET NODE INDEX HERE, and `skin_world_index` is keyed by exactly that: the cache is
+        // built over "every wanted node", joints and mesh nodes together (see skin_sources), so a joint this
+        // controller collected is a lookup and a joint it did not is a miss rather than a wrong matrix.
+        auto const found = this->skin_world_index.find(rig.s.joints[joint_index]);
+        if (found == this->skin_world_index.end() || found->second >= this->skin_world_cache.size()) {
+            return std::nullopt;
+        }
+        return this->skin_world_cache[found->second];
+    }
+
     std::size_t controller::playable_count() const noexcept {
         return this->playable.size();
     }
