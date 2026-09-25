@@ -55,6 +55,16 @@
 static const float character_rim_light_end = 0.35;
 
 /**
+ * @brief the V band a RAMP ATLAS's diffuse ramp lives at
+ *
+ * The reference samples ONE ramp texture twice, at two V bands - the diffuse ramp at 0.125 and the specular
+ * ramp at 0.375 - which is why a single map serves two lookups. The band is the ASSET's layout rather than this
+ * stage's choice, so it is named rather than inlined: a ramp authored with its bands elsewhere would need this
+ * number, and finding it here is faster than finding it in a shader body.
+ */
+static const float character_ramp_band_v = 0.125;
+
+/**
  * @brief the toon diffuse: half-Lambert GATED by the shadow term, then banded
  *
  * THIS IS THE REFERENCE'S STRUCTURE, and the gating is the part worth stating because it is what makes the
@@ -81,7 +91,7 @@ static const float character_rim_light_end = 0.35;
  *        reference's dark side is a hue shift as much as a darkening, and a grey scale factor cannot
  *        express it. Cooler than the albedo, which is what the reference's skin and cloth ramps encode.
  */
-float3 toon_diffuse(float3 albedo, float3 n, float3 world_pos, float ao, toon_params params) {
+float3 toon_diffuse(float3 albedo, float3 n, float3 world_pos, float ao, toon_params params, uint ramp_index) {
     // THE LIGHT VECTOR IS THE SURFACE-TO-LIGHT DIRECTION, which is the engine's existing convention
     // (`evaluate_direct_light` normalizes this same field into its `l`).
     const float3 l = normalize(light_at(heap_light_slot).light_dir.xyz);
@@ -95,9 +105,24 @@ float3 toon_diffuse(float3 albedo, float3 n, float3 world_pos, float ao, toon_pa
 
     // THE GATE. The shadow term multiplies the half-Lambert rather than being applied after it.
     const float gated = saturate(shadow * half_lambert);
-    // THE RAMP: one hard-ish threshold, not a quantizer. See character_toon_center for why these are two
-    // different shapes and why the difference was measured rather than assumed.
-    const float band = smoothstep(params.center - params.softness, params.center + params.softness, gated);
+
+    // ---- THE LIGHT TINT: the material's OWN RAMP when it has one, the procedural threshold otherwise ----
+    //
+    // THE TEXTURE CARRIES BOTH THE STEP AND THE COLOUR, and that is why the procedural threshold is NOT also
+    // applied on top of a looked-up value: a ramp atlas IS a quantizer, baked - its hard edge is in its pixels,
+    // at the V band the reference samples - and running a second threshold over a ramp read would quantize an
+    // already-quantized value and flatten the step back out. The two branches are ALTERNATIVES, not layers.
+    //
+    // A LANE OF 0 MEANS "DO NOT READ" (it is the white fallback - see material_record::toon_indices), so a
+    // material with no ramp, or one whose artist switched the ramp off, takes the procedural path. That is what
+    // keeps the family table's thresholds meaningful: they are what a character looks like BEFORE its ramps
+    // arrive, not a second opinion about them.
+    float3 light_tint;
+    if (ramp_index != 0u) {
+        light_tint = heap_texel(heap_at<Texture2D<float4>>(heap_slots_textures + ramp_index), heap_sampler_texture, float2(gated, character_ramp_band_v)).rgb;
+    } else {
+        light_tint = lerp(params.shadow_tint, float3(1.0, 1.0, 1.0), smoothstep(params.center - params.softness, params.center + params.softness, gated));
+    }
 
     // The sun's radiance and the /PI are the ENGINE'S expressions (`shade_surface` builds the same pair:
     // `vec3(7.5 * sun_intensity)` and `kd * base_color / PI`), so a toon fragment and a deferred fragment
@@ -111,7 +136,7 @@ float3 toon_diffuse(float3 albedo, float3 n, float3 world_pos, float ao, toon_pa
     // is to CHOOSE the side of the ramp; the tint is what the shadow side looks like, and it is a colour,
     // not an extinction. Measured: the double-applied version and the flat-albedo probe were hard to tell
     // apart by eye, which is what a banding term multiplied by its own gate does.
-    const float3 direct = albedo * sun * lerp(params.shadow_tint, float3(1.0, 1.0, 1.0), band) / PI;
+    const float3 direct = albedo * sun * light_tint / PI;
 
     // The ambient is the engine's irradiance map and the engine's composition
     // (`ibl_diffuse * albedo * ao`), so a toon character in a scene is lit by the same sky as everything
@@ -166,7 +191,7 @@ float4 main(
     // gltf_loader's toon_family_of) and carried through the material record. An unclassified material gets
     // `toon_params_for(0)`, which is the family-independent path.
     const toon_params params = toon_params_for(s.toon_family);
-    const float3 colour = toon_diffuse(s.albedo, normalize(s.normal), v_world_pos, s.ao, params);
+    const float3 colour = toon_diffuse(s.albedo, normalize(s.normal), v_world_pos, s.ao, params, s.toon_indices.x);
 
     // the BLEND rule, copied from unlit.slang: an alphaMode BLEND material carries its own coverage, and
     // every other material is fully opaque regardless of what its base colour's alpha says

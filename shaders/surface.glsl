@@ -134,6 +134,10 @@ struct surface_sample {
     float ao;        // mix(1, occlusion texture .r, occlusion_strength)
     uint flags;      // the material record's flag bits (see Material)
     uint toon_family; // the toon material family (see Material::toon_family); 0 == none
+    // THE TOON TEXTURE LANES (see Material::toon_indices): x = diffuse ramp, y = shadow LUT, z = specular
+    // ramp, w = matcap. ELEMENT 0 IS "DO NOT READ" - it is the white fallback, and a stage that read it as a
+    // ramp would tint from a constant rather than from a no-op.
+    uvec4 toon_indices;
 };
 
 /**
@@ -171,6 +175,7 @@ surface_sample gather_surface(vec3 world_pos, vec3 geo_normal, vec2 uv) {
     s.emissive = mat.emissive_factor.rgb * heap_sample(mat.emissive_index, uv).rgb;
     s.flags = mat.flags;
     s.toon_family = mat.toon_family;
+    s.toon_indices = mat.toon_indices;
 
     // ---- normal: optional tangent-space normal map, else the interpolated normal ----
     if ((mat.flags & 1u) != 0u) {
