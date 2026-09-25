@@ -165,17 +165,29 @@ namespace vulkan::animation {
 
     std::string escape_mmd_name(std::string_view raw) {
         static constexpr char digits[] = "0123456789abcdef";
+        // A C hex escape swallows every hex digit that follows it, so "\x89E" is the single value
+        // 0x89E rather than two bytes - which matters because a retarget table is generated from
+        // this output.  When the byte after an escape would render as a literal hex digit the two
+        // are separated by an empty literal, a no-op in C: "\x89""E".  Only printable ASCII can
+        // collide, since every hex digit character is printable and every other byte renders as
+        // "\x..", which begins with a backslash.
+        auto const is_hex_digit = [](unsigned char const c) {
+            return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+        };
         std::string out;
         out.reserve(raw.size());
-        for (char const c : raw) {
-            auto const byte = static_cast<unsigned char>(c);
-            if (byte >= 0x20u && byte < 0x7fu && byte != '\\') {
+        for (std::size_t i = 0; i < raw.size(); ++i) {
+            auto const byte = static_cast<unsigned char>(raw[i]);
+            if (byte >= 0x20u && byte < 0x7fu && byte != '\\' && byte != '"') {
                 out.push_back(static_cast<char>(byte));
-            } else {
-                out.push_back('\\');
-                out.push_back('x');
-                out.push_back(digits[(byte >> 4u) & 0xfu]);
-                out.push_back(digits[byte & 0xfu]);
+                continue;
+            }
+            out.push_back('\\');
+            out.push_back('x');
+            out.push_back(digits[(byte >> 4u) & 0xfu]);
+            out.push_back(digits[byte & 0xfu]);
+            if (i + 1 < raw.size() && is_hex_digit(static_cast<unsigned char>(raw[i + 1]))) {
+                out += "\"\"";
             }
         }
         return out;

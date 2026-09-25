@@ -181,6 +181,10 @@ namespace vulkan::animation {
      * @brief render a raw Shift-JIS name as ASCII, escaping every non-ASCII byte as @c \\xNN
      *
      * Names stay undecoded on purpose, so this is how they are logged without inventing a codepage.
+     * The result is also a usable C string literal body: a hex escape followed by a literal hex
+     * digit would otherwise merge into one escape (0x89 followed by 'E' is the single value 0x89E),
+     * so such a pair is separated by an empty literal, and a quote is escaped rather than passed
+     * through.
      */
     export std::string escape_mmd_name(std::string_view raw);
 

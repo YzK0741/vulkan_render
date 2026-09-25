@@ -338,6 +338,26 @@ namespace {
         CHECK(m->unparsed_bytes == 0);
         CHECK(m->ik.size() == 4);
     }
+
+    void test_mmd_name_escape_is_an_unambiguous_literal() {
+        // 右足ＩＫ in Shift-JIS. The byte right after the first escape is 'E', itself a literal hex
+        // digit, so without a separator the two merge into the single escape 0x89E - which is
+        // exactly what a retarget table generated from this output would then contain.
+        std::string const raw("\x89\x45\x91\xab\x82\x68\x82\x6a", 8);
+        std::string const escaped = escape_mmd_name(raw);
+        CHECK(escaped == "\\x89\"\"E\\x91\\xab\\x82h\\x82j");
+
+        // The invariant behind that one case: no escape may be followed by a literal hex digit.
+        // An escape spans i..i+3, so the character after it is at i+4.
+        for (std::size_t i = 0; i + 4 < escaped.size(); ++i) {
+            if (escaped[i] != '\\' || escaped[i + 1] != 'x') {
+                continue;
+            }
+            char const after = escaped[i + 4];
+            bool const hex = (after >= '0' && after <= '9') || (after >= 'a' && after <= 'f') || (after >= 'A' && after <= 'F');
+            CHECK(!hex);
+        }
+    }
 } // namespace
 
 int main() {
@@ -352,5 +372,6 @@ int main() {
     test_mmd_bezier_solver();
     test_mmd_motion_rejects_bad_input();
     test_mmd_motion_real_file_when_available();
+    test_mmd_name_escape_is_an_unambiguous_literal();
     return vk_test::finish("test_animation");
 }
