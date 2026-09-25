@@ -347,7 +347,7 @@ namespace {
             aliased.emplace_back(alias.joint_name);
         }
         mmd_retarget const retarget = build_mmd_retarget(*m, aliased);
-        CHECK(mmd_bone_aliases().size() == 29);
+        CHECK(mmd_bone_aliases().size() == 90);
         CHECK(retarget.mapped == mmd_bone_aliases().size());
         CHECK(retarget.unmapped == m->bones.size() - mmd_bone_aliases().size());
     }
@@ -435,7 +435,7 @@ namespace {
             return;
         }
         // order matters: the joint index is the position in this list, not the alias table's
-        std::vector<std::string> const joints = {"mmd_head", "mmd_center"};
+        std::vector<std::string> const joints = {"head", "center"};
         mmd_retarget const retarget = build_mmd_retarget(*motion, joints);
 
         CHECK(retarget.joint_of_bone.size() == 3);
@@ -449,7 +449,7 @@ namespace {
         CHECK(retarget.joint_of(99) == -1); // out of range reads as unmapped, never out of bounds
 
         // a skeleton whose joints carry none of the alias names maps nothing, and says so
-        mmd_retarget const empty = build_mmd_retarget(*motion, {"root", "head"});
+        mmd_retarget const empty = build_mmd_retarget(*motion, {"nope_a", "nope_b"});
         CHECK(empty.mapped == 0);
         CHECK(empty.unmapped == 3);
         CHECK(empty.joint_of(0) == -1);
@@ -463,12 +463,15 @@ namespace {
         if (!motion.has_value()) {
             return;
         }
-        mmd_retarget const retarget = build_mmd_retarget(*motion, {"mmd_center"});
+        mmd_retarget const retarget = build_mmd_retarget(*motion, {"center"});
         CHECK(retarget.mapped == 1);
 
         clip const baked = bake_mmd_clip(*motion, retarget);
         CHECK(baked.samplers.size() == 2); // translation and rotation
         CHECK(baked.channels.size() == 2);
+        if (baked.samplers.size() != 2 || baked.channels.size() != 2) {
+            return; // indexing below would read out of bounds and segfault rather than fail
+        }
         CHECK(baked.channels[0].target_node == 0); // the joint the retarget resolved
         CHECK(baked.channels[1].target_node == 0);
         CHECK(baked.channels[0].path == channel_path::translation);
