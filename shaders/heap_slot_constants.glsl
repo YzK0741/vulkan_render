@@ -66,6 +66,19 @@ const uint heap_slots_meshlet_stats = heap_slot_base + 746u;
 // group count IS the survivor count and a workgroup is never launched for a meshlet nobody will see. One descriptor
 // with a per-frame lane, like every other per-frame buffer (see core::heap_slots::meshlet_culled).
 const uint heap_slots_meshlet_culled = heap_slot_base + 747u;
+// THE FACE SDF LANE TABLE: one uint per material - that material's `_SDFLightmap` texture-array index, or 0 for
+// "do not read", which is the same contract `material_record::toon_indices` uses for its four.
+//
+// WHY A BUFFER OF ITS OWN RATHER THAN A FIFTH COMPONENT THERE, and it is a measurement rather than a preference:
+// the material record is INLINE IN THE PER-DRAW PUSH BLOCK (`surface.glsl`: 96 B of material fields plus two
+// heap lanes; `shadow.slang`: 96 + 3 lanes, with the cascade pinned at offset 96), so a word added to it moves
+// every one of those offsets and grows a push block that is already near its limit. The naive version compiled
+// and then crashed the renderer.
+//
+// ONE DESCRIPTOR, NOT A PER-FRAME PAIR, for the same reason `meshlets` is one: the values are fixed at scene
+// import and never rewritten, so there is no frame in flight that could read a buffer the next frame is writing
+// - which is the whole reason the frame-varying arrays above are pairs.
+const uint heap_slots_sdf_lanes = heap_slot_base + 748u;
 const uint heap_slots_mask_instances = heap_slot_base + 530u;
 // frame-invariant images the shading stage samples
 const uint heap_slots_env_cube = heap_slot_base + 532u;

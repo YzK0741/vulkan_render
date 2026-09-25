@@ -584,6 +584,10 @@ namespace vulkan {
              *       group count is the survivor count and no workgroup is launched for a culled meshlet.
              */
             static constexpr uint32_t meshlet_culled = heap_slot_base + 747u;
+            // THE FACE SDF LANE TABLE: one uint per material, written once at import. See
+            // heap_slot_constants.glsl for why it is a buffer of its own rather than a fifth component of the
+            // material record, and why it is one descriptor rather than a per-frame pair.
+            static constexpr uint32_t sdf_lanes = heap_slot_base + 748u;
             static constexpr uint32_t scene_camera = heap_slot_base + 514u;        // binding 0, per frame slot
             static constexpr uint32_t scene_light = heap_slot_base + 516u;         // binding 7, per frame slot
             static constexpr uint32_t cluster_counts = heap_slot_base + 518u;      // binding 11, per frame slot

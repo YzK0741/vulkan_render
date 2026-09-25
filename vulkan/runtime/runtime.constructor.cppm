@@ -356,6 +356,41 @@ namespace vulkan {
             }
         }
 
+        // ---- THE FACE SDF LANE TABLE: ONE uint PER MATERIAL, and a buffer of its own because the material record
+        //      cannot hold it - see core::heap_slots::sdf_lanes for the measurement that settled that (the record
+        //      is INLINE in the per-draw push block, and adding a word to it crashed the renderer).
+        //
+        //      IT IS MATERIAL-INDEXED, not lane-indexed like the record's `toon_indices`: the shader reaches it
+        //      with the material index it already has, so nothing new has to be threaded through the push path.
+        //      Zero means "do not read", which is the contract the record's four lanes use too.
+        //
+        //      WRITTEN ONCE, here, like the material table beside it: the values are fixed at import and never
+        //      rewritten, which is why it is one descriptor and not a per-frame pair.
+        std::vector<unsigned char> const zeroed_sdf_lanes(static_cast<size_t>(vulkan::material_capacity) * sizeof(uint32_t), 0);
+        init_utils::create_host_buffer(this->vulkan_core,
+                                       std::as_bytes(std::span(zeroed_sdf_lanes)),
+                                       vulkan::buffer_type::storage_coherent,
+                                       "face sdf lane table buffer",
+                                       this->sdf_lane_buffer,
+                                       this->sdf_lane_mapped,
+                                       VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT);
+        if (this->vulkan_core.descriptor_heaps.ready() && this->vulkan_core.heap_grid_offset != VK_WHOLE_SIZE) {
+            auto const* const detail = this->vulkan_core.vma.get_buffer_detail(this->sdf_lane_buffer.handle());
+            if (detail != nullptr) {
+                VkBufferDeviceAddressInfo const address_info = {.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .pNext = nullptr, .buffer = detail->buffer};
+                VkDeviceAddress const address = vkGetBufferDeviceAddress(this->vulkan_core.device, &address_info);
+                bool const written = this->vulkan_core.descriptor_heaps.write_buffer(static_cast<VkDeviceSize>(core::heap_slots::sdf_lanes) * core::heap_slot_stride,
+                                                                                     address,
+                                                                                     static_cast<VkDeviceSize>(vulkan::material_capacity) * sizeof(uint32_t),
+                                                                                     VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+                utility::log("descriptor heap: face sdf lane table {} (address 0x{:x}, {} lanes, offset {})",
+                             written ? "written" : "NOT written",
+                             address,
+                             vulkan::material_capacity,
+                             static_cast<VkDeviceSize>(core::heap_slots::sdf_lanes) * core::heap_slot_stride);
+            }
+        }
+
         // ---- THE MESHLET TABLE (docs/mesh_shaders.md step 3): one `vulkan::meshlet` record per meshlet - 48 bytes,
         //      the layout `static_assert`s in vulkan/meshlet/meshlet.cppm pin field by field, because a 28-byte
         //      host record against the shader's std430 stride WEDGED the GPU before it was found - appended by the
@@ -1160,8 +1195,19 @@ namespace vulkan {
         // the byte-exact 80-byte record carried in a data_block - no hash collisions, because
         // the unordered lookup hashes the block only for bucketing while equality stays
         // byte-exact.
-        utility::data_block<sizeof(vulkan::material_record)> material_key = {};
+        // ---- THE FACE SDF LANE IS PART OF THE DEDUP KEY, and that is a fix rather than tidiness ----
+        //
+        // The record does NOT carry this lane (see core::heap_slots::sdf_lanes), so two primitives whose
+        // records are byte-identical but whose materials differ in their SDF map would COLLIDE on the key below:
+        // the second would take the early return, never write its lane, and that face would simply not have one
+        // - with the frame showing nothing but a slightly wrong face. MEASURED BEFORE THIS LINE EXISTED: an
+        // instrumented probe showed the SDF texture arriving at this function VALID (1024x1024, 4 MB) and every
+        // material's written lane was nevertheless 0, which is exactly the signature of the material that owns
+        // the map losing the race to one that does not.
+        uint32_t const sdf_lane = texture_indices[toon_base + static_cast<std::size_t>(vulkan::toon_slot::sdf_lightmap)];
+        utility::data_block<sizeof(vulkan::material_record) + sizeof(uint32_t)> material_key = {};
         std::memcpy(material_key.data.data(), &record, sizeof(record));
+        std::memcpy(material_key.data.data() + sizeof(record), &sdf_lane, sizeof(sdf_lane));
         if (auto const cached = this->material_slot_cache.find(material_key); cached != this->material_slot_cache.end()) {
             return cached->second; // already registered: share the existing record
         }
@@ -1177,6 +1223,20 @@ namespace vulkan {
         }
         uint32_t const material_index = this->material_count++;
         std::memcpy(static_cast<unsigned char*>(this->material_mapped) + static_cast<size_t>(material_index) * sizeof(material_record), &record, sizeof(record));
+        // THE FACE SDF LANE, written BESIDE the record rather than into it, and this is the one place that knows
+        // both the material's index and its lane (see core::heap_slots::sdf_lanes for why the record cannot carry
+        // it). It is MATERIAL-indexed, so the shader reaches it with the index it already uses for the record.
+        //
+        // IT SITS AFTER THE DEDUP'S EARLY RETURN, deliberately and safely: that return is for a record ALREADY in
+        // the table, whose lane was written when it was appended. A lane of 0 - no map, or the artist's
+        // `_UseSDFLightmap` off, which collapse to the same value here exactly as they do for the record's four -
+        // is the "do not read" the shader tests.
+        static_cast<uint32_t*>(this->sdf_lane_mapped)[material_index] = sdf_lane;
+        // LOGGED WHILE THIS LANE IS BEING WIRED, and the reason is that a lane which silently stays zero is this
+        // table's only failure mode and it is invisible in the frame: the shader's test is `lane != 0`, so a
+        // table that was never filled renders exactly like a model with no SDF at all - the feature does not
+        // happen and nothing says why.
+        utility::log("toon: material {} (family {}) -> face SDF lane {} of {} texture(s)", material_index, record.toon_family, sdf_lane, this->texture_array_views.size());
         this->material_slot_cache.emplace(material_key, material_id{material_index});
         // THE TOON FAMILY, LOGGED WHEN IT IS NOT `none`, and this is the one place it can be logged once per
         // MATERIAL rather than once per primitive (the dedup above returns early for a shared record). A

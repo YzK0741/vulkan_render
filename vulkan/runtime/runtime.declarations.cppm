@@ -205,6 +205,11 @@ namespace vulkan {
         // registration, read-only for the GPU.
         vk_buffer material_buffer = {};
         void* material_mapped = nullptr;
+        // THE FACE SDF LANE TABLE: ONE uint PER MATERIAL, and a buffer of its own because the material record
+        // cannot carry a fifth lane - it is inline in the per-draw push block (see core::heap_slots::sdf_lanes).
+        // Host-visible and written once at import, exactly like the table above and for the same reason.
+        vk_buffer sdf_lane_buffer = {};
+        void* sdf_lane_mapped = nullptr;
         uint32_t material_count = 0;
         // content-addressed material dedup + overflow fallback (see register_material):
         // material_slot_cache keys the full material_record bytes (texture indices + factors +
@@ -213,8 +218,13 @@ namespace vulkan {
         // key: data_block's own FNV-1a hasher + byte-equality); when the table really fills up,
         // later registrations degrade to the reserved default material at index 0 (registered
         // in init_scene_resources) with a one-time log instead of a hard panic.
-        std::unordered_map<utility::data_block<sizeof(vulkan::material_record)>, material_id,
-                           utility::data_block<sizeof(vulkan::material_record)>::hasher>
+        //
+        // THE KEY CARRIES ONE WORD PAST THE RECORD, and it has to: the face SDF lane lives OUTSIDE the record
+        // (see core::heap_slots::sdf_lanes for why), so a key built from the record alone cannot tell two
+        // materials apart when they differ ONLY in their SDF map - the second would take the dedup early return,
+        // never write its lane, and the face would silently not have one. See register_material.
+        std::unordered_map<utility::data_block<sizeof(vulkan::material_record) + sizeof(uint32_t)>, material_id,
+                           utility::data_block<sizeof(vulkan::material_record) + sizeof(uint32_t)>::hasher>
             material_slot_cache = {};
         bool material_overflow_logged = false;
         // same degradation policy for the texture array: when scene_texture_capacity distinct
