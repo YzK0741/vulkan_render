@@ -559,6 +559,11 @@ int main(int argc, char** argv) {
     // in all three). `taa_enabled` alone happened to look wired because it IS copied here.
     gui.taa_blend_static = settings.render.taa_blend_static;
     gui.taa_blend_min = settings.render.taa_blend_min;
+    // THE TOON CHARACTER STAGE: copied here like every other toggle, and that copy is load-bearing rather than
+    // tidiness - the frame loop mirrors `gui.character_forward` into the runtime every frame, so a config value
+    // that never reached the gui (the trap the two lines above record) would be overwritten by the binding's
+    // default on the very first frame.
+    gui.character_forward = settings.render.character_forward;
     gui.megalights_enabled = settings.render.megalights;
     gui.megalights_samples = static_cast<float>(settings.render.megalights_samples);
     gui.megalights_spatial_sigma = settings.render.megalights_spatial_sigma;
@@ -812,6 +817,10 @@ int main(int argc, char** argv) {
         // when the cluster pipeline does), so mirroring them earlier would report a stale answer for
         // the first frame of every run.
         runtime.set_clustered_lights(gui.clustered_lights);
+        // The toon character stage: mirrored like the other render toggles. Its own gate composes this knob
+        // with the frame's opaque leaf list (feature_facts::character_forward_pending), so turning it on in a
+        // frame with no opaque geometry records nothing rather than an empty instance.
+        runtime.set_character_forward(gui.character_forward);
         start_demo.set_ssao(gui.ssao_enabled, gui.ssao_radius, gui.ssao_intensity, static_cast<uint32_t>(std::max(gui.ssao_samples, 0.0f) + 0.5f));
         // cel shading: the combo picks a discrete band count (index 0 = off); every entry is a
         // visibly different look, unlike a continuous strength that had dead zones between bands

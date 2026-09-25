@@ -271,6 +271,11 @@ namespace app_config {
                     settings.render.gbuffer_debug = *value;
                 }
             }
+            if (toml::node const* node = render->get("character_forward")) {
+                if (std::optional<bool> const value = node->value<bool>()) {
+                    settings.render.character_forward = *value;
+                }
+            }
             if (toml::node const* node = render->get("gbuffer_channel")) {
                 if (std::optional<int64_t> const value = node->value<int64_t>()) {
                     settings.render.gbuffer_channel = static_cast<int>(*value);

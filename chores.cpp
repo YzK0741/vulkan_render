@@ -600,6 +600,15 @@ namespace chores {
             make_taa_slider("taa history (static)", &bindings.taa_blend_static, 0.0f, 0.98f);
             make_taa_slider("taa history (min)", &bindings.taa_blend_min, 0.0f, 0.98f);
         }
+        // THE TOON CHARACTER STAGE: re-shades the scene's opaque leaves OVER the lit frame, at depth-EQUAL,
+        // so a character can carry its own shading instead of the deferred one - and without being lit twice.
+        // Offered only when the renderer registered the pipeline the stage binds (it needs the mesh stage), so
+        // a switch that would draw nothing is not shown at all - the failure mode feature_available exists for.
+        {
+            auto character = std::make_unique<vulkan::gui::checkbox_widget>("character forward (toon)", &bindings.character_forward);
+            character->visible_when = [&runtime] { return runtime.feature_available("character_forward"); };
+            panel.push_back(std::move(character));
+        }
         // cel/toon shading: quantize the diffuse falloff (and harden shadows/highlights);
         // 0 steps leaves plain PBR, softness shrinks toward hard comic edges
         // cel/toon shading is discrete: every listed band count gives a visibly different look

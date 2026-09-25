@@ -239,8 +239,17 @@ namespace app_config {
         // reprojected, neighborhood-clamped history in - see runtime::set_taa. There is no per-object
         // motion yet: the G-buffer motion vectors are camera-only at this milestone.
         bool taa = false;
-        float taa_blend_static = 0.9f;                      // history weight for a pixel that did not move
-        float taa_blend_min = 0.5f;                         // history weight floor under motion (lower = less ghosting)
+        float taa_blend_static = 0.9f; // history weight for a pixel that did not move
+        float taa_blend_min = 0.5f;    // history weight floor under motion (lower = less ghosting)
+        // The TOON CHARACTER STAGE ([render] character_forward): a pass that re-shades the scene's OPAQUE
+        // leaves OVER the lit frame, at depth-EQUAL, so a character can have its own hand-authored shading
+        // instead of the deferred one - and without being lit twice, which is what happens if a finished
+        // colour is fed back through the G-buffer. See vulkan.pass.character_forward.
+        //
+        // OFF BY DEFAULT, and that default is the feature's contract rather than caution: with it ON every
+        // opaque surface in the scene is drawn by the character pipeline, which is what a character viewer
+        // wants and what a scenario comparing against the pre-existing references must not have.
+        bool character_forward = false;
         bool validation_layers = default_validation_layers; // Vulkan validation layers + debug messenger ([render])
     };
 

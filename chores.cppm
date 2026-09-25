@@ -152,6 +152,11 @@ namespace chores {
         bool taa_enabled = false;
         float taa_blend_static = 0.9f; // history weight for a static pixel (0.9 = 10% of the new frame)
         float taa_blend_min = 0.5f;    // history weight floor under motion (lower = less ghosting)
+        // The TOON CHARACTER STAGE (runtime::set_character_forward): re-shades the scene's opaque leaves OVER
+        // the lit frame so a character can carry its own shading. Mirrored into the runtime every frame like
+        // the other render toggles, and the overlay only offers it when the renderer registered the pipeline
+        // (see render_start_demo::feature_available).
+        bool character_forward = false;
         // Stochastic PUNCTUAL lighting (docs/megalights.md): the switch and the estimator's sample count. The
         // switch is the A/B a user actually wants - the shadows the punctual lights never had, against the
         // unshadowed path - and the sample count is the one knob cost and noise both scale with.

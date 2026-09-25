@@ -282,6 +282,21 @@ taa = false
 taa_blend_static = 0.9
 taa_blend_min = 0.5
 
+# character_forward: the TOON CHARACTER STAGE. It draws the scene's opaque leaves a SECOND time, after the
+# lighting stage, through a pipeline whose depth compare is EQUAL and whose depth write is held off - so it
+# lands on exactly the surface the G-buffer pass recorded and REPLACES the lit pixel rather than layering
+# over it. That is what lets a character carry its own hand-authored shading without being lit twice, which
+# is what happens if a finished (display-space) colour is fed back through the G-buffer.
+#
+# OFF by default, and that default is the feature's contract rather than caution: with it ON every opaque
+# surface in the scene is drawn by the character pipeline, so a frame from a scene with no toon character
+# is bit-for-bit what it was before the stage existed. See vulkan/pass/character_forward.cppm and
+# _toon_ref/PORT_SPEC.md for the architecture this follows.
+#
+# NOTE: this is the PIPELINE only. What the stage outputs is still a probe (the surface albedo); the toon
+# shading chain replaces it once the per-material data it reads exists.
+character_forward = false
+
 # validation_layers: Vulkan validation layers + debug messenger (VK_LAYER_KHRONOS_validation).
 # Debug builds default to true, Release builds to false; override per build as needed (e.g.
 # turn it on in a Release build when tracking a problem, or off in Debug for raw speed).
