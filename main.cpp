@@ -432,6 +432,11 @@ int main(int argc, char** argv) {
         std::vector<unsigned char> baked_unit_ramp = {};
         uint32_t baked_ramp_width = 0;
         uint32_t baked_ramp_height = 0;
+        /// the SHADOW LUT cube (see the baker below) - a different shape from the ramp and so a different
+        /// buffer, kept alive for the same reason: the lookup hands out a SPAN INTO IT
+        std::vector<unsigned char> baked_shadow_lut = {};
+        uint32_t baked_lut_width = 0;
+        uint32_t baked_lut_height = 0;
     };
 
     // ---- THE PROCEDURAL RAMP, which is what replaces the game's own ramps on the read path ----
@@ -504,6 +509,59 @@ int main(int argc, char** argv) {
         return pixels;
     };
 
+    // ---- THE SHADOW LUT, WHICH IS A CUBE RATHER THAN A STEP ----
+    //
+    // IT IS THE ONE LANE THAT CANNOT REUSE THE UNIT RAMP, and the shape is the reason: a ramp answers "how deep
+    // is the shadow here", a shadow LUT answers "what is THIS MATERIAL's colour in shadow" and is indexed by the
+    // material's own albedo. That is not a variation on the ramp - it is a function of a different variable -
+    // and it is why the reference ships skin and cloth a `1024x32` cube at all rather than another band.
+    //
+    // THE LAYOUT IS THE REFERENCE'S, TO THE TILE COUNT: 32 horizontal `32x32` tiles holding a `32^3` cube, the
+    // tile chosen by the X channel and a bilinear hop between adjacent tiles because X is continuous. The
+    // shader's `toon_shadow_lut` inverts this exactly, and `baked_lut_tiles` is HALF OF THAT CONTRACT - the other
+    // half is `character_shadow_lut_tiles` - because a bake laid out for a different tile count reads back as a
+    // different colour with no other symptom. `tests/test_toon_material_sidecar.cpp` compares the two.
+    //
+    // THE CONTENT IS THE IDENTITY CUBE, which is the same choice the ramps make and for the same reason: a
+    // neutral bake reproduces the look the procedural branch already had (`albedo` in, `albedo` out), so the
+    // lane is EXERCISED without the frame being changed by a guess at what the artist meant. What the lane buys
+    // is that an AUTHORED cube would be honoured - a real skin palette makes the shadow a function of the skin
+    // tone, which no per-family constant can be - and that is not something a neutral bake can substitute for.
+    //
+    // Note the axes, because they are the ones that invert: X picks the TILE, the in-tile X is the GREEN channel,
+    // the in-tile Y is the BLUE channel FLIPPED, and each channel's stored value is `index / (tiles - 1)`. The
+    // half-texel offsets are in the SHADER rather than here - the bake writes texel centres, and a reader that
+    // sampled corners would be off by half a texel in every direction.
+    constexpr uint32_t baked_lut_tiles = 32;
+    constexpr uint32_t baked_lut_width = baked_lut_tiles * baked_lut_tiles;
+    constexpr uint32_t baked_lut_height = baked_lut_tiles;
+    auto const bake_shadow_lut = []() {
+        auto const srgb_encode = [](float const linear) {
+            return linear <= 0.0031308f ? linear * 12.92f : 1.055f * std::pow(linear, 1.0f / 2.4f) - 0.055f;
+        };
+        std::vector<unsigned char> pixels(static_cast<std::size_t>(baked_lut_width) * baked_lut_height * 4u, 255u);
+        for (uint32_t row = 0; row < baked_lut_height; ++row) {
+            for (uint32_t column = 0; column < baked_lut_width; ++column) {
+                // The identity cube at this texel's coordinate: the X channel from which tile it is in, the Y
+                // channel from where it sits inside that tile, the Z channel from the row - flipped, because the
+                // shader reads the cube's Z from the BOTTOM of the strip upward.
+                float const x = static_cast<float>(column / baked_lut_tiles) / static_cast<float>(baked_lut_tiles - 1u);
+                float const y = static_cast<float>(column % baked_lut_tiles) / static_cast<float>(baked_lut_tiles - 1u);
+                float const z = static_cast<float>(baked_lut_tiles - 1u - row) / static_cast<float>(baked_lut_tiles - 1u);
+                float const cube[3] = {x, y, z};
+                unsigned char* const texel = pixels.data() + (static_cast<std::size_t>(row) * baked_lut_width + column) * 4u;
+                for (int c = 0; c < 3; ++c) {
+                    // SRGB-ENCODED for the same reason the ramp is: the lane is uploaded as an sRGB texture, so
+                    // the sampler hands the shader the LINEAR value the cube is written to mean, and the identity
+                    // survives the round trip instead of being gamma-shifted by it.
+                    texel[c] = static_cast<unsigned char>(std::clamp(srgb_encode(cube[c]), 0.0f, 1.0f) * 255.0f + 0.5f);
+                }
+                texel[3] = 255u;
+            }
+        }
+        return pixels;
+    };
+
     // THE MAPPING between the asset pipeline's vocabulary and the record's layout, and the only place it appears:
     // one sidecar slot name per `toon_slot` lane, in lane order.
     static constexpr std::array<std::string_view, static_cast<std::size_t>(vulkan::toon_slot::count)> toon_slot_names = {"_DiffRampMap", "_ShadowLutTex", "_SpecRampMap", "_MatcapTex"};
@@ -527,12 +585,25 @@ int main(int argc, char** argv) {
         // THE DIFFUSE AND SPECULAR RAMP LANES BOTH GET THE BAKED UNIT STEP, NOT THE MODEL'S IMAGE - see
         // bake_unit_ramp for why a path that read the game's own ramps is a path this repository cannot carry,
         // and note that the artist's switch above is still what decides WHETHER there is a ramp at all. The
-        // other two lanes keep the model's images for now: nothing reads them yet, and baking them is the same
+        // other lanes keep the model's images for now: nothing reads them yet, and baking them is the same
         // question one lane at a time.
         if ((lane == vulkan::toon_slot::diffuse_ramp || lane == vulkan::toon_slot::specular_ramp) && !state.baked_unit_ramp.empty()) {
             out.data = std::span<unsigned char const>(state.baked_unit_ramp.data(), state.baked_unit_ramp.size());
             out.width = state.baked_ramp_width;
             out.height = state.baked_ramp_height;
+            out.mip_levels = 1;
+            out.valid = true;
+            return out;
+        }
+        // THE SHADOW LUT LANE GETS THE BAKED CUBE, NOT THE MODEL'S PALETTE - the same trade as the ramps, and
+        // for a stronger version of the same reason: `T_actor_common_femaleskincolor01_lut_D` is not the game's
+        // only skin palette but one of several per-character variants, so a read path carrying it would be
+        // carrying a specific character's skin tone. The artist's switch above still decides whether there is a
+        // LUT at all, which is why hair - whose `_UseShadowLutTex` is off - is unaffected by any of this.
+        if (lane == vulkan::toon_slot::shadow_lut && !state.baked_shadow_lut.empty()) {
+            out.data = std::span<unsigned char const>(state.baked_shadow_lut.data(), state.baked_shadow_lut.size());
+            out.width = state.baked_lut_width;
+            out.height = state.baked_lut_height;
             out.mip_levels = 1;
             out.valid = true;
             return out;
@@ -560,6 +631,9 @@ int main(int argc, char** argv) {
     toon_state.baked_unit_ramp = bake_unit_ramp();
     toon_state.baked_ramp_width = baked_ramp_width;
     toon_state.baked_ramp_height = baked_ramp_height;
+    toon_state.baked_shadow_lut = bake_shadow_lut();
+    toon_state.baked_lut_width = baked_lut_width;
+    toon_state.baked_lut_height = baked_lut_height;
     runtime.set_toon_lookup(vulkan::runtime::toon_lookup{.owner = &toon_state, .texture = toon_texture});
 
     vulkan::scene_import_result const imported = runtime.import_scene(node_first, node_last, scene_first, scene_last, scene_import_shift);

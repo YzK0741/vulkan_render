@@ -289,6 +289,16 @@ namespace {
         // `character_ramp_half_width`, because the host bakes ONE asset for the two lanes and cannot invert it
         // at two different widths.
         CHECK(shader.find("saturate(0.5 + (no_h - params.spec_center) * (character_ramp_half_width") != std::string::npos);
+
+        // THE SHADOW LUT'S TILE COUNT IS THE SAME KIND OF CONTRACT, and it fails the same silent way: the bake
+        // lays a `32^3` cube into a `1024x32` strip of `32x32` tiles and the shader's `toon_shadow_lut` inverts
+        // that layout, so a bake for a DIFFERENT tile count reads back as a different COLOUR - the lane still
+        // answers, it just answers with the wrong cube - and nothing about the frame says which side moved.
+        std::optional<float> const lut_tiles = float_constant_of(host, "baked_lut_tiles");
+        std::optional<float> const lut_tiles_read = float_constant_of(shader, "character_shadow_lut_tiles");
+        CHECK(lut_tiles.has_value());
+        CHECK(lut_tiles_read.has_value());
+        CHECK(lut_tiles == lut_tiles_read);
     }
 
 } // namespace

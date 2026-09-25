@@ -89,6 +89,63 @@ static const float character_ramp_spec_band_v = 0.375;
  */
 static const float character_ramp_half_width = 0.035;
 
+/// @brief the SHADOW LUT's edge: how many 32x32 tiles across its 1024x32 strip
+///
+/// The reference's skin and cloth LUTs are `1024x32` strips holding 32 horizontal `32x32` tiles - a `32^3`
+/// colour cube flattened - and this is that number. It is shared with the host's bake (`baked_lut_tiles` in
+/// main.cpp) because the tiling below and the bake are INVERSE operations: a bake laid out for a different
+/// tile count reads back as a different colour with no other symptom, so
+/// `tests/test_toon_material_sidecar.cpp` compares the two.
+static const float character_shadow_lut_tiles = 32.0;
+
+/**
+ * @brief the material's SHADOW COLOUR for its own albedo - the reference's `_ShadowLutTex` lane
+ *
+ * THIS IS THE ONE LANE THAT IS NOT A RAMP, and the difference is what it is for. A ramp answers "how deep is
+ * the shadow here"; this answers "what is THIS MATERIAL's colour when it is in shadow", indexed by the
+ * material's own albedo. `EfFaceSampleSkinLut` / `EfClothSampleLut` in the reference do exactly this, and the
+ * reason skin ships one is that a skin tone's shadow is a function of the skin tone - a single per-family
+ * constant cannot express it, which is why the family table wants a LUT here and a threshold there.
+ *
+ * THE TILING IS THE REFERENCE'S, deliberately and to the constant: a `32^3` cube in a `1024x32` strip, the
+ * tile chosen by the X channel, the in-tile position by Y and Z, and a bilinear hop between the two adjacent
+ * tiles because X is a continuous coordinate rather than an index. Its numbers are `1/32` and `31/32` plus the
+ * half-texel offsets, and they are written below as the arithmetic they are so the next reader does not have
+ * to recover them from decimals.
+ *
+ * WHERE IT DEVIATES, and it is one thing: the reference indexes its LUT by the DISPLAY-SPACE (sRGB) albedo,
+ * because the atlas it reads was authored in the space the artist painted in. This one is indexed by the
+ * LINEAR albedo, because the LUT here is OUR bake and this stage works in linear - so the domain is ours to
+ * choose, and choosing the working space removes two colour conversions whose only possible contribution
+ * would be to disagree with the sampler's own.
+ *
+ * THE CONTENT OF THE BAKED LUT IS THE IDENTITY, which makes this lane READ WITHOUT CHANGING THE LOOK - the
+ * same property the ramps have - and it is not a placeholder: what the lane is for is honouring an AUTHORED
+ * cube, and an artist's intent is not something a neutral bake can invent. `albedo` in gives `albedo` out,
+ * `params.shadow_tint` still rides on top, and the caller then evaluates the reference's own expression
+ * `lerp(lutDark, authoredBright, diffuseWeight)` with `diffuseWeight` being this stage's ramp step.
+ *
+ * @param albedo the surface albedo (LINEAR, matching `surface_sample::albedo`)
+ * @param lane the material's shadow-LUT heap lane; 0 means "do not read" and the caller must not call this
+ */
+float3 toon_shadow_lut(const float3 albedo, const uint lane) {
+    const float3 cube = saturate(albedo);
+    // The tile the X channel lands in, and how far between it and the next one - the reference's
+    // `lutFloorX` / `lutTileLerp` pair.
+    const float tile_f = cube.x * (character_shadow_lut_tiles - 1.0);
+    const float tile = floor(tile_f);
+    const float tile_lerp = tile_f - tile;
+    // The in-tile coordinate: X from the Y channel, Y from the Z channel and FLIPPED, with the half-texel
+    // offsets that put a sample at a texel CENTRE rather than at its corner - which is what makes the bake
+    // and this read invert each other instead of being off by half a texel everywhere.
+    const float in_tile_x = cube.y * ((character_shadow_lut_tiles - 1.0) / (character_shadow_lut_tiles * character_shadow_lut_tiles)) + (0.5 / (character_shadow_lut_tiles * character_shadow_lut_tiles));
+    const float in_tile_y = 1.0 - (cube.z * ((character_shadow_lut_tiles - 1.0) / character_shadow_lut_tiles) + (0.5 / character_shadow_lut_tiles));
+    const float u = tile / character_shadow_lut_tiles + in_tile_x;
+    const float3 low = heap_texel(heap_at<Texture2D<float4>>(heap_slots_textures + lane), heap_sampler_texture, float2(u, in_tile_y)).rgb;
+    const float3 high = heap_texel(heap_at<Texture2D<float4>>(heap_slots_textures + lane), heap_sampler_texture, float2(u + 1.0 / character_shadow_lut_tiles, in_tile_y)).rgb;
+    return lerp(low, high, tile_lerp);
+}
+
 /**
  * @brief the toon diffuse: half-Lambert GATED by the shadow term, then banded
  *
@@ -155,7 +212,10 @@ float3 toon_diffuse(float3 albedo, float3 n, float3 world_pos, float ao, toon_pa
     // material with no ramp, or one whose artist switched the ramp off, takes the procedural path. That is what
     // keeps the family table's thresholds meaningful: they are what a character looks like BEFORE its ramps
     // arrive, not a second opinion about them.
-    float3 light_tint;
+    // THE BRANCH PRODUCES A STEP, NOT A COLOUR, and that is what lets a SECOND lane join it below: the shadow
+    // LUT supplies the dark side's colour and needs the same weight this produces. `light_tint` is derived from
+    // it immediately afterwards, so the no-LUT arithmetic is character-for-character what it was.
+    float ramp_step;
     if (toon_indices.x != 0u) {
         // THE REMAP, and each factor is doing a different job: `- center` slides the neutral step to this
         // family's threshold, and `* (character_ramp_half_width / softness)` rescales the coordinate so the
@@ -165,11 +225,11 @@ float3 toon_diffuse(float3 albedo, float3 n, float3 world_pos, float ao, toon_pa
         // `.r` because the baked ramp holds the STEP in all three channels and no colour - the dark side's
         // colour is `params.shadow_tint` below, so one shared asset can serve a family whose shadow is warm and
         // one whose shadow is cool, which a baked-in tint could not.
-        const float ramp_step = heap_texel(heap_at<Texture2D<float4>>(heap_slots_textures + toon_indices.x), heap_sampler_texture, float2(ramp_x, character_ramp_band_v)).r;
-        light_tint = lerp(params.shadow_tint, float3(1.0, 1.0, 1.0), ramp_step);
+        ramp_step = heap_texel(heap_at<Texture2D<float4>>(heap_slots_textures + toon_indices.x), heap_sampler_texture, float2(ramp_x, character_ramp_band_v)).r;
     } else {
-        light_tint = lerp(params.shadow_tint, float3(1.0, 1.0, 1.0), smoothstep(params.center - params.softness, params.center + params.softness, gated));
+        ramp_step = smoothstep(params.center - params.softness, params.center + params.softness, gated);
     }
+    const float3 light_tint = lerp(params.shadow_tint, float3(1.0, 1.0, 1.0), ramp_step);
 
     // The sun's radiance and the /PI are the ENGINE'S expressions (`shade_surface` builds the same pair:
     // `vec3(7.5 * sun_intensity)` and `kd * base_color / PI`), so a toon fragment and a deferred fragment
@@ -183,7 +243,24 @@ float3 toon_diffuse(float3 albedo, float3 n, float3 world_pos, float ao, toon_pa
     // is to CHOOSE the side of the ramp; the tint is what the shadow side looks like, and it is a colour,
     // not an extinction. Measured: the double-applied version and the flat-albedo probe were hard to tell
     // apart by eye, which is what a banding term multiplied by its own gate does.
-    const float3 direct = albedo * sun * light_tint / PI;
+    // ---- THE SHADOW LUT LANE, which replaces the dark side's COLOUR and not its weight ----
+    //
+    // THE REFERENCE'S OWN EXPRESSION, `lerp(lutDark, authoredBright, diffuseWeight)`: the shadowed albedo is
+    // looked up from the lit one, and the ramp step is the weight between them. The no-LUT path is the same
+    // expression with the lookup replaced by the family's constant tint - `lerp(albedo * tint, albedo, step)`
+    // is `albedo * lerp(tint, white, step)` - so the two branches differ in WHERE the dark side's colour comes
+    // from and in nothing else. That is why this is a branch rather than a second term: a LUT blended ON TOP of
+    // the tint would be a third opinion about a colour that already has two sources.
+    float3 direct;
+    if (toon_indices.y != 0u) {
+        // `* params.shadow_tint` because our bake holds the IDENTITY cube rather than the game's palette, so
+        // the family's tint is still what says how dark and how warm the shadow side is; an authored cube would
+        // carry that itself and this multiply would become the identity it already is for the baked one.
+        const float3 lut_dark = toon_shadow_lut(albedo, toon_indices.y) * params.shadow_tint;
+        direct = sun * lerp(lut_dark, albedo, ramp_step) / PI;
+    } else {
+        direct = albedo * sun * light_tint / PI;
+    }
 
     // The ambient is the engine's irradiance map and the engine's composition
     // (`ibl_diffuse * albedo * ao`), so a toon character in a scene is lit by the same sky as everything
