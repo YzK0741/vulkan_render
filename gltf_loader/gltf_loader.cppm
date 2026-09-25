@@ -869,6 +869,80 @@ namespace gltf {
 
     /**
      * @ingroup gltf_loader
+     * @brief the FACE SDF's three axes: which way the head looks, and its right and up
+     *
+     * WHY THE FACE NEEDS A HEAD FRAME AT ALL, and it is the whole reason the SDF lane exists: a low-poly anime
+     * face is a few triangles whose normals do not describe its form - the cheeks and the nose are painted into
+     * the texture - so its terminator is decided by a distance field thresholded against the light's angle IN
+     * THE HEAD'S OWN FRAME rather than by `dot(N, L)`. The surface normal is never consulted.
+     *
+     * THE CONVENTION IS THE REFERENCE'S, and it is not the obvious one: `EfFaceGetHeadBasis` takes `-row3` as
+     * the forward axis and `-row1` as the right axis of the head bone's matrix, then re-orthogonalises. The
+     * negation is MMD's head-bone convention rather than a sign error, and `head_basis_from_axes` reproduces the
+     * function that does it.
+     */
+    export struct head_basis {
+        glm::vec3 front = glm::vec3(0.0f, 0.0f, -1.0f);
+        glm::vec3 right = glm::vec3(-1.0f, 0.0f, 0.0f);
+        glm::vec3 up = glm::vec3(0.0f, 1.0f, 0.0f);
+        /// false when these are the reference's FALLBACK constants rather than a real bone's axes - see
+        /// `head_basis_fallback`. A caller that needs to know whether the head frame is real reads this; the
+        /// shader does not, because the two cases differ only in whether the head can turn.
+        bool from_skeleton = false;
+    };
+
+    /**
+     * @ingroup gltf_loader
+     * @brief the reference's OWN fallback head frame, verbatim from `EfFaceGetHeadBasis`
+     *
+     * `headFront = (0,0,-1)`, `headRight = (-1,0,0)`, `headUp = (0,1,0)` - these are literally what the
+     * reference substitutes when the head bone is missing or degenerate, so this is a PORTED constant rather
+     * than an approximation invented here. It matters because this repository's only SDF-bearing model
+     * (`zhuangfy_scalar.glb`) has NO SKELETON - seven nodes, zero skins, a static pose split by body part - and
+     * for a model that cannot turn its head a fixed frame and a bone matrix give the same three vectors.
+     */
+    export head_basis head_basis_fallback() noexcept;
+
+    /**
+     * @ingroup gltf_loader
+     * @brief the head frame a head bone's matrix describes, or the fallback when it describes none
+     *
+     * TAKES THE TWO AXES RATHER THAN A MATRIX, deliberately: the reference reads `_31_32_33` and `_11_12_13`
+     * off a row-major HLSL matrix, and expressing that as a `glm::mat4` column here would be a convention
+     * argument nobody could check by reading. The caller extracts the rows; this function does the part that
+     * has a right answer - normalise, negate, re-orthogonalise, and fall back when the axes are degenerate.
+     *
+     * @param forward_axis the head's forward row (HLSL `_31_32_33`), NOT yet negated
+     * @param right_axis the head's right row (HLSL `_11_12_13`), NOT yet negated
+     * @return the frame, `from_skeleton == true` only when both axes were usable and not parallel
+     */
+    export head_basis head_basis_from_axes(glm::vec3 forward_axis, glm::vec3 right_axis) noexcept;
+
+    /**
+     * @ingroup gltf_loader
+     * @brief whether a glTF node's name is a head BONE's
+     *
+     * TOKEN EQUALITY RATHER THAN A SUBSTRING, and that is the substance of the function: models name bones
+     * `head`, `Head`, `Bip01 Head`, `J_Head` and `Head_Nub`, and a substring test over `head` also matches
+     * `headgear`, `overhead` and `Forehead` - which are exactly the sort of props and accessories that sit in
+     * the same skeleton. The name is lowercased and split on non-alphanumerics, and a token has to BE `head`.
+     * The CJK names are matched as substrings because they have no separators to split on.
+     */
+    export bool looks_like_head_joint(std::string_view node_name) noexcept;
+
+    /**
+     * @ingroup gltf_loader
+     * @brief the index of the head JOINT inside a skin, or nothing when that skin has no head bone
+     *
+     * @return an index into `skin::joints` (NOT an asset node index - a caller needs it to pick the joint's
+     *         matrix out of the per-frame skin matrix array, which is in joint order), or `std::nullopt`
+     * @param scene_index which scene's node pool to resolve the joints against; `skin::joints` holds ASSET node
+     *        indices, which are matched through `node::source_index`
+     */
+    export std::optional<std::size_t> head_joint_of(scenes const& scene, std::size_t scene_index, std::size_t skin_index) noexcept;
+
+    /**
+     * @ingroup gltf_loader
      * @brief a glTF material that has been RESOLVED: its factors, its five decoded texture slots, and the
      *        toon family its name classified into
      */

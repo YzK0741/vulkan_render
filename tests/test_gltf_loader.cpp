@@ -199,6 +199,76 @@ void test_one_skin_used_by_two_nodes() {
     CHECK(skinned == 2); // both users of the skin, not just the first
 }
 
+// THE FACE SDF'S HEAD FRAME: the name matcher, the matrix-to-frame extraction, and the fallback. All three are
+// pure, which is the point of testing them here - the model this lane was written for has NO SKELETON at all, so
+// the only way the bone half can have any evidence behind it is as arithmetic rather than as pixels.
+void test_the_head_frame_matcher_rejects_lookalikes() {
+    // WHAT COUNTS AS A HEAD BONE, and the negative cases are the test: every rig names its head bone something
+    // like these four, and every character with a hat or a hairstyle also carries `headgear`, `overhead` or
+    // `Forehead` in the same skeleton. A substring test would take those.
+    CHECK(gltf::looks_like_head_joint("head"));
+    CHECK(gltf::looks_like_head_joint("Head"));
+    CHECK(gltf::looks_like_head_joint("Bip01 Head"));
+    CHECK(gltf::looks_like_head_joint("J_Head"));
+    CHECK(gltf::looks_like_head_joint("Head_Nub"));
+    CHECK(gltf::looks_like_head_joint("頭_01"));
+    CHECK(gltf::looks_like_head_joint("头"));
+    CHECK(!gltf::looks_like_head_joint("headgear"));
+    CHECK(!gltf::looks_like_head_joint("overhead"));
+    CHECK(!gltf::looks_like_head_joint("Forehead"));
+    CHECK(!gltf::looks_like_head_joint("neck"));
+    CHECK(!gltf::looks_like_head_joint(""));
+}
+
+void test_the_head_frame_from_a_bone_and_when_there_is_none() {
+    // THE FALLBACK IS THE REFERENCE'S OWN CONSTANTS, not an invention, so its exact values are the assertion.
+    gltf::head_basis const fallback = gltf::head_basis_fallback();
+    CHECK(fallback.front == glm::vec3(0.0f, 0.0f, -1.0f));
+    CHECK(fallback.right == glm::vec3(-1.0f, 0.0f, 0.0f));
+    CHECK(fallback.up == glm::vec3(0.0f, 1.0f, 0.0f));
+    CHECK(!fallback.from_skeleton);
+
+    // AN IDENTITY BONE. The reference negates `row3` for forward and `row1` for right, and for the identity
+    // those rows are +Z and +X - so the negated frame is the fallback above, and it must come back flagged as a
+    // REAL frame rather than as the fallback, because those two are different answers that look identical.
+    gltf::head_basis const identity = gltf::head_basis_from_axes(glm::vec3(0.0f, 0.0f, 1.0f), glm::vec3(1.0f, 0.0f, 0.0f));
+    CHECK(identity.from_skeleton);
+    CHECK(identity.front == glm::vec3(0.0f, 0.0f, -1.0f));
+    CHECK(identity.right == glm::vec3(-1.0f, 0.0f, 0.0f));
+    CHECK(identity.up == glm::vec3(0.0f, 1.0f, 0.0f));
+
+    // A DEGENERATE BONE IS THE FALLBACK. An unposed or missing bone arrives as a zero matrix, and normalising
+    // that would put NaNs in the shader - i.e. a black or flickering face rather than an error.
+    CHECK(!gltf::head_basis_from_axes(glm::vec3(0.0f), glm::vec3(0.0f)).from_skeleton);
+    // ... and so are two PARALLEL axes, where there is no third one to build.
+    CHECK(!gltf::head_basis_from_axes(glm::vec3(1.0f, 0.0f, 0.0f), glm::vec3(-2.0f, 0.0f, 0.0f)).from_skeleton);
+
+    // A NON-ORTHOGONAL BONE IS RE-ORTHOGONALISED rather than taken as it is: the returned frame's three axes
+    // have to BE a frame, because the SDF's angle is taken between the light and them.
+    gltf::head_basis const skewed = gltf::head_basis_from_axes(glm::vec3(0.0f, 0.0f, 1.0f), glm::vec3(1.0f, 0.0f, 0.5f));
+    CHECK(skewed.from_skeleton);
+    CHECK(std::abs(glm::dot(skewed.front, skewed.right)) < 1e-4f);
+    CHECK(std::abs(glm::dot(skewed.front, skewed.up)) < 1e-4f);
+    CHECK(std::abs(glm::dot(skewed.right, skewed.up)) < 1e-4f);
+}
+
+void test_no_head_bone_is_found_where_there_is_none() {
+    // THE TWO SKINNED FIXTURES HAVE JOINTS CALLED `pole`/`arm` AND `joint` - no head - so the finder must answer
+    // "no head bone" rather than take the first joint it sees, which is the failure that would matter: a face
+    // shaded from an arm's frame looks like a face shaded from a head's until the arm moves.
+    auto const result = gltf::load_model(VR_TEST_SOURCE_DIR "/tests/fixtures/animated_skin_plane.gltf");
+    CHECK(result.has_value());
+    if (!result.has_value()) {
+        return;
+    }
+    CHECK(result->skins.size() == 1);
+    CHECK(!gltf::head_joint_of(*result, 0, 0).has_value());
+    // OUT-OF-RANGE ASKS NOTHING RATHER THAN CRASHING: a caller that indexes a scene or a skin that this file
+    // does not have gets "no head bone", which is the same answer it would get from a model with no skeleton.
+    CHECK(!gltf::head_joint_of(*result, 99, 0).has_value());
+    CHECK(!gltf::head_joint_of(*result, 0, 99).has_value());
+}
+
 int main() {
     test_load_damaged_helmet();
     test_async_load_matches_sync();
@@ -206,5 +276,8 @@ int main() {
     test_khr_lights_punctual_minimal();
     test_one_skin_used_by_two_nodes();
     test_quantized_attributes();
+    test_the_head_frame_matcher_rejects_lookalikes();
+    test_the_head_frame_from_a_bone_and_when_there_is_none();
+    test_no_head_bone_is_found_where_there_is_none();
     return vk_test::finish("test_gltf_loader");
 }

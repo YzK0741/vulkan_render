@@ -1235,6 +1235,102 @@ namespace {
 } // namespace
 
 namespace gltf {
+    head_basis head_basis_fallback() noexcept {
+        // THE REFERENCE'S OWN CONSTANTS, verbatim from `EfFaceGetHeadBasis`'s `valid < 0.5` branch: it
+        // substitutes exactly these three vectors when the head bone is missing or degenerate. Reproduced
+        // rather than invented, because a model with NO SKELETON is the case this repository actually has.
+        return head_basis{};
+    }
+
+    head_basis head_basis_from_axes(glm::vec3 const forward_axis, glm::vec3 const right_axis) noexcept {
+        head_basis out = head_basis_fallback();
+        float const forward_len_sq = glm::dot(forward_axis, forward_axis);
+        float const right_len_sq = glm::dot(right_axis, right_axis);
+        // THE DEGENERATE CASE IS THE REFERENCE'S TOO (`forwardLengthSq > 1e-8 && rightLengthSq > 1e-8`), and it
+        // is not hypothetical: a bone that has not been posed arrives as a zero matrix, and normalising that
+        // yields NaNs - which reach the shader as a face that is black or flickering rather than as an error.
+        if (forward_len_sq <= 1e-8f || right_len_sq <= 1e-8f) {
+            return out;
+        }
+        // THE NEGATIONS ARE THE REFERENCE'S, and they are a convention rather than a sign error: MMD's head
+        // bone carries its axes the opposite way round from the direction the face looks.
+        out.front = -glm::normalize(forward_axis);
+        out.right = -glm::normalize(right_axis);
+        glm::vec3 const up_axis = glm::cross(out.front, out.right);
+        if (glm::dot(up_axis, up_axis) < 1e-8f) {
+            // THE TWO AXES ARE PARALLEL, so there is no frame to build: the reference sets `valid = 0` and
+            // keeps its default up, and this returns the whole fallback rather than half of a frame.
+            return out;
+        }
+        out.up = glm::normalize(up_axis);
+        // THE RE-ORTHOGONALISATION IS THE REFERENCE'S LAST STEP and it matters: a bone's forward and right rows
+        // are only orthogonal if whoever rigged it made them so, and the SDF's angle is taken between the light
+        // and a FRAME - three axes that are nearly right are not three axes.
+        out.right = glm::normalize(glm::cross(out.up, out.front));
+        out.from_skeleton = true;
+        return out;
+    }
+
+    bool looks_like_head_joint(std::string_view const node_name) noexcept {
+        if (node_name.empty()) {
+            return false;
+        }
+        // THE CJK NAMES FIRST, because they have no separators to split on: 頭 / 头 ARE the head, and a name
+        // like `頭_01` yields no useful ASCII token.
+        if (node_name.find("頭") != std::string_view::npos || node_name.find("头") != std::string_view::npos) {
+            return true;
+        }
+        // TOKEN EQUALITY, NOT A SUBSTRING, and that is the substance of this function: models name bones
+        // `head`, `Head`, `Bip01 Head`, `J_Head`, `Head_Nub` - and a substring test over `head` also matches
+        // `headgear`, `overhead` and `Forehead`, which are exactly the props and accessories that share a
+        // character's skeleton. So the name is split on non-alphanumerics and a token has to BE `head`.
+        std::size_t i = 0;
+        while (i < node_name.size()) {
+            while (i < node_name.size() && std::isalnum(static_cast<unsigned char>(node_name[i])) == 0) {
+                ++i;
+            }
+            std::size_t const start = i;
+            while (i < node_name.size() && std::isalnum(static_cast<unsigned char>(node_name[i])) != 0) {
+                ++i;
+            }
+            if (i == start) {
+                continue;
+            }
+            std::string token;
+            token.reserve(i - start);
+            for (std::size_t k = start; k < i; ++k) {
+                token.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(node_name[k]))));
+            }
+            if (token == "head") {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    std::optional<std::size_t> head_joint_of(scenes const& scene, std::size_t const scene_index, std::size_t const skin_index) noexcept {
+        if (skin_index >= scene.skins.size() || scene_index >= scene.scene.size()) {
+            return std::nullopt;
+        }
+        skin const& skin_object = scene.skins[skin_index];
+        std::vector<node> const& nodes = scene.scene[scene_index].nodes;
+        // `skin::joints` HOLDS ASSET NODE INDICES, not positions in the scene's pool, so each one is resolved
+        // through `node::source_index` - the same indirection every other asset index in this loader uses. The
+        // RETURNED value is the JOINT index, because that is what picks a matrix out of the per-frame skin
+        // matrix array; the two are different numbers and confusing them would give a face shaded by its foot.
+        for (std::size_t joint = 0; joint < skin_object.joints.size(); ++joint) {
+            for (node const& candidate : nodes) {
+                if (candidate.source_index == skin_object.joints[joint]) {
+                    if (looks_like_head_joint(candidate.name)) {
+                        return joint;
+                    }
+                    break;
+                }
+            }
+        }
+        return std::nullopt;
+    }
+
     toon_family toon_family_of(std::string_view const name) {
         if (name.empty()) {
             return toon_family::none;
