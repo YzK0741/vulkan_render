@@ -301,6 +301,44 @@ namespace {
         CHECK(lut_tiles == lut_tiles_read);
     }
 
+    void test_the_matcap_slot_does_not_follow_the_use_slot_rule() {
+        // THE ONE SLOT WHOSE FLAG IS NOT `_Use<Slot>`, and it is a test because the failure is silent AND
+        // one-sided: the iris in this repository's own test model switches its matcap on with `_UseMatcap`, so a
+        // consumer asking `enabled("_MatcapTex")` builds `_UseMatcapTex`, finds nothing, and answers "off" -
+        // correctly by this module's rule, and completely wrongly by the asset pipeline's. What that looks like
+        // downstream is not an error: it is one material quietly missing a feature it asked for.
+        constexpr std::string_view text =
+            "material\tkind\tname\tvalue\n"
+            "M_iris\tslot\t_MatcapTex\tT_matcap_10_D\n"
+            "M_iris\tfloat\t_UseMatcap\t1.0\n";
+        auto const parsed = toon::parse_sidecar(text);
+        CHECK(parsed.has_value());
+        if (!parsed.has_value()) {
+            return;
+        }
+        toon::material_sidecar const* const iris = parsed->find("M_iris");
+        CHECK(iris != nullptr);
+        if (iris == nullptr) {
+            return;
+        }
+        // the convention misses
+        CHECK(!iris->enabled("_MatcapTex"));
+        // the explicit name hits, and that is what the application's lane table asks with
+        CHECK(iris->enabled_by_flag("_UseMatcap"));
+        // A SLOT WITH NO FLAG AT ALL IS STILL OFF, whichever way it is asked - the module's first rule survives
+        // the second entry point
+        CHECK(!iris->enabled_by_flag("_UseSpecRampMap"));
+        CHECK(!iris->enabled("_SpecRampMap"));
+        // and the three lanes that DO follow the convention answer the same through both entry points
+        toon::material_sidecar const* const body = toon::parse_sidecar(good_text)->find("M_body");
+        CHECK(body != nullptr);
+        if (body == nullptr) {
+            return;
+        }
+        CHECK(body->enabled("_DiffRampMap"));
+        CHECK(body->enabled_by_flag("_UseDiffRampMap"));
+    }
+
 } // namespace
 
 int main() {
@@ -315,5 +353,6 @@ int main() {
     test_a_malformed_file_on_disk_reports_its_path();
     test_the_sidecar_and_the_model_join_by_texture_name();
     test_the_baked_ramp_and_the_shader_agree_on_its_width();
+    test_the_matcap_slot_does_not_follow_the_use_slot_rule();
     return vk_test::finish("test_toon_material_sidecar");
 }

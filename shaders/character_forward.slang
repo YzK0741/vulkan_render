@@ -71,6 +71,41 @@ static const float character_ramp_band_v = 0.125;
 /// this one by the half-vector angle - so they get a constant each instead of one constant and an assumption.
 static const float character_ramp_spec_band_v = 0.375;
 
+/// @brief the MATCAP's strength - the reference's `EF_EYE_IRIS_MATCAP05_STRENGTH`
+///
+/// The reference carries it per MATERIAL (`EF_EYE_IRIS_MATCAP05_STRENGTH = 0.5666667`, recorded from the material
+/// the pack was extracted from) rather than per family, and the family table here has no matcap strength because
+/// until this lane existed nothing read one. It is a named constant rather than an inline literal for the reason
+/// the bands above are: a number whose provenance is a specific material should say so where it is written.
+static const float character_matcap_strength = 0.5666667;
+
+/**
+ * @brief the MATCAP's UV - the sphere map, from the view-space normal
+ *
+ * THE THIRD VARIABLE, after the shading term (ramps) and the material's own albedo (the shadow LUT): a matcap is
+ * indexed by WHERE THE SURFACE POINTS RELATIVE TO THE CAMERA, which is why a matcap image is a picture of a ball
+ * and why it is the one toon map that does not depend on the light at all.
+ *
+ * THE REFERENCE'S OWN REMAP, `normalVS.xy * float2(0.5, -0.5) + 0.5`, INCLUDING THE FLIPPED Y - both
+ * `EfEyeIrisApplyMatcap05` and `EfClothSampleMatcap` carry it, and the latter's comment is explicit that it is
+ * there because the texture's V axis is opposite the convention the map was authored in.
+ *
+ * THE VIEW BASIS IS BUILT FROM THE VIEW VECTOR rather than read from a view matrix, and the whole difference is
+ * a ROLL about the view axis: `right` and `up_ortho` are any stable pair orthogonal to `v`, so a matcap read
+ * this way agrees with the reference's up to a rotation of the ball - which a matcap cannot care about, because
+ * a ball has no distinguished up. What it buys is not needing a second per-frame matrix in this stage for one
+ * lookup.
+ *
+ * @param n world-space shading normal
+ * @param v the unit surface-to-camera vector, which the caller has already computed
+ */
+float2 toon_matcap_uv(const float3 n, const float3 v) {
+    const float3 up = abs(v.y) < 0.99 ? float3(0.0, 1.0, 0.0) : float3(1.0, 0.0, 0.0);
+    const float3 right = normalize(cross(up, v));
+    const float3 up_ortho = cross(v, right);
+    return saturate(float2(dot(n, right), -dot(n, up_ortho)) * 0.5 + 0.5);
+}
+
 /**
  * @brief the neutral ramp's HALF edge width, and the other half of a shared contract
  *
@@ -316,7 +351,23 @@ float3 toon_diffuse(float3 albedo, float3 n, float3 world_pos, float ao, toon_pa
     // `lightSideMask = smoothstep(0, EF_SKIN_SPECULAR_LIGHT_END, noL) * diffuseWeight` for exactly this.
     const float3 specular = sun * spec_band * params.spec_strength * shadow * light_side / PI;
 
-    return direct + ambient + rim + specular * albedo;
+    const float3 toon_colour = direct + ambient + rim + specular * albedo;
+
+    // ---- THE MATCAP LANE: applied to the FINISHED colour, which is where the reference applies it ----
+    //
+    // `EfEyeIrisApplyMatcap05` returns `max(color, 0) * (1 + max(matcap, 0) * strength)`: a matcap MULTIPLIES the
+    // shaded result rather than being another light, because it stands for the environment the surface is sitting
+    // in rather than for a second sun. The `max(..., 0)` is the reference's and is kept - a matcap's negative
+    // texels are an artifact of its encoding, not a request to darken the surface.
+    //
+    // A LANE OF 0 IS "DO NOT READ", as in every other lane, and the BAKED CONTENT IS BLACK (see main.cpp's
+    // bake_matcap for why black is this lane's neutral value rather than a placeholder). Black makes the factor
+    // exactly `1.0`, so this multiply is bit-exact for every material whose artist did not supply a matcap.
+    if (toon_indices.w != 0u) {
+        const float3 matcap = heap_texel(heap_at<Texture2D<float4>>(heap_slots_textures + toon_indices.w), heap_sampler_texture, toon_matcap_uv(n, v)).rgb;
+        return toon_colour * (1.0 + max(matcap, 0.0) * character_matcap_strength);
+    }
+    return toon_colour;
 }
 
 [shader("fragment")]

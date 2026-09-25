@@ -44,14 +44,21 @@ namespace toon {
         // THE CONVENTION IS THE FILE'S OWN: a slot `_DiffRampMap` is switched on by `_UseDiffRampMap`, and the
         // prefix replaces the slot's leading underscore rather than being inserted after it. A name that does
         // not start with one gets the prefix directly, so both spellings resolve.
+        //
+        // IT IS A CONVENTION AND NOT A LAW, which is why `enabled_by_flag` exists: `_MatcapTex` is switched on
+        // by `_UseMatcap`. This builds the conventional name and asks the same question the explicit form does.
         std::string flag;
         flag.reserve(enable_flag_prefix.size() + slot_name.size());
         flag.append(enable_flag_prefix);
         flag.append(slot_name.starts_with('_') ? slot_name.substr(1) : slot_name);
+        return this->enabled_by_flag(flag);
+    }
+
+    bool material_sidecar::enabled_by_flag(std::string_view const flag_name) const noexcept {
         // FALSE WHEN THE FLAG IS ABSENT, which is the safe answer and the second rule of the header: an
         // artist's switch is off unless it was switched on, and a consumer that inferred from the slot's
         // presence would turn on exactly the features the sidecar exists to keep off.
-        return this->scalar(flag, 0.0f) > 0.5f;
+        return this->scalar(flag_name, 0.0f) > 0.5f;
     }
 
     material_sidecar const* sidecar::find(std::string_view const material_name) const noexcept {

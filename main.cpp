@@ -296,6 +296,44 @@ int main(int argc, char** argv) {
     //     no sidecar at all (the normal case for a model that is not a character), a slot whose flag is off,
     //     and a slot that is ON while the model has no such image - which is the case a consumer must handle by
     //     leaving the feature off rather than by substituting something.
+    // THE ASSET PIPELINE'S VOCABULARY FOR THE FOUR TOON LANES, and the only place it appears: one entry per
+    // `vulkan::toon_slot`, in lane order, carrying BOTH names the pipeline uses for it.
+    //
+    // TWO NAMES RATHER THAN ONE, and the second is not derivable from the first: the ramp and LUT lanes are
+    // switched on by `_Use<Slot>`, but the MATCAP lane `_MatcapTex` is switched on by `_UseMatcap` - the slot's
+    // `Tex` suffix is not in the flag, which is a fact about the pipeline rather than a rule. Deriving the flag
+    // from the slot answered "off" for every matcap in the file, silently, which is the failure the sidecar
+    // module exists to prevent and precisely the one its own convention could not see: it is right for three
+    // lanes and wrong for the fourth.
+    //
+    // IT SITS HERE, ABOVE THE DIAGNOSTIC, because the diagnostic prints every slot in the file and has to answer
+    // the same question the lookup does. It did not, once: the lookup was taught the real flag names while the log
+    // went on calling the convention, and the result was a log line reading `| off` about a lane the renderer was
+    // reading - a diagnostic that contradicts the renderer is worse than no diagnostic, so both now ask
+    // `toon_flag_for`.
+    struct toon_lane_names {
+        std::string_view slot;
+        std::string_view flag;
+    };
+    static constexpr std::array<toon_lane_names, static_cast<std::size_t>(vulkan::toon_slot::count)> toon_lane = {{
+        {"_DiffRampMap", "_UseDiffRampMap"},
+        {"_ShadowLutTex", "_UseShadowLutTex"},
+        {"_SpecRampMap", "_UseSpecRampMap"},
+        {"_MatcapTex", "_UseMatcap"},
+    }};
+    // The declared flag for a toon lane; the `_Use<Slot>` convention for every OTHER slot, which the diagnostic
+    // needs because it walks the whole file (`_BaseMap`, `_BumpMap`, the outline and SDF masks and the rest).
+    auto const toon_flag_for = [](std::string_view const slot_name) -> std::string {
+        for (toon_lane_names const& lane : toon_lane) {
+            if (lane.slot == slot_name) {
+                return std::string(lane.flag);
+            }
+        }
+        std::string flag{toon::enable_flag_prefix};
+        flag.append(slot_name.starts_with('_') ? slot_name.substr(1) : slot_name);
+        return flag;
+    };
+
     std::optional<toon::sidecar> toon_sidecar = {}; // kept in scope: the import below is what consumes it
     {
         auto const sidecar = toon::load_sidecar(model_path);
@@ -313,7 +351,7 @@ int main(int argc, char** argv) {
                 utility::log("  '{}' -> family {} | {} slot(s), {} scalar(s)", material.name, static_cast<uint32_t>(gltf::toon_family_of(material.name)), material.slots.size(), material.scalars.size());
                 for (auto const& [slot_name, texture_name] : material.slots) {
                     std::optional<uint16_t> const index = scenes->texture_index_by_name(texture_name);
-                    utility::log("      {} = '{}' -> {} | {}", slot_name, texture_name, index.has_value() ? std::format("texture #{}", *index) : std::string("ABSENT from this model"), material.enabled(slot_name) ? "ON" : "off");
+                    utility::log("      {} = '{}' -> {} | {}", slot_name, texture_name, index.has_value() ? std::format("texture #{}", *index) : std::string("ABSENT from this model"), material.enabled_by_flag(toon_flag_for(slot_name)) ? "ON" : "off");
                 }
             }
         }
@@ -437,6 +475,10 @@ int main(int argc, char** argv) {
         std::vector<unsigned char> baked_shadow_lut = {};
         uint32_t baked_lut_width = 0;
         uint32_t baked_lut_height = 0;
+        /// the MATCAP ball (see the baker below) - a third shape again, and a black one, because this stage had
+        /// no matcap term to reproduce
+        std::vector<unsigned char> baked_matcap = {};
+        uint32_t baked_matcap_size = 0;
     };
 
     // ---- THE PROCEDURAL RAMP, which is what replaces the game's own ramps on the read path ----
@@ -562,9 +604,29 @@ int main(int argc, char** argv) {
         return pixels;
     };
 
-    // THE MAPPING between the asset pipeline's vocabulary and the record's layout, and the only place it appears:
-    // one sidecar slot name per `toon_slot` lane, in lane order.
-    static constexpr std::array<std::string_view, static_cast<std::size_t>(vulkan::toon_slot::count)> toon_slot_names = {"_DiffRampMap", "_ShadowLutTex", "_SpecRampMap", "_MatcapTex"};
+    // ---- THE MATCAP, WHICH IS BLACK, AND THAT IS THE WHOLE OF ITS NEUTRALITY ----
+    //
+    // THE THIRD SHAPE AND THE THIRD VARIABLE: a ramp is indexed by the shading term, the shadow LUT by the
+    // material's albedo, and a matcap by the VIEW-SPACE NORMAL - `normalVS.xy * 0.5 + 0.5`, which is a sphere
+    // map's own UV and the reason a matcap image is a picture of a ball.
+    //
+    // BLACK IS NOT A PLACEHOLDER, IT IS THE ONLY CONTENT THAT IS NEUTRAL HERE, and the difference from the other
+    // two lanes is worth stating because it looks like a weaker bake and is not. The ramps and the cube have a
+    // procedural branch to reproduce, so their neutral bake is a SHAPE the shader already computed (`smoothstep`,
+    // the identity). This stage had NO matcap term at all before this lane existed, so "the look without the
+    // artist's matcap" is the reference's own expression with the lookup at zero - `1 + 0 * strength` - and any
+    // other content would be this repository inventing art direction and calling it a substitute. The lane is
+    // real, it is read, and what it is FOR is honouring an authored ball.
+    constexpr uint32_t baked_matcap_size = 256;
+    auto const bake_matcap = []() {
+        // A matcap is an sRGB reference image (the reference's `EfClothSampleMatcap` says so explicitly), so the
+        // lane's upload format applies here as it does to the ramps: zero is zero in both encodings, which is the
+        // one value where the encode step cannot disagree with itself.
+        return std::vector<unsigned char>(static_cast<std::size_t>(baked_matcap_size) * baked_matcap_size * 4u, 0u);
+    };
+
+    // THE LOOKUP, whose lane vocabulary lives with the diagnostic above so that the two cannot disagree about
+    // which flag switches a lane on.
     auto const toon_texture = [](void* const owner, std::string_view const material_name, vulkan::toon_slot const lane) -> vulkan::texture_input {
         toon_lookup_state const& state = *static_cast<toon_lookup_state*>(owner);
         vulkan::texture_input out = {};
@@ -575,11 +637,13 @@ int main(int argc, char** argv) {
         if (material == nullptr) {
             return out;
         }
-        std::string_view const slot_name = toon_slot_names[static_cast<std::size_t>(lane)];
+        toon_lane_names const& names = toon_lane[static_cast<std::size_t>(lane)];
+        std::string_view const slot_name = names.slot;
         // THE ARTIST'S SWITCH DECIDES, and an off flag produces an INVALID input, which the record turns into the
         // white fallback - i.e. "do not read" (see material_record::toon_indices). A map that exists while its
-        // flag is off must NOT be read: that is the first rule the sidecar module exists to keep.
-        if (!material->enabled(slot_name)) {
+        // flag is off must NOT be read: that is the first rule the sidecar module exists to keep. Asked BY NAME
+        // rather than by slot, because that is the only spelling that is true for all four lanes.
+        if (!material->enabled_by_flag(names.flag)) {
             return out;
         }
         // THE DIFFUSE AND SPECULAR RAMP LANES BOTH GET THE BAKED UNIT STEP, NOT THE MODEL'S IMAGE - see
@@ -604,6 +668,19 @@ int main(int argc, char** argv) {
             out.data = std::span<unsigned char const>(state.baked_shadow_lut.data(), state.baked_shadow_lut.size());
             out.width = state.baked_lut_width;
             out.height = state.baked_lut_height;
+            out.mip_levels = 1;
+            out.valid = true;
+            return out;
+        }
+        // THE MATCAP LANE GETS THE BAKED BALL, NOT THE MODEL'S - `T_actor_common_matcap_10_D` is a game image
+        // like the rest. THIS IS ALSO THE LANE THE FLAG TABLE ABOVE WAS FIXED FOR: until the flag was asked by
+        // name, `_MatcapTex` resolved to "off" for the iris that ships it on, so this branch was unreachable and
+        // the game's matcap was neither read nor replaced - the lane was simply absent, which is the quietest
+        // possible version of getting it wrong.
+        if (lane == vulkan::toon_slot::matcap && !state.baked_matcap.empty()) {
+            out.data = std::span<unsigned char const>(state.baked_matcap.data(), state.baked_matcap.size());
+            out.width = state.baked_matcap_size;
+            out.height = state.baked_matcap_size;
             out.mip_levels = 1;
             out.valid = true;
             return out;
@@ -634,6 +711,8 @@ int main(int argc, char** argv) {
     toon_state.baked_shadow_lut = bake_shadow_lut();
     toon_state.baked_lut_width = baked_lut_width;
     toon_state.baked_lut_height = baked_lut_height;
+    toon_state.baked_matcap = bake_matcap();
+    toon_state.baked_matcap_size = baked_matcap_size;
     runtime.set_toon_lookup(vulkan::runtime::toon_lookup{.owner = &toon_state, .texture = toon_texture});
 
     vulkan::scene_import_result const imported = runtime.import_scene(node_first, node_last, scene_first, scene_last, scene_import_shift);

@@ -99,6 +99,26 @@ export namespace toon {
          *         because the contract is that a feature is off unless it was switched on
          */
         [[nodiscard]] bool enabled(std::string_view slot_name) const noexcept;
+        /**
+         * @brief whether the flag NAMED @p flag_name is switched on, for the slots whose flag is not
+         *        `_Use<Slot>`
+         *
+         * WHY THIS EXISTS ALONGSIDE `enabled()`, and it is a fact about the asset pipeline rather than a
+         * convenience: NOT EVERY SLOT'S FLAG IS `_Use<Slot>`. The ramp and LUT slots do follow it
+         * (`_DiffRampMap`/`_UseDiffRampMap`, `_ShadowLutTex`/`_UseShadowLutTex`, `_SpecRampMap`/
+         * `_UseSpecRampMap`), but the MATCAP slot `_MatcapTex` is switched on by `_UseMatcap` - the slot's
+         * `Tex` suffix is not in the flag. A consumer that assumed the rule for every slot would ask for
+         * `_UseMatcapTex`, find nothing, and answer "off" - correctly by this module's rules, and completely
+         * wrongly by the asset pipeline's, silently, and only on the materials that have a matcap.
+         *
+         * The flag's name is therefore part of the ASSET PIPELINE'S VOCABULARY, exactly like the slot's name
+         * is, and it belongs to the layer that knows that vocabulary rather than to a rule inferred here.
+         * `enabled()` is the convenience for the slots that follow the convention and is built on this.
+         *
+         * @param flag_name the flag as the sidecar writes it, leading underscore included (`_UseMatcap`)
+         * @return its value > 0.5, and FALSE when it is absent - the same safe answer as `enabled()`
+         */
+        [[nodiscard]] bool enabled_by_flag(std::string_view flag_name) const noexcept;
     };
 
     /// @brief a whole sidecar: one entry per material, in the file's order
