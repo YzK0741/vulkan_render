@@ -4,10 +4,17 @@
 
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
+#include <cstdlib>
+#include <cstring>
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
+#include <optional>
+#include <string_view>
+#include <vector>
 
 import vulkan.animation;
+import vulkan.animation.mmd_motion;
 
 namespace {
     using namespace vulkan::animation;
@@ -100,6 +107,237 @@ namespace {
         sampler const short_values = {.times = {0.0f, 1.0f}, .values = {1.0f}, .per_key = 3, .interp = interpolation::linear};
         CHECK(!sample_channel(short_values, channel_path::translation, 0.5f).valid);
     }
+
+    // --- vulkan.animation.mmd_motion (VMD) ------------------------------------------------
+    // The two format details below are the ones that fail silently on a real file, so the
+    // synthetic motion writes decoys exactly where a wrong reader would look: bytes 2 and 3 of
+    // the interpolation block (which hold the physics flags, not Z's and R's first control
+    // point) and the 9-byte property-keyframe header that precedes the IK state list.
+
+    /** @brief a minimal well-formed VMD 0002 motion, built byte by byte */
+    [[nodiscard]] std::vector<std::uint8_t> build_vmd() {
+        std::vector<std::uint8_t> d;
+        auto push = [&d](std::size_t const count, std::uint8_t const value) {
+            for (std::size_t i = 0; i < count; ++i) {
+                d.push_back(value);
+            }
+        };
+        auto text = [&d](std::string_view const s, std::size_t const width) {
+            for (char const c : s) {
+                d.push_back(static_cast<std::uint8_t>(c));
+            }
+            for (std::size_t i = s.size(); i < width; ++i) {
+                d.push_back(0);
+            }
+        };
+        auto u32 = [&d](std::uint32_t const value) {
+            d.push_back(static_cast<std::uint8_t>(value & 0xffu));
+            d.push_back(static_cast<std::uint8_t>((value >> 8u) & 0xffu));
+            d.push_back(static_cast<std::uint8_t>((value >> 16u) & 0xffu));
+            d.push_back(static_cast<std::uint8_t>((value >> 24u) & 0xffu));
+        };
+        auto f32 = [&u32](float const value) {
+            std::uint32_t bits = 0;
+            std::memcpy(&bits, &value, sizeof(bits));
+            u32(bits);
+        };
+        // MMD's default linear curve on all four channels, at the offsets the format uses; the
+        // physics flags are decoys that a uniform-stride reader would mistake for Z and R.
+        auto interp_block = [&](std::uint8_t const physics_lo, std::uint8_t const physics_hi) {
+            std::vector<std::uint8_t> block(64, 0);
+            block[0] = 20;
+            block[4] = 20;
+            block[8] = 107;
+            block[12] = 107; // X
+            block[1] = 20;
+            block[5] = 20;
+            block[9] = 107;
+            block[13] = 107; // Y
+            block[17] = 20;
+            block[6] = 20;
+            block[10] = 107;
+            block[14] = 107; // Z
+            block[18] = 20;
+            block[7] = 20;
+            block[11] = 107;
+            block[15] = 107; // R
+            block[2] = physics_lo;
+            block[3] = physics_hi;
+            for (std::uint8_t const byte : block) {
+                d.push_back(byte);
+            }
+        };
+        auto bone = [&](std::string_view const n, std::uint32_t const frame, float const px, float const py, float const pz) {
+            text(n, 15);
+            u32(frame);
+            f32(px);
+            f32(py);
+            f32(pz);
+            f32(0.0f);
+            f32(0.0f);
+            f32(0.0f);
+            f32(1.0f); // identity quaternion, stored x, y, z, w
+            interp_block(5, 6);
+        };
+        auto morph = [&](std::string_view const n, std::uint32_t const frame, float const weight) {
+            text(n, 15);
+            u32(frame);
+            f32(weight);
+        };
+
+        text("Vocaloid Motion Data 0002", 30);
+        text("test_model", 20);
+        u32(3); // bone keyframes
+        bone("B0", 0, 0.0f, 0.0f, 0.0f);
+        bone("B0", 10, 1.0f, 2.0f, 3.0f);
+        bone("B1", 0, 0.0f, 0.0f, 0.0f);
+        u32(2); // morph keyframes
+        morph("M0", 0, 0.0f);
+        morph("M0", 10, 1.0f);
+        u32(0);     // camera keyframes
+        u32(0);     // light keyframes
+        u32(0);     // self-shadow keyframes
+        u32(1);     // property keyframes
+        u32(7);     //   frame
+        push(1, 1); // visible
+        u32(1);     //   IK state count
+        text("IK0", 20);
+        push(1, 1); //   IK enabled
+        return d;
+    }
+
+    void test_mmd_motion_parses_synthetic_vmd() {
+        std::optional<mmd_motion> const parsed = parse_mmd_motion(build_vmd());
+        CHECK(parsed.has_value());
+        if (!parsed.has_value()) {
+            return;
+        }
+        mmd_motion const& m = *parsed;
+
+        CHECK(m.model_name == "test_model");
+        // the last section must consume the file exactly; a nonzero count here means the parse
+        // walked the sections wrongly and quietly left bytes behind
+        CHECK(m.unparsed_bytes == 0);
+        CHECK(m.bones.size() == 2);
+        CHECK(m.bones[0].name == "B0");
+        CHECK(m.bones[0].keys.size() == 2);
+        CHECK(m.bones[1].name == "B1");
+        CHECK(m.last_frame == 10);
+        CHECK(m.morphs.size() == 1);
+        CHECK(m.morphs[0].keys.size() == 2);
+
+        // bytes 2 and 3 of the block are the physics flags, so Z's and R's first control point
+        // live at 17 and 18; the decoys in bytes 2 and 3 fail these CHECKs if a reader goes back
+        // to reading every channel at a uniform stride
+        mmd_bone_key const& key = m.bones[0].keys[0];
+        float const lo = 20.0f / 127.0f;
+        float const hi = 107.0f / 127.0f;
+        CHECK(approx(key.ease_x.x1, lo));
+        CHECK(approx(key.ease_y.x1, lo));
+        CHECK(approx(key.ease_z.x1, lo));
+        CHECK(approx(key.ease_r.x1, lo));
+        CHECK(approx(key.ease_x.y1, lo));
+        CHECK(approx(key.ease_z.y1, lo));
+        CHECK(approx(key.ease_x.x2, hi));
+        CHECK(approx(key.ease_y.x2, hi));
+        CHECK(approx(key.ease_z.x2, hi));
+        CHECK(approx(key.ease_r.x2, hi));
+        CHECK(approx(key.ease_x.y2, hi));
+        CHECK(approx(key.ease_z.y2, hi));
+        CHECK(key.physics_flags == 0x0605u);
+
+        // the IK list is preceded by a property keyframe header (frame, visibility, state count)
+        // and its names are 20 bytes wide; a bare "count then 21-byte records" reader reports a
+        // garbage name and an impossible frame number here
+        CHECK(m.ik.size() == 1);
+        CHECK(m.ik[0].name == "IK0");
+        CHECK(m.ik[0].frame == 7);
+        CHECK(m.ik[0].enabled);
+
+        // default-linear easing is symmetric, so frame 5 sits exactly halfway between the keys
+        mmd_pose pose;
+        CHECK(m.sample_bone("B0", 5.0f, pose));
+        CHECK(approx(pose.translation, glm::vec3(0.5f, 1.0f, 1.5f)));
+        CHECK(approx(pose.rotation, glm::quat(1.0f, 0.0f, 0.0f, 0.0f)));
+        CHECK(m.sample_bone("B0", -5.0f, pose));
+        CHECK(approx(pose.translation, glm::vec3(0.0f)));
+        CHECK(m.sample_bone("B0", 100.0f, pose));
+        CHECK(approx(pose.translation, glm::vec3(1.0f, 2.0f, 3.0f)));
+        CHECK(!m.sample_bone("missing", 0.0f, pose));
+
+        CHECK(approx(m.sample_morph("M0", 5.0f), 0.5f));
+        CHECK(approx(m.sample_morph("missing", 5.0f), 0.0f));
+    }
+
+    void test_mmd_bezier_solver() {
+        mmd_bezier const linear = mmd_bezier::linear();
+        CHECK(approx(linear.evaluate(0.0f), 0.0f));
+        CHECK(approx(linear.evaluate(1.0f), 1.0f));
+        CHECK(approx(linear.evaluate(0.5f), 0.5f));
+        // A curve the test motion does not contain: every key in the real motion is default
+        // linear, so the solver is pinned here against values cross-checked with an independent
+        // double-precision implementation.
+        mmd_bezier const curve{0.1f, 0.9f, 0.9f, 0.1f};
+        CHECK(approx(curve.evaluate(0.5f), 0.5f, 1e-6f));
+        CHECK(approx(curve.evaluate(0.25f), 0.44682231f, 1e-6f));
+        CHECK(approx(curve.evaluate(0.75f), 0.55317769f, 1e-6f));
+    }
+
+    void test_mmd_motion_rejects_bad_input() {
+        std::vector<std::uint8_t> const valid = build_vmd();
+        CHECK(!parse_mmd_motion(std::vector<std::uint8_t>{}).has_value());
+
+        std::vector<std::uint8_t> wrong_signature = valid;
+        wrong_signature[0] = 'X';
+        CHECK(!parse_mmd_motion(wrong_signature).has_value());
+
+        // Every prefix must either be rejected or parse cleanly; a prefix that is accepted with
+        // bytes left over would mean the section walk had silently gone wrong.
+        for (std::size_t cut = 0; cut < valid.size(); cut += 7) {
+            std::vector<std::uint8_t> const truncated(valid.begin(), valid.begin() + static_cast<std::ptrdiff_t>(cut));
+            std::optional<mmd_motion> const r = parse_mmd_motion(truncated);
+            CHECK(!r.has_value() || r->unparsed_bytes == 0);
+        }
+
+        // trailing bytes are reported rather than ignored, so a malformed file cannot look clean
+        std::vector<std::uint8_t> padded = valid;
+        padded.push_back(0);
+        padded.push_back(0);
+        padded.push_back(0);
+        std::optional<mmd_motion> const r = parse_mmd_motion(padded);
+        CHECK(r.has_value());
+        CHECK(r.has_value() && r->unparsed_bytes == 3);
+    }
+
+    // The 20 MB motion this parser was written against lives outside the repo, so the check that
+    // needs it is opt-in: set VR_MMD_MOTION to its path to run it.
+    void test_mmd_motion_real_file_when_available() {
+        char const* const path = std::getenv("VR_MMD_MOTION");
+        if (path == nullptr || *path == '\0') {
+            std::println("  (VR_MMD_MOTION is not set - the real-motion check was skipped)");
+            return;
+        }
+        std::optional<mmd_motion> const m = load_mmd_motion(path);
+        CHECK_MSG(m.has_value(), "VR_MMD_MOTION is set but the file could not be parsed");
+        if (!m.has_value()) {
+            return;
+        }
+        std::size_t bone_keys = 0;
+        for (auto const& track : m->bones) {
+            bone_keys += track.keys.size();
+        }
+        std::size_t morph_keys = 0;
+        for (auto const& track : m->morphs) {
+            morph_keys += track.keys.size();
+        }
+        CHECK(m->bones.size() == 168);
+        CHECK(bone_keys == 193525);
+        CHECK(m->morphs.size() == 29);
+        CHECK(morph_keys == 3349);
+        CHECK(m->last_frame == 3954);
+        CHECK(m->unparsed_bytes == 0);
+        CHECK(m->ik.size() == 4);
+    }
 } // namespace
 
 int main() {
@@ -110,5 +348,9 @@ int main() {
     test_cubic_translation_matches_lerp_for_zero_tangents();
     test_sample_node_merges_channels_onto_base_pose();
     test_broken_samplers_report_invalid();
+    test_mmd_motion_parses_synthetic_vmd();
+    test_mmd_bezier_solver();
+    test_mmd_motion_rejects_bad_input();
+    test_mmd_motion_real_file_when_available();
     return vk_test::finish("test_animation");
 }
