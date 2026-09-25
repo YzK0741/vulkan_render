@@ -425,7 +425,61 @@ int main(int argc, char** argv) {
     struct toon_lookup_state {
         toon::sidecar const* sidecar = nullptr;
         gltf::scenes const* scenes = nullptr;
+        /// the PROCEDURALLY BAKED diffuse ramp (see the baker below), kept alive here because the texture input
+        /// the lookup returns is a SPAN INTO IT and `register_material` reads it during the import
+        std::vector<unsigned char> baked_ramp = {};
+        uint32_t baked_ramp_width = 0;
+        uint32_t baked_ramp_height = 0;
     };
+
+    // ---- THE PROCEDURAL RAMP, which is what replaces the game's own ramp on the read path ----
+    //
+    // WHY IT IS BAKED RATHER THAN SAMPLED FROM THE MODEL: the ramp a character ships with is the GAME's texture,
+    // and `ASSET_LICENSE_BOUNDARY_CN.md` excludes those from redistribution - so a read path that depends on it
+    // is a read path this repository cannot carry. This bakes an equivalent SHAPE instead: a flat shadow side,
+    // a step, a flat lit side, which is what a toon ramp IS (see character_forward.slang's note on why a ramp
+    // replaces the procedural threshold rather than layering with it).
+    //
+    // IT IS THE FAMILY-INDEPENDENT RAMP, DELIBERATELY. A per-family bake would need the numbers in
+    // `shaders/toon_params.slang`, which live in the SHADER; reproducing them here would be the duplicate this
+    // project refuses elsewhere, and the fix is to make that table a single source (a generator plus a test
+    // that the two agree) rather than to copy it. Until then this ramp reproduces the `none`-family look - the
+    // one the shader already falls back to - so the read path is exercised by a redistributable asset and the
+    // per-family ramps remain the next step rather than being silently approximated.
+    constexpr uint32_t baked_ramp_width = 256;
+    constexpr uint32_t baked_ramp_height = 8;
+    auto const bake_diffuse_ramp = []() {
+        // The same shape the shader's fallback builds: `lerp(shadow_tint, white, smoothstep(center - s, center +
+        // s, x))` over the ramp coordinate, with the fallback's own three numbers.
+        constexpr float center = 0.42f;
+        constexpr float softness = 0.035f;
+        constexpr float tint[3] = {0.58f, 0.60f, 0.72f};
+        auto const srgb_encode = [](float const linear) {
+            return linear <= 0.0031308f ? linear * 12.92f : 1.055f * std::pow(linear, 1.0f / 2.4f) - 0.055f;
+        };
+        auto const smoothstep = [](float const edge0, float const edge1, float const x) {
+            float const t = std::clamp((x - edge0) / (edge1 - edge0), 0.0f, 1.0f);
+            return t * t * (3.0f - 2.0f * t);
+        };
+        std::vector<unsigned char> pixels(static_cast<std::size_t>(baked_ramp_width) * baked_ramp_height * 4u, 255u);
+        for (uint32_t v = 0; v < baked_ramp_height; ++v) {
+            for (uint32_t u = 0; u < baked_ramp_width; ++u) {
+                float const x = static_cast<float>(u) / static_cast<float>(baked_ramp_width - 1u);
+                float const step = smoothstep(center - softness, center + softness, x);
+                unsigned char* const texel = pixels.data() + (static_cast<std::size_t>(v) * baked_ramp_width + u) * 4u;
+                for (int c = 0; c < 3; ++c) {
+                    float const linear = tint[c] + (1.0f - tint[c]) * step;
+                    // THE UPLOAD IS SRGB (see register_material's slot table), so the texel holds the ENCODED
+                    // value: what the sampler hands the shader is then the linear tint, which is what the
+                    // procedural path multiplied by.
+                    texel[c] = static_cast<unsigned char>(std::clamp(srgb_encode(linear), 0.0f, 1.0f) * 255.0f + 0.5f);
+                }
+                texel[3] = 255u;
+            }
+        }
+        return pixels;
+    };
+
     // THE MAPPING between the asset pipeline's vocabulary and the record's layout, and the only place it appears:
     // one sidecar slot name per `toon_slot` lane, in lane order.
     static constexpr std::array<std::string_view, static_cast<std::size_t>(vulkan::toon_slot::count)> toon_slot_names = {"_DiffRampMap", "_ShadowLutTex", "_SpecRampMap", "_MatcapTex"};
@@ -444,6 +498,18 @@ int main(int argc, char** argv) {
         // white fallback - i.e. "do not read" (see material_record::toon_indices). A map that exists while its
         // flag is off must NOT be read: that is the first rule the sidecar module exists to keep.
         if (!material->enabled(slot_name)) {
+            return out;
+        }
+        // THE DIFFUSE RAMP IS THE BAKED ONE, NOT THE MODEL'S IMAGE - see bake_diffuse_ramp for why a path that
+        // read the game's own ramp is a path this repository cannot carry, and note that the artist's switch
+        // above is still what decides WHETHER there is a ramp at all. The other lanes keep the model's images
+        // for now: nothing reads them yet, and baking them is the same question one lane at a time.
+        if (lane == vulkan::toon_slot::diffuse_ramp && !state.baked_ramp.empty()) {
+            out.data = std::span<unsigned char const>(state.baked_ramp.data(), state.baked_ramp.size());
+            out.width = state.baked_ramp_width;
+            out.height = state.baked_ramp_height;
+            out.mip_levels = 1;
+            out.valid = true;
             return out;
         }
         std::string_view const texture_name = material->slot(slot_name);
@@ -465,8 +531,11 @@ int main(int argc, char** argv) {
         out.valid = true;
         return out;
     };
-    toon_lookup_state const toon_state{.sidecar = toon_sidecar.has_value() ? &*toon_sidecar : nullptr, .scenes = &*scenes};
-    runtime.set_toon_lookup(vulkan::runtime::toon_lookup{.owner = const_cast<toon_lookup_state*>(&toon_state), .texture = toon_texture});
+    toon_lookup_state toon_state{.sidecar = toon_sidecar.has_value() ? &*toon_sidecar : nullptr, .scenes = &*scenes};
+    toon_state.baked_ramp = bake_diffuse_ramp();
+    toon_state.baked_ramp_width = baked_ramp_width;
+    toon_state.baked_ramp_height = baked_ramp_height;
+    runtime.set_toon_lookup(vulkan::runtime::toon_lookup{.owner = &toon_state, .texture = toon_texture});
 
     vulkan::scene_import_result const imported = runtime.import_scene(node_first, node_last, scene_first, scene_last, scene_import_shift);
     utility::log("imported {} primitives ({} new materials)", imported.primitive_count, imported.material_count);
