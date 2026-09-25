@@ -269,6 +269,33 @@ void test_no_head_bone_is_found_where_there_is_none() {
     CHECK(!gltf::head_joint_of(*result, 0, 99).has_value());
 }
 
+void test_a_head_bone_is_found_at_its_joint_index() {
+    // THE SUCCESS PATH, which the other fixtures cannot exercise: both of them have joints called `pole`/`arm`
+    // and `joint`, so until this file existed `head_joint_of` was only ever tested answering "no".
+    //
+    // THE FIXTURE IS BUILT SO THE ANSWER IS AN INDEX THAT IS NOT ZERO - its skin's joints are `neck` then
+    // `Head`, so the head is joint 1. A finder that returned the first joint, or an asset node index instead of
+    // a joint index, would pass a test written against joint 0 and fail here, and both of those are real
+    // mistakes: the joint index is what picks a matrix out of the per-frame skin matrix array, so an off-by-one
+    // shades a face from a neck.
+    auto const result = gltf::load_model(VR_TEST_SOURCE_DIR "/tests/fixtures/skinned_head.gltf");
+    CHECK(result.has_value());
+    if (!result.has_value()) {
+        return;
+    }
+    CHECK(result->skins.size() == 1);
+    if (result->skins.size() != 1) {
+        return;
+    }
+    CHECK(result->skins[0].joints.size() == 2);
+    std::optional<std::size_t> const head = gltf::head_joint_of(*result, 0, 0);
+    CHECK(head.has_value());
+    CHECK(head == std::optional<std::size_t>{1});
+    // AND IT IS AN INDEX INTO `joints`, NOT AN ASSET NODE INDEX: the two differ here on purpose (the head is
+    // asset node 3 and joint 1), so a finder that returned the wrong one of them cannot pass both assertions.
+    CHECK(result->skins[0].joints[1] != 1u);
+}
+
 int main() {
     test_load_damaged_helmet();
     test_async_load_matches_sync();
@@ -279,5 +306,6 @@ int main() {
     test_the_head_frame_matcher_rejects_lookalikes();
     test_the_head_frame_from_a_bone_and_when_there_is_none();
     test_no_head_bone_is_found_where_there_is_none();
+    test_a_head_bone_is_found_at_its_joint_index();
     return vk_test::finish("test_gltf_loader");
 }
