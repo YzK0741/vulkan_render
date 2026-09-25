@@ -73,6 +73,10 @@ DescriptorHandle<Sampler2D> combined_at(uint texture_slot, uint sampler_slot)
 #define skin_matrix_at(slot, index) heap_at<StructuredBuffer<VR_MAT4>>(slot)[index]
 #define skin_matrix_previous_at(slot, index) heap_at<StructuredBuffer<VR_MAT4>>(slot)[index]
 #define morph_value_at(slot, index) heap_at<StructuredBuffer<float>>(slot)[index]
+// THE FACE SDF LANE: one texture-array index per material, or 0 for "do not read". It is a structured buffer
+// rather than a member of the material record because the record is INLINE in the per-draw push block and a
+// word added to it moves every offset in `surface.glsl` and `shadow.slang` - see core::heap_slots::sdf_lanes.
+#define sdf_lane_at(slot, index) heap_at<StructuredBuffer<uint>>(slot)[index]
 
 /// one cascade's world -> light-clip matrix, read as the FIRST matrix array of the light buffer.
 /// @note WHY NOT `light_at(slot).light_view_proj[index]`, measured: Slang lowers a matrix ARRAY member of a

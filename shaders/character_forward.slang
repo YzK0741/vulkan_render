@@ -106,6 +106,83 @@ float2 toon_matcap_uv(const float3 n, const float3 v) {
     return saturate(float2(dot(n, right), -dot(n, up_ortho)) * 0.5 + 0.5);
 }
 
+/// @brief the reference's `EF_FACE_SDF_GOO_SHARP` - the Sigmoid's SLOPE, neutral 0.5 (range 0.05..5.0)
+static const float character_sdf_sharp = 0.5;
+/// @brief the reference's `EF_FACE_SDF_GOO_CENTER` - a constant added to the per-pixel angle threshold
+static const float character_sdf_center_offset = 0.1;
+/// @brief the reference's `EF_FACE_SDF_GOO_BASE` - the Sigmoid's base, hardcoded in its named twin too
+static const float character_sdf_base = 100000.0;
+
+/**
+ * @brief the FACE's shadow terminator, from its SDF lightmap - the reference's `EF_FACE_SDF_GOO_ANGLE` path
+ *
+ * WHY A FACE NEEDS A DIFFERENT MECHANISM FROM EVERY OTHER SURFACE, and it is the whole reason this lane exists:
+ * a low-poly anime face is a handful of triangles whose normals are a poor description of its form - the cheeks
+ * and the nose are painted into the texture rather than modelled - so shading it by `dot(N, L)` puts the
+ * terminator wherever the tessellation happens to put it. The reference therefore shades the face as a 2D SHAPE:
+ * a distance field authored per face, thresholded against an angle derived from the light's direction IN THE
+ * HEAD'S OWN FRAME. That is why the light is projected onto the head plane below and the surface normal is
+ * never used - the only place the reference touches `normalWS` in its whole SDF path is a debug escape hatch.
+ *
+ * THE HEAD BASIS IS THE REFERENCE'S OWN FALLBACK, verbatim from `EfFaceGetHeadBasis`:
+ *
+ *     if (valid < 0.5) { headFront = float3(0,0,-1); headRight = float3(-1,0,0); headUp = float3(0,1,0); }
+ *
+ * The reference reaches for the PMX HEAD BONE MATRIX and falls back to these constants when the bone is missing
+ * or degenerate. This model has NO SKELETON AT ALL - `zhuangfy_scalar.glb` is 7 nodes and 0 skins, a static
+ * pose split by body part - so the fallback is not an approximation here, it is the accurate answer: a static
+ * model's head does not turn, and a fixed basis and a bone matrix would give the same three vectors. A SKINNED
+ * model would want the bone path, and that path IS NOT IMPLEMENTED - see the note at the end of this block.
+ *
+ * THE MIRROR IS THE PART WORTH STATING, because it looks like a trick and is the reference's design: the atlas
+ * holds ONE face, and a light from the other side reads it MIRRORED (`1 - uv.x`). Measured on the real asset
+ * (`T_actor_common_female_face_02_SDF`): the image correlates -0.89 with its own horizontal flip against +0.62
+ * with its vertical flip, i.e. it is strongly antisymmetric about u = 0.5, which is exactly the structure that
+ * makes the mirrored read land on a meaningful counterpart.
+ *
+ * THE SIGMOID IS THE REFERENCE'S, INLINED AS IT INLINES IT: `1 / (1 + base^(-3 * sharp * (x - center)))`, with
+ * `x` the R/G average of the mirrored sample, `center` the per-pixel light angle plus a constant, and a `saturate`
+ * on the way out. The angle is `|atan2(side, front)| / PI`, so 0 is a light straight ahead and 1 is a light
+ * directly behind - and `center` is therefore where the terminator sits for THIS light direction.
+ *
+ * WHAT IS NOT IMPLEMENTED, said plainly rather than left to be discovered: the head-bone path. A model with a
+ * skeleton wants `headFront` / `headRight` from that bone's world matrix per frame; this function takes the
+ * fallback unconditionally. It is correct for the static models this repository has and wrong for an animated
+ * one, and nothing here can tell the difference.
+ *
+ * @param uv the surface's texture coordinate, which is the SDF atlas's coordinate too
+ * @param lane the material's SDF heap lane; the caller must not call this with 0
+ * @param light_ws the unit SURFACE-TO-LIGHT vector
+ * @return the light/dark weight, 0 = shadow side, 1 = lit side
+ */
+float toon_sdf_mask(const float2 uv, const uint lane, const float3 light_ws) {
+    const float3 head_front = float3(0.0, 0.0, -1.0);
+    const float3 head_right = float3(-1.0, 0.0, 0.0);
+    const float3 head_up = float3(0.0, 1.0, 0.0);
+    // THE LIGHT IS PROJECTED ONTO THE HEAD PLANE. A light straight down the head's up axis has no stable
+    // left/right side, and the reference bails out of that case (`return float4(1,1,0,1)`); this returns "lit",
+    // because a magenta debug frame is not an option in a shipped stage and 1.0 is the value the ramp treats as
+    // unshadowed.
+    const float3 projected = light_ws - dot(light_ws, head_up) * head_up;
+    const float projected_len_sq = dot(projected, projected);
+    if (projected_len_sq < 1e-8) {
+        return 1.0;
+    }
+    const float3 light_dir = projected * rsqrt(projected_len_sq);
+    const float side = dot(light_dir, head_right);
+    const float mirror = step(0.0, side);
+    const float2 sdf_uv = float2(lerp(1.0 - uv.x, uv.x, mirror), uv.y);
+    const float4 sdf = heap_texel(heap_at<Texture2D<float4>>(heap_slots_textures + lane), heap_sampler_texture, sdf_uv);
+    // R AND G AVERAGED, which is what the reference's production path does. Its debug branches read the
+    // channels separately (front light -> G, back light -> R); the goo path this ports averages them, and B and
+    // A are never read outside a raw dump.
+    const float average = saturate(0.5 * (sdf.r + sdf.g));
+    const float angle01 = saturate(abs(atan2(side, dot(light_dir, head_front))) * (1.0 / 3.14159265));
+    const float center = angle01 + character_sdf_center_offset;
+    const float exponent = -3.0 * character_sdf_sharp * (average - center);
+    return saturate(1.0 / max(1.0 + pow(character_sdf_base, exponent), 1e-4));
+}
+
 /**
  * @brief the neutral ramp's HALF edge width, and the other half of a shared contract
  *
@@ -214,7 +291,7 @@ float3 toon_shadow_lut(const float3 albedo, const uint lane) {
  *        model does not have it", and every read below is gated on that rather than on a separate flag - which
  *        is what makes the `_Use` flag in the sidecar the only switch there is.
  */
-float3 toon_diffuse(float3 albedo, float3 n, float3 world_pos, float ao, toon_params params, uint4 toon_indices) {
+float3 toon_diffuse(float3 albedo, float3 n, float3 world_pos, float ao, toon_params params, uint4 toon_indices, const float2 uv, const uint sdf_lane) {
     // THE LIGHT VECTOR IS THE SURFACE-TO-LIGHT DIRECTION, which is the engine's existing convention
     // (`evaluate_direct_light` normalizes this same field into its `l`).
     const float3 l = normalize(light_at(heap_light_slot).light_dir.xyz);
@@ -228,6 +305,19 @@ float3 toon_diffuse(float3 albedo, float3 n, float3 world_pos, float ao, toon_pa
 
     // THE GATE. The shadow term multiplies the half-Lambert rather than being applied after it.
     const float gated = saturate(shadow * half_lambert);
+
+    // ---- THE FACE SDF LANE: the terminator as a SHAPE rather than as geometry (see toon_sdf_mask) ----
+    //
+    // THE MASK REPLACES THE COORDINATE, NOT THE COLOUR. It answers "which side of the ramp is this fragment on"
+    // and the ramp below still decides what the two sides look like - which is the reference's own composition:
+    // its SDF mask becomes the U coordinate of an RD ramp lookup and that lookup's alpha becomes the light/dark
+    // weight. So this is a SUBSTITUTION, not a second term to blend with the gated half-Lambert, and a material
+    // without the lane keeps the coordinate it always had.
+    //
+    // A LANE OF 0 MEANS "DO NOT READ", as in every other lane, and it is the ONLY test needed: the sidecar's
+    // `_UseSDFLightmap` and the model's lack of an SDF both collapse to it at import (see
+    // core::heap_slots::sdf_lanes), so this stage cannot tell them apart and does not have to.
+    const float shaped = sdf_lane != 0u ? toon_sdf_mask(uv, sdf_lane, l) : gated;
 
     // ---- THE LIGHT TINT: the material's OWN RAMP when it has one, the procedural threshold otherwise ----
     //
@@ -256,13 +346,13 @@ float3 toon_diffuse(float3 albedo, float3 n, float3 world_pos, float ao, toon_pa
         // family's threshold, and `* (character_ramp_half_width / softness)` rescales the coordinate so the
         // family's edge width lands on the ramp's own. `saturate` gives the flat shadow and lit sides, which is
         // what a ramp has and a bare `smoothstep` does not.
-        const float ramp_x = saturate(0.5 + (gated - params.center) * (character_ramp_half_width / max(params.softness, 1e-4)));
+        const float ramp_x = saturate(0.5 + (shaped - params.center) * (character_ramp_half_width / max(params.softness, 1e-4)));
         // `.r` because the baked ramp holds the STEP in all three channels and no colour - the dark side's
         // colour is `params.shadow_tint` below, so one shared asset can serve a family whose shadow is warm and
         // one whose shadow is cool, which a baked-in tint could not.
         ramp_step = heap_texel(heap_at<Texture2D<float4>>(heap_slots_textures + toon_indices.x), heap_sampler_texture, float2(ramp_x, character_ramp_band_v)).r;
     } else {
-        ramp_step = smoothstep(params.center - params.softness, params.center + params.softness, gated);
+        ramp_step = smoothstep(params.center - params.softness, params.center + params.softness, shaped);
     }
     const float3 light_tint = lerp(params.shadow_tint, float3(1.0, 1.0, 1.0), ramp_step);
 
@@ -386,7 +476,7 @@ float4 main(
     // gltf_loader's toon_family_of) and carried through the material record. An unclassified material gets
     // `toon_params_for(0)`, which is the family-independent path.
     const toon_params params = toon_params_for(s.toon_family);
-    const float3 colour = toon_diffuse(s.albedo, normalize(s.normal), v_world_pos, s.ao, params, s.toon_indices);
+    const float3 colour = toon_diffuse(s.albedo, normalize(s.normal), v_world_pos, s.ao, params, s.toon_indices, v_uv, sdf_lane_at(heap_slots_sdf_lanes, push.material_index));
 
     // the BLEND rule, copied from unlit.slang: an alphaMode BLEND material carries its own coverage, and
     // every other material is fully opaque regardless of what its base colour's alpha says
