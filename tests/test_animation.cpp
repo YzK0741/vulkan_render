@@ -388,19 +388,28 @@ namespace {
                 d.push_back(static_cast<std::uint8_t>((value >> (8 * byte)) & 0xffu));
             }
         };
+        // position and weight fields are floats: writing an integer into one stores its bit
+        // pattern (u32(1) reads back as 1.4e-45), which looks like a zero and not like a mistake
+        auto f32 = [&u32](float const value) {
+            std::uint32_t bits = 0;
+            std::memcpy(&bits, &value, sizeof(bits));
+            u32(bits);
+        };
         text("Vocaloid Motion Data 0002", 30);
         text("named", 20);
         u32(static_cast<std::uint32_t>(names.size()));
+        std::uint32_t frame = 0;
         for (auto const& name : names) {
             text(name, 15);
-            u32(0); // frame
+            u32(frame);                             // frame: one key per entry, 30 frames apart
+            f32(static_cast<float>(frame) / 30.0f); // position x advances with the frame
             u32(0);
             u32(0);
-            u32(0); // position
             u32(0);
             u32(0);
             u32(0);
             u32(0x3f800000u); // rotation x, y, z, w = 0, 0, 0, 1
+            frame += 30u;
             for (int byte = 0; byte < 64; ++byte) {
                 d.push_back(0); // interpolation block
             }
@@ -445,6 +454,47 @@ namespace {
         CHECK(empty.unmapped == 3);
         CHECK(empty.joint_of(0) == -1);
     }
+    void test_mmd_bake_feeds_the_controller() {
+        // センター twice: frame 0 at x=0 and frame 30 at x=1, so the bake has a span to sample
+        std::string const centre("\x83\x5a\x83\x93\x83\x5e\x81\x5b", 8);
+        std::vector<std::uint8_t> const bytes = build_vmd_named({centre, centre});
+        std::optional<mmd_motion> const motion = parse_mmd_motion(bytes);
+        CHECK(motion.has_value());
+        if (!motion.has_value()) {
+            return;
+        }
+        mmd_retarget const retarget = build_mmd_retarget(*motion, {"mmd_center"});
+        CHECK(retarget.mapped == 1);
+
+        clip const baked = bake_mmd_clip(*motion, retarget);
+        CHECK(baked.samplers.size() == 2); // translation and rotation
+        CHECK(baked.channels.size() == 2);
+        CHECK(baked.channels[0].target_node == 0); // the joint the retarget resolved
+        CHECK(baked.channels[1].target_node == 0);
+        CHECK(baked.channels[0].path == channel_path::translation);
+        CHECK(baked.channels[1].path == channel_path::rotation);
+        // frame 30 is 1.0 s at MMD's source rate, so 0..30 is 31 samples one frame apart
+        CHECK(baked.samplers[0].times.size() == 31);
+        CHECK(approx(baked.samplers[0].times.back(), 1.0f));
+        CHECK(baked.samplers[1].times.size() == 31);
+
+        // Play it through the controller's own sampler, which is what consumes a clip.
+        node_pose const base;
+        CHECK(approx(sample_node(baked, 0, base, 0.0f).translation, glm::vec3(0.0f)));
+        CHECK(approx(sample_node(baked, 0, base, 0.5f).translation, glm::vec3(0.5f, 0.0f, 0.0f)));
+        CHECK(approx(sample_node(baked, 0, base, 1.0f).translation, glm::vec3(1.0f, 0.0f, 0.0f)));
+        // past the last key it holds, like any other clip
+        CHECK(approx(sample_node(baked, 0, base, 9.0f).translation, glm::vec3(1.0f, 0.0f, 0.0f)));
+        // a node nothing targets stays untouched
+        CHECK(!sample_node(baked, 7, base, 0.5f).any_channel);
+
+        // Half the rate still spans the same motion, in half as many samples.
+        clip const coarse =
+            bake_mmd_clip(*motion, retarget, mmd_bake_options{.frames_per_second = 15.0f});
+        CHECK(coarse.samplers[0].times.size() == 16);
+        CHECK(approx(coarse.samplers[0].times.back(), 1.0f));
+        CHECK(approx(sample_node(coarse, 0, base, 0.5f).translation, glm::vec3(0.5f, 0.0f, 0.0f)));
+    }
 } // namespace
 
 int main() {
@@ -461,5 +511,6 @@ int main() {
     test_mmd_motion_real_file_when_available();
     test_mmd_name_escape_is_an_unambiguous_literal();
     test_mmd_retarget_resolves_by_alias();
+    test_mmd_bake_feeds_the_controller();
     return vk_test::finish("test_animation");
 }

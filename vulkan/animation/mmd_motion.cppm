@@ -30,6 +30,10 @@ export module vulkan.animation.mmd_motion;
 
 import vstd;
 import utility;
+// clip / sampler / channel: the bridge at the bottom of this file builds one so the controller can
+// play a VMD without being taught about VMD.  The controller does not import this module, so the
+// dependency runs one way only.
+import vulkan.animation;
 
 namespace vulkan::animation {
 
@@ -232,5 +236,28 @@ namespace vulkan::animation {
      */
     export mmd_retarget build_mmd_retarget(mmd_motion const& motion,
                                            std::vector<std::string> const& joint_names);
+
+    /** @brief how finely to sample a motion when turning it into a playable clip */
+    export struct mmd_bake_options {
+        /** samples per second; MMD evaluates its curves once per 30 fps frame, so 30 is exact */
+        float frames_per_second = 30.0f;
+        /** last MMD frame to bake (negative means the motion's own last frame) */
+        float last_frame = -1.0f;
+    };
+
+    /**
+     * @brief sample @p motion into a controller clip, one key per mapped bone per sample
+     *
+     * The controller already plays clips onto node poses, so the motion is converted rather than
+     * the controller being taught about VMD.  Baking here is not the same thing as baking into the
+     * model: the parsed motion stays untouched and retargetable, and at MMD's own 30 fps the samples
+     * land exactly where MMD evaluates its curves, so no easing is lost.  Asking for a higher rate
+     * only subdivides the same curve for an engine that renders faster than the source motion.
+     *
+     * Morphs are not carried: a weights channel addresses one node's morph targets, and the models
+     * this engine loads have none.
+     */
+    export clip bake_mmd_clip(mmd_motion const& motion, mmd_retarget const& retarget,
+                              mmd_bake_options const& options = {});
 
 } // namespace vulkan::animation

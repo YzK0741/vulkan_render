@@ -430,4 +430,61 @@ namespace vulkan::animation {
         return result;
     }
 
+    clip bake_mmd_clip(mmd_motion const& motion, mmd_retarget const& retarget,
+                       mmd_bake_options const& options) {
+        clip baked;
+        baked.name = motion.model_name;
+        float const rate = options.frames_per_second > 0.0f ? options.frames_per_second
+                                                            : mmd_motion::frames_per_second;
+        float const last = options.last_frame >= 0.0f ? options.last_frame
+                                                      : static_cast<float>(motion.last_frame);
+        // MMD frame numbers and clip seconds are related by the SOURCE rate, not the bake rate:
+        // frame f always sits at f / 30 seconds, however finely it is sampled.
+        float const frames_per_step = mmd_motion::frames_per_second / rate;
+        std::size_t const steps = static_cast<std::size_t>(last / frames_per_step) + 1;
+
+        for (std::size_t bone = 0; bone < motion.bones.size(); ++bone) {
+            std::int32_t const joint = retarget.joint_of(bone);
+            if (joint < 0) {
+                continue; // no counterpart on this skeleton, so there is nothing to drive
+            }
+            sampler translation;
+            translation.per_key = 3;
+            translation.interp = interpolation::linear;
+            sampler rotation;
+            rotation.per_key = 4;
+            rotation.interp = interpolation::linear;
+            for (std::size_t step = 0; step < steps; ++step) {
+                float const frame = static_cast<float>(step) * frames_per_step;
+                mmd_pose pose;
+                if (!motion.sample_bone(motion.bones[bone].name, frame, pose)) {
+                    continue;
+                }
+                float const seconds = frame / mmd_motion::frames_per_second;
+                translation.times.push_back(seconds);
+                translation.values.push_back(pose.translation.x);
+                translation.values.push_back(pose.translation.y);
+                translation.values.push_back(pose.translation.z);
+                // the controller stores rotation keys as x, y, z, w
+                rotation.times.push_back(seconds);
+                rotation.values.push_back(pose.rotation.x);
+                rotation.values.push_back(pose.rotation.y);
+                rotation.values.push_back(pose.rotation.z);
+                rotation.values.push_back(pose.rotation.w);
+            }
+            if (translation.times.empty()) {
+                continue;
+            }
+            auto const joint_index = static_cast<std::size_t>(joint);
+            std::size_t const translation_sampler = baked.samplers.size();
+            baked.samplers.push_back(std::move(translation));
+            std::size_t const rotation_sampler = baked.samplers.size();
+            baked.samplers.push_back(std::move(rotation));
+            baked.channels.push_back(
+                channel{channel_path::translation, translation_sampler, joint_index});
+            baked.channels.push_back(channel{channel_path::rotation, rotation_sampler, joint_index});
+        }
+        return baked;
+    }
+
 } // namespace vulkan::animation
