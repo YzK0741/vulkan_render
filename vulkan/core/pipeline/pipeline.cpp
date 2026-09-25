@@ -77,7 +77,8 @@ namespace vulkan {
         float const depth_bias_slope_factor,
         float const depth_bias_clamp,
         std::span<VkPipelineColorBlendAttachmentState const> const blend_attachments,
-        VkShaderStageFlagBits const first_stage) {
+        VkShaderStageFlagBits const first_stage,
+        VkCompareOp const depth_compare_op) {
         using fail = std::unexpected<std::string_view>;
         if (!blend_attachments.empty() && blend_attachments.size() != color_formats.size()) {
             return fail("make_pipeline: a blend attachment per color format is required");
@@ -162,7 +163,7 @@ namespace vulkan {
         VkPipelineViewportStateCreateInfo const viewport_state_create_info = make_viewport_state();
         VkPipelineDynamicStateCreateInfo const dynamic_state_create_info = make_dynamic_state(dynamic_states.data(), dynamic_state_count);
         VkPipelineRasterizationStateCreateInfo const rasterization_state_create_info = make_rasterization_state(depth_bias_enabled, depth_bias_constant_factor, depth_bias_slope_factor, depth_bias_clamp);
-        VkPipelineDepthStencilStateCreateInfo const depth_stencil_state_create_info = make_depth_stencil_state(depth_test_enabled);
+        VkPipelineDepthStencilStateCreateInfo const depth_stencil_state_create_info = make_depth_stencil_state(depth_test_enabled, depth_compare_op);
         // one blend attachment per color target, either the caller's list (a pass that mixes states
         // per target: the G-buffer overwrites its three surface targets and accumulates into the HDR
         // target) or the opaque overwrite state (a G-buffer must not blend: there alpha is

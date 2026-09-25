@@ -530,6 +530,46 @@ namespace vulkan {
         return result;
     }
 
+    std::expected<vk_pipeline, std::string_view> core::make_character_forward_pipeline(
+        std::span<unsigned char const> const vertex_shader_code,
+        std::span<unsigned char const> const fragment_shader_code,
+        VkShaderStageFlagBits const first_stage) const {
+        // ONE colour target, and it is the HDR one: this pass runs inside the HDR chain (after the lighting
+        // stage, before the resolve), so the tonemap stays the post chain's - see the declaration's note.
+        std::array<VkFormat, 1> const formats = {hdr_format};
+        // OVERWRITE, not blend: the toon result replaces the deferred-lit pixel rather than layering over it.
+        std::array<VkPipelineColorBlendAttachmentState, 1> const blends = {make_color_blend_attachment_opaque()};
+        auto result = vulkan::make_pipeline(
+            this->device,
+            std::span<VkFormat const>(formats),
+            this->depth_format,
+            vertex_shader_code,
+            fragment_shader_code,
+            VK_SAMPLE_COUNT_1_BIT, // the HDR chain is single-sampled, like the G-buffer it re-shades
+            true,                  // the depth TEST is on; the WRITE is turned off per draw (dynamic state)
+            0.0f,
+            0.0f,
+            0.0f,
+            std::span<VkPipelineColorBlendAttachmentState const>(blends),
+            first_stage,
+            // THE ONE OPERATOR IN THE RENDERER THAT IS NOT LESS_OR_EQUAL: it confines the overwrite to the
+            // surface the G-buffer pass recorded, which is what makes this pass a replacement rather than a
+            // second layer over geometry that is merely in front.
+            VK_COMPARE_OP_EQUAL);
+        if (result) {
+            result->viewport = {
+                0.0f,
+                0.0f,
+                static_cast<float>(this->swap_chain_extent.width),
+                static_cast<float>(this->swap_chain_extent.height),
+                0.0f,
+                1.0f,
+            };
+            result->scissor = {{0, 0}, this->swap_chain_extent};
+        }
+        return result;
+    }
+
     std::expected<vk_pipeline, std::string_view> core::make_depth_pipeline(
         std::span<unsigned char const> vertex_shader_code,
         std::span<unsigned char const> const fragment_shader_code,

@@ -502,22 +502,41 @@ export namespace vulkan {
                 .lineWidth = 1.0f};
     }
     /**
-     * @brief depth test + write (disabled for background passes such as the skybox, which draw
-     *        first and must not occlude later geometry); compare LESS_OR_EQUAL
+     * @brief depth test + write, with the COMPARE OPERATOR chosen by the caller
+     * @param depth_test_enabled enable the test; DEPTH WRITE FOLLOWS IT, which is this family's rule and
+     *        is why a pass that needs the test ON with the write OFF must turn the write off through the
+     *        DYNAMIC setter instead: depth write is a dynamic state here (see the dynamic-state list in
+     *        vulkan.core.pipeline), the compare operator is not.
+     * @param depth_compare_op the operator. LESS_OR_EQUAL is what every pipeline in the renderer used
+     *        before this parameter existed; the CHARACTER-FORWARD pass is the first caller that needs a
+     *        different one, and the reason is the whole point of that pass: it OVERWRITES the pixels the
+     *        deferred stage already lit, and `EQUAL` is what restricts that overwrite to exactly the
+     *        surface the G-buffer pass recorded. With LESS_OR_EQUAL it would also re-shade fragments that
+     *        happen to be in front of the recorded depth, which is not a surface it was asked to draw.
      */
-    constexpr VkPipelineDepthStencilStateCreateInfo make_depth_stencil_state(bool const depth_test_enabled) noexcept {
+    constexpr VkPipelineDepthStencilStateCreateInfo make_depth_stencil_state(bool const depth_test_enabled, VkCompareOp const depth_compare_op) noexcept {
         return {.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
                 .pNext = nullptr,
                 .flags = 0,
                 .depthTestEnable = depth_test_enabled ? VK_TRUE : VK_FALSE,
                 .depthWriteEnable = depth_test_enabled ? VK_TRUE : VK_FALSE,
-                .depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL,
+                .depthCompareOp = depth_compare_op,
                 .depthBoundsTestEnable = VK_FALSE,
                 .stencilTestEnable = VK_FALSE,
                 .front = {},
                 .back = {},
                 .minDepthBounds = 0.0f,
                 .maxDepthBounds = 0.0f};
+    }
+    /**
+     * @brief depth test + write (disabled for background passes such as the skybox, which draw
+     *        first and must not occlude later geometry); compare LESS_OR_EQUAL
+     * @note DELEGATES to the two-argument form rather than repeating its ten initializers: the operator is
+     *       the ONLY thing this overload fixes, and a second copy of the state would be a second place to
+     *       keep in step (the failure mode this file's header warns about).
+     */
+    constexpr VkPipelineDepthStencilStateCreateInfo make_depth_stencil_state(bool const depth_test_enabled) noexcept {
+        return make_depth_stencil_state(depth_test_enabled, VK_COMPARE_OP_LESS_OR_EQUAL);
     }
     /**
      * @brief standard alpha blending, ALWAYS enabled: with src alpha == 1 (an opaque material)

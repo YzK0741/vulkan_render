@@ -94,5 +94,17 @@ namespace vulkan {
         std::span<VkPipelineColorBlendAttachmentState const> blend_attachments = {},
         /// @copydoc make_pipeline(VkDevice, VkFormat, VkFormat, std::span<unsigned char const>, std::span<unsigned char const>, VkSampleCountFlagBits, bool, bool, float, float, float)
         /// (the same `first_stage`: VERTEX derives the vertex input state from the module, MESH does not)
-        VkShaderStageFlagBits first_stage = VK_SHADER_STAGE_VERTEX_BIT);
+        VkShaderStageFlagBits first_stage = VK_SHADER_STAGE_VERTEX_BIT,
+        /**
+         * @param depth_compare_op the depth COMPARE OPERATOR, defaulted to what every pipeline in this
+         *        renderer used before the parameter existed, so no existing caller's pipeline changes.
+         *
+         *        The CHARACTER-FORWARD pass is the first caller that needs another value, and `EQUAL` is
+         *        the reason that pass is shaped the way it is: it draws the same leaves a second time to
+         *        overwrite the pixels the deferred stage already lit, and `EQUAL` is what confines the
+         *        overwrite to exactly the surface the G-buffer pass recorded. Depth WRITE is not a
+         *        parameter here because it is already a DYNAMIC state (see the dynamic-state list in
+         *        pipeline.cpp) - a pass that needs the test on with the write off sets it per draw.
+         */
+        VkCompareOp depth_compare_op = VK_COMPARE_OP_LESS_OR_EQUAL);
 } // namespace vulkan

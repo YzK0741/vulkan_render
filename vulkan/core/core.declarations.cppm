@@ -908,6 +908,38 @@ namespace vulkan {
             std::span<unsigned char const> fragment_shader_code,
             VkShaderStageFlagBits first_stage = VK_SHADER_STAGE_VERTEX_BIT) const;
 
+        /**
+         * @brief the CHARACTER-FORWARD pipeline: the toon shading stage that OVERWRITES the deferred-lit
+         *        character pixels, ONE HDR colour target, no blending, depth test on, depth compare EQUAL
+         *
+         * WHAT MAKES IT DIFFERENT FROM THE OTHER FORWARD BUILDER, and each difference is forced:
+         *  - ONE target, and it is `hdr_format`, not the swapchain format. The named forward pipelines
+         *    (`runtime::make_pipeline`: `unlit`, `pbr`, `pbr_premult`) are built for the SWAPCHAIN image
+         *    because that is what a forward session's default target was; this pass runs INSIDE the HDR
+         *    chain, before the resolve, so that the grade and the tonemap stay the post chain's job. A
+         *    toon stage that wrote the swapchain would be tonemapping a second time.
+         *  - BLENDING OFF (`make_color_blend_attachment_opaque`), because the pass OVERWRITES. The named
+         *    forward pipelines blend src-alpha, which is right for coverage and wrong here: the toon result
+         *    is a finished colour, not a layer.
+         *  - DEPTH COMPARE `EQUAL`. See make_depth_stencil_state's second parameter: this is the only
+         *    caller in the renderer that needs an operator other than LESS_OR_EQUAL.
+         *
+         * DEPTH WRITE IS NOT SET HERE because it is a dynamic state: the pass turns it off per draw, the
+         * same way the outline pass does. Leaving it at the builder's default (on) would let a toon
+         * fragment write depth over the surface the lighting stage already committed.
+         *
+         * @param vertex_shader_code the MESH stage that emits the geometry (docs/mesh_shaders.md step 4:
+         *        there is no vertex geometry path left, so this is the pbr mesh entry, exactly as the
+         *        named forward pipelines use)
+         * @param fragment_shader_code the toon fragment stage
+         * @param first_stage MESH for the mesh entry, MESH for the meshlet entry
+         * @return vk_pipeline on success, error message on failure
+         */
+        std::expected<vk_pipeline, std::string_view> make_character_forward_pipeline(
+            std::span<unsigned char const> vertex_shader_code,
+            std::span<unsigned char const> fragment_shader_code,
+            VkShaderStageFlagBits first_stage = VK_SHADER_STAGE_MESH_BIT_EXT) const;
+
     private:
         // ---- THE INITIALIZATION STEPS, and they are private because the constructor is their only caller:
         //      the order in which they run IS the initialization order (see the constructor in core.cpp), and a
