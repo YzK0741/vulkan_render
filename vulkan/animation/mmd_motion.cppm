@@ -237,12 +237,59 @@ namespace vulkan::animation {
     export mmd_retarget build_mmd_retarget(mmd_motion const& motion,
                                            std::vector<std::string> const& joint_names);
 
+    /** @brief the two unit bone directions a two-bone chain settles into */
+    export struct mmd_two_bone_solution {
+        glm::vec3 upper = glm::vec3(0.0f); // hip -> knee, unit
+        glm::vec3 lower = glm::vec3(0.0f); // knee -> ankle, unit
+        bool clamped = false;              // the target was out of reach and was pulled back
+    };
+
+    /**
+     * @brief solve a two-bone chain so its end reaches @p target - the core of MMD's leg IK
+     *
+     * Bone lengths cannot change, so only the two joint angles move; @p pole picks which of the
+     * otherwise one-parameter family of solutions to take, which is how MMD keeps a knee pointing
+     * forward instead of flipping to the other side.
+     *
+     * This exists because MMD drives its legs with IK and THIS MOTION HAS IT ENABLED for all four
+     * leg bones (their property keyframe says so).  Driving the FK keys alone leaves the feet riding
+     * along with the centre bone, so the character floats and bobs instead of dancing on the floor.
+     */
+    export mmd_two_bone_solution solve_two_bone(glm::vec3 const& hip, glm::vec3 const& knee,
+                                                glm::vec3 const& ankle, glm::vec3 const& target,
+                                                glm::vec3 const& pole);
+    /** @brief the local rotations a leg chain needs so its ankle reaches the IK target */
+    export struct mmd_ik_result {
+        glm::quat hip_local = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+        glm::quat knee_local = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+        bool clamped = false; // the target was out of reach
+    };
+
+    /**
+     * @brief aim a hip->knee->ankle chain at @p target_world, returning LOCAL joint rotations
+     *
+     * @ref solve_two_bone works in world space, but a glTF joint carries a LOCAL rotation, so the
+     * solved directions have to be turned back into the parent's frame - first for the hip, then
+     * for the knee whose parent is the hip's NEW world rotation.  Chain geometry arrives as the
+     * two local offsets and the two local rotations, which is exactly what the node tree holds.
+     *
+     * @param pole_world  which way the knee should bend; pass the FK knee's own direction so the
+     *                    knee keeps the facing the animator gave it instead of guessing an axis
+     */
+    export mmd_ik_result solve_leg_ik(glm::quat const& hip_local, glm::vec3 const& knee_offset,
+                                      glm::quat const& knee_local, glm::vec3 const& ankle_offset,
+                                      glm::quat const& parent_world, glm::vec3 const& hip_world,
+                                      glm::vec3 const& target_world, glm::vec3 const& pole_world);
     /** @brief how finely to sample a motion when turning it into a playable clip */
     export struct mmd_bake_options {
         /** samples per second; MMD evaluates its curves once per 30 fps frame, so 30 is exact */
         float frames_per_second = 30.0f;
         /** last MMD frame to bake (negative means the motion's own last frame) */
         float last_frame = -1.0f;
+        /** model units per MMD unit - MUST match the transform the skeleton was rigged with */
+        float scale = 1.0f;
+        /** per-axis sign of that same transform (MMD is left-handed Y-up: (x, y, -z)) */
+        glm::vec3 axis_sign = glm::vec3(1.0f, 1.0f, -1.0f);
     };
 
     /**

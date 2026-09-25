@@ -911,6 +911,25 @@ int main(int argc, char** argv) {
                 }
                 converted.channels.push_back(out);
             }
+            // The controller's translation channel REPLACES a node's local translation, so the node's
+            // own rest offset has to be added back: the bake emits an offset from rest, not a position.
+            for (gltf::animation_channel const& c : converted.channels) {
+                if (c.path != gltf::animation_path::translation) {
+                    continue;
+                }
+                auto const found = scenes->node_by_source.find(c.target_node);
+                if (found == scenes->node_by_source.end() || found->second == nullptr) {
+                    continue;
+                }
+                glm::vec3 const rest = found->second->translation;
+                gltf::animation_sampler& s = converted.samplers[c.sampler];
+
+                for (std::size_t i = 0; i + 2 < s.values.size(); i += 3) {
+                    s.values[i] += rest.x;
+                    s.values[i + 1] += rest.y;
+                    s.values[i + 2] += rest.z;
+                }
+            }
             utility::log("mmd motion: baked clip '{}' - {} samplers, {} channels", converted.name,
                          converted.samplers.size(), converted.channels.size());
             scenes->animations.push_back(std::move(converted));

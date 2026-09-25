@@ -498,6 +498,65 @@ namespace {
         CHECK(approx(coarse.samplers[0].times.back(), 1.0f));
         CHECK(approx(sample_node(coarse, 0, base, 0.5f).translation, glm::vec3(0.5f, 0.0f, 0.0f)));
     }
+    void test_mmd_two_bone_ik() {
+        // a 0.5 + 0.5 chain hanging straight down, knee free to swing towards -Z
+        glm::vec3 const hip(0.0f, 1.0f, 0.0f);
+        glm::vec3 const knee(0.0f, 0.5f, 0.0f);
+        glm::vec3 const ankle(0.0f, 0.0f, 0.0f);
+        glm::vec3 const pole(0.0f, 0.0f, -1.0f);
+        glm::vec3 const target(0.2f, 0.1f, -0.3f);
+
+        mmd_two_bone_solution const s = solve_two_bone(hip, knee, ankle, target, pole);
+        CHECK(!s.clamped);
+        CHECK(approx(glm::length(s.upper), 1.0f, 1e-4f)); // unit directions
+        CHECK(approx(glm::length(s.lower), 1.0f, 1e-4f));
+        // bone lengths are preserved and the end lands on the target
+        CHECK(approx(hip + s.upper * 0.5f + s.lower * 0.5f, target, 1e-3f));
+        // the knee swung towards the pole side, not away from it
+        CHECK(glm::dot(s.upper, pole) > 0.0f);
+
+        // an unreachable target is pulled onto the reachable sphere and reported, not ignored
+        mmd_two_bone_solution const far = solve_two_bone(hip, knee, ankle, glm::vec3(5.0f), pole);
+        CHECK(far.clamped);
+        // measured FROM THE HIP: the reachable sphere is centred there, not on the origin
+        CHECK(approx(glm::length((hip + far.upper * 0.5f + far.lower * 0.5f) - hip), 1.0f, 1e-3f));
+
+        // a degenerate chain must not produce NaN
+        mmd_two_bone_solution const flat = solve_two_bone(hip, hip, hip, target, pole);
+        CHECK(approx(glm::length(flat.upper), 0.0f, 1e-6f));
+    }
+    void test_mmd_leg_ik_lands_the_foot() {
+        // hip at (0,1,0), a straight 0.4 + 0.4 leg hanging down, every rest rotation identity
+        glm::quat const identity(1.0f, 0.0f, 0.0f, 0.0f);
+        glm::vec3 const knee_offset(0.0f, -0.4f, 0.0f);
+        glm::vec3 const ankle_offset(0.0f, -0.4f, 0.0f);
+        glm::vec3 const hip_world(0.0f, 1.0f, 0.0f);
+        glm::vec3 const target(0.2f, 0.3f, -0.2f);
+        glm::vec3 const pole(0.0f, 0.0f, -1.0f);
+
+        mmd_ik_result const r =
+            solve_leg_ik(identity, knee_offset, identity, ankle_offset, identity, hip_world, target, pole);
+        CHECK(!r.clamped);
+
+        // forward-kinematics the returned LOCAL rotations: the ankle must land on the target
+        glm::vec3 const knee_world = hip_world + r.hip_local * knee_offset;
+        glm::vec3 const ankle_world = knee_world + (r.hip_local * r.knee_local) * ankle_offset;
+        CHECK(approx(ankle_world, target, 1e-3f));
+        // and the chain kept its bone lengths
+        CHECK(approx(glm::length(knee_world - hip_world), 0.4f, 1e-4f));
+        CHECK(approx(glm::length(ankle_world - knee_world), 0.4f, 1e-4f));
+        // the knee bent towards the pole side rather than away from it
+        CHECK(glm::dot(knee_world - hip_world, pole) > 0.0f);
+
+        // a target already at the rest position leaves the chain alone
+        mmd_ik_result const same =
+            solve_leg_ik(identity, knee_offset, identity, ankle_offset, identity, hip_world,
+                         hip_world + knee_offset + ankle_offset, pole);
+        glm::vec3 const same_ankle =
+            hip_world + same.hip_local * knee_offset +
+            (same.hip_local * same.knee_local) * ankle_offset;
+        CHECK(approx(same_ankle, hip_world + knee_offset + ankle_offset, 1e-3f));
+    }
 } // namespace
 
 int main() {
@@ -514,6 +573,8 @@ int main() {
     test_mmd_motion_real_file_when_available();
     test_mmd_name_escape_is_an_unambiguous_literal();
     test_mmd_retarget_resolves_by_alias();
+    test_mmd_two_bone_ik();
+    test_mmd_leg_ik_lands_the_foot();
     test_mmd_bake_feeds_the_controller();
     return vk_test::finish("test_animation");
 }

@@ -491,6 +491,92 @@ namespace vulkan::animation {
         return result;
     }
 
+    mmd_two_bone_solution solve_two_bone(glm::vec3 const& hip, glm::vec3 const& knee,
+                                         glm::vec3 const& ankle, glm::vec3 const& target,
+                                         glm::vec3 const& pole) {
+        mmd_two_bone_solution out;
+        float const upper_length = glm::length(knee - hip);
+        float const lower_length = glm::length(ankle - knee);
+        glm::vec3 const to_target = target - hip;
+        float const distance = glm::length(to_target);
+        if (upper_length <= 1e-6f || lower_length <= 1e-6f || distance <= 1e-6f) {
+            return out;
+        }
+        // the chain cannot change length, so an out-of-reach target is pulled onto the sphere it
+        // CAN reach - and said so, rather than silently returning a straight limb
+        float const max_reach = upper_length + lower_length;
+        float const min_reach = std::fabs(upper_length - lower_length);
+        if (distance > max_reach || distance < min_reach) {
+            out.clamped = true;
+        }
+        float const d = std::min(std::max(distance, min_reach + 1e-4f), max_reach - 1e-4f);
+        glm::vec3 const axis = to_target / distance;
+        // the plane: everything perpendicular to the chain axis, with the pole projected into it
+        glm::vec3 bend = pole - axis * glm::dot(pole, axis);
+        if (glm::length(bend) <= 1e-5f) {
+            glm::vec3 const fallback = std::fabs(axis.y) < 0.9f ? glm::vec3(0.0f, 1.0f, 0.0f)
+                                                                : glm::vec3(1.0f, 0.0f, 0.0f);
+            bend = fallback - axis * glm::dot(fallback, axis);
+        }
+        bend = glm::normalize(bend);
+        // law of cosines: the angle at the hip between the chain and the hip -> target direction
+        float const cosine = (d * d + upper_length * upper_length - lower_length * lower_length) /
+                             (2.0f * d * upper_length);
+        float const angle = std::acos(std::min(1.0f, std::max(-1.0f, cosine)));
+        out.upper = axis * std::cos(angle) + bend * std::sin(angle);
+        glm::vec3 const reach = hip + out.upper * upper_length;
+        glm::vec3 const rest = target - reach;
+        out.lower = glm::length(rest) > 1e-6f ? glm::normalize(rest) : out.upper;
+        return out;
+    }
+    namespace {
+
+        /** @brief shortest-arc rotation taking @p from to @p to (both directions need not be unit) */
+        glm::quat rotate_between(glm::vec3 const& from, glm::vec3 const& to) {
+            glm::vec3 const a = glm::normalize(from);
+            glm::vec3 const b = glm::normalize(to);
+            float const cosine = glm::dot(a, b);
+            if (cosine > 1.0f - 1e-6f) {
+                return glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+            }
+            if (cosine < -1.0f + 1e-6f) { // opposite: any perpendicular axis will do
+                glm::vec3 axis = glm::cross(glm::vec3(1.0f, 0.0f, 0.0f), a);
+                if (glm::length(axis) < 1e-4f) {
+                    axis = glm::cross(glm::vec3(0.0f, 1.0f, 0.0f), a);
+                }
+                return glm::angleAxis(3.14159265358979f, glm::normalize(axis));
+            }
+            glm::vec3 const axis = glm::cross(a, b);
+            return glm::normalize(glm::quat(1.0f + cosine, axis.x, axis.y, axis.z));
+        }
+
+    } // namespace
+
+    mmd_ik_result solve_leg_ik(glm::quat const& hip_local, glm::vec3 const& knee_offset,
+                               glm::quat const& knee_local, glm::vec3 const& ankle_offset,
+                               glm::quat const& parent_world, glm::vec3 const& hip_world,
+                               glm::vec3 const& target_world, glm::vec3 const& pole_world) {
+        mmd_ik_result out;
+        glm::quat const hip_world_rotation = parent_world * hip_local;
+        glm::vec3 const knee_world = hip_world + hip_world_rotation * knee_offset;
+        glm::quat const knee_world_rotation = hip_world_rotation * knee_local;
+        glm::vec3 const ankle_world = knee_world + knee_world_rotation * ankle_offset;
+
+        mmd_two_bone_solution const solved =
+            solve_two_bone(hip_world, knee_world, ankle_world, target_world, pole_world);
+        out.clamped = solved.clamped;
+
+        glm::quat const hip_delta = rotate_between(knee_world - hip_world, solved.upper);
+        out.hip_local = glm::normalize(glm::inverse(parent_world) * (hip_delta * hip_world_rotation));
+
+        // the knee's parent is the hip's NEW world rotation, and the lower bone has already been
+        // carried along by hip_delta, so its own delta is measured after that
+        glm::quat const new_hip_world = parent_world * out.hip_local;
+        glm::quat const knee_delta = rotate_between(hip_delta * (ankle_world - knee_world), solved.lower);
+        out.knee_local =
+            glm::normalize(glm::inverse(new_hip_world) * (knee_delta * hip_delta * knee_world_rotation));
+        return out;
+    }
     clip bake_mmd_clip(mmd_motion const& motion, mmd_retarget const& retarget,
                        mmd_bake_options const& options) {
         clip baked;
@@ -522,10 +608,14 @@ namespace vulkan::animation {
                     continue;
                 }
                 float const seconds = frame / mmd_motion::frames_per_second;
+                // A VMD position is an OFFSET in MMD's own space, so it takes the same transform the
+                // skeleton was rigged with before it can serve as a node translation.  Writing it
+                // verbatim is what stretched the mesh into a spike: every driven joint's local
+                // translation was replaced by a value ~13.6x too large and with Z un-negated.
                 translation.times.push_back(seconds);
-                translation.values.push_back(pose.translation.x);
-                translation.values.push_back(pose.translation.y);
-                translation.values.push_back(pose.translation.z);
+                translation.values.push_back(pose.translation.x * options.axis_sign.x * options.scale);
+                translation.values.push_back(pose.translation.y * options.axis_sign.y * options.scale);
+                translation.values.push_back(pose.translation.z * options.axis_sign.z * options.scale);
                 // the controller stores rotation keys as x, y, z, w
                 rotation.times.push_back(seconds);
                 rotation.values.push_back(pose.rotation.x);
