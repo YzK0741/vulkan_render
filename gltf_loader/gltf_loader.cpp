@@ -1349,31 +1349,63 @@ namespace gltf {
         // unit. Each group is written as the patterns the reference's classifier uses for the same family,
         // and the ones that could collide with a later group come first.
         //
+        // THE CJK PATTERNS ARE MATCHED AS BYTES, SO THE SAME WORD IN ANOTHER SCRIPT IS A DIFFERENT WORD
+        // HERE - and that is not hypothetical. `顔` (U+9854, Japanese) and `颜` (U+989C, simplified
+        // Chinese) are one word and two byte sequences, so a table that listed only the first classified
+        // NONE of the MMD models' face materials; the same held for `髪`/`发` (hair), `靴`/`鞋` (shoe) and
+        // `裤` (trousers, with no Japanese entry at all). Measured on `zhuangfy_toon.glb` before this was
+        // fixed: 25 of its 35 materials fell through to `none`, including every `face` and every `hair`
+        // material - which silently costs the hair its highlight and the eye its soft ramp, because a
+        // material that matches nothing gets the family-independent path. Both scripts are therefore
+        // listed side by side, and the SIMPLIFIED forms are the ones these models actually use.
+        //
+        // AND THE TOKENS ARE OFTEN A SINGLE CHARACTER. An MMD model names its materials `颜`, `发`, `目`,
+        // `眉`, `睫`, `口`, `齿`, `舌`, `鼻`, `鞋`, `裤` - not the two-character words (`頭髮`, `眉毛`,
+        // `睫毛`, `口內`) the first version of this table was written against, so the bare characters are
+        // matched too. Each bare character below is one a model in this repository actually uses as a
+        // WHOLE material name, and the order absorbs the collisions that creates: `手套` (glove) contains
+        // `手` and `袖口` (cuff) and `领口` (collar) contain `口`, so cloth is tested BEFORE skin and face
+        // and carries `手套`/`袖`/`领` of its own; `发饰` (hair ornament) contains `发` and is claimed by
+        // hair, which is the reference's own call - it classifies its `hairshadow` material as hair.
+        //
         // eye BEFORE face: `眼白`/`目白`/`sclera` and `高光`/`highlight` are eye layers.
         if (has("虹膜") || has("瞳") || has("眼白") || has("目白") || has("高光") || has("iris") || has("sclera") ||
-            has("eyewhite") || has("eyehl") || has("eye_hl") || has("catchlight") || has("eyebase")) {
+            has("eyewhite") || has("eyehl") || has("eye_hl") || has("catchlight") || has("eyebase") ||
+            // the bare characters: `目` is the whole name of an MMD eye material, and `目`/`眼` are the
+            // prefixes of every layer around it (`目白` sclera, `目影` eye shadow, `目HL` highlight)
+            has("目") || has("眼")) {
             return toon_family::eye;
         }
         // hair BEFORE skin and face: `髪`/`发` are unambiguous, but this comes early because the reference's
         // hair materials also carry `頭` (head), which a face pattern must not claim.
-        if (has("髪") || has("头发") || has("頭髪") || has("hair")) {
+        if (has("髪") || has("髮") || has("发") || has("头发") || has("頭髪") || has("hair")) {
             return toon_family::hair;
         }
         // cloth BEFORE skin: the two sets never overlap, and this order is the reference's.
-        if (has("衣") || has("布") || has("服") || has("裙") || has("靴") || has("cloth") || has("coat") ||
-            has("dress") || has("skirt") || has("shoe") || has("boot")) {
+        if (has("衣") || has("布") || has("服") || has("裙") || has("靴") || has("鞋") || has("裤") || has("褲") ||
+            has("袜") || has("襪") || has("帽") || has("手套") || has("袖") || has("领") || has("領") ||
+            has("cloth") || has("coat") || has("dress") || has("skirt") || has("shoe") || has("boot")) {
             return toon_family::cloth;
         }
         // skin: `body` is here because the character models name the skin material `..._body_01`, which is
         // the reference's own mapping (its `MaterialRole.Skin` classifier matches `body` too).
-        if (has("皮肤") || has("皮膚") || has("肌") || has("skin") || has("body")) {
+        if (has("皮肤") || has("皮膚") || has("肌") || has("手") || has("脚") || has("腳") || has("足") ||
+            has("腿") || has("臂") || has("耳") || has("指") || has("skin") || has("body")) {
             return toon_family::skin;
         }
-        // face LAST of the named families: `面`/`脸`/`顔` and `face` are short tokens that appear inside other
-        // words, so everything more specific above gets its chance first. The lash/brow/mouth layers belong to
-        // the face group and are matched here.
-        if (has("面") || has("脸") || has("顔") || has("face") || has("brow") || has("lash") || has("mouth") ||
-            has("teeth") || has("tongue") || has("睫毛") || has("眉毛") || has("口内")) {
+        // face LAST of the named families: `面`/`脸`/`臉`/`顔`/`颜` and `face` are short tokens that appear
+        // inside other words, so everything more specific above gets its chance first. The lash/brow/mouth
+        // layers belong to the face group and are matched here.
+        if (has("面") || has("脸") || has("臉") || has("顔") || has("颜") || has("face") || has("brow") ||
+            has("lash") || has("mouth") || has("teeth") || has("tongue") || has("睫毛") || has("眉毛") ||
+            has("口内") || has("口內") ||
+            // the bare characters, which is how an MMD model names the face and every line drawn on it:
+            // `颜`/`脸` the face, then `眉` brow, `睫` lash, `口`/`口线` mouth and its line, `齿` teeth,
+            // `舌` tongue, `鼻`/`鼻线` nose and its line, `唇` lips, `二重` the double-eyelid line, `表情`
+            // the expression overlay that draws blush and tears over the same geometry. Cloth is what keeps
+            // these unambiguous: `袖口`/`领口` are claimed above, so `口` here can only be a mouth.
+            has("眉") || has("睫") || has("口") || has("齿") || has("齒") || has("舌") || has("鼻") ||
+            has("唇") || has("二重") || has("表情")) {
             return toon_family::face;
         }
         return toon_family::none;

@@ -296,6 +296,86 @@ void test_a_head_bone_is_found_at_its_joint_index() {
     CHECK(result->skins[0].joints[1] != 1u);
 }
 
+void test_the_toon_family_matcher_reads_mmd_material_names() {
+    // WHAT THIS GUARDS, and it is a failure with no symptom anywhere in the loader: a material whose name
+    // matches no pattern is `toon_family::none`, and `none` is the family-independent toon path. A table that
+    // cannot read a model's script therefore reports nothing at all - it just shades every material of that
+    // model without its family, and the frame still looks like a toon character. That is exactly what
+    // happened to the MMD character models this branch imports: their materials are named `颜`, `发`, `目`,
+    // `眉`, `睫`, `口`, `齿`, `舌`, `鼻`, `鞋`, `裤`, while the table held the Japanese and two-character
+    // spellings, so 25 of one model's 35 materials fell through to `none` - every `face` and every `hair`
+    // material among them, which is what silently cost the hair its highlight and the eye its soft ramp.
+    //
+    // EVERY NAME BELOW IS TAKEN FROM A MODEL IN THIS REPOSITORY rather than invented. The first group is
+    // `zhuangfy_toon.glb`'s own material list, in its own spellings.
+    CHECK(gltf::toon_family_of("颜") == gltf::toon_family::face);
+    CHECK(gltf::toon_family_of("肌上") == gltf::toon_family::skin);
+    CHECK(gltf::toon_family_of("肌-手") == gltf::toon_family::skin);
+    CHECK(gltf::toon_family_of("肌-耳") == gltf::toon_family::skin);
+    CHECK(gltf::toon_family_of("肌下-隐藏") == gltf::toon_family::skin);
+    CHECK(gltf::toon_family_of("目") == gltf::toon_family::eye);
+    CHECK(gltf::toon_family_of("目白") == gltf::toon_family::eye);
+    CHECK(gltf::toon_family_of("目HL") == gltf::toon_family::eye);
+    CHECK(gltf::toon_family_of("眉") == gltf::toon_family::face);
+    CHECK(gltf::toon_family_of("睫") == gltf::toon_family::face);
+    CHECK(gltf::toon_family_of("舌") == gltf::toon_family::face);
+    CHECK(gltf::toon_family_of("口线") == gltf::toon_family::face);
+    CHECK(gltf::toon_family_of("鼻线") == gltf::toon_family::face);
+    CHECK(gltf::toon_family_of("齿") == gltf::toon_family::face);
+    CHECK(gltf::toon_family_of("二重") == gltf::toon_family::face);
+    // `表情` is the expression overlay - blush and tears drawn over the same face geometry - and it is the
+    // last name in these models to fall through, so it is asserted with them.
+    CHECK(gltf::toon_family_of("表情") == gltf::toon_family::face);
+    CHECK(gltf::toon_family_of("发") == gltf::toon_family::hair);
+    CHECK(gltf::toon_family_of("前发饰") == gltf::toon_family::hair);
+    CHECK(gltf::toon_family_of("发簪") == gltf::toon_family::hair);
+    CHECK(gltf::toon_family_of("鞋") == gltf::toon_family::cloth);
+    CHECK(gltf::toon_family_of("裤") == gltf::toon_family::cloth);
+    CHECK(gltf::toon_family_of("裤-alpha") == gltf::toon_family::cloth);
+    CHECK(gltf::toon_family_of("手") == gltf::toon_family::skin);
+
+    // THE SAME WORD IN ANOTHER SCRIPT IS A DIFFERENT WORD TO A BYTE COMPARISON, so each spelling is asserted
+    // on its own: a table that gained only one of a pair reads half the models it exists to serve.
+    CHECK(gltf::toon_family_of("髪") == gltf::toon_family::hair);  // Japanese
+    CHECK(gltf::toon_family_of("髮") == gltf::toon_family::hair);  // traditional
+    CHECK(gltf::toon_family_of("顔") == gltf::toon_family::face);  // Japanese
+    CHECK(gltf::toon_family_of("臉") == gltf::toon_family::face);  // traditional
+    CHECK(gltf::toon_family_of("靴") == gltf::toon_family::cloth); // Japanese
+    CHECK(gltf::toon_family_of("褲") == gltf::toon_family::cloth); // traditional
+    CHECK(gltf::toon_family_of("襪") == gltf::toon_family::cloth);
+    CHECK(gltf::toon_family_of("腳") == gltf::toon_family::skin);
+    // ... AND THE FACE IS THE ONE PLACE THE LASH AND BROW LAYERS OF `zhuangfy_toon.glb` DISAGREE WITH THE
+    // BARE CHARACTERS: `睫眉` is ONE material covering both, so it must still reach `face` through either.
+    CHECK(gltf::toon_family_of("睫眉") == gltf::toon_family::face);
+
+    // THE COLLISIONS THE GROUP ORDER RESOLVES, and both directions matter: `手套` (glove) must be cloth even
+    // though it contains `手` (skin), and `袖口` (cuff) / `领口` (collar) must be cloth even though they
+    // contain `口` (face). A table that gained the bare characters WITHOUT cloth ahead of skin and face
+    // passes every assertion above and fails these three.
+    CHECK(gltf::toon_family_of("手套") == gltf::toon_family::cloth);
+    CHECK(gltf::toon_family_of("袖口") == gltf::toon_family::cloth);
+    CHECK(gltf::toon_family_of("领口") == gltf::toon_family::cloth);
+
+    // THE REFERENCE'S OWN NAMES ARE UNCHANGED, which is the widest risk in adding patterns: one that steals
+    // a material the game data already classified moves a frame that was not supposed to move. These are
+    // `actor_zhuangfy.glb`'s names, and `eyeshadow` and `tail` must stay `none` - they are the two names in
+    // that file no family claims, and `eyeshadow` is the near miss that would catch a careless `eye` pattern.
+    CHECK(gltf::toon_family_of("M_actor_zhuangfy_face_01") == gltf::toon_family::face);
+    CHECK(gltf::toon_family_of("M_actor_zhuangfy_hair_01") == gltf::toon_family::hair);
+    CHECK(gltf::toon_family_of("M_actor_zhuangfy_iris_01") == gltf::toon_family::eye);
+    CHECK(gltf::toon_family_of("M_actor_zhuangfy_body_01") == gltf::toon_family::skin);
+    CHECK(gltf::toon_family_of("M_actor_zhuangfy_cloth_01") == gltf::toon_family::cloth);
+    CHECK(gltf::toon_family_of("M_S_actor_zhuangfy_eyebrow_01_lod0") == gltf::toon_family::face);
+    CHECK(gltf::toon_family_of("M_S_actor_zhuangfy_hairshadow_01_lod0") == gltf::toon_family::hair);
+    CHECK(gltf::toon_family_of("M_S_actor_zhuangfy_eyeshadow_01_lod0") == gltf::toon_family::none);
+    CHECK(gltf::toon_family_of("M_S_actor_zhuangfy_tail_02_lod0") == gltf::toon_family::none);
+
+    // AN EMPTY NAME ASKS NOTHING and an unrecognised one is `none` rather than the first pattern's family -
+    // an unnamed material is common in these files and must keep the family-independent path.
+    CHECK(gltf::toon_family_of("") == gltf::toon_family::none);
+    CHECK(gltf::toon_family_of("biaoq") == gltf::toon_family::none);
+}
+
 int main() {
     test_load_damaged_helmet();
     test_async_load_matches_sync();
@@ -307,5 +387,6 @@ int main() {
     test_the_head_frame_from_a_bone_and_when_there_is_none();
     test_no_head_bone_is_found_where_there_is_none();
     test_a_head_bone_is_found_at_its_joint_index();
+    test_the_toon_family_matcher_reads_mmd_material_names();
     return vk_test::finish("test_gltf_loader");
 }

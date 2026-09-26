@@ -862,7 +862,16 @@ namespace gltf {
      * group; `眼白` (sclera) contains `眼` (eye) so it must be tested before the general eye patterns; and
      * `髪` (hair) vs `肌`/`皮肤` (skin) never overlap, so their order is free.
      *
-     * @param name the glTF material name (case-insensitive; ASCII and CJK both matched)
+     * THE NAME IS THE ONLY INPUT, SO THE TABLE HAS TO SPELL EVERY SCRIPT IT EXPECTS TO MEET. The CJK
+     * patterns are compared as BYTES, so `顔` (Japanese) is not `颜` (simplified Chinese), `髪` is not
+     * `发`, and `靴` is not `鞋` - and because a name that matches nothing is `none`, a missing script does
+     * not fail loudly, it quietly costs every material that used it its family's shading. Japanese,
+     * simplified and traditional forms are therefore all listed, as are the SINGLE-CHARACTER names an MMD
+     * model uses as whole material names (`颜`, `发`, `目`, `眉`, `睫`, `口`, `齿`, `舌`, `鼻`, `鞋`,
+     * `裤`), with the group order above absorbing the collisions those create (`手套` contains `手`,
+     * `袖口`/`领口` contain `口`).
+     *
+     * @param name the glTF material name (case-insensitive ASCII; CJK matched byte-wise, all scripts)
      * @return the family, or `toon_family::none` when nothing matched
      */
     export toon_family toon_family_of(std::string_view name);
