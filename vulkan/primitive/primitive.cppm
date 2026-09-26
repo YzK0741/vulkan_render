@@ -557,7 +557,7 @@ namespace vulkan {
     // EIGHT MIB WORTH OF FLOATS, which is 32 MiB of buffer. The controller's capacity check compares FLOAT
     // counts against this, and the allocation multiplies it by sizeof(float), so the two agree; calling it a
     // "byte capacity" (as this comment did) is what made a reader suspect an overflow that is not there.
-    export constexpr std::size_t scene_morph_capacity = std::size_t{8u} * 1024u * 1024u;
+    export constexpr std::size_t scene_morph_capacity = std::size_t{12u} * 1024u * 1024u;
 
     /**
      * @ingroup vulkan_primitive

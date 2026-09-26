@@ -270,7 +270,11 @@ namespace vulkan::animation {
                 if (rig.source != source) {
                     continue;
                 }
-                std::size_t const weight_offset = static_cast<std::size_t>(rig.morph_base) + static_cast<std::size_t>(rig.vertex_count) * static_cast<std::size_t>(rig.target_count) * 6u;
+                // The weights are the FIRST region of a sparse morph block (see the layout note on the bake
+                // in controller.cppm): the block offset IS the weight offset. The dense form had to step over
+                // vertex_count * target_count * 6 floats of deltas to reach them, which is what made the
+                // weight write depend on the geometry's size.
+                std::size_t const weight_offset = static_cast<std::size_t>(rig.morph_base);
                 std::span<float const> const weights = pose.weights.size() == rig.target_count
                                                            ? std::span<float const>(pose.weights)
                                                            : std::span<float const>(rig.default_weights);

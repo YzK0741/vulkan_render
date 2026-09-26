@@ -117,19 +117,31 @@ pbr_vertex_output pbr_shade_vertex(const MeshVertex v, const uint vertex_index, 
     if (push.morph_targets > 0u)
     {
         const uint vert = vertex_index;
-        // TWO weight regions per morph block: the current weights, then the weights one frame ago (see the
-        // layout note on MorphData in pbr.vert and the weight write in animation::controller::update).
-        const uint weight_base = push.morph_base + push.morph_targets * push.morph_vertices * 6u;
+        // SPARSE morph block, layout written by animation::controller: the weights come FIRST so that
+        // morph_base / morph_targets / morph_vertices alone locate every other part - adding a field to
+        // the shared push block would have meant touching every pass for one number.
+        //   [weights: targets][previous weights: targets][offsets: verts + 1][entries: 7 floats each]
+        // An entry is (target, dpos.xyz, dnrm.xyz) and EXISTS ONLY WHERE THE DELTA IS NON-ZERO, which is
+        // what makes the block proportional to the deformation instead of to verts * targets: a character
+        // with 43 facial morphs over a 70k-vertex shared buffer needs ~1 MB here, not the ~70 MB the old
+        // dense stride asked for.
+        const uint weight_base = push.morph_base;
+        const uint offset_base = push.morph_base + push.morph_targets * 2u;
+        const uint entry_base = offset_base + push.morph_vertices + 1u;
         float3 pos_delta = float3(0.0, 0.0, 0.0);
         float3 prev_pos_delta = float3(0.0, 0.0, 0.0);
         float3 nrm_delta = float3(0.0, 0.0, 0.0);
-        for (uint t = 0u; t < push.morph_targets; ++t)
+        // this vertex's slice of the entry list: consecutive, so the walk is O(moved), not O(targets)
+        const uint first = uint(morph_value_at(heap_morph_slot, offset_base + vert));
+        const uint last = uint(morph_value_at(heap_morph_slot, offset_base + vert + 1u));
+        for (uint k = first; k < last; ++k)
         {
+            const uint e = entry_base + k * 7u;
+            const uint t = uint(morph_value_at(heap_morph_slot, e));
             const float w = morph_value_at(heap_morph_slot, weight_base + t);
             const float w_prev = morph_value_at(heap_morph_slot, weight_base + push.morph_targets + t);
-            const uint base = push.morph_base + (vert * push.morph_targets + t) * 6u;
-            const float3 dpos = float3(morph_value_at(heap_morph_slot, base), morph_value_at(heap_morph_slot, base + 1u), morph_value_at(heap_morph_slot, base + 2u));
-            const float3 dnrm = float3(morph_value_at(heap_morph_slot, base + 3u), morph_value_at(heap_morph_slot, base + 4u), morph_value_at(heap_morph_slot, base + 5u));
+            const float3 dpos = float3(morph_value_at(heap_morph_slot, e + 1u), morph_value_at(heap_morph_slot, e + 2u), morph_value_at(heap_morph_slot, e + 3u));
+            const float3 dnrm = float3(morph_value_at(heap_morph_slot, e + 4u), morph_value_at(heap_morph_slot, e + 5u), morph_value_at(heap_morph_slot, e + 6u));
             pos_delta += w * dpos;
             prev_pos_delta += w_prev * dpos;
             nrm_delta += w * dnrm;

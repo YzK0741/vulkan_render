@@ -561,32 +561,46 @@ namespace vulkan::animation {
                             utility::log("morph: skipping primitive (vertex count mismatch with its POSITION data)");
                             continue;
                         }
-                        std::size_t const delta_floats = static_cast<std::size_t>(verts) * target_count * 6u;
+                        // SPARSE morph block: only the (vertex, target) pairs whose delta is non-zero are
+                        // stored, so the block is proportional to the DEFORMATION rather than to
+                        // verts * targets.  A dense stride over a character that shares one 70,824-vertex
+                        // buffer between 35 primitives and carries 43 facial morphs asks for ~70 MB per
+                        // primitive; the sparse form asks for ~1 MB, which is the difference between a
+                        // face that animates and one that is skipped outright.
+                        //
                         // TWO weight regions per primitive, not one: the current weights and the weights
-                        // this vertex had ONE FRAME AGO. The second is what gives a MORPHING mesh a motion
-                        // vector that carries its deformation - the same job the previous-frame skin
-                        // matrices do for a skinned one - and it costs 2*target_count floats instead of the
-                        // 8 Mi-float scratch a whole-buffer mirror would need (see
-                        // docs/deformation_motion_vectors.md). Its layout is the LAST region of the block:
-                        // [per vertex per target: dpos(3) dnrm(3)][weights: targets][previous weights: targets]
+                        // this vertex had ONE FRAME AGO, which is what gives a MORPHING mesh a motion
+                        // vector that carries its deformation (see docs/deformation_motion_vectors.md).
+                        // They come FIRST so the shader can locate every other region from morph_base,
+                        // morph_targets and morph_vertices alone - adding a field to the shared push block
+                        // would have meant touching every pass.  Layout, mirrored in
+                        // pbr_shade_vertex (pbr.slang) and shadow_shade_vertex (shadow.slang):
+                        //   [weights: targets][previous weights: targets][offsets: verts + 1][entries: 7]
+                        // An entry is (target, dpos.xyz, dnrm.xyz); the offsets array is what turns the walk
+                        // over a vertex's moved targets into O(moved) instead of a search per target.
                         std::size_t const weight_floats = static_cast<std::size_t>(target_count) * 2u;
-                        if (total_floats + delta_floats + weight_floats > vulkan::scene_morph_capacity) {
+                        std::size_t const offset_floats = static_cast<std::size_t>(verts) + 1u;
+                        // pass 1: the per-vertex offsets, which also gives the entry count the capacity
+                        // check needs - a single pass could only find that out after writing
+                        std::vector<std::uint32_t> sparse_offsets(offset_floats, 0u);
+                        std::uint32_t entries = 0;
+                        for (uint32_t v = 0; v < verts; ++v) {
+                            sparse_offsets[v] = entries;
+                            for (uint32_t t = 0; t < target_count; ++t) {
+                                glm::vec3 const dpos = read_delta_vec3(loader_prim.targets[t].attributes, "POSITION", v);
+                                glm::vec3 const dnrm = read_delta_vec3(loader_prim.targets[t].attributes, "NORMAL", v);
+                                if (glm::dot(dpos, dpos) > 0.0f || glm::dot(dnrm, dnrm) > 0.0f) {
+                                    ++entries;
+                                }
+                            }
+                        }
+                        sparse_offsets[verts] = entries;
+                        std::size_t const entry_floats = static_cast<std::size_t>(entries) * 7u;
+                        if (total_floats + weight_floats + offset_floats + entry_floats > vulkan::scene_morph_capacity) {
                             utility::log("morph: scene morph buffer capacity exceeded, remaining primitives skipped");
                             break;
                         }
                         float* dst = morph_scratch_mem + total_floats;
-                        for (uint32_t v = 0; v < verts; ++v) {
-                            for (uint32_t t = 0; t < target_count; ++t) {
-                                glm::vec3 const dpos = read_delta_vec3(loader_prim.targets[t].attributes, "POSITION", v);
-                                glm::vec3 const dnrm = read_delta_vec3(loader_prim.targets[t].attributes, "NORMAL", v);
-                                *dst++ = dpos.x;
-                                *dst++ = dpos.y;
-                                *dst++ = dpos.z;
-                                *dst++ = dnrm.x;
-                                *dst++ = dnrm.y;
-                                *dst++ = dnrm.z;
-                            }
-                        }
                         std::vector<float> rig_defaults;
                         rig_defaults.reserve(target_count);
                         for (uint32_t t = 0; t < target_count; ++t) {
@@ -602,11 +616,34 @@ namespace vulkan::animation {
                         for (uint32_t t = 0; t < target_count; ++t) {
                             *dst++ = rig_defaults[t];
                         }
+                        // offsets ride in the same float buffer as the data, which is exact while they stay
+                        // below 2^24 - a vertex count, so they do
+                        for (uint32_t v = 0; v <= verts; ++v) {
+                            *dst++ = static_cast<float>(sparse_offsets[v]);
+                        }
+                        // pass 2: the entries themselves, in the same (vertex, target) order the offsets
+                        // were built in, so a vertex's entries are contiguous
+                        for (uint32_t v = 0; v < verts; ++v) {
+                            for (uint32_t t = 0; t < target_count; ++t) {
+                                glm::vec3 const dpos = read_delta_vec3(loader_prim.targets[t].attributes, "POSITION", v);
+                                glm::vec3 const dnrm = read_delta_vec3(loader_prim.targets[t].attributes, "NORMAL", v);
+                                if (glm::dot(dpos, dpos) <= 0.0f && glm::dot(dnrm, dnrm) <= 0.0f) {
+                                    continue;
+                                }
+                                *dst++ = static_cast<float>(t);
+                                *dst++ = dpos.x;
+                                *dst++ = dpos.y;
+                                *dst++ = dpos.z;
+                                *dst++ = dnrm.x;
+                                *dst++ = dnrm.y;
+                                *dst++ = dnrm.z;
+                            }
+                        }
                         this->morph_rigs.push_back(morph_rig{leaves[i], verts, target_count, static_cast<uint32_t>(total_floats), source, std::move(rig_defaults)});
                         leaves[i]->push.morph_base = static_cast<uint32_t>(total_floats);
                         leaves[i]->push.morph_targets = target_count;
                         leaves[i]->push.morph_vertices = verts;
-                        total_floats += delta_floats + weight_floats;
+                        total_floats += weight_floats + offset_floats + entry_floats;
                     }
                 }
                 if (!this->morph_rigs.empty()) {

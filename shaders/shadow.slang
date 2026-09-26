@@ -113,13 +113,20 @@ shadow_vertex_output shadow_shade_vertex(const MeshVertex v, const uint vertex_i
     if (push.morph_targets > 0u)
     {
         const uint vert = vertex_index;
-        const uint weight_base = push.morph_base + push.morph_targets * push.morph_vertices * 6u;
+        // SPARSE morph block - the layout and the reasoning are on pbr_shade_vertex (pbr.slang); this pass
+        // must walk it identically or the shadow silhouette stops matching the shaded one. Only the
+        // POSITION deltas matter in a depth pass, so the entry stride is still 7 but only 3 are read.
+        const uint offset_base = push.morph_base + push.morph_targets * 2u;
+        const uint entry_base = offset_base + push.morph_vertices + 1u;
         float3 pos_delta = float3(0.0, 0.0, 0.0);
-        for (uint t = 0u; t < push.morph_targets; ++t)
+        const uint first = uint(morph_value_at(heap_morph_slot, offset_base + vert));
+        const uint last = uint(morph_value_at(heap_morph_slot, offset_base + vert + 1u));
+        for (uint k = first; k < last; ++k)
         {
-            const float w = morph_value_at(heap_morph_slot, weight_base + t);
-            const uint base = push.morph_base + (vert * push.morph_targets + t) * 6u;
-            pos_delta += w * float3(morph_value_at(heap_morph_slot, base), morph_value_at(heap_morph_slot, base + 1u), morph_value_at(heap_morph_slot, base + 2u));
+            const uint e = entry_base + k * 7u;
+            const uint t = uint(morph_value_at(heap_morph_slot, e));
+            const float w = morph_value_at(heap_morph_slot, push.morph_base + t);
+            pos_delta += w * float3(morph_value_at(heap_morph_slot, e + 1u), morph_value_at(heap_morph_slot, e + 2u), morph_value_at(heap_morph_slot, e + 3u));
         }
         local_pos = float4(v.position + pos_delta, 1.0);
     }
