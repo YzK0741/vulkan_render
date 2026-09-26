@@ -885,16 +885,24 @@ namespace gltf {
      * the texture - so its terminator is decided by a distance field thresholded against the light's angle IN
      * THE HEAD'S OWN FRAME rather than by `dot(N, L)`. The surface normal is never consulted.
      *
-     * THE CONVENTION IS THE REFERENCE'S, and it is not the obvious one: `EfFaceGetHeadBasis` takes `-row3` as
-     * the forward axis and `-row1` as the right axis of the head bone's matrix, then re-orthogonalises. The
-     * negation is MMD's head-bone convention rather than a sign error, and `head_basis_from_axes` reproduces the
-     * function that does it.
+     * THE FRAME POINTS WHERE THE FACE LOOKS, WHICH IS glTF'S OWN CONVENTION RATHER THAN THE REFERENCE'S. glTF
+     * specifies `+Y` up, `+Z` forward and `-X` right, with the front of an asset facing `+Z`, and every
+     * character this repository has follows it: the mean bind normal of the face primitive measures
+     * `(+0.10 +0.31 +0.95)` on `lizhiyan_toon.glb`, `(-0.18 +0.41 +0.89)` on `zhuangfy_toon.glb` and
+     * `(0 -0.38 +0.93)` on the game's own `actor_zhuangfy.glb` - all three face `+Z`.
+     *
+     * `EfFaceGetHeadBasis` INSTEAD TAKES `-row3` AS FORWARD, and `head_basis_from_axes` therefore reproduces its
+     * re-orthogonalisation but NOT its negation. The cost of the negation is measurable rather than cosmetic:
+     * with `front = -row3` the light's angle in the head frame comes out at 0.83 for a sun the face is looking
+     * almost straight into, the SDF atlas' mean threshold is 0.55, and 94.1% of the texels the face's own UVs
+     * sample are then read as SHADOW - the whole face wears the family's shadow tint and the lane stops shaping
+     * anything. With the sign corrected, the same measurement gives 11.9%.
      */
     export struct head_basis {
-        glm::vec3 front = glm::vec3(0.0f, 0.0f, -1.0f);
+        glm::vec3 front = glm::vec3(0.0f, 0.0f, 1.0f);
         glm::vec3 right = glm::vec3(-1.0f, 0.0f, 0.0f);
         glm::vec3 up = glm::vec3(0.0f, 1.0f, 0.0f);
-        /// false when these are the reference's FALLBACK constants rather than a real bone's axes - see
+        /// false when these are the FALLBACK constants rather than a real bone's axes - see
         /// `head_basis_fallback`. A caller that needs to know whether the head frame is real reads this; the
         /// shader does not, because the two cases differ only in whether the head can turn.
         bool from_skeleton = false;
@@ -902,13 +910,15 @@ namespace gltf {
 
     /**
      * @ingroup gltf_loader
-     * @brief the reference's OWN fallback head frame, verbatim from `EfFaceGetHeadBasis`
+     * @brief the fallback head frame: glTF's own basis, `headFront = (0,0,1)`, `headRight = (-1,0,0)`,
+     *        `headUp = (0,1,0)`
      *
-     * `headFront = (0,0,-1)`, `headRight = (-1,0,0)`, `headUp = (0,1,0)` - these are literally what the
-     * reference substitutes when the head bone is missing or degenerate, so this is a PORTED constant rather
-     * than an approximation invented here. It matters because this repository's only SDF-bearing model
-     * (`zhuangfy_scalar.glb`) has NO SKELETON - seven nodes, zero skins, a static pose split by body part - and
-     * for a model that cannot turn its head a fixed frame and a bone matrix give the same three vectors.
+     * IT IS DELIBERATELY NOT THE REFERENCE'S CONSTANTS, which substitute `headFront = (0,0,-1)` for a bone that
+     * is missing or degenerate - 180 degrees away from the face of every asset measured here (see the note on
+     * `head_basis`). It still matters that a fallback exists, because this repository's SDF-bearing models are
+     * exactly the ones that reach it: `zhuangfy_scalar.glb` has NO SKELETON - seven nodes, zero skins, a static
+     * pose split by body part - and for a model that cannot turn its head a fixed frame and a bone matrix give
+     * the same three vectors.
      */
     export head_basis head_basis_fallback() noexcept;
 

@@ -152,14 +152,16 @@ namespace vulkan {
      * accident until someone reorders it. The fourth component is unused and the shader reads `.xyz`.
      */
     export struct head_ubo {
-        glm::vec4 front = glm::vec4(0.0f, 0.0f, -1.0f, 0.0f); // the direction the face looks
+        glm::vec4 front = glm::vec4(0.0f, 0.0f, 1.0f, 0.0f);  // the direction the face looks
         glm::vec4 right = glm::vec4(-1.0f, 0.0f, 0.0f, 0.0f); // its right
         glm::vec4 up = glm::vec4(0.0f, 1.0f, 0.0f, 0.0f);     // its up
     };
     // 48: three vec4s and no padding, which is what lets the shader's copy be the same three members with no
-    // `alignas` or explicit padding anywhere - and the values above are the reference's own FALLBACK frame
-    // (`EfFaceGetHeadBasis`'s `valid < 0.5` branch), so a block nobody writes is still a usable frame rather
-    // than three zeros that would produce NaNs on the way to the sigmoid.
+    // `alignas` or explicit padding anywhere - and the values above are glTF's own basis, matching
+    // `gltf::head_basis_fallback`, so a block nobody writes is still a usable frame rather than three zeros that
+    // would produce NaNs on the way to the sigmoid. THE DEFAULTS MATTER MORE THAN THEY LOOK: a model with NO
+    // SKELETON never calls `set_head_basis`, so this block IS that model's head frame - and getting its `front`
+    // backwards costs the face its terminator outright (see the note on `gltf::head_basis`).
     static_assert(sizeof(head_ubo) == 48);
 
     /**

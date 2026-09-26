@@ -134,15 +134,22 @@ static const float character_sdf_base = 100000.0;
  * HEAD'S OWN FRAME. That is why the light is projected onto the head plane below and the surface normal is
  * never used - the only place the reference touches `normalWS` in its whole SDF path is a debug escape hatch.
  *
- * THE HEAD BASIS IS THE REFERENCE'S OWN FALLBACK, verbatim from `EfFaceGetHeadBasis`:
+ * THE HEAD FRAME IS READ, NOT ASSUMED. `head_frame_at(heap_slots_scene_head + heap_frame_slot)` below is written
+ * once per frame by the host from the HEAD BONE's world matrix (the `-row1`/`row3` extraction `EfFaceGetHeadBasis`
+ * performs, reproduced in gltf_loader's `head_basis_from_axes`), and it falls back to glTF's own basis -
+ * `front = (0,0,1)`, `right = (-1,0,0)`, `up = (0,1,0)` - for a model whose skeleton has no usable head bone.
+ * `zhuangfy_scalar.glb` is that case: 7 nodes, 0 skins, a static pose split by body part, so the fallback is not
+ * an approximation for it - a static model's head does not turn, and a fixed basis and a bone matrix give the
+ * same three vectors. A model that DOES have one publishes its own, so a skinned character's terminator follows
+ * its head as it turns.
  *
- *     if (valid < 0.5) { headFront = float3(0,0,-1); headRight = float3(-1,0,0); headUp = float3(0,1,0); }
- *
- * The reference reaches for the PMX HEAD BONE MATRIX and falls back to these constants when the bone is missing
- * or degenerate. This model has NO SKELETON AT ALL - `zhuangfy_scalar.glb` is 7 nodes and 0 skins, a static
- * pose split by body part - so the fallback is not an approximation here, it is the accurate answer: a static
- * model's head does not turn, and a fixed basis and a bone matrix would give the same three vectors. A SKINNED
- * model would want the bone path, and that path IS NOT IMPLEMENTED - see the note at the end of this block.
+ * THE FRONT AXIS POINTS WHERE THE FACE LOOKS, which is glTF's convention rather than the reference's: it is `+Z`
+ * for every model here, measured on the face primitive's mean bind normal - `(+0.10 +0.31 +0.95)` on
+ * `lizhiyan_toon.glb`, `(-0.18 +0.41 +0.89)` on `zhuangfy_toon.glb`, `(0 -0.38 +0.93)` on the game's own
+ * `actor_zhuangfy.glb`. `EfFaceGetHeadBasis`'s `-row3` pointed the other way for ITS assets, and following it
+ * here is not a cosmetic difference: it puts the sun 0.83 of the way round the head for a light the face is
+ * looking almost straight into, and 94.1% of the texels the face's own UVs sample then read as shadow - the whole
+ * face wears the family's shadow tint and this function shapes nothing. See `gltf::head_basis` for the numbers.
  *
  * THE MIRROR IS THE PART WORTH STATING, because it looks like a trick and is the reference's design: the atlas
  * holds ONE face, and a light from the other side reads it MIRRORED (`1 - uv.x`). Measured on the real asset
@@ -155,10 +162,9 @@ static const float character_sdf_base = 100000.0;
  * on the way out. The angle is `|atan2(side, front)| / PI`, so 0 is a light straight ahead and 1 is a light
  * directly behind - and `center` is therefore where the terminator sits for THIS light direction.
  *
- * WHAT IS NOT IMPLEMENTED, said plainly rather than left to be discovered: the head-bone path. A model with a
- * skeleton wants `headFront` / `headRight` from that bone's world matrix per frame; this function takes the
- * fallback unconditionally. It is correct for the static models this repository has and wrong for an animated
- * one, and nothing here can tell the difference.
+ * WHAT IT DOES NOT DO, said plainly: it never reads the surface normal - that is the point of the lane - so a
+ * material with no SDF map, or one whose artist switched `_UseSDFLightmap` off, keeps the geometric terminator
+ * instead. The caller's `sdf_lane != 0u` test is the whole of that decision, and both cases collapse to it.
  *
  * @param uv the surface's texture coordinate, which is the SDF atlas's coordinate too
  * @param lane the material's SDF heap lane; the caller must not call this with 0

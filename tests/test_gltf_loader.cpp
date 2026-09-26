@@ -221,19 +221,25 @@ void test_the_head_frame_matcher_rejects_lookalikes() {
 }
 
 void test_the_head_frame_from_a_bone_and_when_there_is_none() {
-    // THE FALLBACK IS THE REFERENCE'S OWN CONSTANTS, not an invention, so its exact values are the assertion.
+    // THE FALLBACK IS glTF'S OWN BASIS, and its exact values are the assertion because they are what a face's
+    // SDF is measured against: the front of a glTF asset faces `+Z` and its right is `-X`. It is deliberately NOT
+    // the reference's constant `(0,0,-1)`, which points 180 degrees away from the face of every model measured
+    // here - see the note on `head_basis` for what that sign costs (94.1% of a face read as shadow).
     gltf::head_basis const fallback = gltf::head_basis_fallback();
-    CHECK(fallback.front == glm::vec3(0.0f, 0.0f, -1.0f));
+    CHECK(fallback.front == glm::vec3(0.0f, 0.0f, 1.0f));
     CHECK(fallback.right == glm::vec3(-1.0f, 0.0f, 0.0f));
     CHECK(fallback.up == glm::vec3(0.0f, 1.0f, 0.0f));
     CHECK(!fallback.from_skeleton);
+    // THE THREE AXES ARE A FRAME, which is the property that ties the fallback to `head_basis_from_axes`: a bone
+    // path whose handedness disagreed with the fallback's would shade a static and a skinned model differently.
+    CHECK(glm::length(glm::cross(fallback.right, fallback.front) - fallback.up) < 1e-6f);
 
-    // AN IDENTITY BONE. The reference negates `row3` for forward and `row1` for right, and for the identity
-    // those rows are +Z and +X - so the negated frame is the fallback above, and it must come back flagged as a
-    // REAL frame rather than as the fallback, because those two are different answers that look identical.
+    // AN IDENTITY BONE. `row3` is `+Z` and `row1` is `+X`, so the frame is the fallback's own - and it must come
+    // back flagged as a REAL frame rather than as the fallback, because those two are different answers that look
+    // identical.
     gltf::head_basis const identity = gltf::head_basis_from_axes(glm::vec3(0.0f, 0.0f, 1.0f), glm::vec3(1.0f, 0.0f, 0.0f));
     CHECK(identity.from_skeleton);
-    CHECK(identity.front == glm::vec3(0.0f, 0.0f, -1.0f));
+    CHECK(identity.front == glm::vec3(0.0f, 0.0f, 1.0f));
     CHECK(identity.right == glm::vec3(-1.0f, 0.0f, 0.0f));
     CHECK(identity.up == glm::vec3(0.0f, 1.0f, 0.0f));
 

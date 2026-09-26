@@ -1252,11 +1252,17 @@ namespace gltf {
         if (forward_len_sq <= 1e-8f || right_len_sq <= 1e-8f) {
             return out;
         }
-        // THE NEGATIONS ARE THE REFERENCE'S, and they are a convention rather than a sign error: MMD's head
-        // bone carries its axes the opposite way round from the direction the face looks.
-        out.front = -glm::normalize(forward_axis);
+        // THE FRAME POINTS WHERE THE FACE LOOKS - the note on `head_basis` in the interface unit carries the
+        // measurement that settled it. `forward_axis` is the head bone's `row3` and on every model here it IS
+        // the direction the face looks, so it is taken AS IT IS; `right_axis` is `row1` and IS negated, because
+        // glTF's right for a `+Z`-facing asset is `-X` while the bone's `row1` is `+X`.
+        out.front = glm::normalize(forward_axis);
         out.right = -glm::normalize(right_axis);
-        glm::vec3 const up_axis = glm::cross(out.front, out.right);
+        // `up = right x front`, which is the same handedness the fallback's three constants already have
+        // (`-X x +Z = +Y`). Taking the cross the other way round yields an up pointing at the floor - and the
+        // shader only ever uses this as the plane normal it projects the light onto, so a flipped up changes no
+        // pixel - but a frame whose axes disagree with the fallback's is a trap for whoever reads this next.
+        glm::vec3 const up_axis = glm::cross(out.right, out.front);
         if (glm::dot(up_axis, up_axis) < 1e-8f) {
             // THE TWO AXES ARE PARALLEL, so there is no frame to build: the reference sets `valid = 0` and
             // keeps its default up, and this returns the whole fallback rather than half of a frame.
@@ -1265,8 +1271,9 @@ namespace gltf {
         out.up = glm::normalize(up_axis);
         // THE RE-ORTHOGONALISATION IS THE REFERENCE'S LAST STEP and it matters: a bone's forward and right rows
         // are only orthogonal if whoever rigged it made them so, and the SDF's angle is taken between the light
-        // and a FRAME - three axes that are nearly right are not three axes.
-        out.right = glm::normalize(glm::cross(out.up, out.front));
+        // and a FRAME - three axes that are nearly right are not three axes. `front x up` is the same handedness
+        // as the `up` above (`+Z x +Y = -X`).
+        out.right = glm::normalize(glm::cross(out.front, out.up));
         out.from_skeleton = true;
         return out;
     }
