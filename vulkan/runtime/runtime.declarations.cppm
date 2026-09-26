@@ -895,6 +895,11 @@ namespace vulkan {
         float toon_softness = 0.15f;
         // a scale on the sun (runtime::set_sun_intensity); the furnace mode forces the lane to 0 regardless
         float sun_intensity = 1.0f;
+        // THE SUN'S DIRECTION (runtime::set_sun_direction), pointing FROM the surface TOWARD the sun and
+        // unnormalized. It is the one source the light UBO is built from (`make_directional_light_ubo`), so
+        // changing it moves the shading, the shadow cascades and - through the UBO's `light_dir`, which
+        // `sky.glsl` reads - the disc in the sky together. The default is the historic hard-coded vector.
+        glm::vec3 sun_direction = glm::vec3(0.3f, 1.0f, 0.5f);
         // bloom parameters (see set_bloom): blend weight into the HDR image and the bright-pass
         // threshold subtracted in linear space (0 intensity disables the effect)
 
@@ -2460,6 +2465,24 @@ namespace vulkan {
          *       slider must not be able to argue with that.
          */
         void set_sun_intensity(float scale) noexcept;
+
+        /**
+         * @ingroup vulkan_runtime
+         * @brief move the sun: `[lighting] sun_direction`, pointing FROM the surface TOWARD the sun
+         *
+         * ONE CALL MOVES EVERYTHING THAT MUST AGREE. The light UBO is rebuilt with this direction (the
+         * shading's `light_dir` and the shadow cascades' matrices), the sky reads the same field out of that
+         * UBO for its disc, and the env bake took it at startup - so a moved sun is a moved sun everywhere
+         * rather than a new shadow direction under an old sky.
+         *
+         * A CHANGE INVALIDATES THE CACHED SHADOW FIT: the cascades are fitted in light space, so they are only
+         * valid for one direction - the same invalidation a new light setup does. Setting the SAME direction
+         * again is free, which is what lets a caller mirror it every frame.
+         *
+         * @param direction the sun's direction in world space, unnormalized; a zero vector is ignored because
+         *        there is no direction in it and `normalize` would put NaNs through the whole lighting stage
+         */
+        void set_sun_direction(glm::vec3 direction) noexcept;
 
         /**
          * @ingroup vulkan_runtime

@@ -262,6 +262,14 @@ namespace app_config {
         int env_mip_count = 5; // prefiltered-environment mip chain length
         int irr_size = 32;     // irradiance cubemap size
         int lut_size = 256;    // BRDF LUT size
+        // sun_direction ([lighting] sun_direction): the sun's direction in world space, pointing FROM the
+        // surface TOWARD the sun, unnormalized (it is normalized where it is used). ONE setting feeds three
+        // consumers that must agree or the frame contradicts itself - the shadow cascades and the shading's
+        // `light_dir`, the visible disc the sky draws, and the environment cubemap's baked sun.
+        // THE DEFAULT REPRODUCES THE HISTORIC HARD-CODED VECTOR exactly, so a config without this key renders
+        // the frame it always did; it is a high sun (59 degrees of elevation, 31 of azimuth) and lowering the
+        // elevation is what moves the shadows off a face and onto the ground behind it.
+        std::array<float, 3> sun_direction = {0.3f, 1.0f, 0.5f};
         // demo_lights ([lighting] demo_lights): spawn this many procedural punctual lights around
         // the scene (a helix at the scene bounds, cycling colors). This is the clustered-light stress
         // mode: with the debug overlay's four light slots the cluster lists and the brute-force loop

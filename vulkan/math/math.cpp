@@ -27,10 +27,12 @@ namespace vulkan {
         }
 
         // Procedural environment (HDR): gradient sky/ground + sun disc.
-        // Keep in sync with shaders/skybox.frag sky_color(): the visible sky is computed
+        // Keep in sync with shaders/sky.glsl sky_color(): the visible sky is computed
         // analytically per-pixel (no cubemap sampling), so the IBL cubemap baked from this
-        // function must produce exactly the same colors for reflections to match the sky.
-        glm::vec3 environment_color(glm::vec3 const& dir) {
+        // function must produce exactly the same colors for reflections to match the sky - which is
+        // why the sun direction is a PARAMETER here rather than a constant: `sky.glsl` takes the
+        // same one from the light UBO, and two constants that must match eventually stop matching.
+        glm::vec3 environment_color(glm::vec3 const& dir, std::array<float, 3> const& sun_direction) {
             float const t = std::clamp(dir.y * 0.5f + 0.5f, 0.0f, 1.0f); // 0 nadir, 1 zenith
             auto const smooth = [](float const e0, float const e1, float const x) {
                 float const u = std::clamp((x - e0) / (e1 - e0), 0.0f, 1.0f);
@@ -43,7 +45,7 @@ namespace vulkan {
             float const s = smooth(0.50f, 0.92f, t); // horizon -> sky
             glm::vec3 env = ground + (horizon - ground) * g;
             env += (sky - env) * s;
-            glm::vec3 const sun_dir = glm::normalize(glm::vec3(0.3f, 1.0f, 0.5f));
+            glm::vec3 const sun_dir = glm::normalize(glm::vec3(sun_direction[0], sun_direction[1], sun_direction[2]));
             float const sun = smooth(0.98f, 1.0f, glm::dot(dir, sun_dir)); // soft-edged disc
             env += glm::vec3(1.0f, 0.95f, 0.85f) * sun * 1.5f;             // visible sun for metallic highlights
             return env;
@@ -146,14 +148,14 @@ namespace vulkan {
         }
     } // namespace
 
-    std::vector<float> generate_environment_cubemap(int const size) {
+    std::vector<float> generate_environment_cubemap(int const size, std::array<float, 3> const sun_direction) {
         std::vector<float> data(static_cast<size_t>(6) * size * size * 4);
         for (int face = 0; face < 6; ++face) {
             for (int y = 0; y < size; ++y) {
                 for (int x = 0; x < size; ++x) {
                     float const u = (static_cast<float>(x) + 0.5f) / static_cast<float>(size) * 2.0f - 1.0f;
                     float const v = (static_cast<float>(y) + 0.5f) / static_cast<float>(size) * 2.0f - 1.0f;
-                    glm::vec3 const color = environment_color(cube_face_direction(face, u, v));
+                    glm::vec3 const color = environment_color(cube_face_direction(face, u, v), sun_direction);
                     size_t const offset = (static_cast<size_t>(face) * size * size + static_cast<size_t>(y) * size + x) * 4;
                     data[offset + 0] = color.r;
                     data[offset + 1] = color.g;
@@ -388,8 +390,9 @@ namespace vulkan {
     // ---- async wrappers (see math.cppm): delegate to the synchronous functions on a
     //      std::async thread; the caller consumes the future when the result is needed ----
 
-    std::future<std::vector<float>> generate_environment_cubemap_async(int const size) {
-        return std::async(std::launch::async, [size] { return generate_environment_cubemap(size); });
+    std::future<std::vector<float>> generate_environment_cubemap_async(int const size, std::array<float, 3> const sun_direction) {
+        // The direction is captured BY VALUE: the caller's vector may be gone by the time the async thread runs.
+        return std::async(std::launch::async, [size, sun_direction] { return generate_environment_cubemap(size, sun_direction); });
     }
 
     std::future<std::vector<float>> prefilter_environment_async(std::span<float const> const env, int const env_size, int const mip_count) {

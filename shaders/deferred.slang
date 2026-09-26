@@ -167,7 +167,12 @@ float4 main([[vk::location(0)]] float2 v_uv : TEXCOORD0, float4 sv_position : SV
         // view direction (the reconstructed position is exact even at depth 1), and the sky function is the
         // forward skybox pass's - so the two paths cannot disagree about the background.
         const vec3 far_point = world_position_from_depth(v_uv, 1.0);
-        return float4(sky_color(normalize(far_point - camera_at(heap_camera_slot).camera_pos)), 1.0);
+        // THE SUN COMES FROM THE LIGHT UBO, not from a constant in the sky: `sky.glsl` used to carry its own
+        // hard-coded `(0.3, 1.0, 0.5)`, which is a second place for one sun to live and would put the visible
+        // disc somewhere other than the direction the shadows are cast from the moment `[lighting]
+        // sun_direction` moved.
+        return float4(sky_color(normalize(far_point - camera_at(heap_camera_slot).camera_pos),
+                                normalize(light_at(heap_light_slot).light_dir.xyz)), 1.0);
     }
 
     const vec4 albedo_metallic = gbuffer_texel(heap_at<Texture2D<float4>>(heap_slots_gbuffer_albedo + heap_image_index), v_uv);

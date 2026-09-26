@@ -975,14 +975,18 @@ namespace vulkan {
     /**
      * @ingroup vulkan_primitive
      * @brief build the directional light UBO (light-space view-proj + direction) for shadow
-     *        mapping. The light direction matches the analytic sky sun (see skybox.frag), so
+     *        mapping. The light direction matches the analytic sky sun (see sky.glsl), so
      *        shadows, the PBR direct light and the visible sun disc all agree.
+     * @param sun_direction the sun's direction in world space, pointing FROM the surface TOWARD the sun; it
+     *        is normalized here and it is the SINGLE source for three consumers that must not disagree -
+     *        this UBO's own matrices, the shader's `light_dir`, and the disc the sky draws (which reads this
+     *        block's `light_dir`, so the sky cannot put its sun where the shadows do not fall). It comes from
+     *        `[lighting] sun_direction`, which is what makes the light movable without rebuilding.
      * @param scene_center world-space center of the shadow frustum (e.g. the imported scene
      *        bounds center after the scene offset is applied)
      * @param scene_radius conservative radius covering the shadow casters
      * @return light UBO with an orthographic view-proj framing the scene bounds
-     * @note ortho box sized to cover a sphere of the given radius around scene_center; the light
-     *       looks down the (0.3, 1.0, 0.5) direction (the same sun as the skybox)
+     * @note ortho box sized to cover a sphere of the given radius around scene_center, along @p sun_direction
      */
-    export light_ubo make_directional_light_ubo(glm::vec3 const& scene_center, float scene_radius, float shadow_map_size);
+    export light_ubo make_directional_light_ubo(glm::vec3 const& sun_direction, glm::vec3 const& scene_center, float scene_radius, float shadow_map_size);
 } // namespace vulkan

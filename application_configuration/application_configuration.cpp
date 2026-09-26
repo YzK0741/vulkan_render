@@ -314,6 +314,19 @@ namespace app_config {
                     settings.lighting.lut_size = static_cast<int>(*value);
                 }
             }
+            if (toml::node const* node = lighting->get("sun_direction")) {
+                if (toml::array const* values = node->as_array()) {
+                    // Three numbers or nothing: a partly-specified direction would silently mix this config's
+                    // components with the default's, which is a light nobody asked for and no way to see it.
+                    if (values->size() == settings.lighting.sun_direction.size()) {
+                        for (std::size_t i = 0; i < values->size(); ++i) {
+                            if (std::optional<double> const component = (*values)[i].value<double>()) {
+                                settings.lighting.sun_direction[i] = static_cast<float>(*component);
+                            }
+                        }
+                    }
+                }
+            }
             if (toml::node const* node = lighting->get("demo_lights")) {
                 if (std::optional<int64_t> const value = node->value<int64_t>()) {
                     settings.lighting.demo_lights = static_cast<int>(*value);

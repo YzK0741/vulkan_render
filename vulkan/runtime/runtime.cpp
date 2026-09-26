@@ -899,7 +899,7 @@ namespace vulkan {
         // light UBO: orthographic light view-proj framing the scene + the light direction.
         // Fill the CPU-side mirror only - pace_and_acquire copies it into every slot's own
         // light buffer as each slot is paced (nothing here touches mapped memory directly).
-        this->light_state = make_directional_light_ubo(scene_center, scene_radius, static_cast<float>(this->shadow_map_size));
+        this->light_state = make_directional_light_ubo(this->sun_direction, scene_center, scene_radius, static_cast<float>(this->shadow_map_size));
         // the cascade settings are the runtime's, not the UBO builder's: re-apply them over the defaults
         this->light_state.cascade_count = static_cast<float>(std::clamp(this->shadow_cascades, 1u, vulkan::max_shadow_cascades));
         this->light_state.cascade_blend = this->shadow_cascade_blend;
@@ -1239,6 +1239,29 @@ namespace vulkan {
 
     void runtime::set_sun_intensity(float const scale) noexcept {
         this->sun_intensity = std::clamp(scale, 0.0f, 3.0f);
+    }
+
+    void runtime::set_sun_direction(glm::vec3 const direction) noexcept {
+        float const length_sq = glm::dot(direction, direction);
+        if (!(length_sq > 1e-12f)) {
+            // NO DIRECTION IN A ZERO VECTOR, and normalising one would put NaNs through the shading's light
+            // term and the shadow cascade fit. Ignored rather than stored, the same way the furnace mode
+            // ignores the intensity slider instead of arguing with it.
+            return;
+        }
+        float const stored_length_sq = std::max(glm::dot(this->sun_direction, this->sun_direction), 1e-12f);
+        glm::vec3 const normalized = direction / std::sqrt(length_sq);
+        glm::vec3 const previous = this->sun_direction / std::sqrt(stored_length_sq);
+        if (glm::length(normalized - previous) < 1e-6f) {
+            // THE SAME SUN AGAIN, which is the common case for a caller that mirrors this every frame - and
+            // the invalidation below is not free (every shadow map re-renders), so an unchanged direction
+            // stops here rather than at the comparison.
+            return;
+        }
+        this->sun_direction = normalized;
+        // THE CASCADES ARE FITTED IN LIGHT SPACE, so a cached fit belongs to ONE direction: the same reason a
+        // new light setup invalidates it (see update_shadow_frustum).
+        this->shadow_frustum_valid = false;
     }
 
     void runtime::set_toon_shading(float const steps, float const softness) noexcept {

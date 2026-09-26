@@ -200,7 +200,12 @@ int main(int argc, char** argv) {
     auto const irr_size = settings.lighting.irr_size;
     auto const lut_size = settings.lighting.lut_size;
     auto const startup_start = std::chrono::steady_clock::now();
-    auto env_future = vulkan::generate_environment_cubemap_async(env_size);
+    // THE SUN, AS ONE VECTOR FOR EVERYTHING THAT HAS TO AGREE ABOUT IT: the light UBO built from it (the
+    // shading's `light_dir` and the shadow cascades), the disc the sky draws - which reads that UBO's
+    // `light_dir`, so the sky cannot put its sun where the shadows do not fall - and the env cubemap baked
+    // below, whose sun has to sit in the same place for a reflection's glint to match the sky it reflects.
+    auto const& sun_direction = settings.lighting.sun_direction;
+    auto env_future = vulkan::generate_environment_cubemap_async(env_size, sun_direction);
     auto load_future = gltf::load_model_async(model_path);
 
     // 5. Construct vulkan::runtime from the startup render settings (window size / title /
@@ -1354,6 +1359,10 @@ int main(int argc, char** argv) {
         auto const toon_index = static_cast<std::size_t>(std::clamp(gui.toon_bands_index, 0, static_cast<int>(toon_band_counts.size()) - 1));
         runtime.set_toon_shading(toon_band_counts[toon_index], gui.toon_softness);
         runtime.set_sun_intensity(gui.sun_intensity);
+        // The sun's DIRECTION is mirrored the same way, from the config (`[lighting] sun_direction`). It is
+        // safe to set every frame: the runtime compares against the direction it already has and only
+        // invalidates the shadow cascade fit when it actually moved.
+        runtime.set_sun_direction(glm::vec3(sun_direction[0], sun_direction[1], sun_direction[2]));
         // F12 screenshot: the runtime reports the request (edge-triggered in poll_events), main
         // captures the presented swapchain image and writes it as a PNG (dependency-free encoder)
         if (runtime.consume_screenshot_request()) {

@@ -25,8 +25,13 @@ namespace vulkan {
     /**
      * @ingroup vulkan_math
      * @brief generate a procedural HDR environment cubemap (RGBA32F, 6 faces packed)
+     * @param sun_direction the sun's direction, pointing FROM the surface TOWARD the sun, unnormalized; the
+     *        default is the historic hard-coded vector, so a caller that does not care gets the frame it
+     *        always got. It is a parameter because the visible sky (`shaders/sky.glsl`) draws its disc from
+     *        the light UBO's direction, and a baked environment whose sun disagreed with it would put the
+     *        reflections' glint somewhere the sky does not have a sun.
      */
-    export std::vector<float> generate_environment_cubemap(int size);
+    export std::vector<float> generate_environment_cubemap(int size, std::array<float, 3> sun_direction = {0.3f, 1.0f, 0.5f});
 
     /**
      * @ingroup vulkan_math
@@ -60,7 +65,7 @@ namespace vulkan {
     // @note span parameters are taken by view: the pointed-to data (e.g. the env cubemap)
     //       must stay alive until the returned future is consumed.
 
-    export std::future<std::vector<float>> generate_environment_cubemap_async(int size);
+    export std::future<std::vector<float>> generate_environment_cubemap_async(int size, std::array<float, 3> sun_direction = {0.3f, 1.0f, 0.5f});
     export std::future<std::vector<float>> prefilter_environment_async(std::span<float const> env, int env_size, int mip_count);
     export std::future<std::vector<float>> generate_irradiance_map_async(std::span<float const> env, int env_size, int irr_size);
     export std::future<std::vector<float>> generate_brdf_lut_async(int size);

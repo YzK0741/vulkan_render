@@ -19,14 +19,16 @@
 /**
  * @brief analytic sky radiance for a world-space direction
  * @param dir normalized world-space view direction
+ * @param sun_dir the sun's direction, pointing FROM the surface TOWARD the sun; the caller takes it from
+ *        the light UBO's `light_dir`, so the disc in the sky and the light that casts the shadows are the
+ *        same sun by construction rather than by two constants agreeing
  * @return linear HDR sky radiance (ground / horizon / sky bands plus a soft sun disc)
  *
  * Computed rather than sampled from the env cubemap - like UE's SkyAtmosphere - which eliminates
  * every cubemap face/texel artifact (the "inside a cube" look): no face seams, no banding, no texel
- * steps. The three bands are blended with smoothstep (C1-smooth) rather than piecewise linear, and
- * the sun disc sits along the same fixed sun direction that the light UBO and the shadow pass use.
+ * steps. The three bands are blended with smoothstep (C1-smooth) rather than piecewise linear.
  */
-vec3 sky_color(vec3 dir) {
+vec3 sky_color(vec3 dir, vec3 sun_dir) {
     // elevation t: 0 = nadir, 1 = zenith
     float t = clamp(dir.y * 0.5 + 0.5, 0.0, 1.0);
     vec3 ground = vec3(0.05, 0.05, 0.07) * 0.75;
@@ -37,8 +39,7 @@ vec3 sky_color(vec3 dir) {
     float s = smoothstep(0.50, 0.92, t); // horizon -> sky
     vec3 env = ground + (horizon - ground) * g;
     env += (sky - env) * s;
-    // soft-edged sun disc along sun_dir
-    vec3 sun_dir = normalize(vec3(0.3, 1.0, 0.5));
+    // soft-edged sun disc along the CALLER's sun direction - not a second constant of its own
     env += vec3(1.0, 0.95, 0.85) * smoothstep(0.98, 1.0, dot(dir, sun_dir)) * 1.5;
     return env;
 }
