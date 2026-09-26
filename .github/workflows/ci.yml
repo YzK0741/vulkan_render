@@ -109,8 +109,12 @@ jobs:
       - name: Run headless unit tests
         run: ctest --test-dir build --output-on-failure
 
+      # SLANGC IS PASSED EXPLICITLY HERE TOO, for exactly the reason the Release step does it: the install
+      # step exports VR_SLANGC but does NOT put it on PATH, so CMakeLists' `find_program` fails and configure
+      # stops with "slangc not found" - which kept this job red while every test in it would have passed. The
+      # two configure steps have the same requirement, so they now say the same thing.
       - name: Configure (Debug, Ninja)
-        run: cmake -S . -B build-debug -G Ninja -DCMAKE_BUILD_TYPE=Debug
+        run: cmake -S . -B build-debug -G Ninja -DCMAKE_BUILD_TYPE=Debug -DVR_SLANGC_EXECUTABLE="$VR_SLANGC"
 
       - name: Build all targets (Debug compile gate)
         run: cmake --build build-debug

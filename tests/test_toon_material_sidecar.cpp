@@ -330,7 +330,18 @@ namespace {
         CHECK(!iris->enabled_by_flag("_UseSpecRampMap"));
         CHECK(!iris->enabled("_SpecRampMap"));
         // and the three lanes that DO follow the convention answer the same through both entry points
-        toon::material_sidecar const* const body = toon::parse_sidecar(good_text)->find("M_body");
+        // THE EXPECTED HAS TO BE NAMED, and this is not style. `parse_sidecar(...)->find(...)` returns a
+        // pointer INTO A TEMPORARY `sidecar`, which is destroyed at the end of that statement, so `body`
+        // dangles and the `enabled()` calls below read a freed `material_sidecar` - ASan reported exactly
+        // that (heap-use-after-free in `scalar()`, freed by `__libcpp_deallocate<material_sidecar>`), while
+        // the unsanitized run read the freed block and happened to pass. Every pointer `find()` hands out
+        // borrows from the object it was called on, so the object outlives the pointer or neither is used.
+        auto const parsed_good = toon::parse_sidecar(good_text);
+        CHECK(parsed_good.has_value());
+        if (!parsed_good.has_value()) {
+            return;
+        }
+        toon::material_sidecar const* const body = parsed_good->find("M_body");
         CHECK(body != nullptr);
         if (body == nullptr) {
             return;
